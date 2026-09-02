@@ -165,16 +165,20 @@ marketing-service 的优惠券与营销活动已接入真实写链路，前端�
 | `POST /campaigns/{id}/transit` | 活动状态流转（幂等，返回 `changed`） |
 | `GET /campaigns` | 活动列表 |
 
-**测试体系**：后端采用 JUnit 5 + Mockito，分层为 service 单元测试（Mock 仓储，覆盖状态机、防超发、部分发放、幂等、校验、审计调用）与 `@WebMvcTest` Web 切片测试（MockMvc 覆盖鉴权 401/403、参数校验 400、路由与中文错误），不依赖真实数据库，进 CI 红线。
+**测试体系**：后端采用 JUnit 5 + Mockito，分层为 service 单元测试（Mock 仓储，覆盖状态机、防超发、部分发放、幂等、校验、审计调用）与 `@WebMvcTest` Web 切片测试（MockMvc 覆盖鉴权 401/403、参数校验 400、路由与中文错误，以及触达双红线：违禁词命中 400 且不落库、周频 ≤3 超限 400、合规触达发布 `push-sent` 事件、quota 余量上报），不依赖真实数据库，进 CI 红线。前端采用 Vitest（node 环境）对适配层纯逻辑做单测，覆盖金额分/元换算、折扣口径、券模板/发券记录适配（含 `EXPIRED` 有效期派生、券码回落、状态归一）、错误消息三态与库存派生。
 
 ```bash
 cd backend
 mvn -pl meiyun-common install          # 先装公共库
-mvn -pl marketing-service test         # 营销服务单测 + Web 切片
+mvn test                               # 全量单测（common + 各服务）
+mvn -pl marketing-service test         # 仅营销服务单测 + Web 切片
+
+cd frontend
+pnpm test                              # vitest 单测（pnpm test:watch 监听模式）
 ```
 
 > 数据库表结构由 Flyway 精管：`customer-service` 启动时执行 `classpath:db/migration`（V1 系统基线、V2 字典种子、V3 营销域表）。营销三表（`coupon_template` / `coupon_grant` / `campaign`）在 V3 中按英文状态机与 bigint 金额重建；`backend/db/migration` 为同源工作副本。
 
 ## CI
 
-`.github/workflows/ci.yml` 在 push 后自动执行网关、后端、前端三组件的构建与单元测试（后端 `mvn test`、前端 `pnpm build` 含 `vue-tsc` 类型检查、网关 `go build`/`go vet`）。
+`.github/workflows/ci.yml` 在 push 后自动执行网关、后端、前端三组件的构建与单元测试（后端 `mvn test`、前端 `pnpm test`（vitest）+ `pnpm build` 含 `vue-tsc` 类型检查、网关 `go build`/`go vet`），任一环节失败即阻断合码。
