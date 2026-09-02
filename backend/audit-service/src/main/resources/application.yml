@@ -1,0 +1,19 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: audit-service
+  datasource:
+    url: jdbc:postgresql://localhost:5433/meiyun_core?stringtype=unspecified
+    username: meiyun
+    password: meiyun123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+
+logging:
+  level:
+    com.meiyun: INFO

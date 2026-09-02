@@ -1,0 +1,158 @@
+# 美研云「种子联调栈」—— 指向独立测试库 meiyun_seed，与正式 app 栈完全隔离。
+#
+# 前置：
+#   1. 先构建过正式镜像（docker-compose.app.yml up -d --build），本栈直接复用 image，不重复 build。
+#   2. 已灌种子：bash scripts/setup-seed-db.sh
+#
+# 隔离方式（四要素，缺一会串栈）：
+#   - 数据源覆盖为 jdbc:postgresql://meiyun-pg:5432/meiyun_seed（复用同一 PG 实例的不同库）；
+#   - 独立容器名 meiyun-seed-*、独立宿主端口（前端 18080 / 网关 18443 / 后端 18082-18088），
+#     与正式栈（8080/8443/8082-8088）互不冲突，可同时运行；
+#   - **独立 Docker 网络 meiyun-seed-net**：compose 会在网络上为每个容器注册「服务名别名」
+#     （customer-service 等），若与正式栈共用 10-_meiyun 网络，同名别名冲突会让正式栈网关
+#     把请求轮询路由到 seed 容器（core 库返回 seed 数据）。故 seed 必须用独立网络；
+#     中间件容器（pg/redis/es/minio/rocketmq）需额外 `docker network connect meiyun-seed-net <容器>` 接入。
+#
+# 启动：docker compose -f docker-compose.seed.yml up -d
+# 停止：docker compose -f docker-compose.seed.yml down
+# 清库：bash scripts/reset-seed-db.sh（开发完彻底清空测试数据）
+#
+# 注意：本文件与 docker-compose.app.yml 同目录，必须用独立 compose 项目名（顶层 name: meiyun-seed），
+# 否则服务名相同（customer-service/gateway…）会被默认项目判定为同一服务而互相 recreate/替换正式栈。
+
+name: meiyun-seed
+
+services:
+  customer-service: &seed-backend
+    image: meiyun/customer-service:latest
+    container_name: meiyun-seed-customer-service
+    networks: [seed-net]
+    ports: ["18082:8082"]
+    environment: &seed-env
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://meiyun-pg:5432/meiyun_seed?stringtype=unspecified"
+      MEIYUN_ES_ENDPOINT: "http://meiyun-es:9200"
+      SPRING_DATA_REDIS_HOST: "meiyun-redis"
+      # 连接池上限：seed 栈与正式栈共用同一 PG 实例（max_connections=100），两栈共 14 个后端服务，
+      # 默认池(10)会打满连接，故限每服务 5（14×5=70，留余量给运维/迁移连接）。
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
+      # 服务间 REST 调用（seed 栈内按 seed 容器名寻址）：名解析 + 审计追加。
+      ORG_SERVICE_URL: "http://meiyun-seed-org-service:8086"
+      STORE_SERVICE_URL: "http://meiyun-seed-store-service:8085"
+      AUDIT_SERVICE_URL: "http://meiyun-seed-audit-service:8084"
+      CUSTOMER_SERVICE_URL: "http://meiyun-seed-customer-service:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8082' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  txn-service:
+    <<: *seed-backend
+    image: meiyun/txn-service:latest
+    container_name: meiyun-seed-txn-service
+    ports: ["18083:8083"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8083' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  audit-service:
+    <<: *seed-backend
+    image: meiyun/audit-service:latest
+    container_name: meiyun-seed-audit-service
+    ports: ["18084:8084"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8084' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  store-service:
+    <<: *seed-backend
+    image: meiyun/store-service:latest
+    container_name: meiyun-seed-store-service
+    ports: ["18085:8085"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8085' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  org-service:
+    <<: *seed-backend
+    image: meiyun/org-service:latest
+    container_name: meiyun-seed-org-service
+    ports: ["18086:8086"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8086' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  finance-service:
+    <<: *seed-backend
+    image: meiyun/finance-service:latest
+    container_name: meiyun-seed-finance-service
+    ports: ["18087:8087"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8087' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  marketing-service:
+    <<: *seed-backend
+    image: meiyun/marketing-service:latest
+    container_name: meiyun-seed-marketing-service
+    ports: ["18088:8088"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8088' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  gateway:
+    image: meiyun/gateway:latest
+    container_name: meiyun-seed-gateway
+    networks: [seed-net]
+    ports: ["18443:8443"]
+    environment:
+      CUSTOMER_SERVICE_URL: "http://meiyun-seed-customer-service:8082"
+      TXN_SERVICE_URL: "http://meiyun-seed-txn-service:8083"
+      AUDIT_SERVICE_URL: "http://meiyun-seed-audit-service:8084"
+      STORES_SERVICE_URL: "http://meiyun-seed-store-service:8085"
+      ORG_SERVICE_URL: "http://meiyun-seed-org-service:8086"
+      FINANCE_SERVICE_URL: "http://meiyun-seed-finance-service:8087"
+      MARKETING_SERVICE_URL: "http://meiyun-seed-marketing-service:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  frontend:
+    image: meiyun/frontend:latest
+    container_name: meiyun-seed-frontend
+    networks: [seed-net]
+    ports: ["18080:80"]
+    depends_on:
+      gateway: { condition: service_started }
+
+networks:
+  # seed 栈独占网络（与正式栈 10-_meiyun 隔离）。compose 自动创建，实际名 meiyun-seed_seed-net。
+  # 中间件容器（meiyun-pg/redis/es/minio/rocketmq）不在本 compose 内，up 后需手动接入：
+  #   for c in meiyun-pg meiyun-redis meiyun-es meiyun-minio meiyun-rocketmq; do
+  #     docker network connect meiyun-seed_seed-net $c 2>/dev/null; done
+  # seed 服务用「中间件容器名」(meiyun-pg 等) 寻址，接入后即可解析。
+  seed-net:
+    driver: bridge

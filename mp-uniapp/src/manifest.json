@@ -1,0 +1,31 @@
+{
+  "name": "美研云",
+  "appid": "",
+  "description": "美研云会员小程序：在线预约、项目购买、会员卡、积分商城、到店核销",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "mp-weixin": {
+    "appid": "REPLACE_WITH_YOUR_WEAPP_APPID",
+    "setting": {
+      "urlCheck": true,
+      "es6": true,
+      "minified": true,
+      "postcss": true,
+      "lazyloadPlaceholderEnable": false,
+      "ignoreUploadUnusedFiles": true
+    },
+    "usingComponents": true,
+    "permission": {
+      "scope.userLocation": {
+        "desc": "用于为您推荐附近的门店"
+      }
+    },
+    "requiredPrivateInfos": ["getLocation", "chooseLocation"],
+    "optimization": {
+      "subPackages": true
+    },
+    "lazyCodeLoading": "requiredComponents"
+  },
+  "vueVersion": "3"
+}

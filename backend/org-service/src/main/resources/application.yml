@@ -1,0 +1,25 @@
+server:
+  port: 8086
+
+spring:
+  application:
+    name: org-service
+  datasource:
+    # 宿主机映射端口 5433（容器内 5432）
+    url: jdbc:postgresql://localhost:5433/meiyun_core?stringtype=unspecified
+    username: meiyun
+    password: meiyun123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update   # 表结构以 DDL 脚本为准，不自动建表
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+    open-in-view: false
+
+logging:
+  level:
+    com.meiyun: INFO

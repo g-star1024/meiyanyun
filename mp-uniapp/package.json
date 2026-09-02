@@ -1,0 +1,33 @@
+{
+  "name": "meiyun-mp-uniapp",
+  "version": "0.1.0",
+  "private": true,
+  "description": "美研云 C 端微信小程序（uni-app + Vue3 + TS + Pinia）",
+  "scripts": {
+    "dev:mp-weixin": "uni -p mp-weixin",
+    "build:mp-weixin": "uni build -p mp-weixin",
+    "type-check": "vue-tsc --noEmit -p tsconfig.json",
+    "upload": "node scripts/upload.js"
+  },
+  "dependencies": {
+    "@dcloudio/uni-app": "3.0.0-alpha-5020520260824002",
+    "@dcloudio/uni-components": "3.0.0-alpha-5020520260824002",
+    "@dcloudio/uni-mp-weixin": "3.0.0-alpha-5020520260824002",
+    "@dcloudio/uni-ui": "^1.5.12",
+    "pinia": "^2.1.7",
+    "vue": "^3.4.21"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "3.4.31",
+    "@dcloudio/uni-automator": "3.0.0-alpha-5020520260824002",
+    "@dcloudio/uni-cli-shared": "3.0.0-alpha-5020520260824002",
+    "@dcloudio/uni-stacktracey": "3.0.0-alpha-5020520260824002",
+    "@dcloudio/vite-plugin-uni": "3.0.0-alpha-5020520260824002",
+    "@vue/tsconfig": "^0.5.1",
+    "miniprogram-ci": "^1.9.11",
+    "sass": "^1.77.0",
+    "typescript": "^5.4.5",
+    "vite": "5.2.8",
+    "vue-tsc": "^2.0.16"
+  }
+}

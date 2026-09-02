@@ -1,0 +1,40 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: customer-service
+  datasource:
+    # 宿主机映射端口 5433；stringtype=unspecified 规避 jsonb/varchar 绑定问题
+    url: jdbc:postgresql://localhost:5433/meiyun_core?stringtype=unspecified
+    username: meiyun
+    password: meiyun123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      # Flyway 负责精管表（sys_*、字典种子），Hibernate 用 update 在迁移后补齐实体派生表
+      ddl-auto: update
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # 现有库已由 JPA 建表：对已有库做 baseline（标记基线），V1/V2 仍会被纳入并执行
+    baseline-on-migrate: true
+    baseline-version: 0
+    baseline-description: "JPA 自动建表基线"
+    table: flyway_schema_history
+    validate-on-migrate: true
+
+# ES 客户全文检索（JDK HttpClient 直连，零客户端依赖；不可用时自动降级 DB 过滤）
+meiyun:
+  es:
+    endpoint: ${MEIYUN_ES_ENDPOINT:http://localhost:9200}
+
+logging:
+  level:
+    com.meiyun: INFO

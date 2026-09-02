@@ -1,0 +1,24 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: txn-service
+  datasource:
+    url: jdbc:postgresql://localhost:5433/meiyun_core
+    username: meiyun
+    password: meiyun123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    open-in-view: false
+
+# audit-service 地址（append-only 审计链写入入口）
+audit:
+  service:
+    url: http://localhost:8084
+
+logging:
+  level:
+    com.meiyun: INFO

@@ -1,0 +1,11 @@
+/**
+ * uni-app 全局 SCSS 变量（与 C 端 H5 原型对齐的品牌色）
+ * 供页面 <style lang="scss"> 通过 uni 插件自动注入
+ */
+$brand: #ff6b9e;        // 主品牌粉
+$brand-deep: #ff4d6d;   // 价格/强调红
+$brand-soft: #fff0f5;   // 软粉底
+$brand-gradient: linear-gradient(135deg, #ffbff0, #ff6b9e);
+$text-main: #1a1a1a;
+$text-sub: #999999;
+$bg-page: #f6f6f8;

@@ -1,0 +1,170 @@
+{
+  "easycom": {
+    "autoscan": true,
+    "custom": {
+      "^uni-(.*)": "@dcloudio/uni-ui/lib/uni-$1/uni-$1.vue"
+    }
+  },
+  "pages": [
+    {
+      "path": "pages/home/index",
+      "style": {
+        "navigationBarTitleText": "美研云",
+        "enablePullDownRefresh": true
+      }
+    },
+    {
+      "path": "pages/projects/list",
+      "style": {
+        "navigationBarTitleText": "全部项目"
+      }
+    },
+    {
+      "path": "pages/projects/detail",
+      "style": {
+        "navigationBarTitleText": "项目详情"
+      }
+    },
+    {
+      "path": "pages/projects/buy",
+      "style": {
+        "navigationBarTitleText": "确认订单"
+      }
+    },
+    {
+      "path": "pages/booking/list",
+      "style": {
+        "navigationBarTitleText": "我的预约"
+      }
+    },
+    {
+      "path": "pages/booking/new",
+      "style": {
+        "navigationBarTitleText": "新建预约"
+      }
+    },
+    {
+      "path": "pages/me/index",
+      "style": {
+        "navigationBarTitleText": "我的"
+      }
+    },
+    {
+      "path": "pages/stores/list",
+      "style": {
+        "navigationBarTitleText": "附近门店"
+      }
+    },
+    {
+      "path": "pages/stores/detail",
+      "style": {
+        "navigationBarTitleText": "门店详情"
+      }
+    },
+    {
+      "path": "pages/packages/index",
+      "style": {
+        "navigationBarTitleText": "我的套餐"
+      }
+    },
+    {
+      "path": "pages/records/index",
+      "style": {
+        "navigationBarTitleText": "消费记录"
+      }
+    },
+    {
+      "path": "pages/orders/list",
+      "style": {
+        "navigationBarTitleText": "我的订单"
+      }
+    },
+    {
+      "path": "pages/orders/detail",
+      "style": {
+        "navigationBarTitleText": "订单详情"
+      }
+    },
+    {
+      "path": "pages/advisor/index",
+      "style": {
+        "navigationBarTitleText": "专属顾问"
+      }
+    },
+    {
+      "path": "pages/invite/index",
+      "style": {
+        "navigationBarTitleText": "邀请有礼"
+      }
+    },
+    {
+      "path": "pages/settings/index",
+      "style": {
+        "navigationBarTitleText": "设置"
+      }
+    },
+    {
+      "path": "pages/coupons/index",
+      "style": {
+        "navigationBarTitleText": "优惠券"
+      }
+    },
+    {
+      "path": "pages/card/index",
+      "style": {
+        "navigationBarTitleText": "我的会员卡"
+      }
+    },
+    {
+      "path": "pages/points-mall/index",
+      "style": {
+        "navigationBarTitleText": "积分商城"
+      }
+    },
+    {
+      "path": "pages/receipt/detail",
+      "style": {
+        "navigationBarTitleText": "电子小票"
+      }
+    },
+    {
+      "path": "pages/followup/index",
+      "style": {
+        "navigationBarTitleText": "术后回访"
+      }
+    },
+    {
+      "path": "pages/notifications/index",
+      "style": {
+        "navigationBarTitleText": "消息中心"
+      }
+    }
+  ],
+  "tabBar": {
+    "color": "#9aa0a6",
+    "selectedColor": "#ff6b9e",
+    "backgroundColor": "#ffffff",
+    "borderStyle": "white",
+    "list": [
+      {
+        "pagePath": "pages/home/index",
+        "text": "首页"
+      },
+      {
+        "pagePath": "pages/projects/list",
+        "text": "项目"
+      },
+      {
+        "pagePath": "pages/me/index",
+        "text": "我的"
+      }
+    ]
+  },
+  "globalStyle": {
+    "navigationStyle": "custom",
+    "navigationBarTextStyle": "black",
+    "navigationBarTitleText": "美研云",
+    "navigationBarBackgroundColor": "#ffffff",
+    "backgroundColor": "#f6f6f8"
+  }
+}

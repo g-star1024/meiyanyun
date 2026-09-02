@@ -1,0 +1,185 @@
+/* ============================================================
+ * Design Tokens — 全站唯一令牌源
+ * 颜色来源：Ardot 文件 713306548228181 Semantic Colors（MCP fetch_variables 实拉真值）
+ * 规则：组件/页面只允许引用以下变量，禁止裸值（间距/颜色/圆角/字号）
+ * ============================================================ */
+:root {
+  /* ---------- 1. 品牌主色 ---------- */
+  --c-brand: #ff6b9e;            /* color/brand/primary 主按钮/强调（Ardot 真值）*/
+  --c-brand-press: #e85a8c;      /* 按压态 */
+  --c-brand-soft: #ffe9f1;       /* 选中/激活背景 */
+  --c-brand-border: #ffc2d8;     /* 次级按钮描边 */
+  --c-brand-secondary: #6b8aff;  /* color/brand/secondary 信息蓝紫 */
+
+  /* ---------- 2. 辅助色板 ---------- */
+  --c-blue: #6b8aff;             /* 信息/链接 */
+  --c-gold: #ffcc47;             /* 等级/勋章（Ardot warning 同值）*/
+  --c-teal: #2ed4bf;             /* color/status/success 青绿（成功主色）*/
+  --c-teal-bg: #e7faf6;          /* 青绿浅底（流水牌"治疗中"阶段色带）*/
+  --c-purple: #8c5cf5;           /* color/feature/ai 紫/特殊标签 */
+  --c-purple-soft: #f1ecff;      /* AI 能力卡片背景 tint */
+
+  /* ---------- 3. 语义状态色（字色 / 底色，成对） ---------- */
+  /* Ardot 真值：C-DAT-StatusPill-* batch_read */
+  --c-success-fg: #52c41a;  --c-success-bg: #f0fbf0;  /* StatusPill-success */
+  --c-warning-fg: #fa8c16;  --c-warning-bg: #fff8ea;  /* StatusPill-warning */
+  --c-danger-fg: #ff4d4f;   --c-danger-bg: #fff0f0;   /* StatusPill-danger */
+  --c-info-fg: #1890ff;     --c-info-bg: #edf5ff;     /* StatusPill-info */
+  --c-disabled-fg: #bfbfbf; --c-disabled-bg: #f6f6f8; /* StatusPill-disabled */
+  --c-draft-fg: #7230d1;    --c-draft-bg: #f8f5ff;    /* StatusPill-draft */
+  --c-default-fg: #4d5ad9;  --c-default-bg: #f0f3fb;  /* StatusPill-default */
+
+  /* ---------- 3a. 客情登记用色（SCREEN-M4-06 真值） ---------- */
+  --c-pink-alert-bg: #ffecec;   /* "全部必填" pill 背景 */
+  --c-teal-fg: #1a9e90;         /* 选中"无"项文字色（配对 --c-teal） */
+
+  /* ---------- 3b. 撞单图谱用色（SCREEN-M4-07 真值） ---------- */
+  --c-teal-dark: #0d5e4d;        /* 已消解 KPI 数值色 */
+  --c-orange-dark: #8a6c00;      /* 渠道反洗客预警 KPI 数值色 / 待判定 tag 文字色 */
+  --c-warn-soft-bg: #fff4df;     /* 待判定 tag 背景 */
+
+  /* ---------- 3c. 双签弹窗用色（SCREEN-M4-08 C-MOD-DualSign 真值） ---------- */
+  --c-modal-blue-soft: #f5f8fb;  /* 业务明细卡背景 / 账实校验头 */
+  --c-modal-teal-soft: #f4faf4;  /* 签1 / 签2 卡背景 */
+  --c-modal-orange-soft: #fff4df;/* 合规提示卡背景 */
+  --c-modal-info-soft: #f5faff;  /* 账实校验区背景 */
+  --c-modal-gray-soft: #f2f3f8;  /* 取消按钮背景 */
+
+  /* ---------- 4. 文本 ---------- */
+  --c-text: #1a1a2e;             /* color/text/primary 标题/关键值 */
+  --c-text-2: #4b4b5a;           /* secondary 正文 */
+  --c-text-3: #8a8ba6;           /* tertiary 说明/占位（Ardot 真值 #8A8BA6） */
+  --c-text-4: #9999a8;           /* quaternary 禁用/极弱 */
+
+  /* ---------- 5. 背景 / 描边 ---------- */
+  --c-bg-page: #f4f6fc;          /* Ardot 7:5 页面背景 */
+  --c-bg-right: #f4f6fb;         /* Ardot 9:126 右侧区域背景 */
+  --c-bg-tablet: #f5f7fc;        /* Ardot 7:62 平板内容区背景 */
+  --c-surface: #ffffff;
+  --c-sidebar: #14152b;          /* Ardot 7:6 侧栏 bg #14152B */
+  --c-border: #e8e8ee;
+  --c-border-light: #eaecef;     /* Ardot 卡片/行描边 #EAECEF */
+
+  /* ---------- 5a. 状态胶囊实心四态（Ardot 7:5 真值） ---------- */
+  --c-pill-wait-bg: #2ed4bf; --c-pill-wait-fg: #0b5a4f;   /* 待到店 */
+  --c-pill-doing-bg: #6b8aff; --c-pill-doing-fg: #1e2e6b;  /* 进行中 */
+  --c-pill-done-bg: #34d39a; --c-pill-done-fg: #065f45;   /* 已完成 */
+  --c-pill-cancel-bg: #e5e9e7; --c-pill-cancel-fg: #6b7280; /* 已取消 */
+
+  /* ---------- 5b. 环比趋势箭头（Ardot 7:5 真值） ---------- */
+  --c-trend-up: #16a349;          /* 绿色▲（好趋势/坏方向下降时取消率也绿） */
+  --c-trend-down: #f6a00a;        /* 橙色▼（待到店下降是坏方向） */
+
+  /* ---------- 5c. 平板 KPI 数值色（Ardot 7:68 真值） ---------- */
+  --c-kpi-green: #1b7a4f;         /* 已到店 深绿 */
+  --c-kpi-yellow: #ffcc46;        /* 待到店 黄 */
+  --c-kpi-red: #ff5a5f;           /* 取消率 红 */
+  --c-topbar-text: #6b6f80;       /* 平板顶栏 chip 文字 */
+
+  /* ---------- 6. 间距（4px 栅格 · 7 级，禁其他值） ---------- */
+  --s-xxs: 4px;
+  --s-xs: 8px;
+  --s-sm: 12px;
+  --s-md: 16px;   /* 卡片内 padding 基准 */
+  --s-lg: 24px;   /* Desktop 内容区 padding */
+  --s-xl: 32px;   /* 区块分隔 */
+  --s-xxl: 48px;  /* 页面级留白 */
+
+  /* ---------- 7. 圆角 ---------- */
+  --r-sm: 6px;       /* 输入框/下拉（Ardot C-FLD-Input cornerRadius=6）*/
+  --r-md: 8px;       /* 表格/卡片（Ardot C-TBL-Table cornerRadius=8）*/
+  --r-lg: 10px;      /* 导航项/芯片（Ardot nav item cornerRadius=10）*/
+  --r-xl: 12px;      /* 卡片/弹窗 */
+  --r-capsule: 20px; /* 主按钮（Ardot C-BTN-Primary cornerRadius=20）*/
+  --r-pill: 10px;    /* 状态标签（Ardot StatusPill cornerRadius=10，非999）*/
+  --r-avatar: 16px;  /* 头像圆角（Ardot 3:71 cornerRadius=16）*/
+
+  /* ---------- 8. 字体（禁 Medium 500；行高显式） ---------- */
+  --f-latin: 'Inter', system-ui, -apple-system, sans-serif;
+  --f-cjk: 'Sarasa Gothic SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --f-sans: var(--f-cjk), var(--f-latin);
+
+  /* 字号 / 行高（成对） */
+  --t-xs: 12px;  --lh-xs: 18px;
+  --t-sm: 13px;  --lh-sm: 20px;
+  --t-base: 14px; --lh-base: 22px;
+  --t-md: 16px;  --lh-md: 24px;
+  --t-lg: 18px;  --lh-lg: 28px;
+  --t-xl: 20px;  --lh-xl: 30px;
+  --t-2xl: 22px; --lh-2xl: 32px;
+  --t-3xl: 24px; --lh-3xl: 34px;
+  --t-number: 28px; --lh-number: 36px;
+
+  /* ---------- 9. elevation 阴影 ---------- */
+  --shadow-card: 0 1px 3px rgba(20, 21, 43, 0.06);
+  --shadow-pop: 0 8px 24px rgba(20, 21, 43, 0.12);
+  --shadow-fab: 0 4px 12px rgba(255, 107, 157, 0.4);
+
+  /* ---------- 10. 断点 ---------- */
+  --bp-desktop: 1280px;
+  --bp-tablet: 1024px;
+
+  /* ---------- 11. 布局尺寸 ---------- */
+  --sidebar-w: 240px;
+  --topbar-h: 60px;
+  --bottombar-h: 64px;
+  --btn-h: 40px;
+
+  /* ---------- 12. 数据可视化色板（多序列图表） ---------- */
+  --c-series-1: #ff6b9e;  /* 品牌粉 */
+  --c-series-2: #6b8aff;  /* 蓝 */
+  --c-series-3: #2ed4bf;  /* 青 */
+  --c-series-4: #ffcb47;  /* 金 */
+  --c-series-5: #8b5cf6;  /* 紫 */
+  --c-series-6: #ff8a5b;  /* 橙 */
+  --c-series-7: #4d5ad9;  /* 靛 */
+  --c-series-8: #36cfa6;  /* 绿 */
+  --c-chart-track: #eef0f7;   /* 进度/柱底轨道 */
+  --c-chart-grid: #eef0f7;    /* 网格线 */
+  --c-chart-axis: #c9ccd8;    /* 坐标轴 */
+  --c-chart-label: #8a8ba6;   /* 轴标签 */
+}
+
+/* ============================================================
+ * 全局重置 & 基础
+ * ============================================================ */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--f-sans);
+  font-size: var(--t-base);
+  line-height: var(--lh-base);
+  color: var(--c-text);
+  background: var(--c-bg-page);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  color: var(--c-text);
+  font-weight: 700;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}

@@ -1,0 +1,26 @@
+server:
+  # 8081 被本机 llama-server 占用，改用 8085；网关路由已同步
+  port: 8085
+
+spring:
+  application:
+    name: store-service
+  datasource:
+    # 宿主机映射端口 5433（容器内 5432；Docker vpnkit 占用宿主机 5432）
+    url: jdbc:postgresql://localhost:5433/meiyun_core
+    username: meiyun
+    password: meiyun123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update   # 表结构以 DDL 脚本为准，不自动建表
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+    open-in-view: false
+
+logging:
+  level:
+    com.meiyun: INFO

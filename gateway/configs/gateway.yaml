@@ -1,0 +1,23 @@
+# 美研云国密网关配置（参考）
+# 说明：本脚手架路由与端口在 internal/proxy/router.go 中硬编码，
+# 此处仅作运维文档。生产可改为从本文件加载（引入 yaml 解析）。
+
+listen: ":8443"            # 国密 TLS 监听端口（GM/T 0024）
+
+# 国密证书：无既有 CA 时由网关自签（internal/gm）。生产应替换为机构根 CA 签发。
+self_signed:
+  common_name: "meiyun-gateway"
+  organization: "MeiYun Medical Aesthetics"
+  valid_years: 10
+
+# 反向代理路由：路径前缀 → 后端微服务
+routes:
+  - prefix: "/api/stores"
+    target: "http://127.0.0.1:8081"   # store-service
+  - prefix: "/api/txn"
+    target: "http://127.0.0.1:8083"   # txn-service
+  - prefix: "/api/audit"
+    target: "http://127.0.0.1:8084"   # audit-service
+
+# 双栈：同时启用国密 TLS 与国际 TLS 1.2/1.3（MixEnabled）
+mix_enabled: true

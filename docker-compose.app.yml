@@ -1,0 +1,207 @@
+# 美研云「应用层」编排（后端 7 微服务 + 国密网关 + 前端）
+#
+# 设计要点：
+# 1. 基础设施（PG/Redis/RocketMQ/MinIO/ES）由另一份 compose 管理
+#    （/Users/huluobo/WorkBuddy/2026-08-15-23-51-02/_fix/10-环境配置/docker-compose.middleware.yml，
+#      compose 项目名 10-），全部位于用户网络 10-_meiyun。
+#    本文件只编排应用层，并接入同一个外部网络 10-_meiyun，从而用服务别名
+#    meiyun-pg / meiyun-redis / meiyun-es / meiyun-minio / meiyun-rocketmq 访问基础设施。
+#    —— 不要重建基础设施，避免与已稳定运行 11 天的容器冲突。
+# 2. 容器内用内部端口（PG 5432 / Redis 6379 / ES 9200 / MinIO 9000），而非宿主映射端口。
+# 3. 网关上游通过环境变量覆盖（CUSTOMER_SERVICE_URL 等），默认值 127.0.0.1 仅在宿主直连时生效。
+# 4. 后端 jar / 网关二进制已在宿主构建好，Dockerfile 直接 COPY，无需镜像内慢构建。
+#
+# 启动：docker compose -f docker-compose.app.yml up -d --build
+# 停止：docker compose -f docker-compose.app.yml down
+# 日志：docker compose -f docker-compose.app.yml logs -f <service>
+
+services:
+  customer-service: &backend-common
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        SERVICE: customer-service
+        PORT: "8082"
+    image: meiyun/customer-service:latest
+    container_name: meiyun-customer-service
+    restart: unless-stopped
+    networks: [meiyun-network]
+    ports: ["8082:8082"]
+    environment:
+      SPRING_DATASOURCE_URL: "jdbc:postgresql://meiyun-pg:5432/meiyun_core?stringtype=unspecified"
+      MEIYUN_ES_ENDPOINT: "http://meiyun-es:9200"
+      SPRING_DATA_REDIS_HOST: "meiyun-redis"
+      # 连接池上限：正式栈与 seed 栈共用同一 PG 实例（max_connections=100），两栈共 14 个后端服务，
+      # 默认池(10)会打满连接，故限每服务 5（14×5=70，留余量给运维/迁移连接）。
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
+      # 服务间 REST 调用（按 compose 服务名在同一 meiyun-network 内寻址）：
+      # 名解析（org/staff、store）与审计追加（audit）。不注入则默认 127.0.0.1，容器内不通会静默降级。
+      ORG_SERVICE_URL: "http://org-service:8086"
+      STORE_SERVICE_URL: "http://store-service:8085"
+      AUDIT_SERVICE_URL: "http://audit-service:8084"
+      CUSTOMER_SERVICE_URL: "http://customer-service:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8082' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  txn-service:
+    <<: *backend-common
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        SERVICE: txn-service
+        PORT: "8083"
+    image: meiyun/txn-service:latest
+    container_name: meiyun-txn-service
+    ports: ["8083:8083"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8083' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  audit-service:
+    <<: *backend-common
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        SERVICE: audit-service
+        PORT: "8084"
+    image: meiyun/audit-service:latest
+    container_name: meiyun-audit-service
+    ports: ["8084:8084"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8084' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  store-service:
+    <<: *backend-common
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        SERVICE: store-service
+        PORT: "8085"
+    image: meiyun/store-service:latest
+    container_name: meiyun-store-service
+    ports: ["8085:8085"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8085' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  org-service:
+    <<: *backend-common
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        SERVICE: org-service
+        PORT: "8086"
+    image: meiyun/org-service:latest
+    container_name: meiyun-org-service
+    ports: ["8086:8086"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8086' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  finance-service:
+    <<: *backend-common
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        SERVICE: finance-service
+        PORT: "8087"
+    image: meiyun/finance-service:latest
+    container_name: meiyun-finance-service
+    ports: ["8087:8087"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8087' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  marketing-service:
+    <<: *backend-common
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+      args:
+        SERVICE: marketing-service
+        PORT: "8088"
+    image: meiyun/marketing-service:latest
+    container_name: meiyun-marketing-service
+    ports: ["8088:8088"]
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8088' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    image: meiyun/gateway:latest
+    container_name: meiyun-gateway
+    restart: unless-stopped
+    networks: [meiyun-network]
+    ports: ["8443:8443"]
+    depends_on:
+      customer-service: { condition: service_healthy }
+      txn-service: { condition: service_healthy }
+      audit-service: { condition: service_healthy }
+      store-service: { condition: service_healthy }
+      org-service: { condition: service_healthy }
+      finance-service: { condition: service_healthy }
+      marketing-service: { condition: service_healthy }
+    environment:
+      CUSTOMER_SERVICE_URL: "http://customer-service:8082"
+      TXN_SERVICE_URL: "http://txn-service:8083"
+      AUDIT_SERVICE_URL: "http://audit-service:8084"
+      STORES_SERVICE_URL: "http://store-service:8085"
+      ORG_SERVICE_URL: "http://org-service:8086"
+      FINANCE_SERVICE_URL: "http://finance-service:8087"
+      MARKETING_SERVICE_URL: "http://marketing-service:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: meiyun/frontend:latest
+    container_name: meiyun-frontend
+    restart: unless-stopped
+    networks: [meiyun-network]
+    ports: ["8080:80"]
+    depends_on:
+      gateway: { condition: service_started }
+
+networks:
+  meiyun-network:
+    external: true
+    name: "10-_meiyun"

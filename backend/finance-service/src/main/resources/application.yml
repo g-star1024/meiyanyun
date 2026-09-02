@@ -1,0 +1,24 @@
+server:
+  port: 8087
+
+spring:
+  application:
+    name: finance-service
+  datasource:
+    url: jdbc:postgresql://localhost:5433/meiyun_core?stringtype=unspecified
+    username: meiyun
+    password: meiyun123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+    open-in-view: false
+
+logging:
+  level:
+    com.meiyun: INFO
