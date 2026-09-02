@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main, develop]
 
-# 美研云 Phase 1 CI：后端 Maven（编译+单测）、前端 pnpm（类型检查+构建）、Go 网关（编译+vet）。
+# 美研云 Phase 1 CI：后端 Maven（编译+单测）、前端 pnpm（vitest 单测+类型检查+构建）、Go 网关（编译+vet）。
 # 红线：单测失败 / 编译失败 / 双签引擎与审计链测试不过 → 阻断合码。
 jobs:
   backend:
@@ -50,6 +50,8 @@ jobs:
           cache-dependency-path: frontend/pnpm-lock.yaml
       - name: Install
         run: pnpm install --no-frozen-lockfile
+      - name: Unit tests (vitest)
+        run: pnpm test
       - name: Type-check & build
         run: pnpm build
 

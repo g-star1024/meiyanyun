@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { fileURLToPath, URL } from 'node:url'
@@ -13,6 +14,12 @@ export default defineConfig({
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
+  },
+  // 单元测试：node 环境跑 store/适配层纯逻辑（*.spec.ts）。
+  // 组件/DOM 测试未来可用 environment: 'jsdom' 单独拆分。
+  test: {
+    environment: 'node',
+    include: ['src/**/*.spec.ts'],
   },
   server: {
     host: '127.0.0.1',

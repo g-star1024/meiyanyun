@@ -240,4 +240,80 @@ class MarketingControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.weeklyPushLimit").value(3));
     }
+
+    // ==================== 触达红线（违禁词 + 周频限 3 条）====================
+
+    /** 让频控默认放行（配额充足），cfg 返回周频上限 3。 */
+    private void allowPush() {
+        MarketingCfg cfg = new MarketingCfg();
+        cfg.setWeeklyPushLimit(3);
+        when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
+        when(rateLimiter.tryAcquire(anyString(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt())).thenReturn(true);
+        when(rateLimiter.currentCount(anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(0L);
+        when(pushRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    @Test
+    void push_hit_forbidden_word_returns_400_chinese_and_not_persisted() throws Exception {
+        allowPush();
+        // “根治” 属医疗承诺类违禁词，必须在频控前拦截，且不允许落库
+        mockMvc.perform(post("/api/marketing/push")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"M001\",\"pushType\":\"SMS\",\"content\":\"本店新品一次见效，根治痘痘\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("违禁词")));
+        org.mockito.Mockito.verify(pushRepo, org.mockito.Mockito.never()).save(any());
+        org.mockito.Mockito.verifyNoInteractions(events);
+    }
+
+    @Test
+    void push_over_weekly_limit_returns_400_chinese() throws Exception {
+        MarketingCfg cfg = new MarketingCfg();
+        cfg.setWeeklyPushLimit(3);
+        when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
+        // 违禁词通过但频控拒绝：近 7 天已触达 3 条
+        when(rateLimiter.tryAcquire(anyString(), org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt())).thenReturn(false);
+        when(rateLimiter.currentCount(anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(3L);
+        mockMvc.perform(post("/api/marketing/push")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"M001\",\"pushType\":\"SMS\",\"content\":\"秋季护理预约提醒\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("触达频控拦截")))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("上限 3")));
+        org.mockito.Mockito.verify(pushRepo, org.mockito.Mockito.never()).save(any());
+    }
+
+    @Test
+    void push_compliant_within_quota_returns_200_and_publishes_event() throws Exception {
+        allowPush();
+        mockMvc.perform(post("/api/marketing/push")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"M001\",\"pushType\":\"SMS\",\"content\":\"您预约的秋季护理明天到店\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("M001"))
+                .andExpect(jsonPath("$.pushType").value("SMS"));
+        org.mockito.Mockito.verify(pushRepo).save(any());
+        org.mockito.Mockito.verify(events).publish(org.mockito.ArgumentMatchers.eq("meiyun.marketing.push-sent"),
+                anyString(), anyString());
+    }
+
+    @Test
+    void push_quota_endpoint_reports_remaining() throws Exception {
+        MarketingCfg cfg = new MarketingCfg();
+        cfg.setWeeklyPushLimit(3);
+        when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
+        when(rateLimiter.currentCount(anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(2L);
+        mockMvc.perform(get("/api/marketing/push/quota/M001")
+                        .header("Authorization", adminToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.customerId").value("M001"))
+                .andExpect(jsonPath("$.sentLast7Days").value(2))
+                .andExpect(jsonPath("$.weeklyLimit").value(3))
+                .andExpect(jsonPath("$.remaining").value(1));
+    }
 }

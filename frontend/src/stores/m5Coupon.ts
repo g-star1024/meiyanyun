@@ -22,13 +22,13 @@ export type GrantScope = 'ALL' | 'NEW' | 'SEGMENT' | 'DESIGNATED'
 export type GrantStatus = 'PENDING' | 'GRANTED' | 'FAILED'
 
 /** 分 → 元 */
-const fen2yuan = (fen?: number | null): number => (fen == null ? 0 : fen / 100)
+export const fen2yuan = (fen?: number | null): number => (fen == null ? 0 : fen / 100)
 /** 元 → 分 */
-const yuan2fen = (yuan: number): number => Math.round((yuan || 0) * 100)
+export const yuan2fen = (yuan: number): number => Math.round((yuan || 0) * 100)
 /** 后端折扣（折扣×10，如 85）→ 前端折扣（8.5） */
-const rate2view = (v: number): number => (v ? v / 10 : 0)
+export const rate2view = (v: number): number => (v ? v / 10 : 0)
 /** 前端折扣（8.5）→ 后端折扣（85） */
-const view2rate = (v: number): number => Math.round((v || 0) * 10)
+export const view2rate = (v: number): number => Math.round((v || 0) * 10)
 
 /** 从 axios 错误中取后端中文 message（与全平台视图错误范式一致） */
 export function errMsg(e: unknown, fallback = '网络异常，请稍后重试'): string {
@@ -86,7 +86,7 @@ export const GRANT_STATUS_PILL: Record<GrantStatus, 'primary' | 'success' | 'dan
 }
 
 /** 后端券模板 → 前端活规格（分→元、折扣×10→8.5、EXPIRED 日期派生） */
-function adaptCoupon(d: CouponTemplateDTO): CouponTemplate {
+export function adaptCoupon(d: CouponTemplateDTO): CouponTemplate {
   const days = d.validEnd ? Math.ceil((new Date(d.validEnd).getTime() - Date.now()) / 86400000) : 999
   let status = d.status as CouponStatus
   if (status === 'ACTIVE' && days < 0) status = 'EXPIRED'
@@ -125,7 +125,7 @@ function adaptCoupon(d: CouponTemplateDTO): CouponTemplate {
 }
 
 /** 后端发券记录 → 前端活规格 */
-function adaptGrant(d: CouponGrantDTO): GrantRecord {
+export function adaptGrant(d: CouponGrantDTO): GrantRecord {
   return {
     id: d.grantId,
     couponId: d.couponId,
