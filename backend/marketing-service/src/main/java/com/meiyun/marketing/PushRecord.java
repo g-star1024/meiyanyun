@@ -21,7 +21,8 @@ public class PushRecord {
     @Column(name = "customer_id", nullable = false, length = 16)
     private String customerId;
 
-    @Column(name = "push_type", nullable = false, length = 8)
+    // length=16：承载 SMS/WECOM/WECHAT_MP 三渠道英文码（WECHAT_MP 为 9 字符，旧表 varchar(8) 落库会超长）
+    @Column(name = "push_type", nullable = false, length = 16)
     private String pushType;
 
     @Column(nullable = false, length = 256)

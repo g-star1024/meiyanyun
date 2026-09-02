@@ -66,7 +66,10 @@ public class CustomerService {
             if (channel != null) ps.add(cb.equal(root.get("channel"), channel));
             if (keyword != null && !keyword.isBlank()) {
                 String like = "%" + keyword + "%";
-                ps.add(cb.or(cb.like(root.get("name"), like), cb.like(root.get("phone"), like)));
+                // 支持客户编号（SC001）检索：触达等 B 端操作页常按编号定位客户
+                ps.add(cb.or(cb.like(root.get("name"), like),
+                             cb.like(root.get("phone"), like),
+                             cb.like(root.get("customerId"), like)));
             }
             return cb.and(ps.toArray(new Predicate[0]));
         };

@@ -72,6 +72,26 @@ echo "==> [4/4] 灌入客户富画像 02_customer_full.sql"
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 < "$SEED_DIR/02_customer_full.sql"
 
 echo ""
+echo "==> [可选] 若 seed 联调栈 org-service 在运行，重启它以触发 RBAC 启动播种"
+# reset 会 TRUNCATE staff/role_def 并重灌不含登录凭证的 01_master.sql；
+# 登录凭证（login_name/password_hash=meiyun123）、SE101-SE105/E001-E014 演示员工、
+# 新角色码迁移都由 org-service 的 RbacDataInitializer 在启动时幂等补齐。
+# 不重启则测试账号登录会报「工号或密码错误」。容器未起则跳过（纯建库场景）。
+SEED_ORG_CONTAINER="${SEED_ORG_CONTAINER:-meiyun-seed-org-service}"
+if docker ps --format '{{.Names}}' | grep -qx "$SEED_ORG_CONTAINER"; then
+  echo "    重启 $SEED_ORG_CONTAINER 触发凭证/角色播种 ..."
+  docker restart "$SEED_ORG_CONTAINER" >/dev/null
+  echo "    等待 healthy ..."
+  for _ in $(seq 1 40); do
+    [ "$(docker inspect "$SEED_ORG_CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && break
+    sleep 3
+  done
+  echo "    $SEED_ORG_CONTAINER 已就绪，测试账号（SE101 等 / 密码 meiyun123）可登录。"
+else
+  echo "    $SEED_ORG_CONTAINER 未运行，跳过（起栈后 org-service 启动即自动播种）。"
+fi
+
+echo ""
 echo "✅ 完成。测试库 $SEED_DB 已就绪（可随时重跑本脚本 reset）。"
 echo "   行数核对："
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
@@ -82,4 +102,5 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
    UNION ALL SELECT 'points_ledger='||count(*) FROM points_ledger
    UNION ALL SELECT 'appointment='||count(*) FROM appointment
    UNION ALL SELECT 'consultation='||count(*) FROM consultation
+   UNION ALL SELECT 'staff='||count(*) FROM staff
    UNION ALL SELECT 'sys_dictionary(保留)='||count(*) FROM sys_dictionary;"

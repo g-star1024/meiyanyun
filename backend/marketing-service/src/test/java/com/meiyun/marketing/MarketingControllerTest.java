@@ -74,6 +74,10 @@ class MarketingControllerTest {
     @MockBean
     CouponService couponService;
     @MockBean
+    MarketingStatsService statsService;
+    @MockBean
+    ForbiddenWordService forbiddenWordService;
+    @MockBean
     PushRecordRepository pushRepo;
     @MockBean
     CouponWriteoffChainRepository chainRepo;
@@ -122,6 +126,29 @@ class MarketingControllerTest {
         mockMvc.perform(get("/api/marketing/coupons")
                         .header("Authorization", frontDeskToken()))
                 .andExpect(status().isOk());
+    }
+
+    // ==================== M5-06 ROI 统计聚合 ====================
+
+    @Test
+    void stats_overview_returns_aggregated_coupon_and_campaign_blocks() throws Exception {
+        java.util.Map<String, Object> overview = new java.util.LinkedHashMap<>();
+        overview.put("coupon", java.util.Map.of(
+                "couponKinds", 2, "totalIssued", 110, "totalUsed", 15,
+                "writeoffRate", 0.1364, "grantBatches", 2L, "grantedPcs", 110L,
+                "rows", List.of()));
+        overview.put("campaign", java.util.Map.of(
+                "campaignCount", 1, "runningCount", 1L, "totalSpent", 200000L,
+                "totalActualAmount", 600000L, "totalNewCustomers", 30,
+                "overallRoi", 3.0, "achieveRate", 1.0, "rows", List.of()));
+        when(statsService.overview()).thenReturn(overview);
+
+        mockMvc.perform(get("/api/marketing/stats/overview")
+                        .header("Authorization", frontDeskToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.coupon.totalIssued").value(110))
+                .andExpect(jsonPath("$.coupon.writeoffRate").value(0.1364))
+                .andExpect(jsonPath("$.campaign.overallRoi").value(3.0));
     }
 
     // ==================== 活动写链路 ====================
@@ -243,11 +270,12 @@ class MarketingControllerTest {
 
     // ==================== 触达红线（违禁词 + 周频限 3 条）====================
 
-    /** 让频控默认放行（配额充足），cfg 返回周频上限 3。 */
+    /** 让频控默认放行（配额充足）、违禁词校验默认通过，cfg 返回周频上限 3。 */
     private void allowPush() {
         MarketingCfg cfg = new MarketingCfg();
         cfg.setWeeklyPushLimit(3);
         when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
+        when(forbiddenWordService.check(anyString())).thenReturn(List.of());
         when(rateLimiter.tryAcquire(anyString(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.anyInt())).thenReturn(true);
         when(rateLimiter.currentCount(anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(0L);
@@ -257,15 +285,20 @@ class MarketingControllerTest {
     @Test
     void push_hit_forbidden_word_returns_400_chinese_and_not_persisted() throws Exception {
         allowPush();
-        // “根治” 属医疗承诺类违禁词，必须在频控前拦截，且不允许落库
+        // “根治” 属医疗承诺类违禁词（DB 词库服务返回命中），必须在频控前拦截，且不允许落库
+        when(forbiddenWordService.check(anyString()))
+                .thenReturn(List.of("医疗承诺:根治", "医疗承诺:一次见效"));
         mockMvc.perform(post("/api/marketing/push")
                         .header("Authorization", adminToken())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"customerId\":\"M001\",\"pushType\":\"SMS\",\"content\":\"本店新品一次见效，根治痘痘\"}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("违禁词")));
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("违禁词")))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("医疗承诺:根治")));
         org.mockito.Mockito.verify(pushRepo, org.mockito.Mockito.never()).save(any());
         org.mockito.Mockito.verifyNoInteractions(events);
+        org.mockito.Mockito.verify(rateLimiter, org.mockito.Mockito.never())
+                .tryAcquire(anyString(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
     }
 
     @Test
@@ -274,6 +307,7 @@ class MarketingControllerTest {
         cfg.setWeeklyPushLimit(3);
         when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
         // 违禁词通过但频控拒绝：近 7 天已触达 3 条
+        when(forbiddenWordService.check(anyString())).thenReturn(List.of());
         when(rateLimiter.tryAcquire(anyString(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.anyInt())).thenReturn(false);
         when(rateLimiter.currentCount(anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(3L);
@@ -303,6 +337,32 @@ class MarketingControllerTest {
     }
 
     @Test
+    void push_invalid_push_type_returns_400_chinese_and_not_persisted() throws Exception {
+        allowPush();
+        mockMvc.perform(post("/api/marketing/push")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"SC001\",\"pushType\":\"CARRIER_PIGEON\",\"content\":\"秋季护理预约提醒\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("推送渠道不合法")));
+        org.mockito.Mockito.verify(pushRepo, org.mockito.Mockito.never()).save(any());
+        org.mockito.Mockito.verify(forbiddenWordService, org.mockito.Mockito.never())
+                .check(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
+    void push_wechat_mp_type_is_accepted_and_persisted() throws Exception {
+        allowPush();
+        mockMvc.perform(post("/api/marketing/push")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"customerId\":\"SC001\",\"pushType\":\"WECHAT_MP\",\"content\":\"公众号模板消息：您有一张专属券待领取\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.pushType").value("WECHAT_MP"));
+        org.mockito.Mockito.verify(pushRepo).save(any());
+    }
+
+    @Test
     void push_quota_endpoint_reports_remaining() throws Exception {
         MarketingCfg cfg = new MarketingCfg();
         cfg.setWeeklyPushLimit(3);
@@ -315,5 +375,116 @@ class MarketingControllerTest {
                 .andExpect(jsonPath("$.sentLast7Days").value(2))
                 .andExpect(jsonPath("$.weeklyLimit").value(3))
                 .andExpect(jsonPath("$.remaining").value(1));
+    }
+
+    // ==================== 违禁词库服务化（A1-04：DB + 缓存 + 管理端维护） ====================
+
+    @Test
+    void forbidden_words_grouped_endpoint_returns_categories() throws Exception {
+        when(forbiddenWordService.categories())
+                .thenReturn(java.util.Map.of("医疗承诺", List.of("根治", "治愈")));
+        mockMvc.perform(get("/api/marketing/forbidden-words")
+                        .header("Authorization", adminToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.['医疗承诺'][0]").value("根治"));
+    }
+
+    @Test
+    void forbidden_words_list_returns_all_rows_for_management() throws Exception {
+        ForbiddenWordView v = new ForbiddenWordView(
+                7L, "虚假宣传", "内部价", true, null, null);
+        when(forbiddenWordService.list()).thenReturn(List.of(v));
+        mockMvc.perform(get("/api/marketing/forbidden-words/list")
+                        .header("Authorization", adminToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].wordId").value(7))
+                .andExpect(jsonPath("$[0].word").value("内部价"))
+                .andExpect(jsonPath("$[0].enabled").value(true));
+    }
+
+    @Test
+    void check_copy_returns_hits_without_400() throws Exception {
+        when(forbiddenWordService.check("包治百病"))
+                .thenReturn(List.of("医疗承诺:包治"));
+        mockMvc.perform(post("/api/marketing/forbidden-words/check")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"content\":\"包治百病\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.passed").value(false))
+                .andExpect(jsonPath("$.hits[0]").value("医疗承诺:包治"));
+    }
+
+    @Test
+    void check_copy_clean_returns_passed() throws Exception {
+        when(forbiddenWordService.check(anyString())).thenReturn(List.of());
+        mockMvc.perform(post("/api/marketing/forbidden-words/check")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"content\":\"秋季护理预约提醒\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.passed").value(true));
+    }
+
+    @Test
+    void create_forbidden_word_requires_edit_perm() throws Exception {
+        // 仅有 marketing:view 的前台角色不可维护词库
+        mockMvc.perform(post("/api/marketing/forbidden-words")
+                        .header("Authorization", frontDeskToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"category\":\"虚假宣传\",\"word\":\"特效\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("无操作权限")));
+    }
+
+    @Test
+    void create_forbidden_word_success_returns_row() throws Exception {
+        ForbiddenWord w = new ForbiddenWord();
+        w.setWordId(99L);
+        w.setCategory("虚假宣传");
+        w.setWord("特效");
+        w.setEnabled(true);
+        when(forbiddenWordService.create(any())).thenReturn(w);
+        mockMvc.perform(post("/api/marketing/forbidden-words")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"category\":\"虚假宣传\",\"word\":\"特效\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.wordId").value(99))
+                .andExpect(jsonPath("$.word").value("特效"));
+    }
+
+    @Test
+    void create_forbidden_word_illegal_category_returns_400_chinese() throws Exception {
+        when(forbiddenWordService.create(any()))
+                .thenThrow(new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "违禁词类别不合法（绝对化用语/医疗承诺/虚假宣传/低俗诱导）"));
+        mockMvc.perform(post("/api/marketing/forbidden-words")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"category\":\"不存在的类\",\"word\":\"特效\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("违禁词类别不合法")));
+    }
+
+    @Test
+    void toggle_forbidden_word_returns_changed() throws Exception {
+        when(forbiddenWordService.toggle(eq(9L), eq(false))).thenReturn(true);
+        mockMvc.perform(post("/api/marketing/forbidden-words/9/toggle")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"enabled\":false}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changed").value(true));
+    }
+
+    @Test
+    void delete_forbidden_word_returns_changed() throws Exception {
+        when(forbiddenWordService.delete(9L)).thenReturn(true);
+        mockMvc.perform(post("/api/marketing/forbidden-words/9/delete")
+                        .header("Authorization", adminToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changed").value(true));
     }
 }

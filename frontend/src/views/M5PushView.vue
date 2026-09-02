@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* M5-03 短信/企微推送 /m5-push — 人群圈选 + 模板 + 周频≤3 + 违禁词双重合规拦截 */
+/* M5-03 客户触达 /m5-push — 选客 → 文案违禁词预检（后端 /check）→ 周频余量（/quota）→ 发送（/push）→ 历史（/history） */
 import { computed, onMounted, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -9,94 +9,160 @@ import CKpi from '@/components/CKpi.vue'
 import CSelect from '@/components/CSelect.vue'
 import CInput from '@/components/CInput.vue'
 import CTextarea from '@/components/CTextarea.vue'
-import { useM5CoreStore, PUSH_CHANNEL_LABEL, PUSH_STATUS_LABEL, PUSH_STATUS_PILL, type PushChannel } from '@/stores/m5Core'
-import { useSegmentStore } from '@/stores/segment'
-import { useSensitiveWords } from '@/composables/useSensitiveWords'
+import { listCustomers, type CustomerDTO } from '@/api/customer'
+import {
+  checkCopy, sendPush, getPushQuota, getPushHistory,
+  type PushQuota, type PushRecordDTO, type PushTypeCode,
+} from '@/api/marketing'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
 import { useAuthStore } from '@/stores/auth'
+import { quotaUsagePct, quotaTone, checkPushReady } from '@/composables/usePushCompliance'
 
-const core = useM5CoreStore()
-const segmentStore = useSegmentStore()
 const auth = useAuthStore()
-const sw = useSensitiveWords()
+const toast = useToast()
 
-const filterStatus = ref('ALL')
+// ---------------- 客户选择（真实 customer-service） ----------------
+const customers = ref<CustomerDTO[]>([])
+const customersTotal = ref(0)
+const keyword = ref('')
+const loadingCustomers = ref(false)
 const selectedId = ref<string | null>(null)
-const showCreate = ref(false)
-const formError = ref('')
+const selected = computed(() => customers.value.find((c) => c.customerId === selectedId.value) ?? null)
+
+// ---------------- 选中客户的频控 / 历史 ----------------
+const quota = ref<PushQuota | null>(null)
+const history = ref<PushRecordDTO[]>([])
+const loadingDetail = ref(false)
+
+// ---------------- 发送表单 ----------------
+const pushType = ref<PushTypeCode>('WECOM')
+const content = ref('')
 const wordHits = ref<string[]>([])
+const checking = ref(false)
+const sending = ref(false)
+const formError = ref('')
 
-const canSend = computed(() => auth.can('push:send'))
-const canCreate = computed(() => auth.can('push:create'))
+// 后端 push:create 为发送接口唯一权限码（与 @RequirePerm 一致）
+const canPush = computed(() => auth.can('push:create'))
 
-const filtered = computed(() => {
-  if (filterStatus.value === 'ALL') return core.batches
-  return core.batches.filter((b) => b.status === filterStatus.value)
-})
-const selected = computed(() => core.batches.find((b) => b.id === selectedId.value) ?? null)
+const PUSH_TYPE_LABEL: Record<string, string> = {
+  SMS: '短信', WECOM: '企业微信', WECHAT_MP: '微信公众号',
+  // 兼容种子旧数据的中文渠道值（历史记录展示用，新发送一律走英文码）
+  短信: '短信', 小程序: '微信公众号', App: 'App推送',
+}
+function pushTypeLabel(t: string) {
+  return PUSH_TYPE_LABEL[t] ?? t
+}
 
 const kpis = computed(() => [
-  { label: '本周已发批次', icon: 'bell', value: String(core.batches.filter((b) => b.status === 'SENT').length), tone: 'brand' as const },
-  { label: '本周触达人次', icon: 'bell', value: core.sentLast7Days.toLocaleString(), tone: 'teal' as const },
-  { label: '周频剩余配额', icon: 'clock', value: `${core.weeklyRemaining} 人次`, tone: core.weeklyRemaining > 0 ? 'success' as const : 'danger' as const },
-  { label: '累计转化', icon: 'trend-up', value: String(core.batches.reduce((s, b) => s + b.converted, 0)), tone: 'orange' as const },
+  { label: '可触达客户', icon: 'marketing', value: String(customersTotal.value || customers.value.length), tone: 'brand' as const },
+  { label: '当前客户近7天已触达', icon: 'bell', value: String(quota.value?.sentLast7Days ?? 0), tone: 'teal' as const },
+  { label: '本周剩余配额', icon: 'clock',
+    value: quota.value ? `${quota.value.remaining} 条` : '—',
+    tone: (quota.value ? quota.value.remaining > 0 : true) ? ('success' as const) : ('danger' as const) },
+  { label: '当前客户累计触达', icon: 'trend-up', value: String(history.value.length), tone: 'orange' as const },
 ])
 
-const blankForm = () => ({
-  name: '', channel: 'WECOM' as PushChannel, segmentId: '', templateTitle: '', templateBody: '',
-  scheduledAt: new Date().toISOString().slice(0, 16),
-})
-const form = ref(blankForm())
+const quotaPct = computed(() => quotaUsagePct(quota.value))
+const quotaBarTone = computed(() => quotaTone(quotaPct.value))
 
-const segmentOptions = computed(() => [
-  { label: '全部门店客户', value: 'all' },
-  ...segmentStore.segments.map((s) => ({ label: `${s.name}（${s.customerCount}人）`, value: s.id })),
-])
-
-function openCreate() {
-  form.value = blankForm()
-  formError.value = ''
-  wordHits.value = []
-  showCreate.value = true
+function fmtTime(iso: string) {
+  if (!iso) return '—'
+  return iso.replace('T', ' ').slice(0, 16)
 }
 
-function previewWords() {
-  wordHits.value = []
-  const hit = sw.checkAny(form.value.templateTitle, form.value.templateBody, form.value.name)
-  wordHits.value = hit.words
-}
-
-function submitCreate() {
-  formError.value = ''
-  if (!form.value.name.trim()) { formError.value = '请输入任务名称'; return }
-  if (!form.value.templateBody.trim()) { formError.value = '请输入推送内容'; return }
-  const hit = sw.checkAny(form.value.templateTitle, form.value.templateBody, form.value.name)
-  if (hit.hit) { formError.value = hit.message; wordHits.value = hit.words; return }
-  if (!form.value.segmentId) { formError.value = '请选择目标人群'; return }
-  const seg = segmentOptions.value.find((s) => s.value === form.value.segmentId)
-  const reach = form.value.segmentId === 'all' ? 800 : (segmentStore.segments.find((s) => s.id === form.value.segmentId)?.customerCount ?? 0)
-  if (reach <= 0) { formError.value = '目标人群人数为 0'; return }
-  const b = core.createBatch({
-    name: form.value.name, channel: form.value.channel, segmentId: form.value.segmentId,
-    segmentName: seg?.label ?? '全部客户', templateTitle: form.value.templateTitle,
-    templateBody: form.value.templateBody, reach, scheduledAt: form.value.scheduledAt,
-  })
-  showCreate.value = false
-  selectedId.value = b.id
-}
-
-function doSend() {
-  if (!selected.value) return
-  formError.value = ''
+async function loadCustomers() {
+  loadingCustomers.value = true
   try {
-    core.sendBatch(selected.value.id)
-    // 刷新状态（可能被拦截）
-    if (selected.value.status === 'BLOCKED') formError.value = selected.value.blockedReason ?? '发送被拦截'
-  } catch (e) { formError.value = (e as Error).message }
+    const page = (await listCustomers({ page: 0, size: 50, keyword: keyword.value.trim() || undefined })).data
+    customers.value = page.content
+    customersTotal.value = page.totalElements
+    if (selectedId.value && !customers.value.some((c) => c.customerId === selectedId.value)) {
+      selectedId.value = null
+    }
+  } catch (e) {
+    toast.error('客户列表加载失败：' + errMsg(e))
+  } finally {
+    loadingCustomers.value = false
+  }
 }
 
-function pct(n: number, d: number) { return d ? Math.round((n / d) * 100) : 0 }
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+function onSearchInput() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(loadCustomers, 300)
+}
 
-onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) selectedId.value = core.batches[0].id })
+async function selectCustomer(c: CustomerDTO) {
+  selectedId.value = c.customerId
+  content.value = ''
+  wordHits.value = []
+  formError.value = ''
+  loadingDetail.value = true
+  try {
+    const [q, h] = await Promise.all([
+      getPushQuota(c.customerId),
+      getPushHistory(c.customerId),
+    ])
+    quota.value = q.data
+    history.value = h.data
+  } catch (e) {
+    toast.error('触达数据加载失败：' + errMsg(e))
+    quota.value = null
+    history.value = []
+  } finally {
+    loadingDetail.value = false
+  }
+}
+
+// 文案预检：实时调后端 /forbidden-words/check（DB 词库 + 缓存，管理端维护即时生效）
+let checkTimer: ReturnType<typeof setTimeout> | undefined
+async function previewWords() {
+  formError.value = ''
+  const text = content.value.trim()
+  if (!text) { wordHits.value = []; return }
+  checking.value = true
+  clearTimeout(checkTimer)
+  checkTimer = setTimeout(async () => {
+    try {
+      const r = (await checkCopy(text)).data
+      wordHits.value = r.hits
+    } catch (e) {
+      // 预检失败不阻断输入，发送时后端仍会强校验
+      wordHits.value = []
+    } finally {
+      checking.value = false
+    }
+  }, 300)
+}
+
+async function doSend() {
+  formError.value = ''
+  const gate = checkPushReady({
+    hasCustomer: !!selected.value,
+    content: content.value,
+    wordHits: wordHits.value,
+    quota: quota.value,
+  })
+  if (!gate.ok) { formError.value = gate.error; return }
+  const customer = selected.value
+  if (!customer) { formError.value = '请先选择客户'; return }
+  sending.value = true
+  try {
+    await sendPush({ customerId: customer.customerId, pushType: pushType.value, content: content.value.trim() })
+    toast.success(`已向 ${customer.name} 发送${pushTypeLabel(pushType.value)}触达`)
+    content.value = ''
+    wordHits.value = []
+    await selectCustomer(customer)
+  } catch (e) {
+    formError.value = errMsg(e)
+  } finally {
+    sending.value = false
+  }
+}
+
+onMounted(loadCustomers)
 </script>
 
 <template>
@@ -108,27 +174,14 @@ onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) sel
     <CCard class="quota" padding="md">
       <div class="quota__left">
         <CIcon name="shield" :size="16" />
-        <span>周频合规：同一人群 7 天内推送 ≤ <strong>{{ core.WEEKLY_LIMIT }}</strong> 次</span>
+        <span>周频合规：同一客户 7 天内触达 ≤ <strong>{{ quota?.weeklyLimit ?? 3 }}</strong> 条</span>
       </div>
       <div class="quota__bar">
-        <div class="quota__track"><div class="quota__fill" :class="{ warn: core.quotaPct >= 70, danger: core.quotaPct >= 100 }" :style="{ width: core.quotaPct + '%' }"></div></div>
-        <span class="quota__num">{{ core.sentLast7Days }} / {{ core.WEEKLY_LIMIT * 800 }} 人次</span>
-      </div>
-    </CCard>
-
-    <CCard class="ps__toolbar" padding="none">
-      <div class="ps__tools">
-        <CSelect v-model="filterStatus" :options="[
-          { value: 'ALL', label: '全部状态' },
-          { value: 'DRAFT', label: '草稿' },
-          { value: 'SCHEDULED', label: '待发送' },
-          { value: 'SENDING', label: '发送中' },
-          { value: 'SENT', label: '已发送' },
-          { value: 'BLOCKED', label: '已拦截' },
-        ]" />
-        <CButton v-if="canCreate" size="sm" variant="primary" class="ps__tools-btn" @click="openCreate">
-          <CIcon name="plus" :size="14" />新建推送
-        </CButton>
+        <div class="quota__track"><div class="quota__fill" :class="{ warn: quotaBarTone === 'warn', danger: quotaBarTone === 'danger' }" :style="{ width: quotaPct + '%' }"></div></div>
+        <span class="quota__num">
+          <template v-if="quota">{{ quota.sentLast7Days }} / {{ quota.weeklyLimit }} 条</template>
+          <template v-else>选择客户后展示</template>
+        </span>
       </div>
     </CCard>
 
@@ -136,20 +189,25 @@ onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) sel
       <CCard class="ps__list" padding="none">
         <div class="list-head">
           <div class="list-head__left">
-            <span class="list-head__title">推送任务</span>
-            <span class="list-head__hint">{{ filtered.length }} 个</span>
+            <span class="list-head__title">选择客户</span>
+            <span class="list-head__hint">{{ customersTotal || customers.length }} 人</span>
           </div>
         </div>
+        <div class="ps__tools">
+          <CInput v-model="keyword" placeholder="搜索姓名 / 手机号 / 客户编号" @input="onSearchInput" />
+        </div>
         <div class="p-list">
-          <button v-for="b in filtered" :key="b.id" class="p-row"
-            :class="{ 'p-row--active': b.id === selectedId, 'p-row--blocked': b.status === 'BLOCKED' }"
-            @click="selectedId = b.id">
+          <div v-if="loadingCustomers" class="p-empty">加载中…</div>
+          <div v-else-if="!customers.length" class="p-empty">未找到匹配客户</div>
+          <button v-for="c in customers" :key="c.customerId" class="p-row"
+            :class="{ 'p-row--active': c.customerId === selectedId }"
+            @click="selectCustomer(c)">
             <div class="p-row__top">
-              <span class="p-row__name">{{ b.name }}</span>
-              <CStatusPill :status="PUSH_STATUS_PILL[b.status]" dot>{{ PUSH_STATUS_LABEL[b.status] }}</CStatusPill>
+              <span class="p-row__name">{{ c.name }}</span>
+              <CStatusPill status="default" dot>{{ c.level }}</CStatusPill>
             </div>
-            <div class="p-row__sub">{{ PUSH_CHANNEL_LABEL[b.channel] }} · {{ b.segmentName }} · {{ b.scheduledAt }}</div>
-            <div class="p-row__nums">触达 {{ b.delivered || b.reach }} · 点击 {{ b.clicked }} · 转化 {{ b.converted }}</div>
+            <div class="p-row__sub">{{ c.customerId }} · {{ c.phone }} · {{ c.storeName || c.storeCode || '—' }}</div>
+            <div class="p-row__nums">{{ c.status || '—' }} · 累计消费 ¥{{ c.totalSpend ?? 0 }} · 到店 {{ c.visitCount ?? 0 }} 次</div>
           </button>
         </div>
       </CCard>
@@ -157,93 +215,76 @@ onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) sel
       <CCard v-if="selected" class="ps__detail" padding="lg">
         <div class="det-head">
           <div>
-            <h3 class="det-head__name">{{ selected.name }}</h3>
-            <div class="det-head__sub">{{ PUSH_CHANNEL_LABEL[selected.channel] }} · {{ selected.segmentName }} · 计划 {{ selected.scheduledAt }}</div>
+            <h3 class="det-head__name">{{ selected.name }}（{{ selected.customerId }}）</h3>
+            <div class="det-head__sub">{{ selected.phone }} · {{ selected.level }} · {{ selected.storeName || selected.storeCode || '—' }} · 归属 {{ selected.ownerStaffName || selected.ownerStaffId || '—' }}</div>
           </div>
-          <CStatusPill :status="PUSH_STATUS_PILL[selected.status]" dot>{{ PUSH_STATUS_LABEL[selected.status] }}</CStatusPill>
+          <CStatusPill status="primary" dot>{{ selected.status || '—' }}</CStatusPill>
         </div>
 
         <CCard class="tpl-card" padding="md">
-          <div class="tpl-title">{{ selected.templateTitle || selected.name }}</div>
-          <div class="tpl-body">{{ selected.templateBody }}</div>
-          <div class="tpl-foot">— 美研云 · 回 T 退订</div>
+          <div class="form-grid">
+            <div class="form-row">
+              <label class="form-label">推送渠道</label>
+              <CSelect v-model="pushType" :options="[
+                { value: 'SMS', label: '短信' },
+                { value: 'WECOM', label: '企业微信' },
+                { value: 'WECHAT_MP', label: '微信公众号' },
+              ]" />
+            </div>
+            <div class="form-row">
+              <label class="form-label">周频余量</label>
+              <div class="quota-inline">
+                <span v-if="quota" :class="quota.remaining > 0 ? 'quota-ok' : 'quota-zero'">
+                  近 7 天已发 {{ quota.sentLast7Days }} 条，剩余 {{ quota.remaining }} 条
+                </span>
+                <span v-else>加载中…</span>
+              </div>
+            </div>
+          </div>
+          <div class="form-row">
+            <label class="form-label">推送内容</label>
+            <CTextarea v-model="content" :rows="4" placeholder="请输入推送文案..." @input="previewWords" />
+            <div v-if="wordHits.length" class="word-hint">
+              <CIcon name="alert" :size="12" />命中违禁词：<strong>{{ wordHits.join('、') }}</strong>，请修改
+            </div>
+            <div v-else-if="content.trim() && !checking" class="word-ok">
+              <CIcon name="check-square" :size="12" />文案预检通过，未命中违禁词
+            </div>
+          </div>
+          <div class="compliance-note">
+            <CIcon name="shield" :size="13" />发送前后端强校验：① 周频 ≤ {{ quota?.weeklyLimit ?? 3 }} 条/客户/7天 ② 违禁词库（DB 实时）。命中任一将被拦截。
+          </div>
+          <div v-if="formError" class="form-error"><CIcon name="alert" :size="13" />{{ formError }}</div>
+          <div class="modal-foot">
+            <CButton v-if="canPush" variant="primary" size="sm" :disabled="sending || checking" @click="doSend">
+              <CIcon name="bell" :size="14" />{{ sending ? '发送中…' : '立即发送' }}
+            </CButton>
+            <span v-else class="ops-hint">无触达发送权限（push:create）</span>
+          </div>
         </CCard>
 
-        <div v-if="selected.status === 'BLOCKED'" class="block-box">
-          <CIcon name="alert" :size="15" />
-          <div>
-            <div class="block-box__title">合规拦截</div>
-            <div class="block-box__hint">{{ selected.blockedReason }}</div>
-          </div>
-        </div>
-
-        <div v-if="selected.status !== 'BLOCKED' && selected.status !== 'SENT'" class="det-ops">
-          <CButton v-if="canSend && (selected.status === 'SCHEDULED' || selected.status === 'DRAFT')" variant="primary" size="sm" @click="doSend">
-            <CIcon name="bell" :size="14" />立即发送
-          </CButton>
-          <span class="ops-hint">发送前自动校验周频配额与违禁词</span>
-        </div>
-
-        <div v-if="selected.status === 'SENT'" class="effect">
-          <div class="effect__title">发送效果</div>
-          <div class="effect__grid">
-            <div class="effect-item"><span class="effect-item__n">{{ selected.reach }}</span><span class="effect-item__l">目标人群</span></div>
-            <div class="effect-item"><span class="effect-item__n">{{ selected.delivered }}</span><span class="effect-item__l">成功到达</span></div>
-            <div class="effect-item"><span class="effect-item__n">{{ selected.clicked }}</span><span class="effect-item__l">点击</span></div>
-            <div class="effect-item"><span class="effect-item__n">{{ selected.converted }}</span><span class="effect-item__l">转化</span></div>
-          </div>
-          <div class="funnel">
-            <div class="funnel__row"><span>到达率</span><div class="funnel__bar"><div :style="{ width: pct(selected.delivered, selected.reach) + '%' }"></div></div><span>{{ pct(selected.delivered, selected.reach) }}%</span></div>
-            <div class="funnel__row"><span>点击率</span><div class="funnel__bar"><div :style="{ width: pct(selected.clicked, selected.delivered) + '%' }"></div></div><span>{{ pct(selected.clicked, selected.delivered) }}%</span></div>
-            <div class="funnel__row"><span>转化率</span><div class="funnel__bar"><div :style="{ width: pct(selected.converted, selected.clicked) + '%' }" class="conv"></div></div><span>{{ pct(selected.converted, selected.clicked) }}%</span></div>
+        <div class="effect">
+          <div class="effect__title">触达历史（{{ history.length }}）</div>
+          <div v-if="loadingDetail" class="p-empty">加载中…</div>
+          <div v-else-if="!history.length" class="p-empty">该客户暂无触达记录</div>
+          <div v-else class="hist-list">
+            <CCard v-for="r in history" :key="r.pushId" class="tpl-card hist-item" padding="md">
+              <div class="hist-top">
+                <CStatusPill status="info" dot>{{ pushTypeLabel(r.pushType) }}</CStatusPill>
+                <span class="hist-time">{{ fmtTime(r.sentAt) }}</span>
+              </div>
+              <div class="tpl-body">{{ r.content }}</div>
+            </CCard>
           </div>
         </div>
       </CCard>
-    </div>
 
-    <!-- 新建推送弹层 -->
-    <div v-if="showCreate" class="modal-mask" @click.self="showCreate = false">
-      <CCard class="modal modal--push" title="新建推送任务" padding="lg">
-        <div class="form-row">
-          <label class="form-label">任务名称</label>
-          <CInput v-model="form.name" placeholder="如：暑期水光活动-高潜客户" />
-        </div>
-        <div class="form-grid">
-          <div class="form-row">
-            <label class="form-label">推送渠道</label>
-            <CSelect v-model="form.channel" :options="[
-              { value: 'SMS', label: '短信' },
-              { value: 'WECOM', label: '企业微信' },
-              { value: 'WECHAT_MP', label: '微信公众号' },
-            ]" />
+      <CCard v-else class="ps__detail" padding="lg">
+        <div class="det-head">
+          <div>
+            <h3 class="det-head__name">客户触达</h3>
+            <div class="det-head__sub">请从左侧选择一位客户，查看频控余量、发送触达与历史记录</div>
           </div>
-          <div class="form-row">
-            <label class="form-label">发送时间</label>
-            <input v-model="form.scheduledAt" type="datetime-local" class="native-input" />
-          </div>
-        </div>
-        <div class="form-row">
-          <label class="form-label">目标人群</label>
-          <CSelect v-model="form.segmentId" :options="segmentOptions" />
-        </div>
-        <div class="form-row">
-          <label class="form-label">消息标题（可选）</label>
-          <CInput v-model="form.templateTitle" placeholder="如：您有一张专属券待领取" />
-        </div>
-        <div class="form-row">
-          <label class="form-label">推送内容</label>
-          <CTextarea v-model="form.templateBody" :rows="4" placeholder="请输入推送文案..." @input="previewWords" />
-          <div v-if="wordHits.length" class="word-hint">
-            <CIcon name="alert" :size="12" />命中违禁词：<strong>{{ wordHits.join('、') }}</strong>，请修改
-          </div>
-        </div>
-        <div class="compliance-note">
-          <CIcon name="shield" :size="13" />提交时将校验：① 周频 ≤ {{ core.WEEKLY_LIMIT }} 次 ② 违禁词库。命中任一将被拦截。
-        </div>
-        <div v-if="formError" class="form-error"><CIcon name="alert" :size="13" />{{ formError }}</div>
-        <div class="modal-foot">
-          <CButton variant="ghost" size="sm" @click="showCreate = false">取消</CButton>
-          <CButton variant="primary" size="sm" @click="submitCreate">创建（待发送）</CButton>
         </div>
       </CCard>
     </div>
@@ -274,9 +315,10 @@ onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) sel
 .list-head__title { font-size: var(--t-sm); font-weight: 700; }
 .list-head__hint { font-size: var(--t-xs); color: var(--c-text-3); }
 .ps__tools { display: flex; align-items: center; gap: var(--s-sm); padding: var(--s-sm) var(--s-md); border-top: 1px solid var(--c-border-light); background: var(--c-surface); flex-wrap: nowrap; overflow-x: auto; }
-.ps__tools > * { flex-shrink: 0; }
+.ps__tools > * { flex-shrink: 0; width: 100%; }
 .ps__tools-btn { margin-left: auto; white-space: nowrap; }
 .p-list { max-height: 600px; overflow-y: auto; }
+.p-empty { padding: var(--s-lg); text-align: center; font-size: var(--t-xs); color: var(--c-text-3); }
 .p-row { display: block; width: 100%; text-align: left; padding: var(--s-md) var(--s-lg); background: none; border: none; border-bottom: 1px solid var(--c-border-light); cursor: pointer; border-left: 3px solid transparent; }
 .p-row:hover { background: var(--c-brand-soft); }
 .p-row--active { background: var(--c-brand-soft); border-left-color: var(--c-brand); }
@@ -295,7 +337,7 @@ onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) sel
 .tpl-card { background: var(--c-bg-right); }
 :deep(.tpl-card .card__body) { display: flex; flex-direction: column; gap: var(--s-sm); }
 .tpl-title { font-size: var(--t-base); font-weight: 700; color: var(--c-text); }
-.tpl-body { font-size: var(--t-sm); color: var(--c-text-2); line-height: 1.6; }
+.tpl-body { font-size: var(--t-sm); color: var(--c-text-2); line-height: 1.6; word-break: break-word; }
 .tpl-foot { font-size: var(--t-xs); color: var(--c-text-4); }
 
 .block-box { display: flex; gap: var(--s-sm); padding: var(--s-md); background: rgba(229,57,53,.08); border-radius: var(--r-md); color: var(--c-danger-fg); }
@@ -303,6 +345,11 @@ onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) sel
 .block-box__hint { font-size: var(--t-xs); margin-top: 2px; }
 .det-ops { display: flex; align-items: center; gap: var(--s-sm); }
 .ops-hint { font-size: var(--t-xs); color: var(--c-text-3); }
+
+.quota-inline { font-size: var(--t-sm); padding: 10px 0; }
+.quota-ok { color: var(--c-success-fg); font-weight: 600; }
+.quota-zero { color: var(--c-danger-fg); font-weight: 600; }
+.word-ok { display: flex; align-items: center; gap: 4px; font-size: var(--t-xs); color: var(--c-success-fg); }
 
 .effect { border-top: 1px solid var(--c-border-light); padding-top: var(--s-md); }
 .effect__title { font-size: var(--t-sm); font-weight: 700; margin-bottom: var(--s-sm); }
@@ -316,6 +363,11 @@ onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) sel
 .funnel__bar > div { height: 100%; background: var(--c-brand); border-radius: 4px; }
 .funnel__bar div.conv { background: var(--c-success-fg); }
 
+.hist-list { display: flex; flex-direction: column; gap: var(--s-sm); max-height: 360px; overflow-y: auto; }
+.hist-item { background: var(--c-bg-right); }
+.hist-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm); }
+.hist-time { font-size: var(--t-xs); color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+
 .modal-mask { position: fixed; inset: 0; background: rgba(20,21,43,.45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: var(--s-lg); }
 .modal { width: 540px; max-width: 100%; box-shadow: var(--shadow-pop); }
 :deep(.modal .card__body) { display: flex; flex-direction: column; gap: var(--s-md); }
@@ -327,7 +379,7 @@ onMounted(() => { core.seed(); segmentStore.seed(); if (core.batches.length) sel
 .word-hint { display: flex; align-items: center; gap: 4px; font-size: var(--t-xs); color: var(--c-danger-fg); }
 .compliance-note { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--c-text-3); background: var(--c-bg-right); padding: var(--s-sm) var(--s-md); border-radius: var(--r-sm); }
 .form-error { display: flex; align-items: center; gap: 4px; color: var(--c-danger-fg); font-size: var(--t-xs); background: rgba(229,57,53,.08); padding: var(--s-sm) var(--s-md); border-radius: var(--r-sm); }
-.modal-foot { display: flex; justify-content: flex-end; gap: var(--s-sm); }
+.modal-foot { display: flex; justify-content: flex-end; align-items: center; gap: var(--s-sm); }
 
 @media (max-width: 1200px) { .ps__body { grid-template-columns: 1fr; } }
 @media (max-width: 1024px) {

@@ -19,12 +19,13 @@ spring:
             non_contextual_creation: true
     open-in-view: false
 
-  # Redis：仅在 meiyun.rate-limiter=redis 时用于触达频控；默认 db 模式不连接 Redis。
-  # Lettuce 懒连接，本机无 Redis 也不影响服务启动。
+  # Redis：违禁词库缓存（@Cacheable）常驻使用；rate-limiter=redis 时兼用于触达频控。
+  # Lettuce 懒连接，本机无 Redis 也不影响服务启动；密码经环境变量注入（与中间件 requirepass 一致）。
   data:
     redis:
       host: localhost
       port: 6379
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
       timeout: 2s
 
 # 中间件接入开关（Phase 2 docker-compose 就绪后改 redis / mq 即无缝切换）：

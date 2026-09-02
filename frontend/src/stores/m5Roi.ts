@@ -1,13 +1,27 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useM5CoreStore, type ChannelKey } from '@/stores/m5Core'
-import { useM1MarketingStore } from '@/stores/m1Marketing'
+import {
+  CAMPAIGN_TYPE_LABEL,
+  CAMPAIGN_STATUS_LABEL,
+  type CampaignStatus,
+  type CampaignType,
+} from '@/stores/m1Marketing'
+import {
+  COUPON_TYPE_LABEL,
+  COUPON_STATUS_LABEL,
+  fen2yuan,
+  type CouponType,
+  type CouponStatus,
+} from '@/stores/m5Coupon'
+import * as api from '@/api/marketing'
+import type { MarketingStatsDTO } from '@/api/marketing'
 
 // ============================================================
 // M5-06 投放 ROI store
-// - 消费 m5Core 渠道业绩 / m1Marketing 活动数据，不重复维护业绩
+// - 渠道业绩：m5Core（外部广告平台 mock，未接入）
+// - 活动维度 ROI / 发券核销统计：真实 marketing-service（GET /stats/overview）
 // - 归因模型：首触点 / 末触点 / 线性（纯前端演示，权重不同）
-// - 活动维度 ROI：从 m1.campaigns 派生
 // ============================================================
 
 export type AttributionModel = 'FIRST' | 'LAST' | 'LINEAR'
@@ -54,11 +68,123 @@ const WEIGHTS: Record<AttributionModel, Record<ChannelKey, number>> = {
   },
 }
 
+// -------------------- M5-06 真实统计（GET /stats/overview，金额分→元） --------------------
+
+export interface CouponRoiRow {
+  id: string
+  name: string
+  type: string
+  status: string
+  total: number
+  issued: number
+  used: number
+  writeoffRate: number
+}
+
+export interface CampaignRoiRow {
+  id: string
+  name: string
+  type: string
+  spent: number
+  actualAmount: number
+  targetAmount: number
+  roi: number
+  achieveRate: number
+  newCustomers: number
+  status: string
+}
+
+export interface CouponStatsView {
+  couponKinds: number
+  totalStock: number
+  totalIssued: number
+  totalUsed: number
+  writeoffRate: number
+  grantBatches: number
+  grantedPcs: number
+  rows: CouponRoiRow[]
+}
+
+export interface CampaignStatsView {
+  campaignCount: number
+  runningCount: number
+  totalSpent: number
+  totalActualAmount: number
+  totalTargetAmount: number
+  totalNewCustomers: number
+  overallRoi: number
+  achieveRate: number
+  rows: CampaignRoiRow[]
+}
+
+export interface MarketingStatsView {
+  coupon: CouponStatsView
+  campaign: CampaignStatsView
+}
+
+export function emptyStats(): MarketingStatsView {
+  return {
+    coupon: { couponKinds: 0, totalStock: 0, totalIssued: 0, totalUsed: 0, writeoffRate: 0, grantBatches: 0, grantedPcs: 0, rows: [] },
+    campaign: { campaignCount: 0, runningCount: 0, totalSpent: 0, totalActualAmount: 0, totalTargetAmount: 0, totalNewCustomers: 0, overallRoi: 0, achieveRate: 0, rows: [] },
+  }
+}
+
+/** 后端统计 → 前端活规格（金额分→元，类型/状态码→中文；比率保持 0~1） */
+export function adaptStats(d: MarketingStatsDTO): MarketingStatsView {
+  return {
+    coupon: {
+      couponKinds: d.coupon.couponKinds,
+      totalStock: d.coupon.totalStock,
+      totalIssued: d.coupon.totalIssued,
+      totalUsed: d.coupon.totalUsed,
+      writeoffRate: d.coupon.writeoffRate,
+      grantBatches: d.coupon.grantBatches,
+      grantedPcs: d.coupon.grantedPcs,
+      rows: d.coupon.rows.map((r) => ({
+        id: r.couponId,
+        name: r.couponName,
+        type: COUPON_TYPE_LABEL[r.couponType as CouponType] ?? r.couponType,
+        status: COUPON_STATUS_LABEL[r.status as CouponStatus] ?? r.status,
+        total: r.totalQty,
+        issued: r.issuedQty,
+        used: r.usedQty,
+        writeoffRate: r.writeoffRate,
+      })),
+    },
+    campaign: {
+      campaignCount: d.campaign.campaignCount,
+      runningCount: d.campaign.runningCount,
+      totalSpent: fen2yuan(d.campaign.totalSpent),
+      totalActualAmount: fen2yuan(d.campaign.totalActualAmount),
+      totalTargetAmount: fen2yuan(d.campaign.totalTargetAmount),
+      totalNewCustomers: d.campaign.totalNewCustomers,
+      overallRoi: d.campaign.overallRoi,
+      achieveRate: d.campaign.achieveRate,
+      rows: d.campaign.rows.map((r) => ({
+        id: r.campaignId,
+        name: r.campaignName,
+        type: CAMPAIGN_TYPE_LABEL[r.campaignType as CampaignType] ?? r.campaignType,
+        spent: fen2yuan(r.spent),
+        actualAmount: fen2yuan(r.actualAmount),
+        targetAmount: fen2yuan(r.targetAmount),
+        roi: r.roi,
+        achieveRate: r.targetAmount > 0 ? Math.round((r.actualAmount / r.targetAmount) * 10000) / 10000 : 0,
+        newCustomers: r.newCustomers,
+        status: CAMPAIGN_STATUS_LABEL[r.status as CampaignStatus] ?? r.status,
+      })),
+    },
+  }
+}
+
 export const useM5RoiStore = defineStore('m5Roi', () => {
   const core = useM5CoreStore()
-  const m1 = useM1MarketingStore()
 
   const model = ref<AttributionModel>('LAST')
+
+  const stats = ref<MarketingStatsView>(emptyStats())
+
+  const couponStats = computed(() => stats.value.coupon)
+  const campaignStats = computed(() => stats.value.campaign)
 
   const kpis = computed(() => ({
     totalAdCost: core.totalAdCost,
@@ -120,38 +246,20 @@ export const useM5RoiStore = defineStore('m5Roi', () => {
     })
   })
 
-  interface CampaignRoiRow {
-    id: string
-    name: string
-    type: string
-    spent: number
-    actualAmount: number
-    roi: number
-    newCustomers: number
-    status: string
-  }
-
+  /** 活动维度 ROI：真实统计（GET /stats/overview），仅展示已投放（spent>0）的活动，金额已转元 */
   const campaignRows = computed<CampaignRoiRow[]>(() =>
-    m1.campaigns
-      .filter((c) => c.spent > 0)
-      .map((c) => ({
-        id: c.id,
-        name: c.name,
-        type: m1.CAMPAIGN_TYPE_LABEL[c.type],
-        spent: c.spent,
-        actualAmount: c.actualAmount,
-        roi: c.spent > 0 ? Number((c.actualAmount / c.spent).toFixed(2)) : 0,
-        newCustomers: c.newCustomers,
-        status: m1.CAMPAIGN_STATUS_LABEL[c.status],
-      })),
+    campaignStats.value.rows.filter((c) => c.spent > 0),
   )
 
   function setModel(m: AttributionModel) {
     model.value = m
   }
 
-  function seed() {
+  /** 渠道业绩 mock 同步播种 + 真实发券/核销/活动转化统计（后端空表时回落全 0 空明细） */
+  async function seed() {
     core.seed()
+    const res = await api.getMarketingStats()
+    stats.value = adaptStats(res.data)
   }
 
   return {
@@ -162,6 +270,8 @@ export const useM5RoiStore = defineStore('m5Roi', () => {
     costDonutData,
     attributionRows,
     campaignRows,
+    couponStats,
+    campaignStats,
     setModel,
     seed,
   }

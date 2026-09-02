@@ -19,10 +19,21 @@ import {
   type M5Settings,
   type PushChannel,
 } from '@/stores/m5Settings'
-import { useSensitiveWords } from '@/composables/useSensitiveWords'
+import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import {
+  FORBIDDEN_WORD_CATEGORIES,
+  listForbiddenWords,
+  createForbiddenWord,
+  toggleForbiddenWord,
+  deleteForbiddenWord,
+  type ForbiddenWordDTO,
+} from '@/api/marketing'
 
 const store = useM5SettingsStore()
-const sw = useSensitiveWords()
+const auth = useAuthStore()
+const toast = useToast()
 onMounted(() => store.seed())
 
 type GroupKey = 'FREQ' | 'WORDS' | 'APPROVAL' | 'CHANNEL'
@@ -39,7 +50,12 @@ const activeGroupLabel = computed(() => groups.find((g) => g.key === activeGroup
 // 本地草稿
 const draft = reactive<M5Settings>({ ...store.settings })
 const newWord = ref('')
+const newWordCategory = ref<string>(FORBIDDEN_WORD_CATEGORIES[0])
 const wordError = ref('')
+const wordLoading = ref(false)
+const wordSaving = ref(false)
+const words = ref<ForbiddenWordDTO[]>([])
+const categoryOptions = FORBIDDEN_WORD_CATEGORIES.map((c) => ({ label: c, value: c }))
 
 function syncFromStore() {
   Object.assign(draft, store.settings)
@@ -52,13 +68,20 @@ onMounted(syncFromStore)
 const dirty = computed(() => JSON.stringify(draft) !== JSON.stringify(store.settings))
 
 const canEdit = computed(() => store.canEdit)
+// 违禁词写端点后端权限码为 marketing:edit（与活动/券写一致），词库维护区单独门禁
+const canEditWords = computed(() => auth.can('marketing:edit'))
 
-const customWords = computed(() => sw.customWords.value)
-const builtinWords = sw.builtinWords
+const enabledWordCount = computed(() => words.value.filter((w) => w.enabled).length)
+const wordsByCategory = computed(() =>
+  FORBIDDEN_WORD_CATEGORIES.map((cat) => ({
+    category: cat,
+    items: words.value.filter((w) => w.category === cat),
+  })),
+)
 
 const kpis = computed(() => [
   { label: '周频上限', icon: 'clock', value: `${draft.weeklyLimit}/周`, tone: 'brand' as const },
-  { label: '违禁词数', icon: 'alert', value: String(builtinWords.length + customWords.value.length), tone: 'danger' as const },
+  { label: '违禁词数', icon: 'alert', value: String(enabledWordCount.value), tone: 'danger' as const },
   { label: '审批层级', icon: 'check-square', value: `${draft.approvalLevel} 级`, tone: 'warning' as const },
   { label: '默认渠道数', icon: 'marketing', value: String(draft.defaultPushChannels.length + draft.defaultAdChannels.length), tone: 'teal' as const },
 ])
@@ -68,24 +91,63 @@ const levelOptions = [
   { value: '2', label: '2 级审批（店长 + 区域）' },
 ]
 
-// 词库
-function addWord() {
+// 词库（A1-04：DB + Redis 缓存，管理端维护即时生效）
+async function loadWords() {
+  wordLoading.value = true
+  try {
+    words.value = (await listForbiddenWords()).data
+  } catch (e) {
+    toast.error('违禁词库加载失败：' + errMsg(e))
+  } finally {
+    wordLoading.value = false
+  }
+}
+onMounted(loadWords)
+
+async function addWord() {
   const w = newWord.value.trim()
   wordError.value = ''
   if (!w) return
-  if (builtinWords.includes(w)) {
-    wordError.value = '该词已在系统内置词库中，无需重复添加'
+  const dup = words.value.find((x) => x.word === w && x.category === newWordCategory.value)
+  if (dup) {
+    wordError.value = dup.enabled ? '该词已存在且启用中' : '该词已存在（已停用），可在下方停用词中重新启用'
     return
   }
-  if (customWords.value.includes(w)) {
-    wordError.value = '该词已存在'
-    return
+  wordSaving.value = true
+  try {
+    await createForbiddenWord({ category: newWordCategory.value, word: w })
+    newWord.value = ''
+    toast.success('违禁词已添加，文案校验即时生效')
+    await loadWords()
+  } catch (e) {
+    wordError.value = errMsg(e)
+  } finally {
+    wordSaving.value = false
   }
-  sw.addWord(w)
-  newWord.value = ''
 }
-function removeCustomWord(w: string) {
-  sw.removeWord(w)
+async function toggleWord(row: ForbiddenWordDTO) {
+  wordSaving.value = true
+  try {
+    await toggleForbiddenWord(row.wordId, !row.enabled)
+    toast.success(row.enabled ? '违禁词已停用' : '违禁词已启用')
+    await loadWords()
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  } finally {
+    wordSaving.value = false
+  }
+}
+async function removeWord(row: ForbiddenWordDTO) {
+  wordSaving.value = true
+  try {
+    await deleteForbiddenWord(row.wordId)
+    toast.success('违禁词已删除')
+    await loadWords()
+  } catch (e) {
+    toast.error('删除失败：' + errMsg(e))
+  } finally {
+    wordSaving.value = false
+  }
 }
 
 // 默认渠道勾选
@@ -102,7 +164,6 @@ function toggleAd(ch: string) {
 
 // 保存二次确认
 const showConfirm = ref(false)
-const toast = ref('')
 function requestSave() {
   if (draft.weeklyLimit > store.WEEKLY_HARD_LIMIT) {
     draft.weeklyLimit = store.WEEKLY_HARD_LIMIT
@@ -114,8 +175,7 @@ function confirmSave() {
   if (!r.ok) return
   syncFromStore()
   showConfirm.value = false
-  toast.value = '营销设置已保存'
-  setTimeout(() => (toast.value = ''), 2400)
+  toast.success('营销设置已保存')
 }
 function resetDraft() {
   syncFromStore()
@@ -222,42 +282,48 @@ const pushEntries = Object.entries(PUSH_CHANNEL_LABEL) as [PushChannel, string][
         <!-- 合规词库 -->
         <template v-else-if="activeGroup === 'WORDS'">
           <h3 class="group-title"><CIcon name="shield" :size="16" /> 合规违禁词库</h3>
-          <p class="group-desc">营销活动名称、推送文案、券名、海报与落地页在发布前强制校验，命中即拦截。内置词由系统维护，自定义词可增删。</p>
+          <p class="group-desc">营销活动名称、推送文案、券名、海报与落地页在发布前强制校验，命中即拦截。词库由集团统一维护，停用后立即不参与校验，删除需谨慎。</p>
 
           <div class="word-add">
-            <CInput v-model="newWord" placeholder="输入自定义违禁词，如：特效、零副作用" :disabled="!canEdit"
+            <CSelect :model-value="newWordCategory" :options="categoryOptions" width="140px"
+              :disabled="!canEditWords || wordSaving"
+              @update:model-value="newWordCategory = $event; wordError = ''" />
+            <CInput v-model="newWord" placeholder="输入违禁词，如：特效、零副作用" :disabled="!canEditWords || wordSaving"
               @update:model-value="newWord = $event; wordError = ''" />
-            <CButton variant="primary" size="md" :disabled="!canEdit || !newWord.trim()" @click="addWord">
+            <CButton variant="primary" size="md" :disabled="!canEditWords || wordSaving || !newWord.trim()" @click="addWord">
               <CIcon name="plus" :size="14" />添加
             </CButton>
           </div>
           <div v-if="wordError" class="word-error"><CIcon name="alert" :size="13" />{{ wordError }}</div>
 
-          <div class="word-section">
-            <div class="word-section__title">自定义词（{{ customWords.length }}）<span class="word-section__hint">可删除</span></div>
-            <div v-if="!customWords.length" class="word-empty">暂无自定义违禁词</div>
-            <div v-else class="word-tags">
-              <span v-for="w in customWords" :key="w" class="word-tag word-tag--custom">
-                {{ w }}
-                <button class="word-tag__x" :disabled="!canEdit" @click="removeCustomWord(w)">
-                  <CIcon name="close" :size="12" />
-                </button>
-              </span>
-            </div>
-          </div>
-
-          <div class="word-section">
-            <div class="word-section__title">系统内置词（{{ builtinWords.length }}）<span class="word-section__hint word-section__hint--lock">不可删</span></div>
-            <div class="word-tags">
-              <span v-for="w in builtinWords" :key="w" class="word-tag word-tag--builtin">
-                <CIcon name="shield" :size="11" />{{ w }}
-              </span>
+          <div v-if="wordLoading" class="word-empty">词库加载中…</div>
+          <div v-else>
+            <div v-for="g in wordsByCategory" :key="g.category" class="word-section">
+              <div class="word-section__title">
+                {{ g.category }}（{{ g.items.filter(i => i.enabled).length }}/{{ g.items.length }}）
+                <span class="word-section__hint">启用/总数；停用即不拦截，删除不可恢复</span>
+              </div>
+              <div v-if="!g.items.length" class="word-empty">该分类暂无违禁词</div>
+              <div v-else class="word-tags">
+                <span v-for="row in g.items" :key="row.wordId" class="word-tag"
+                  :class="row.enabled ? 'word-tag--builtin' : 'word-tag--custom'"
+                  :style="row.enabled ? null : 'opacity:.55;text-decoration:line-through'">
+                  <CIcon v-if="row.enabled" name="shield" :size="11" />{{ row.word }}
+                  <button class="word-tag__x" :title="row.enabled ? '停用' : '启用'"
+                    :disabled="!canEditWords || wordSaving" @click="toggleWord(row)">
+                    <CIcon :name="row.enabled ? 'close' : 'check'" :size="12" />
+                  </button>
+                  <button class="word-tag__x" title="删除" :disabled="!canEditWords || wordSaving" @click="removeWord(row)">
+                    <CIcon name="delete" :size="12" />
+                  </button>
+                </span>
+              </div>
             </div>
           </div>
 
           <div class="redline">
             <CIcon name="shield" :size="16" />
-            <span>违禁词拦截为硬合规约束，所有 M5 文案发布前强制过校验，不可关闭。</span>
+            <span>违禁词拦截为硬合规约束，所有 M5 文案发布前强制过校验，不可关闭；词库变更经缓存即时生效并留痕。</span>
           </div>
         </template>
 
@@ -357,10 +423,6 @@ const pushEntries = Object.entries(PUSH_CHANNEL_LABEL) as [PushChannel, string][
         </template>
       </CCard>
     </div>
-
-    <transition name="toast">
-      <div v-if="toast" class="toast"><CIcon name="check" :size="16" />{{ toast }}</div>
-    </transition>
   </div>
 </template>
 

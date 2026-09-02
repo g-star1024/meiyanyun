@@ -38,6 +38,11 @@ function money(n: number) {
   return `¥${n.toLocaleString('zh-CN')}`
 }
 
+/** 0~1 比率 → 百分比文本（核销率/达成率，后端已保留四位小数） */
+function pct(r: number) {
+  return `${(r * 100).toFixed(1)}%`
+}
+
 function roiTone(r: number): 'success' | 'warning' | 'danger' {
   if (r >= 3) return 'success'
   if (r >= 1) return 'warning'
@@ -112,6 +117,59 @@ function onExport() {
       </div>
     </CCard>
 
+    <!-- M5-06 发券与核销统计（真实 marketing-service /stats/overview） -->
+    <CCard class="ri__coupon" title="发券与核销统计" padding="none">
+      <div class="ri-statbar">
+        <div class="ri-statbar__item">
+          <span class="ri-statbar__label">券种</span>
+          <span class="ri-statbar__val">{{ store.couponStats.couponKinds }}</span>
+        </div>
+        <div class="ri-statbar__item">
+          <span class="ri-statbar__label">累计发放</span>
+          <span class="ri-statbar__val">{{ store.couponStats.grantedPcs.toLocaleString('zh-CN') }} 张</span>
+        </div>
+        <div class="ri-statbar__item">
+          <span class="ri-statbar__label">累计核销</span>
+          <span class="ri-statbar__val">{{ store.couponStats.totalUsed.toLocaleString('zh-CN') }} 张</span>
+        </div>
+        <div class="ri-statbar__item">
+          <span class="ri-statbar__label">核销率</span>
+          <span class="ri-statbar__val">{{ pct(store.couponStats.writeoffRate) }}</span>
+        </div>
+        <div class="ri-statbar__item">
+          <span class="ri-statbar__label">发放批次</span>
+          <span class="ri-statbar__val">{{ store.couponStats.grantBatches }} 次</span>
+        </div>
+      </div>
+      <div class="ri-table">
+        <div class="ri-table__head ri-ctable__head">
+          <div class="ri-table__cell ri-ctable__cell--name">优惠券</div>
+          <div class="ri-table__cell ri-table__cell--num">类型</div>
+          <div class="ri-table__cell ri-table__cell--num">状态</div>
+          <div class="ri-table__cell ri-table__cell--num">库存</div>
+          <div class="ri-table__cell ri-table__cell--num">已发放</div>
+          <div class="ri-table__cell ri-table__cell--num">已核销</div>
+          <div class="ri-table__cell ri-table__cell--num">核销率</div>
+        </div>
+        <div v-if="store.couponStats.rows.length === 0" class="ri-camp__empty">暂无优惠券数据</div>
+        <div
+          v-for="r in store.couponStats.rows"
+          :key="r.id"
+          class="ri-table__row ri-ctable__row"
+        >
+          <div class="ri-table__cell ri-ctable__cell--name">
+            <span class="ri-table__name">{{ r.name }}</span>
+          </div>
+          <div class="ri-table__cell ri-table__cell--num">{{ r.type }}</div>
+          <div class="ri-table__cell ri-table__cell--num">{{ r.status }}</div>
+          <div class="ri-table__cell ri-table__cell--num">{{ r.total }}</div>
+          <div class="ri-table__cell ri-table__cell--num">{{ r.issued }}</div>
+          <div class="ri-table__cell ri-table__cell--num">{{ r.used }}</div>
+          <div class="ri-table__cell ri-table__cell--num">{{ r.issued ? pct(r.writeoffRate) : '—' }}</div>
+        </div>
+      </div>
+    </CCard>
+
     <!-- 图表区 -->
     <div class="ri__charts">
       <CCard class="ri__chart" title="各渠道 ROI 对比">
@@ -160,13 +218,40 @@ function onExport() {
         </div>
       </CCard>
 
-      <CCard class="ri__camp" title="活动维度 ROI" padding="none">
+      <CCard class="ri__camp" padding="none">
+        <template #header>
+          <div class="ri__card-head">
+            <h3 class="ri__card-title">活动维度 ROI</h3>
+            <div class="ri-statbar ri-statbar--inline">
+              <div class="ri-statbar__item">
+                <span class="ri-statbar__label">投放</span>
+                <span class="ri-statbar__val">{{ money(store.campaignStats.totalSpent) }}</span>
+              </div>
+              <div class="ri-statbar__item">
+                <span class="ri-statbar__label">成交</span>
+                <span class="ri-statbar__val">{{ money(store.campaignStats.totalActualAmount) }}</span>
+              </div>
+              <div class="ri-statbar__item">
+                <span class="ri-statbar__label">综合 ROI</span>
+                <span class="ri-statbar__val" :class="`ri-roi__num--${roiTone(store.campaignStats.overallRoi)}`">{{ store.campaignStats.totalSpent > 0 ? store.campaignStats.overallRoi.toFixed(1) : '—' }}</span>
+              </div>
+              <div class="ri-statbar__item">
+                <span class="ri-statbar__label">达成率</span>
+                <span class="ri-statbar__val">{{ pct(store.campaignStats.achieveRate) }}</span>
+              </div>
+              <div class="ri-statbar__item">
+                <span class="ri-statbar__label">新客</span>
+                <span class="ri-statbar__val">{{ store.campaignStats.totalNewCustomers }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
         <div class="ri-camp">
           <div v-if="store.campaignRows.length === 0" class="ri-camp__empty">暂无活动投放数据</div>
           <div v-for="c in store.campaignRows" :key="c.id" class="ri-camp__row">
             <div class="ri-camp__main">
               <div class="ri-camp__name">{{ c.name }}</div>
-              <div class="ri-camp__meta">{{ c.type }} · 新客 {{ c.newCustomers }} · {{ c.status }}</div>
+              <div class="ri-camp__meta">{{ c.type }} · 新客 {{ c.newCustomers }} · 达成率 {{ c.targetAmount ? pct(c.achieveRate) : '—' }} · {{ c.status }}</div>
             </div>
             <div class="ri-camp__nums">
               <div class="ri-camp__num">
@@ -179,7 +264,7 @@ function onExport() {
               </div>
               <div class="ri-camp__num">
                 <span class="ri-camp__label">ROI</span>
-                <span class="ri-camp__val" :class="`ri-roi__num--${roiTone(c.roi)}`">{{ c.roi.toFixed(1) }}</span>
+                <span class="ri-camp__val" :class="`ri-roi__num--${roiTone(c.roi)}`">{{ c.roi ? c.roi.toFixed(1) : '—' }}</span>
               </div>
             </div>
           </div>
@@ -236,6 +321,24 @@ function onExport() {
 .ri-roi__num--warning { color: var(--c-warning-fg); }
 .ri-roi__num--danger { color: var(--c-danger-fg); }
 
+/* M5-06 统计汇总条（发券核销 / 活动转化通用） */
+.ri-statbar {
+  display: flex; align-items: center; gap: var(--s-xl);
+  padding: var(--s-md) var(--s-lg);
+  border-bottom: 1px solid var(--c-border-light);
+  flex-wrap: wrap;
+}
+.ri-statbar--inline { padding: 0; border-bottom: none; gap: var(--s-lg); }
+.ri-statbar__item { display: flex; align-items: baseline; gap: var(--s-xs); min-width: 0; }
+.ri-statbar__label { font-size: var(--t-xs); color: var(--c-text-3); white-space: nowrap; }
+.ri-statbar__val { font-size: var(--t-md); font-weight: 700; color: var(--c-text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* M5-06 发券核销明细表（复用 ri-table 基类，7 列等宽） */
+.ri-ctable__head, .ri-ctable__row {
+  grid-template-columns: 1.6fr 0.9fr 0.9fr 0.8fr 0.9fr 0.9fr 0.9fr;
+}
+.ri-ctable__cell--name { color: var(--c-text); font-weight: 600; min-width: 0; }
+
 /* 图表 */
 .ri__charts { display: grid; grid-template-columns: 1.2fr 1fr; gap: var(--s-lg); align-items: stretch; }
 .ri__chart { min-width: 0; }
@@ -280,6 +383,7 @@ function onExport() {
   .ri__kpis { grid-template-columns: repeat(2, 1fr); min-width: 0; }
   .ri__charts, .ri__bottom { grid-template-columns: 1fr; }
   .ri-table__head, .ri-table__row { grid-template-columns: 1.4fr 1fr 0.8fr 0.8fr 1.1fr 1fr 1fr; min-width: 720px; }
+  .ri-ctable__head, .ri-ctable__row { grid-template-columns: 1.6fr 0.9fr 0.9fr 0.8fr 0.9fr 0.9fr 0.9fr; min-width: 680px; }
   .ri-table { overflow-x: auto; }
 }
 </style>

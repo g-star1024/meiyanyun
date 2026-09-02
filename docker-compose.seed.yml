@@ -32,6 +32,8 @@ services:
       SPRING_DATASOURCE_URL: "jdbc:postgresql://meiyun-pg:5432/meiyun_seed?stringtype=unspecified"
       MEIYUN_ES_ENDPOINT: "http://meiyun-es:9200"
       SPRING_DATA_REDIS_HOST: "meiyun-redis"
+      # Redis 容器启用了 requirepass，Spring Cache（违禁词库）与 redis 频控需带密码认证。
+      SPRING_DATA_REDIS_PASSWORD: "meiyun123"
       # 连接池上限：seed 栈与正式栈共用同一 PG 实例（max_connections=100），两栈共 14 个后端服务，
       # 默认池(10)会打满连接，故限每服务 5（14×5=70，留余量给运维/迁移连接）。
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
