@@ -136,6 +136,45 @@ cd frontend && pnpm build                      # vue-tsc --noEmit && vite build
 - RBAC 角色权限 + 四级数据权限（集团 / 区域 / 门店 / 个人），后端统一拦截器 + 注解鉴权，前端 `v-perm` 指令做按钮 / 字段级控制。
 - 全链路操作审计（append-only 哈希链），敏感字段（如手机号）按权限脱敏，后端校验错误信息统一中文返回。
 
+## 营销写链路与测试体系（M5）
+
+marketing-service 的优惠券与营销活动已接入真实写链路，前端营销页去 mock 直连 API。
+
+**写链路四件套**（每个写接口统一具备）：
+
+1. **参数校验**：Bean Validation + 业务校验（券面值/门槛/库存/有效期、折扣区间、活动日期、枚举合法），错误信息全中文返回；
+2. **幂等**：状态流转同态重复请求返回 `changed=false` 不产生副作用；启用/停用重复操作幂等；
+3. **全动作审计**：创建 / 启用 / 停用 / 发券 / 状态流转全部落 `audit_log`，payload 以 jsonb 规范化存储，纳入 SHA-256 链式哈希（审计服务降级仅记日志，不阻断主流程）；
+4. **中文错误**：400（校验/非法状态跳跃）、403（无权限）、404（单据不存在）、409（库存已发完）均返回中文文案。
+
+**状态机与防超发**：
+
+- 优惠券：`DRAFT 草稿 → ACTIVE 进行中 → DISABLED 已停用`（`EXPIRED` 由有效期派生不落库）；发券在事务内 `synchronized` 校验库存，库存不足返回 409，库存部分够发时按实际可发数量发放并在审计 payload 标记 `partial`。
+- 营销活动：`DRAFT → SCHEDULED → RUNNING → ENDED`，`CANCELLED` 为旁路终态；非法跳跃（如 DRAFT 直跳 RUNNING、终态回流）返回 400 中文提示。
+- 金额一律 `bigint` 存分；折扣券面值存「折扣 × 10」（8.5 折 = 85）；单据号按「前缀 + 日期 + 序列」生成（券 `CPN`、发券台账 `GR`、活动 `CP`）。
+
+**主要接口**（网关前缀 `/api/marketing`，均需登录 + 对应权限码）：
+
+| 方法 & 路径 | 说明 |
+|---|---|
+| `POST /coupons` | 创建券模板（返回 DRAFT） |
+| `POST /coupons/{id}/enable` · `/disable` | 启用 / 停用（幂等，返回 `changed`） |
+| `POST /coupons/{id}/grant` | 发券（防超发，返回发券台账） |
+| `GET /coupons` · `/coupon-grants` · `/config` | 券列表 / 发放记录 / 营销配置 |
+| `POST /campaign` | 创建营销活动（返回 DRAFT） |
+| `POST /campaigns/{id}/transit` | 活动状态流转（幂等，返回 `changed`） |
+| `GET /campaigns` | 活动列表 |
+
+**测试体系**：后端采用 JUnit 5 + Mockito，分层为 service 单元测试（Mock 仓储，覆盖状态机、防超发、部分发放、幂等、校验、审计调用）与 `@WebMvcTest` Web 切片测试（MockMvc 覆盖鉴权 401/403、参数校验 400、路由与中文错误），不依赖真实数据库，进 CI 红线。
+
+```bash
+cd backend
+mvn -pl meiyun-common install          # 先装公共库
+mvn -pl marketing-service test         # 营销服务单测 + Web 切片
+```
+
+> 数据库表结构由 Flyway 精管：`customer-service` 启动时执行 `classpath:db/migration`（V1 系统基线、V2 字典种子、V3 营销域表）。营销三表（`coupon_template` / `coupon_grant` / `campaign`）在 V3 中按英文状态机与 bigint 金额重建；`backend/db/migration` 为同源工作副本。
+
 ## CI
 
-`.github/workflows/ci.yml` 在 push 后自动执行网关、后端、前端三组件的构建与单元测试。
+`.github/workflows/ci.yml` 在 push 后自动执行网关、后端、前端三组件的构建与单元测试（后端 `mvn test`、前端 `pnpm build` 含 `vue-tsc` 类型检查、网关 `go build`/`go vet`）。

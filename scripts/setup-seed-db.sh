@@ -54,7 +54,7 @@ SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
   account_mirror, appointment, appointment_month, audit_log, campaign, consultation,
-  contraindication, coupon_template, coupon_writeoff_chain, cross_domain_coeff,
+  contraindication, coupon_grant, coupon_template, coupon_writeoff_chain, cross_domain_coeff,
   customer, customer_tag, customer_tag_rel, dual_sign_ticket,
   inventory_item, inventory_log, mall_exchange, mall_product, marketing_cfg,
   member_card, member_level, org_unit, outbox_record, point_rule,

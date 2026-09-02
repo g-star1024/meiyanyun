@@ -1,13 +1,18 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import * as api from '@/api/marketing'
+import type { CampaignDTO } from '@/api/marketing'
+import { useM5CouponStore } from '@/stores/m5Coupon'
 
 // ============================================================
-// 营销中心 store（M1 集团管控 / 营销中心）
-// - Campaign 营销活动：DRAFT 草稿 → SCHEDULED 待开始 → RUNNING 进行中 → ENDED 已结束；CANCELLED 旁路
-// - 类型：满减/折扣/券包/赠品/新客礼/会员日
-// - 多渠道投放（抖音/小红书/美团/微信私域/大众点评）
-// - 关联 Coupon 优惠券（领/用/核销）
-// - KPI：进行中数、累计成交额、引流新客、ROI
+// 营销中心 store（M1 集团管控 / 营销中心，已接真实 marketing-service）
+//
+// 适配层（铁律：模板/样式零改动，只换数据源）：
+//  - 后端金额 bigint 存「分」，前端活规格用「元」：fen2yuan / yuan2fen
+//  - channels 后端存 JSON 数组文本（渠道中文名），前端用数组
+//  - 字段名 campaignId→id、campaignName→name、campaignType→type
+//  - 关联券复用 m5Coupon store 的真实券（按 campaignId 过滤）
+//  - 写动作经网关，非法流转后端 400 中文错误经 errMsg() 外露
 // ============================================================
 
 export type CampaignStatus = 'DRAFT' | 'SCHEDULED' | 'RUNNING' | 'ENDED' | 'CANCELLED'
@@ -21,6 +26,7 @@ export const CAMPAIGN_TYPE_LABEL: Record<CampaignType, string> = {
 }
 export const CHANNELS = ['抖音', '小红书', '美团', '大众点评', '微信私域', '视频号']
 
+/** 合法状态流转（与后端 CampaignService TRANSITIONS 一致，用于按钮置灰；最终校验在后端） */
 const TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
   DRAFT: ['SCHEDULED', 'CANCELLED'],
   SCHEDULED: ['RUNNING', 'DRAFT', 'CANCELLED'],
@@ -28,6 +34,11 @@ const TRANSITIONS: Record<CampaignStatus, CampaignStatus[]> = {
   ENDED: [],
   CANCELLED: [],
 }
+
+/** 分 → 元 */
+const fen2yuan = (fen?: number | null): number => (fen == null ? 0 : fen / 100)
+/** 元 → 分 */
+const yuan2fen = (yuan: number): number => Math.round((yuan || 0) * 100)
 
 export interface Coupon {
   id: string
@@ -60,17 +71,44 @@ export interface Campaign {
   remark?: string
 }
 
-let _cid = 0
-function cid(p: string) { _cid += 1; return `${p}-${Date.now().toString(36)}-${_cid}` }
-function dateOffset(n: number) {
-  const d = new Date(); d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+/** yyyy-MM-dd（后端 LocalDate 直接可用） */
+function dayOf(s?: string | null): string {
+  return s ? s.slice(0, 10) : ''
+}
+
+/** 后端活动 → 前端活规格（分→元、channels JSON 串→数组、字段名映射） */
+function adaptCampaign(d: CampaignDTO): Campaign {
+  let channels: string[] = []
+  if (d.channels) {
+    try {
+      const parsed = JSON.parse(d.channels)
+      if (Array.isArray(parsed)) channels = parsed.filter((x): x is string => typeof x === 'string')
+    } catch {
+      channels = []
+    }
+  }
+  return {
+    id: d.campaignId,
+    name: d.campaignName,
+    type: d.campaignType as CampaignType,
+    status: d.status as CampaignStatus,
+    channels,
+    startDate: dayOf(d.startDate),
+    endDate: dayOf(d.endDate),
+    budget: fen2yuan(d.budget),
+    spent: fen2yuan(d.spent),
+    targetAmount: fen2yuan(d.targetAmount),
+    actualAmount: fen2yuan(d.actualAmount),
+    newCustomers: d.newCustomers ?? 0,
+    storeScope: d.storeScope || '全部门店',
+    owner: d.owner || '系统',
+    remark: d.remark || undefined,
+  }
 }
 
 export const useM1MarketingStore = defineStore('m1Marketing', () => {
   const campaigns = ref<Campaign[]>([])
-  const coupons = ref<Coupon[]>([])
-  const seeded = ref(false)
+  const loaded = ref(false)
 
   const stats = computed(() => {
     const list = campaigns.value.filter((c) => c.status !== 'CANCELLED')
@@ -89,44 +127,71 @@ export const useM1MarketingStore = defineStore('m1Marketing', () => {
   })
 
   function campaign(id: string) { return campaigns.value.find((c) => c.id === id) }
-  function couponsOf(campaignId: string) { return coupons.value.filter((c) => c.campaignId === campaignId) }
+
+  /**
+   * 全量券兼容层：旧 mock 期 m1.coupons 的消费方（核销 m5Core / 看板漏斗 m5Dash /
+   * 直播挂券 m5Live / 会员日 m5Calendar）数据源切到真实 m5Coupon store，形状与旧 Coupon 一致。
+   * PACKAGE 券包归入 AMOUNT 展示；store 在 computed 内取用，无初始化顺序依赖。
+   */
+  const coupons = computed<Coupon[]>(() => {
+    const m5 = useM5CouponStore()
+    return m5.coupons.map((c) => ({
+      id: c.id,
+      campaignId: c.campaignId ?? '',
+      code: c.code || c.id,
+      name: c.name,
+      type: c.type === 'RATE' ? 'RATE' as const : 'AMOUNT' as const,
+      value: c.value,
+      threshold: c.threshold,
+      total: c.total,
+      received: c.received,
+      used: c.used,
+    }))
+  })
+
+  /** 活动关联券：复用 m5Coupon store 的真实券（按 campaignId 过滤）；store 在函数内取用，无初始化顺序依赖 */
+  function couponsOf(campaignId: string): Coupon[] {
+    return coupons.value.filter((c) => c.campaignId === campaignId)
+  }
+
   function canTransit(c: Campaign, to: CampaignStatus) { return TRANSITIONS[c.status].includes(to) }
   function achieveRate(c: Campaign) { return c.targetAmount ? Math.min(999, Math.round((c.actualAmount / c.targetAmount) * 100)) : 0 }
   function campaignRoi(c: Campaign) { return c.spent ? Number((c.actualAmount / c.spent).toFixed(1)) : 0 }
 
-  function transit(id: string, to: CampaignStatus) {
-    const c = campaign(id)
-    if (c && canTransit(c, to)) c.status = to
+  /** 拉取真实活动列表（幂等：已加载默认不重复，force 用于写后重拉）；顺带确保关联券 store 已加载（详情抽屉 couponsOf 依赖） */
+  async function seed(force = false) {
+    const m5 = useM5CouponStore()
+    const [res] = await Promise.all([
+      api.listCampaigns(),
+      m5.seed(force),
+    ])
+    campaigns.value = res.data.map(adaptCampaign)
+    loaded.value = true
   }
 
-  function createCampaign(payload: Omit<Campaign, 'id' | 'status' | 'spent' | 'actualAmount' | 'newCustomers'>): Campaign {
-    const c: Campaign = { ...payload, id: cid('cmp'), status: 'DRAFT', spent: 0, actualAmount: 0, newCustomers: 0 }
-    campaigns.value.unshift(c)
-    return c
+  /** 状态流转：非法流转/终态由后端 400 拦截，错误向上抛给视图中文外露 */
+  async function transit(id: string, to: CampaignStatus) {
+    await api.transitCampaign(id, to)
+    await seed(true)
   }
 
-  function seed() {
-    if (seeded.value) return
-    const mk = (c: Partial<Campaign> & { name: string; type: CampaignType; status: CampaignStatus; channels: string[] }): Campaign => ({
-      id: cid('cmp'), name: c.name, type: c.type, status: c.status, channels: c.channels,
-      startDate: c.startDate!, endDate: c.endDate!, budget: c.budget ?? 0, spent: c.spent ?? 0,
-      targetAmount: c.targetAmount ?? 0, actualAmount: c.actualAmount ?? 0, newCustomers: c.newCustomers ?? 0,
-      storeScope: c.storeScope ?? '全部门店', owner: c.owner ?? '白桥', remark: c.remark,
+  async function createCampaign(
+    payload: Omit<Campaign, 'id' | 'status' | 'spent' | 'actualAmount' | 'newCustomers'>,
+  ): Promise<Campaign> {
+    const res = await api.createCampaign({
+      name: payload.name,
+      type: payload.type,
+      channels: payload.channels,
+      startDate: payload.startDate,
+      endDate: payload.endDate,
+      budget: yuan2fen(payload.budget),
+      targetAmount: yuan2fen(payload.targetAmount),
+      storeScope: payload.storeScope,
+      owner: payload.owner,
+      remark: payload.remark,
     })
-    campaigns.value = [
-      mk({ name: '暑期水光自由卡', type: 'COUPON_PACK', status: 'RUNNING', channels: ['抖音', '小红书', '美团'], startDate: dateOffset(-20), endDate: dateOffset(20), budget: 80000, spent: 52000, targetAmount: 400000, actualAmount: 386000, newCustomers: 142, owner: '白桥', remark: '主推润致娃娃针次卡，抖音直播核销率 68%' }),
-      mk({ name: '新客专享·首次体验礼', type: 'NEWBIE', status: 'RUNNING', channels: ['大众点评', '微信私域'], startDate: dateOffset(-30), endDate: dateOffset(30), budget: 30000, spent: 18000, targetAmount: 150000, actualAmount: 96000, newCustomers: 218, owner: '林微' }),
-      mk({ name: '会员日·乔雅登满减', type: 'FULL_REDUCE', status: 'SCHEDULED', channels: ['微信私域', '视频号'], startDate: dateOffset(3), endDate: dateOffset(5), budget: 20000, spent: 0, targetAmount: 200000, actualAmount: 0, newCustomers: 0, owner: '白桥' }),
-      mk({ name: '热玛吉抗衰专场', type: 'VIP_DAY', status: 'DRAFT', channels: ['微信私域'], startDate: dateOffset(15), endDate: dateOffset(17), budget: 50000, targetAmount: 600000, owner: '苏晴' }),
-      mk({ name: '光子嫩肤买3送1', type: 'GIFT', status: 'ENDED', channels: ['美团', '大众点评'], startDate: dateOffset(-60), endDate: dateOffset(-30), budget: 25000, spent: 24800, targetAmount: 120000, actualAmount: 138000, newCustomers: 76, owner: '白桥' }),
-      mk({ name: '保妥适拼团8.5折', type: 'DISCOUNT', status: 'CANCELLED', channels: ['抖音'], startDate: dateOffset(-10), endDate: dateOffset(5), budget: 15000, spent: 1200, targetAmount: 80000, actualAmount: 0, newCustomers: 0, owner: '白桥', remark: '因供应商限价政策中止' }),
-    ]
-    const running = campaigns.value[0]
-    coupons.value = [
-      { id: cid('cp'), campaignId: running.id, code: 'WATER500', name: '水光满3000减500', type: 'AMOUNT', value: 500, threshold: 3000, total: 200, received: 156, used: 89 },
-      { id: cid('cp'), campaignId: running.id, code: 'NEWBIE88', name: '新客88元体验券', type: 'AMOUNT', value: 200, threshold: 500, total: 500, received: 218, used: 134 },
-    ]
-    seeded.value = true
+    await seed(true)
+    return campaign(res.data.campaignId) ?? adaptCampaign(res.data)
   }
 
   return {

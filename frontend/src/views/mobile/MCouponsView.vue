@@ -21,12 +21,16 @@ const expired = ref([
   { id: 'e1', name: '满 1000 减 200', desc: '疗程项目可用', date: '2026-07-31' },
 ])
 
-function claim(c: Record<string, any>) {
-  const r = coupon.grant(c.id, 'DESIGNATED', 'C端会员-陈美玲', 1)
-  if (r.status === 'GRANTED') {
-    window.alert(`已领取「${c.name}」！可在 B 端 M4-15 收银核销。`)
-  } else {
-    window.alert('领取失败，库存不足或已领过。')
+async function claim(c: Record<string, any>) {
+  try {
+    const r = await coupon.grant(c.id, 'DESIGNATED', 'C端会员-陈美玲', 1)
+    if (r.status === 'GRANTED') {
+      window.alert(`已领取「${c.name}」！可在 B 端 M4-15 收银核销。`)
+    } else {
+      window.alert('领取失败，库存不足或已领过。')
+    }
+  } catch (e: any) {
+    window.alert('领取失败：' + (e?.response?.data?.message || e?.message || '网络异常，请稍后重试'))
   }
 }
 </script>
@@ -47,7 +51,7 @@ function claim(c: Record<string, any>) {
         <div class="coupon__left">
           <div class="coupon__amount">
             <span v-if="c.type === 'AMOUNT'">¥<strong>{{ c.value }}</strong></span>
-            <strong v-else>{{ c.value / 10 }}<em>折</em></strong>
+            <strong v-else>{{ c.value }}<em>折</em></strong>
           </div>
           <div class="coupon__cond">满{{ c.threshold }}可用</div>
         </div>

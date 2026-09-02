@@ -89,7 +89,8 @@ design-spec/
 CODEBUDDY.md
 
 # 根目录历史草稿 SQL（运行时仅用 backend/db/migration 与 backend/db/seed）
-db/
+/db/
+# 注意：backend/db/ 为运行时迁移与种子脚本，属项目源码，必须入库
 
 # 备份与回收站目录
 backup-*/

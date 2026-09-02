@@ -11,14 +11,15 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.OffsetDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * marketing-service（M5 营销）控制器。
+ *
+ * 写链路：券模板（创建/启用/停用/发放）与活动（创建/状态流转）全部落 Service，
+ * 统一具备参数校验、状态机、幂等与全动作审计（audit_log jsonb）。
  *
  * 红线：
  * ① 触达每周每客户 ≤3 条（weekly_push_limit，发送前查近 7 天计数，超限 400）；
@@ -30,24 +31,23 @@ import java.util.concurrent.atomic.AtomicLong;
 @RequirePerm("marketing:view")
 public class MarketingController {
 
-    private final CampaignRepository campaignRepo;
-    private final CouponTemplateRepository couponRepo;
+    private final CampaignService campaignService;
+    private final CouponService couponService;
     private final PushRecordRepository pushRepo;
     private final CouponWriteoffChainRepository chainRepo;
     private final MarketingCfgRepository cfgRepo;
     private final RateLimiter rateLimiter;
     private final DomainEventPublisher events;
-    private final AtomicLong seq = new AtomicLong(System.nanoTime() % 1_000_000);
 
     private static final int PUSH_WINDOW_SECONDS = 7 * 24 * 3600; // 周频窗口
     private static final String PUSH_TOPIC = "meiyun.marketing.push-sent";
 
-    public MarketingController(CampaignRepository campaignRepo, CouponTemplateRepository couponRepo,
+    public MarketingController(CampaignService campaignService, CouponService couponService,
                                PushRecordRepository pushRepo, CouponWriteoffChainRepository chainRepo,
                                MarketingCfgRepository cfgRepo, RateLimiter rateLimiter,
                                DomainEventPublisher events) {
-        this.campaignRepo = campaignRepo;
-        this.couponRepo = couponRepo;
+        this.campaignService = campaignService;
+        this.couponService = couponService;
         this.pushRepo = pushRepo;
         this.chainRepo = chainRepo;
         this.cfgRepo = cfgRepo;
@@ -62,31 +62,63 @@ public class MarketingController {
         return cfgRepo.findById(1).orElseGet(MarketingCfg::new);
     }
 
-    // ==================== 活动 / 券 ====================
+    // ==================== 活动 ====================
 
     @GetMapping("/campaigns")
     public List<Campaign> campaigns() {
-        return campaignRepo.findAllByOrderByCreatedAtDesc();
+        return campaignService.list();
     }
 
     @PostMapping("/campaign")
     @RequirePerm("marketing:create")
-    public Campaign createCampaign(@RequestBody @Valid CampaignCmd cmd) {
-        Campaign c = new Campaign();
-        c.setCampaignId(nextNo("CP"));
-        c.setCampaignName(cmd.name());
-        c.setCampaignType(cmd.type());
-        c.setStatus("草稿");
-        c.setStartDate(cmd.startDate());
-        c.setEndDate(cmd.endDate());
-        c.setBudget(cmd.budget() == null ? 0L : cmd.budget());
-        c.setCreatedAt(OffsetDateTime.now());
-        return campaignRepo.save(c);
+    public Campaign createCampaign(@RequestBody @Valid CampaignService.CampaignCmd cmd) {
+        return campaignService.create(cmd);
     }
+
+    /** 活动状态流转（草稿→待开始→进行中→已结束/取消），非法流转由 Service 抛 400 中文错误。 */
+    @PostMapping("/campaigns/{id}/transit")
+    @RequirePerm("marketing:edit")
+    public Map<String, Object> transitCampaign(@PathVariable String id,
+                                               @RequestBody CampaignService.TransitCmd cmd) {
+        boolean changed = campaignService.transit(id, cmd == null ? null : cmd.to());
+        return Map.of("changed", changed);
+    }
+
+    // ==================== 优惠券 ====================
 
     @GetMapping("/coupons")
     public List<CouponTemplate> coupons() {
-        return couponRepo.findAllByOrderByCreatedAtDesc();
+        return couponService.list();
+    }
+
+    @PostMapping("/coupons")
+    @RequirePerm("coupon:create")
+    public CouponTemplate createCoupon(@RequestBody @Valid CouponService.CouponCmd cmd) {
+        return couponService.create(cmd);
+    }
+
+    @PostMapping("/coupons/{id}/enable")
+    @RequirePerm("coupon:edit")
+    public Map<String, Object> enableCoupon(@PathVariable String id) {
+        return Map.of("changed", couponService.enable(id));
+    }
+
+    @PostMapping("/coupons/{id}/disable")
+    @RequirePerm("coupon:edit")
+    public Map<String, Object> disableCoupon(@PathVariable String id) {
+        return Map.of("changed", couponService.disable(id));
+    }
+
+    /** 发券（防超发）：库存发完返回 409，部分发放正常落库。 */
+    @PostMapping("/coupons/{id}/grant")
+    @RequirePerm("coupon:edit")
+    public CouponGrant grantCoupon(@PathVariable String id, @RequestBody @Valid CouponService.GrantCmd cmd) {
+        return couponService.grant(id, cmd);
+    }
+
+    @GetMapping("/coupon-grants")
+    public List<CouponGrant> couponGrants() {
+        return couponService.listGrants();
     }
 
     // ==================== 触达（周频限 + 违禁词） ====================
@@ -159,19 +191,7 @@ public class MarketingController {
         return ForbiddenWords.categories();
     }
 
-    // ==================== 内部方法 ====================
-
-    private String nextNo(String prefix) {
-        long n = seq.incrementAndGet() % 1_000_000;
-        return prefix + OffsetDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-                + "-" + String.format("%06d", n);
-    }
-
     // ==================== 命令 DTO ====================
-
-    public record CampaignCmd(
-            @NotBlank String name, @NotBlank String type,
-            java.time.LocalDate startDate, java.time.LocalDate endDate, Long budget) {}
 
     public record PushCmd(
             @NotBlank String customerId, @NotBlank String pushType, @NotBlank String content) {}

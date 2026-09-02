@@ -9,11 +9,16 @@ import CIcon from '@/components/CIcon.vue'
 import {
   useM1MarketingStore, type Campaign, type CampaignStatus, type CampaignType,
 } from '@/stores/m1Marketing'
+import { errMsg } from '@/stores/m5Coupon'
+import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 
 const mk = useM1MarketingStore()
 const auth = useAuthStore()
-onMounted(() => mk.seed())
+const toast = useToast()
+onMounted(async () => {
+  try { await mk.seed() } catch (e) { toast.error('活动数据加载失败：' + errMsg(e)) }
+})
 
 const canEdit = computed(() => auth.can('marketing:edit'))
 
@@ -53,7 +58,15 @@ const statusChips: { key: CampaignStatus | ''; label: string }[] = [
 ]
 
 // 操作
-function doTransit(to: CampaignStatus) { if (selected.value) mk.transit(selected.value.id, to) }
+async function doTransit(to: CampaignStatus) {
+  if (!selected.value) return
+  try {
+    await mk.transit(selected.value.id, to)
+    toast.success('活动状态已更新')
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
+}
 
 // 新建活动
 const showModal = ref(false)
@@ -70,18 +83,20 @@ function toggleChannel(ch: string) {
   const i = form.channels.indexOf(ch)
   if (i >= 0) form.channels.splice(i, 1); else form.channels.push(ch)
 }
-function submit() {
+async function submit() {
   if (!form.name.trim()) { formErr.value = '请填写活动名称'; return }
   if (!form.startDate || !form.endDate) { formErr.value = '请选择活动起止日期'; return }
   if (form.channels.length === 0) { formErr.value = '至少选择一个投放渠道'; return }
-  const c = mk.createCampaign({
-    name: form.name.trim(), type: form.type, channels: [...form.channels],
-    startDate: form.startDate, endDate: form.endDate, storeScope: form.storeScope,
-    budget: Number(form.budget) || 0, targetAmount: Number(form.targetAmount) || 0,
-    owner: form.owner || auth.user.name, remark: form.remark.trim() || undefined,
-  })
-  showModal.value = false
-  selectedId.value = c.id
+  try {
+    const c = await mk.createCampaign({
+      name: form.name.trim(), type: form.type, channels: [...form.channels],
+      startDate: form.startDate, endDate: form.endDate, storeScope: form.storeScope,
+      budget: Number(form.budget) || 0, targetAmount: Number(form.targetAmount) || 0,
+      owner: form.owner || auth.user.name, remark: form.remark.trim() || undefined,
+    })
+    showModal.value = false
+    selectedId.value = c.id
+  } catch (e) { formErr.value = errMsg(e) }
 }
 
 const selectedCoupons = computed(() => selected.value ? mk.couponsOf(selected.value.id) : [])

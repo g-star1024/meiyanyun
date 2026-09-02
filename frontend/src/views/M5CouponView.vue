@@ -10,7 +10,7 @@ import CSelect from '@/components/CSelect.vue'
 import CInput from '@/components/CInput.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import {
-  useM5CouponStore, type CouponTemplate, type CouponType, type GrantScope,
+  useM5CouponStore, errMsg, type CouponTemplate, type CouponType, type GrantScope,
   COUPON_TYPE_LABEL, COUPON_STATUS_LABEL, COUPON_STATUS_PILL, GRANT_STATUS_PILL,
 } from '@/stores/m5Coupon'
 import { useSensitiveWords } from '@/composables/useSensitiveWords'
@@ -54,7 +54,7 @@ function openCreate() {
   formError.value = ''
   showCreate.value = true
 }
-function submitCreate() {
+async function submitCreate() {
   formError.value = ''
   if (!form.value.name.trim()) { formError.value = '请输入券名称'; return }
   const hit = sw.check(form.value.name)
@@ -62,10 +62,10 @@ function submitCreate() {
   if (form.value.total < 1) { formError.value = '库存必须大于 0'; return }
   if (!form.value.startDate || !form.value.endDate) { formError.value = '请选择有效期'; return }
   try {
-    const c = store.createCoupon({ ...form.value })
+    const c = await store.createCoupon({ ...form.value })
     showCreate.value = false
     selectedId.value = c.id
-  } catch (e) { formError.value = (e as Error).message }
+  } catch (e) { formError.value = errMsg(e) }
 }
 
 // 发放弹层
@@ -76,13 +76,26 @@ function openGrant() {
   formError.value = ''
   showGrant.value = true
 }
-function submitGrant() {
+async function submitGrant() {
   if (!selected.value) return
   formError.value = ''
   if (grantForm.value.count < 1) { formError.value = '发放数量必须大于 0'; return }
-  const rec = store.grant(selected.value.id, grantForm.value.scope, grantForm.value.targetName, grantForm.value.count)
-  if (rec.status === 'FAILED') formError.value = '库存不足，发放失败'
-  else showGrant.value = false
+  try {
+    const rec = await store.grant(selected.value.id, grantForm.value.scope, grantForm.value.targetName, grantForm.value.count)
+    if (rec.status === 'FAILED') formError.value = '库存不足，发放失败'
+    else showGrant.value = false
+  } catch (e) { formError.value = errMsg(e) }
+}
+
+async function doEnable() {
+  if (!selected.value) return
+  formError.value = ''
+  try { await store.enableCoupon(selected.value.id) } catch (e) { formError.value = errMsg(e) }
+}
+async function doDisable() {
+  if (!selected.value) return
+  formError.value = ''
+  try { await store.disableCoupon(selected.value.id) } catch (e) { formError.value = errMsg(e) }
 }
 
 function stockPct(c: CouponTemplate) {
@@ -97,7 +110,12 @@ function valueText(c: CouponTemplate) {
   return `券包 ¥${c.value}`
 }
 
-onMounted(() => { store.seed(); if (store.coupons.length) selectedId.value = store.coupons[0].id })
+onMounted(async () => {
+  try {
+    await store.seed()
+    if (store.coupons.length) selectedId.value = store.coupons[0].id
+  } catch (e) { formError.value = errMsg(e) }
+})
 </script>
 
 <template>
@@ -187,11 +205,11 @@ onMounted(() => { store.seed(); if (store.coupons.length) selectedId.value = sto
             <CIcon name="customer" :size="14" />发放
           </CButton>
           <CButton v-if="selected.status === 'DRAFT' || selected.status === 'DISABLED'" variant="secondary" size="sm"
-            :disabled="!canGrant" @click="store.enableCoupon(selected.id)">
+            :disabled="!canGrant" @click="doEnable">
             <CIcon name="check" :size="14" />启用
           </CButton>
           <CButton v-if="selected.status === 'ACTIVE'" variant="secondary" size="sm"
-            :disabled="!canGrant" @click="store.disableCoupon(selected.id)">
+            :disabled="!canGrant" @click="doDisable">
             <CIcon name="close" :size="14" />停用
           </CButton>
         </div>
