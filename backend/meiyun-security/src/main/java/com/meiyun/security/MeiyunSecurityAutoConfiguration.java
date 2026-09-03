@@ -22,8 +22,8 @@ public class MeiyunSecurityAutoConfiguration {
     }
 
     @Bean
-    public AuthInterceptor authInterceptor(JwtTokenUtil jwtTokenUtil) {
-        return new AuthInterceptor(jwtTokenUtil);
+    public AuthInterceptor authInterceptor(JwtTokenUtil jwtTokenUtil, SecurityProperties props) {
+        return new AuthInterceptor(jwtTokenUtil, props);
     }
 
     /** Bean Validation 异常统一中文化（@NotBlank/@NotNull 等英文默认消息不外露）。 */

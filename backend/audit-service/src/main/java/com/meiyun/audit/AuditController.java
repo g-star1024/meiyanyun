@@ -18,8 +18,12 @@ public class AuditController {
         this.auditService = auditService;
     }
 
-    /** 追加一条审计（唯一写入入口）。 */
+    /**
+     * 追加一条审计（唯一写入入口）。
+     * 双通道鉴权：各业务服务携带 X-Internal-Token 系统身份写入，或持 audit:view 的员工（如审计/超管）。
+     */
     @PostMapping
+    @RequirePerm("audit:view")
     public Map<String, Object> append(@RequestBody @Valid AppendRequest req) {
         AuditLog log = auditService.append(
                 req.bizType(), req.txnNo(), req.actor(), req.action(), req.payload());

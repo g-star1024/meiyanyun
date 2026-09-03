@@ -169,6 +169,7 @@ const router = createRouter({
 
     // ===== Wave 5 · 四中台底座（PC only） =====
     // T1 权限中台（RBAC 真源）
+    { path: '/admin/staff', name: 't1-staff', component: () => import('@/views/T1StaffView.vue') },
     { path: '/admin/roles', name: 't1-roles', component: () => import('@/views/T1RolesView.vue') },
     { path: '/admin/permissions', name: 't1-permissions', component: () => import('@/views/T1PermissionsView.vue') },
     { path: '/admin/org', name: 't1-org', component: () => import('@/views/T1OrgView.vue') },

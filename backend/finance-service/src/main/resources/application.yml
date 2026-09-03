@@ -19,6 +19,19 @@ spring:
             non_contextual_creation: true
     open-in-view: false
 
+meiyun:
+  security:
+    # 生产经环境变量注入；dev 默认值仅供本地联调
+    secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}
+    internal-token: ${MEIYUN_INTERNAL_TOKEN:meiyun-dev-internal-token-please-change-in-prod}
+    dev-login: ${MEIYUN_DEV_LOGIN:true}
+    # public-paths 整体覆盖默认列表，须显式带全默认公共路径
+    public-paths:
+      - /api/org/auth/login
+      - /api/org/auth/dev-login
+      - /actuator/health
+      - /error
+
 logging:
   level:
     com.meiyun: INFO

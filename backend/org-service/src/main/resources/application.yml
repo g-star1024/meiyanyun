@@ -20,6 +20,24 @@ spring:
             non_contextual_creation: true
     open-in-view: false
 
+# 审计服务（RBAC 管理写动作落 audit_log）：本地默认直连 :8084，容器内经环境变量指向 audit-service
+audit:
+  service:
+    url: ${AUDIT_SERVICE_URL:http://127.0.0.1:8084}
+
+meiyun:
+  security:
+    # JWT 签名密钥 / 内部服务令牌 / dev-login 开关：生产经环境变量注入，dev-login 生产必须置 false
+    secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}
+    internal-token: ${MEIYUN_INTERNAL_TOKEN:meiyun-dev-internal-token-please-change-in-prod}
+    dev-login: ${MEIYUN_DEV_LOGIN:true}
+    # public-paths 配置整体覆盖默认列表，四个默认放行项须显式带全
+    public-paths:
+      - /api/org/auth/login
+      - /api/org/auth/dev-login
+      - /actuator/health
+      - /error
+
 logging:
   level:
     com.meiyun: INFO

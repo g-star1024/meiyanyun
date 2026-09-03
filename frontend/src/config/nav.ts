@@ -353,6 +353,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/m1-org', label: '组织架构权限', icon: 'org', permission: 'org:view' },
       { to: '/m1-rbac', label: '字段级RBAC', icon: 'sign', permission: 'rbac:view' },
+      { to: '/admin/staff', label: '员工管理', icon: 'customer', permission: 'rbac:view' },
       { to: '/admin/roles', label: '角色管理', icon: 'shield', permission: 'role:view' },
       { to: '/admin/permissions', label: '权限矩阵', icon: 'check-square', permission: 'permission:view' },
       { to: '/admin/org', label: '组织架构(T1)', icon: 'org', permission: 'org:view' },
@@ -537,6 +538,7 @@ export const PAGE_TITLES: Record<string, PageTitle> = {
   '/m1-sop': { breadcrumb: '管理后台 / 标准作业SOP', title: '标准作业SOP' },
 
   // ===== Wave 5 · 四中台底座 =====
+  '/admin/staff': { breadcrumb: '管理后台 / 员工管理', title: '员工管理' },
   '/admin/roles': { breadcrumb: '管理后台 / 角色管理', title: '角色管理' },
   '/admin/permissions': { breadcrumb: '管理后台 / 权限矩阵', title: '权限矩阵' },
   '/admin/org': { breadcrumb: '管理后台 / 组织架构', title: '组织架构' },

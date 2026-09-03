@@ -1,4 +1,4 @@
-package com.meiyun.customer.audit;
+package com.meiyun.org.audit;
 
 import com.meiyun.security.AuthInterceptor;
 import org.slf4j.Logger;
@@ -15,7 +15,7 @@ import java.util.Map;
 
 /**
  * 通过 REST 调用 audit-service（:8084）追加审计。失败仅记录日志，不阻断主流程（审计异步补偿）。
- * 服务间调用携带 X-Internal-Token（系统身份），audit-service 不再接受匿名审计写入。
+ * 服务间调用携带 X-Internal-Token（系统身份），audit-service 不接受匿名审计写入。
  */
 @Component
 public class RestAuditRecorder implements AuditRecorder {

@@ -142,6 +142,7 @@ public class RbacDataInitializer implements ApplicationRunner {
             r.setRoleSequence(meta[2]);
             r.setMedical(Boolean.parseBoolean(meta[3]));
             r.setDescription(meta[4]);
+            if (r.getStatus() == null || r.getStatus().isBlank()) r.setStatus("启用");
             roleRepo.save(r);
         }
         // 清理旧角色（员工迁移完成后旧码不再被引用）

@@ -9,4 +9,6 @@ public interface StaffRoleRepository extends JpaRepository<StaffRole, StaffRole.
     List<StaffRole> findByStaffId(String staffId);
 
     List<StaffRole> findByStaffIdIn(List<String> staffIds);
+
+    void deleteByRoleCode(String roleCode);
 }

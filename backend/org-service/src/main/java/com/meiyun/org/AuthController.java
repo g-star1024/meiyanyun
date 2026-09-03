@@ -101,6 +101,9 @@ public class AuthController {
         if (staffId != null && !staffId.isBlank()) {
             staff = staffRepo.findById(staffId.trim())
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "员工不存在: " + staffId));
+            if (!"在职".equals(staff.getStatus())) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN, "账号已离职停用，请联系管理员");
+            }
             roles = rolesOf(staff);
         } else {
             String role = (asRole == null || asRole.isBlank()) ? "STORE_MGR" : asRole.trim().toUpperCase();
@@ -113,10 +116,11 @@ public class AuthController {
             List<Staff> roleStaff = staffRepo.findByRoleCodeOrderByStaffIdAsc(role);
             String scope = ROLE_SCOPE.get(role);
             staff = roleStaff.stream()
+                    .filter(s -> "在职".equals(s.getStatus()))
                     .filter(s -> !"STORE".equals(scope)
                             || (s.getStoreCode() != null && !s.getStoreCode().isBlank()))
                     .findFirst()
-                    .or(() -> roleStaff.stream().findFirst())
+                    .or(() -> roleStaff.stream().filter(s -> "在职".equals(s.getStatus())).findFirst())
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "角色无可用员工: " + role));
             roles = List.of(role);
         }

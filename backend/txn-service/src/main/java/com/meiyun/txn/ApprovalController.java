@@ -53,14 +53,16 @@ public class ApprovalController {
         return approvalService.reject(todoNo, cmd);
     }
 
-    /** 转交他人审批（to 必填）。 */
+    /** 转交他人审批（to 必填）：与同意/驳回同档，仅审批岗可操作。 */
     @PostMapping("/{todoNo}/transfer")
+    @RequirePerm({"refund:approve", "cardcancel:approve"})
     public ApprovalTodo transfer(@PathVariable String todoNo, @RequestBody ApprovalService.TransferCmd cmd) {
         return approvalService.transfer(todoNo, cmd);
     }
 
-    /** 加签（who 必填，去重）。 */
+    /** 加签（who 必填，去重）：与同意/驳回同档，仅审批岗可操作。 */
     @PostMapping("/{todoNo}/add-signer")
+    @RequirePerm({"refund:approve", "cardcancel:approve"})
     public ApprovalTodo addSigner(@PathVariable String todoNo, @RequestBody ApprovalService.AddSignerCmd cmd) {
         return approvalService.addSigner(todoNo, cmd);
     }

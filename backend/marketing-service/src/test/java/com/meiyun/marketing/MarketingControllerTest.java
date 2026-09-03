@@ -5,6 +5,7 @@ import com.meiyun.common.ratelimit.RateLimiter;
 import com.meiyun.security.AuthInterceptor;
 import com.meiyun.security.JwtTokenUtil;
 import com.meiyun.security.LoginUser;
+import com.meiyun.security.SecurityProperties;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -49,8 +50,13 @@ class MarketingControllerTest {
         }
 
         @Bean
-        AuthInterceptor authInterceptor(JwtTokenUtil jwt) {
-            return new AuthInterceptor(jwt);
+        SecurityProperties securityProperties() {
+            return new SecurityProperties();
+        }
+
+        @Bean
+        AuthInterceptor authInterceptor(JwtTokenUtil jwt, SecurityProperties props) {
+            return new AuthInterceptor(jwt, props);
         }
 
         @Bean

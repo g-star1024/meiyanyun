@@ -34,6 +34,19 @@ spring:
 meiyun:
   es:
     endpoint: ${MEIYUN_ES_ENDPOINT:http://localhost:9200}
+  security:
+    # 生产经环境变量注入；dev 默认值仅供本地联调
+    secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}
+    internal-token: ${MEIYUN_INTERNAL_TOKEN:meiyun-dev-internal-token-please-change-in-prod}
+    dev-login: ${MEIYUN_DEV_LOGIN:true}
+    # public-paths 整体覆盖默认列表，须显式带全默认公共路径
+    public-paths:
+      - /api/org/auth/login
+      - /api/org/auth/dev-login
+      - /actuator/health
+      - /error
+      # C 端积分商城兑换入口（小程序/App 调用，非员工权限域；生成待审核单，不扣分不发货）
+      - /api/customer/mall/exchange
 
 logging:
   level:

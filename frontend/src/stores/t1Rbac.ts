@@ -1,13 +1,30 @@
 // ============================================================
-// T1 权限中台 · RBAC 真源 store
-// 角色 CRUD + 继承树 + 权限包（功能+数据范围）+ 成员关联
-// 权限矩阵（角色×模块）+ 冲突检测
-// 变更走 T3-01 审批 + 写 T1-04 审计
+// T1 权限中台 · RBAC 真源 store（对接 org-service /api/org/admin/*）
+// 角色 CRUD + 权限包（功能码 + 数据范围）+ 成员关联
+// 权限矩阵（角色×资源模块）+ 冲突检测
+// 后端事实：角色无继承（parentId 恒 null）；超管 "*" 不落库（前端补）；
+// 内置 8 角色为矩阵权威源（禁删/禁改权限/禁停用）；审计由后端落 audit-service。
 // ============================================================
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { computed, reactive, ref } from 'vue'
 import { useAuthStore } from './auth'
+import {
+  listRoles,
+  listAdminPermissions,
+  getRolePermissions,
+  getRoleMembers,
+  listStores,
+  createRole as apiCreateRole,
+  updateRole as apiUpdateRole,
+  deleteRole as apiDeleteRole,
+  toggleRoleStatus,
+  updateRolePermissions,
+  removeStaffRole,
+  type PermissionDef,
+  type RoleDef,
+  type Staff,
+  type Store as OrgStore,
+} from '@/api/org'
 
 // ---- 类型 ----
 export type DataScope = 'SELF' | 'STORE' | 'BRAND' | 'REGION' | 'GROUP'
@@ -32,13 +49,13 @@ export interface T1Role {
   code: string
   name: string
   description: string
-  /** 父角色 id（继承） */
+  /** 父角色 id（后端无继承，恒 null） */
   parentId: string | null
   /** 权限包 */
   permissions: PermissionPackage
   /** 角色状态 */
   status: 'ACTIVE' | 'INACTIVE'
-  /** 是否系统内置（不可删除） */
+  /** 是否系统内置（不可删除/改权限/停用） */
   builtin: boolean
   sort: number
   createdAt: string
@@ -62,6 +79,12 @@ export interface AuditEntry {
   at: string
 }
 
+export interface MatrixModule {
+  key: string
+  label: string
+  perms: string[]
+}
+
 const SCOPE_LABEL: Record<DataScope, string> = {
   SELF: '仅本人', STORE: '门店', BRAND: '品牌', REGION: '区域', GROUP: '集团',
 }
@@ -70,31 +93,162 @@ const SCOPE_RANK: Record<DataScope, number> = {
   SELF: 0, STORE: 1, BRAND: 2, REGION: 3, GROUP: 4,
 }
 
-// 权限矩阵模块定义（模块 → 功能权限码）
-export const MATRIX_MODULES = [
-  { key: 'appointment', label: '预约接待', perms: ['appointment:view', 'appointment:create', 'appointment:edit'] },
-  { key: 'customer', label: '客户管理', perms: ['customer:view', 'customer:create', 'customer:edit', 'customer:merge'] },
-  { key: 'finance', label: '数据财务', perms: ['finance:view', 'finance:reconcile', 'finance:settlement:generate', 'finance:export'] },
-  { key: 'inventory', label: '库存耗材', perms: ['inventory:view', 'inventory:edit', 'inventory:approve'] },
-  { key: 'marketing', label: '营销中心', perms: ['marketing:view', 'marketing:edit', 'coupon:create', 'push:send'] },
-  { key: 'role', label: '权限中台', perms: ['role:view', 'role:create', 'role:edit', 'role:delete', 'role:assign'] },
-  { key: 'data', label: '数据中台', perms: ['collect:view', 'tagFactory:publish', 'dataService:apply'] },
-  { key: 'integration', label: '集成中心', perms: ['integration:view', 'integration:sync', 'integration:reconcile'] },
-  { key: 'model', label: 'AI 模型', perms: ['model:view', 'model:register', 'model:release', 'model:rollback'] },
-  { key: 'report', label: '报表中心', perms: ['report:view', 'report:export'] },
-] as const
+/** 内置矩阵角色码（与后端 RbacAdminController.BUILTIN_ROLES 同源） */
+const BUILTIN_ROLE_CODES = new Set([
+  'SUPER_ADMIN', 'REGION_MGR', 'STORE_MGR', 'CONSULTANT',
+  'DOCTOR', 'FRONT_DESK', 'OPERATOR', 'FINANCE',
+])
+
+/**
+ * 资源码 → 中文模块名（权限字典按 resourceCode 分组展示）。
+ * 资源全集以后端 permission_def 为准；未覆盖的资源码回退显示原文，不外露英文缺口。
+ */
+const RESOURCE_LABEL: Record<string, string> = {
+  appointment: '预约管理',
+  queue: '排队叫号',
+  reception: '前台接待',
+  customer: '客户管理',
+  complaint: '客诉管理',
+  followup: '回访管理',
+  consult: '咨询开单',
+  prescription: '处方管理',
+  cashier: '收银结算',
+  writeoff: '核销管理',
+  refund: '退款管理',
+  cardcancel: '退卡管理',
+  course: '疗程管理',
+  transfer: '转店管理',
+  contract: '合同管理',
+  emr: '电子病历',
+  recall: '召回管理',
+  handover: '交接班',
+  report: '报表中心',
+  tenant: '租户管理',
+  org: '组织管理',
+  rbac: '权限管理',
+  inventory: '库存耗材',
+  brand: '品牌管理',
+  marketing: '营销中心',
+  dispatch: '调度管理',
+  compliance: '合规管理',
+  audit: '审计日志',
+  health: '健康档案',
+  sop: 'SOP 规程',
+  target: '目标管理',
+  screen: '大屏展示',
+  settings: '系统设置',
+  schedule: '排班管理',
+  approval: '审批中心',
+  notification: '消息通知',
+  workorder: '工单管理',
+  daily: '日报管理',
+  requisition: '领用申请',
+  wastage: '损耗管理',
+  room: '房间管理',
+  equipment: '设备管理',
+  performance: '绩效管理',
+  weekly: '周报管理',
+  pricelist: '价目管理',
+  catalog: '品项目录',
+  writeoffdesk: '核销台',
+  checkin: '签到管理',
+  inspection: '巡检管理',
+  acquisition: '获客管理',
+  reactivate: '沉睡唤醒',
+  exception: '异常管理',
+  help: '帮助中心',
+  level: '会员等级',
+  points: '积分管理',
+  tag: '客户标签',
+  journey: '客户旅程',
+  followuptask: '跟进任务',
+  care: '客户关怀',
+  churn: '流失管理',
+  referral: '转介绍',
+  nps: '满意度调研',
+  private: '私域运营',
+  segment: '客群分群',
+  io: '数据导入导出',
+  risk: '风控管理',
+  insight: '经营洞察',
+  finance: '财务中心',
+  coupon: '优惠券',
+  push: '消息推送',
+  poster: '海报素材',
+  live: '直播管理',
+  roi: 'ROI 分析',
+  channel: '渠道管理',
+  landing: '落地页',
+  calendar: '营销日历',
+  referralCampaign: '裂变活动',
+  couponWriteoff: '券核销',
+  asset: '素材资产',
+  marketingDash: '营销看板',
+  role: '角色管理',
+  permission: '权限字典',
+  collect: '数据采集',
+  govern: '数据治理',
+  tagFactory: '标签工厂',
+  dataService: '数据服务',
+  ticket: '运维工单',
+  integration: '集成中心',
+  model: 'AI 模型',
+  compute: '算力管理',
+  feature: '特征工程',
+  monitor: '监控告警',
+  ai: 'AI 中心',
+  aiProfile: 'AI 客户画像',
+  aiRepurchase: 'AI 复购预测',
+  aiSensitive: 'AI 敏感词',
+  aiDaily: 'AI 日报',
+  aiScript: 'AI 话术',
+  aiChatbot: 'AI 客服',
+  aiScheduling: 'AI 排班',
+  aiChurn: 'AI 流失预警',
+  aiContent: 'AI 内容',
+  aiKnowledge: 'AI 知识库',
+  aiGovern: 'AI 治理',
+  aiPrivacy: 'AI 隐私',
+  aiGateway: 'AI 网关',
+  aiAdmin: 'AI 管理',
+}
+
+/** 后端中文数据域 → 前端枚举 */
+function scopeFromCn(cn: string | undefined): DataScope {
+  if (cn === '区域') return 'REGION'
+  if (cn === '集团') return 'GROUP'
+  return 'STORE'
+}
+
+/** 前端枚举 → 后端中文数据域（SELF/BRAND 为视图历史选项，分别就近落 门店/区域） */
+function scopeToCn(scope: DataScope): string {
+  if (scope === 'REGION' || scope === 'BRAND') return '区域'
+  if (scope === 'GROUP') return '集团'
+  return '门店'
+}
+
+function errMsg(e: unknown, fallback = '网络异常，请稍后重试'): string {
+  const anyE = e as { response?: { data?: { message?: string } }; message?: string }
+  return anyE?.response?.data?.message || anyE?.message || fallback
+}
+
+// 权限矩阵模块定义（seed 后按后端权限字典 resourceCode 分组原地重建）
+// reactive 数组：视图侧 computed（kpiModules/kpiPerms）与 v-for 需追踪 splice 原地变更
+export const MATRIX_MODULES = reactive<MatrixModule[]>([])
 
 export const useT1RbacStore = defineStore('t1Rbac', () => {
   const auth = useAuthStore()
-  const activity = useActivityStore()
 
   const roles = ref<T1Role[]>([])
   const members = ref<Record<string, RoleMember[]>>({})
   const auditLog = ref<AuditEntry[]>([])
   const loaded = ref(false)
+  const loading = ref(false)
 
   // ---- 查询 ----
-  const activeRoles = computed(() => roles.value.filter((r) => r.status === 'ACTIVE').sort((a, b) => a.sort - b.sort))
+  const activeRoles = computed(() =>
+    roles.value.filter((r) => r.status === 'ACTIVE').sort((a, b) => a.sort - b.sort),
+  )
 
   function get(id: string) {
     return roles.value.find((r) => r.id === id)
@@ -104,23 +258,11 @@ export const useT1RbacStore = defineStore('t1Rbac', () => {
     return roles.value.filter((r) => r.parentId === parentId).sort((a, b) => a.sort - b.sort)
   }
 
-  /** 继承链：获取某角色的所有祖先权限并集 */
+  /** 有效权限：后端无角色继承，直接返回角色自身权限包 */
   function effectivePermissions(roleId: string): PermissionPackage {
     const role = get(roleId)
     if (!role) return { actions: [], scope: 'SELF' }
-    const actions = new Set(role.permissions.actions)
-    let maxScope = role.permissions.scope
-    let cur = role
-    while (cur.parentId) {
-      const parent = get(cur.parentId)
-      if (!parent) break
-      parent.permissions.actions.forEach((a) => actions.add(a))
-      if (SCOPE_RANK[parent.permissions.scope] > SCOPE_RANK[maxScope]) {
-        maxScope = parent.permissions.scope
-      }
-      cur = parent
-    }
-    return { actions: [...actions], scope: maxScope }
+    return { actions: [...role.permissions.actions], scope: role.permissions.scope }
   }
 
   function getMembers(roleId: string) {
@@ -155,14 +297,16 @@ export const useT1RbacStore = defineStore('t1Rbac', () => {
           }
         }
         // 检测：数据范围差异过大（GROUP vs SELF）但功能权限高度重叠
-        if (SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope] >= 3 && a.actions.length > 5) {
+        const rankGap = Math.abs(SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope])
+        if (rankGap >= 3 && a.actions.length > 5 && b.actions.length > 5) {
           const overlap = a.actions.filter((x) => b.actions.includes(x)).length
-          if (overlap > a.actions.length * 0.6) {
+          const base = Math.min(a.actions.length, b.actions.length)
+          if (overlap > base * 0.6) {
             conflicts.push({
               roleA: active[i].name,
               roleB: active[j].name,
               module: '数据范围',
-              reason: `两角色功能权限重叠度 ${Math.round(overlap / a.actions.length * 100)}%，但数据范围差异大（${SCOPE_LABEL[a.scope]} vs ${SCOPE_LABEL[b.scope]}）`,
+              reason: `两角色功能权限重叠度 ${Math.round((overlap / base) * 100)}%，但数据范围差异大（${SCOPE_LABEL[a.scope]} vs ${SCOPE_LABEL[b.scope]}）`,
               severity: 'MEDIUM',
             })
           }
@@ -178,7 +322,7 @@ export const useT1RbacStore = defineStore('t1Rbac', () => {
       const eff = effectivePermissions(role.id)
       const row: Record<string, boolean> = {}
       for (const mod of MATRIX_MODULES) {
-        row[mod.key] = mod.perms.some((p) => eff.actions.includes(p))
+        row[mod.key] = mod.perms.some((p) => eff.actions.includes('*') || eff.actions.includes(p))
       }
       return { role, eff, row }
     })
@@ -188,230 +332,272 @@ export const useT1RbacStore = defineStore('t1Rbac', () => {
   function diffRoles(roleA: string, roleB: string) {
     const a = effectivePermissions(roleA)
     const b = effectivePermissions(roleB)
-    const onlyA = a.actions.filter((x) => !b.actions.includes(x))
-    const onlyB = b.actions.filter((x) => !a.actions.includes(x))
+    const onlyA = a.actions.filter((x) => !b.actions.includes(x) && x !== '*')
+    const onlyB = b.actions.filter((x) => !a.actions.includes(x) && x !== '*')
     const common = a.actions.filter((x) => b.actions.includes(x))
     return { onlyA, onlyB, common, scopeA: a.scope, scopeB: b.scope }
+  }
+
+  // ---- 适配映射 ----
+  function adaptRole(
+    r: RoleDef,
+    perms: Record<string, string[]>,
+    nowIso: string,
+  ): T1Role {
+    const builtin = BUILTIN_ROLE_CODES.has(r.roleCode)
+    let actions = perms[r.roleCode] ? [...perms[r.roleCode]] : []
+    // 超管 "*" 不落库：前端补通配，权限编辑器按通配置灰
+    if (r.roleCode === 'SUPER_ADMIN') actions = ['*']
+    return {
+      id: r.roleCode,
+      code: r.roleCode,
+      name: r.roleName,
+      description: r.description ?? '',
+      parentId: null,
+      permissions: { actions, scope: scopeFromCn(r.dataScope) },
+      status: r.status === '停用' ? 'INACTIVE' : 'ACTIVE',
+      builtin,
+      sort: Number.parseInt(r.roleSequence ?? '90', 10) || 90,
+      // RoleDef 无时间戳：内置角色给固定早兜底，自定义角色给当前时间
+      createdAt: builtin ? '2024-01-01T00:00:00+08:00' : nowIso,
+      updatedAt: nowIso,
+    }
+  }
+
+  function adaptMember(s: Staff, storeMap: Map<string, string>): RoleMember {
+    return {
+      staffId: s.staffId,
+      name: s.staffName,
+      jobTitle: s.role?.roleName ?? '',
+      storeName: (s.storeCode && storeMap.get(s.storeCode)) || s.storeCode || '—',
+      addedAt: s.createdAt ?? new Date().toISOString(),
+    }
+  }
+
+  /** 按权限字典重建矩阵模块（原地 mutate，保持模块级 const 的 live binding） */
+  function rebuildModules(defs: PermissionDef[]) {
+    const groups = new Map<string, string[]>()
+    for (const d of defs) {
+      const arr = groups.get(d.resourceCode)
+      if (arr) arr.push(d.permissionCode)
+      else groups.set(d.resourceCode, [d.permissionCode])
+    }
+    const modules: MatrixModule[] = []
+    for (const [key, perms] of groups) {
+      modules.push({
+        key,
+        label: RESOURCE_LABEL[key] || key,
+        perms: perms.sort(),
+      })
+    }
+    modules.sort((a, b) => a.label.localeCompare(b.label, 'zh-Hans-CN'))
+    MATRIX_MODULES.splice(0, MATRIX_MODULES.length, ...modules)
   }
 
   // ---- 命令 ----
   function canEdit() { return auth.can('role:edit') }
 
+  /**
+   * 新建角色：视图同步取返回值 id（=roleCode，提交时已知），故乐观构造入列并同步返回；
+   * 后端 POST /admin/roles + PUT permissions 异步执行，失败弹中文错误并回滚。
+   */
   function createRole(input: {
     code: string; name: string; description: string; parentId: string | null
     permissions: PermissionPackage; sort?: number
   }): T1Role {
     if (!auth.can('role:create')) throw new Error('无角色创建权限')
-    const now = new Date().toISOString()
+    const nowIso = new Date().toISOString()
     const role: T1Role = {
-      id: nextId('role'),
+      id: input.code,
       code: input.code,
       name: input.name,
       description: input.description,
-      parentId: input.parentId,
-      permissions: input.permissions,
+      parentId: null,
+      permissions: { actions: [...input.permissions.actions], scope: input.permissions.scope },
       status: 'ACTIVE',
       builtin: false,
       sort: input.sort ?? roles.value.length,
-      createdAt: now,
-      updatedAt: now,
+      createdAt: nowIso,
+      updatedAt: nowIso,
     }
     roles.value.push(role)
     members.value[role.id] = []
-    logAudit('CREATE', role.name, `创建角色「${role.name}」（${input.code}）`)
-    activity.log(auth.user.name, `创建角色「${role.name}」`, role.id)
+
+    const payload = {
+      roleCode: role.code,
+      roleName: role.name,
+      dataScope: scopeToCn(role.permissions.scope),
+      description: role.description,
+    }
+    void (async () => {
+      try {
+        await apiCreateRole(payload)
+        const codes = role.permissions.actions.filter((a) => a !== '*')
+        if (codes.length > 0) {
+          await updateRolePermissions(role.code, codes)
+        }
+      } catch (e) {
+        // 回滚乐观更新
+        roles.value = roles.value.filter((r) => r.id !== role.id)
+        delete members.value[role.id]
+        window.alert(errMsg(e, '角色创建失败，请稍后重试'))
+      }
+    })()
     return role
   }
 
+  /**
+   * 更新角色：名称/描述/数据域走 PUT /admin/roles；功能权限变更走 PUT permissions（全量覆写）。
+   * 内置角色仅描述可改（后端强制），权限勾选不落库。fire-and-forget，失败弹中文错误。
+   */
   function updateRole(id: string, patch: Partial<Pick<T1Role, 'name' | 'description' | 'parentId' | 'permissions' | 'sort'>>) {
     if (!auth.can('role:edit')) throw new Error('无角色编辑权限')
     const role = get(id)
     if (!role) return
-    Object.assign(role, patch, { updatedAt: new Date().toISOString() })
-    logAudit('UPDATE', role.name, `更新角色「${role.name}」信息`)
-    activity.log(auth.user.name, `更新角色「${role.name}」`, id)
+    const prev = {
+      name: role.name,
+      description: role.description,
+      scope: role.permissions.scope,
+      actions: [...role.permissions.actions],
+    }
+    // 乐观更新
+    if (patch.name !== undefined) role.name = patch.name
+    if (patch.description !== undefined) role.description = patch.description
+    if (patch.permissions) {
+      role.permissions = {
+        actions: [...patch.permissions.actions],
+        scope: patch.permissions.scope,
+      }
+    }
+    role.updatedAt = new Date().toISOString()
+
+    void (async () => {
+      try {
+        await apiUpdateRole(role.code, {
+          roleName: role.builtin ? undefined : role.name,
+          description: role.description,
+          dataScope: role.builtin ? undefined : scopeToCn(role.permissions.scope),
+        })
+        if (!role.builtin && patch.permissions) {
+          const codes = role.permissions.actions.filter((a) => a !== '*')
+          const same = codes.length === prev.actions.filter((a) => a !== '*').length
+            && codes.every((c) => prev.actions.includes(c))
+          if (!same) {
+            await updateRolePermissions(role.code, codes)
+          }
+        }
+      } catch (e) {
+        // 回滚
+        role.name = prev.name
+        role.description = prev.description
+        role.permissions = { actions: prev.actions, scope: prev.scope }
+        window.alert(errMsg(e, '角色更新失败，请稍后重试'))
+      }
+    })()
   }
 
   function deleteRole(id: string) {
     if (!auth.can('role:delete')) throw new Error('无角色删除权限')
     const role = get(id)
     if (!role || role.builtin) return
-    // 检查是否有子角色
-    if (children(id).length > 0) throw new Error('存在子角色，无法删除')
-    if (getMembers(id).length > 0) throw new Error('角色下仍有成员，无法删除')
+    const prevRoles = roles.value
+    const prevMembers = members.value[id]
     roles.value = roles.value.filter((r) => r.id !== id)
     delete members.value[id]
-    logAudit('DELETE', role.name, `删除角色「${role.name}」`)
-    activity.log(auth.user.name, `删除角色「${role.name}」`, id)
+
+    void (async () => {
+      try {
+        await apiDeleteRole(role.code)
+      } catch (e) {
+        // 回滚
+        roles.value = prevRoles
+        if (prevMembers) members.value[id] = prevMembers
+        window.alert(errMsg(e, '角色删除失败，请稍后重试'))
+      }
+    })()
   }
 
   function toggleStatus(id: string) {
     if (!auth.can('role:edit')) throw new Error('无角色编辑权限')
     const role = get(id)
     if (!role || role.builtin) return
+    const prevStatus = role.status
     role.status = role.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
     role.updatedAt = new Date().toISOString()
-    logAudit('STATUS', role.name, `${role.status === 'ACTIVE' ? '启用' : '停用'}角色「${role.name}」`)
+
+    void (async () => {
+      try {
+        const res = await toggleRoleStatus(role.code)
+        role.status = res.data.status === '停用' ? 'INACTIVE' : 'ACTIVE'
+      } catch (e) {
+        role.status = prevStatus
+        window.alert(errMsg(e, '角色状态切换失败，请稍后重试'))
+      }
+    })()
   }
 
-  function assignMember(roleId: string, member: Omit<RoleMember, 'addedAt'>) {
+  /** 成员移除：摘除兼岗角色（DELETE /admin/staff/{staffId}/roles/{roleCode}） */
+  function removeMember(roleId: string, staffId: string) {
     if (!auth.can('role:assign')) throw new Error('无角色分配权限')
+    const prev = members.value[roleId]
+    if (!prev) return
+    const removed = prev.find((m) => m.staffId === staffId)
+    if (!removed) return
+    members.value[roleId] = prev.filter((m) => m.staffId !== staffId)
+
+    void (async () => {
+      try {
+        await removeStaffRole(staffId, roleId)
+      } catch (e) {
+        members.value[roleId] = prev
+        window.alert(errMsg(e, '成员移除失败，请稍后重试'))
+      }
+    })()
+  }
+
+  /** 兼岗分配入口保留（员工管理页经 api 直接调用；此处同步成员表） */
+  function assignMember(roleId: string, member: Omit<RoleMember, 'addedAt'>) {
     if (!members.value[roleId]) members.value[roleId] = []
     if (members.value[roleId].some((m) => m.staffId === member.staffId)) return
     members.value[roleId].push({ ...member, addedAt: new Date().toISOString() })
-    const role = get(roleId)
-    logAudit('ASSIGN', role?.name || roleId, `分配成员「${member.name}」到角色「${role?.name}」`)
   }
 
-  function removeMember(roleId: string, staffId: string) {
-    if (!auth.can('role:assign')) throw new Error('无角色分配权限')
-    if (!members.value[roleId]) return
-    members.value[roleId] = members.value[roleId].filter((m) => m.staffId !== staffId)
-  }
+  // ---- 载入 ----
+  async function seed() {
+    if (loaded.value || loading.value) return
+    loading.value = true
+    try {
+      const [rolesRes, permsRes, rolePermsRes, membersRes, storesRes] = await Promise.all([
+        listRoles(),
+        listAdminPermissions(),
+        getRolePermissions(),
+        getRoleMembers(),
+        listStores(),
+      ])
+      const nowIso = new Date().toISOString()
+      const rolePerms = rolePermsRes.data
+      roles.value = rolesRes.data
+        .map((r) => adaptRole(r, rolePerms, nowIso))
+        .sort((a, b) => a.sort - b.sort)
 
-  function logAudit(action: AuditEntry['action'], target: string, detail: string) {
-    auditLog.value.unshift({
-      id: nextId('audit'),
-      actor: auth.user.name,
-      action, target, detail,
-      at: new Date().toISOString(),
-    })
-  }
+      const storeMap = new Map<string, string>()
+      for (const s of (storesRes.data as OrgStore[] | null) ?? []) {
+        storeMap.set(s.storeCode, s.storeName)
+      }
+      const mem: Record<string, RoleMember[]> = {}
+      for (const [roleCode, staffList] of Object.entries(membersRes.data || {})) {
+        mem[roleCode] = staffList.map((s) => adaptMember(s, storeMap))
+      }
+      members.value = mem
 
-  // ---- 种子 ----
-  function seed() {
-    if (loaded.value) return
-    loaded.value = true
-    const now = Date.now()
-    const daysAgo = (d: number) => new Date(now - d * 86400000).toISOString()
-
-    const seedRoles: Array<Partial<T1Role> & Pick<T1Role, 'code' | 'name' | 'description' | 'permissions'>> = [
-      {
-        code: 'SUPER_ADMIN', name: '集团管理员', description: '拥有全平台所有权限，系统最高角色',
-        parentId: null, permissions: { actions: ['*'], scope: 'GROUP' }, builtin: true, sort: 0,
-      },
-      {
-        code: 'REGION_MGR', name: '区域经理', description: '负责区域内多门店运营管理，含审批权',
-        parentId: null, permissions: {
-          actions: ['appointment:view', 'appointment:edit', 'customer:view', 'customer:edit', 'finance:view', 'finance:reconcile', 'finance:export', 'inventory:view', 'inventory:edit', 'inventory:approve', 'marketing:view', 'marketing:edit', 'report:view', 'report:export', 'role:view', 'role:assign', 'collect:view', 'integration:view', 'model:view'],
-          scope: 'REGION',
-        },
-        builtin: true, sort: 1,
-      },
-      {
-        code: 'STORE_MGR', name: '门店店长', description: '单门店全面管理，含日常审批',
-        parentId: null, permissions: {
-          actions: ['appointment:view', 'appointment:create', 'appointment:edit', 'customer:view', 'customer:create', 'customer:edit', 'finance:view', 'finance:reconcile', 'inventory:view', 'inventory:edit', 'marketing:view', 'report:view', 'report:export', 'role:view', 'role:assign', 'ticket:create', 'ticket:close'],
-          scope: 'STORE',
-        },
-        builtin: true, sort: 2,
-      },
-      {
-        code: 'CONSULTANT', name: '咨询顾问', description: '客户咨询、开单、跟进',
-        parentId: null, permissions: {
-          actions: ['appointment:view', 'appointment:create', 'customer:view', 'customer:create', 'customer:edit', 'consult:view', 'consult:create', 'prescription:view', 'prescription:create'],
-          scope: 'SELF',
-        },
-        builtin: true, sort: 3,
-      },
-      {
-        code: 'DOCTOR', name: '医生', description: '电子病历、处方、核销',
-        parentId: null, permissions: {
-          actions: ['emr:view', 'emr:create', 'emr:edit', 'prescription:view', 'prescription:create', 'writeoff:view', 'writeoff:create'],
-          scope: 'STORE',
-        },
-        builtin: true, sort: 4,
-      },
-      {
-        code: 'FRONT_DESK', name: '前台/收银', description: '接待、排队、收银',
-        parentId: null, permissions: {
-          actions: ['reception:view', 'reception:create', 'queue:view', 'queue:create', 'cashier:view', 'cashier:create'],
-          scope: 'STORE',
-        },
-        builtin: true, sort: 5,
-      },
-      {
-        code: 'FINANCE', name: '财务', description: '财务审核、对账、结算',
-        parentId: null, permissions: {
-          actions: ['finance:view', 'finance:reconcile', 'finance:reconcile:approve', 'finance:settlement:generate', 'finance:settlement:approve', 'finance:invoice:apply', 'finance:export', 'refund:approve', 'refund:sign', 'audit:view'],
-          scope: 'REGION',
-        },
-        builtin: true, sort: 6,
-      },
-      {
-        code: 'DATA_ANALYST', name: '数据分析师', description: '数据中台操作、标签加工、模型管理（Wave 5 新增）',
-        parentId: null, permissions: {
-          actions: ['collect:view', 'collect:create', 'collect:sync', 'govern:view', 'tagFactory:view', 'tagFactory:create', 'tagFactory:edit', 'tagFactory:publish', 'dataService:view', 'dataService:publish', 'model:view', 'model:register', 'feature:view', 'feature:register', 'monitor:view', 'report:view', 'report:export'],
-          scope: 'GROUP',
-        },
-        builtin: false, sort: 7,
-      },
-      {
-        code: 'INTEGRATION_ENG', name: '集成工程师', description: '连接器配置、Outbox 监控、T+1 对账（Wave 5 新增）',
-        parentId: null, permissions: {
-          actions: ['integration:view', 'integration:create', 'integration:edit', 'integration:sync', 'integration:reconcile', 'monitor:view'],
-          scope: 'GROUP',
-        },
-        builtin: false, sort: 8,
-      },
-    ]
-
-    seedRoles.forEach((r) => {
-      const id = nextId('role')
-      roles.value.push({
-        id,
-        code: r.code!,
-        name: r.name!,
-        description: r.description!,
-        parentId: r.parentId ?? null,
-        permissions: r.permissions!,
-        status: 'ACTIVE',
-        builtin: r.builtin ?? false,
-        sort: r.sort ?? 0,
-        createdAt: daysAgo(120 - (r.sort ?? 0) * 10),
-        updatedAt: daysAgo(3),
-      })
-    })
-
-    // 种子成员
-    const memberSeed: Record<string, RoleMember[]> = {
-      [roles.value[0].id]: [
-        { staffId: 'staff-zhou', name: '周岚', jobTitle: '集团运营总裁', storeName: '集团总部', addedAt: daysAgo(120) },
-      ],
-      [roles.value[1].id]: [
-        { staffId: 'staff-chen', name: '陈野', jobTitle: '华东大区经理', storeName: '华东大区', addedAt: daysAgo(100) },
-      ],
-      [roles.value[2].id]: [
-        { staffId: 'staff-su', name: '苏晴', jobTitle: '静安旗舰店店长', storeName: '静安旗舰店', addedAt: daysAgo(90) },
-      ],
-      [roles.value[3].id]: [
-        { staffId: 'staff-lin', name: '林微', jobTitle: '资深咨询师', storeName: '静安旗舰店', addedAt: daysAgo(80) },
-      ],
-      [roles.value[4].id]: [
-        { staffId: 'staff-gu', name: '顾屿', jobTitle: '主治医师', storeName: '静安旗舰店', addedAt: daysAgo(75) },
-      ],
-      [roles.value[5].id]: [
-        { staffId: 'staff-xia', name: '夏沫', jobTitle: '前台/收银', storeName: '静安旗舰店', addedAt: daysAgo(60) },
-      ],
-      [roles.value[6].id]: [
-        { staffId: 'staff-qian', name: '钱进', jobTitle: '财务审核', storeName: '华东大区', addedAt: daysAgo(50) },
-      ],
-      [roles.value[7].id]: [
-        { staffId: 'staff-data', name: '数据分析师·张数', jobTitle: '高级数据工程师', storeName: '集团总部', addedAt: daysAgo(20) },
-      ],
-      [roles.value[8].id]: [
-        { staffId: 'staff-int', name: '集成工程师·李联', jobTitle: '系统集成工程师', storeName: '集团总部', addedAt: daysAgo(15) },
-      ],
+      rebuildModules(permsRes.data)
+      loaded.value = true
+    } catch (e) {
+      // 403/网络失败：保留空表，不弹扰（页面门控本身已按权限隐藏入口）
+      console.error('[t1Rbac] 权限中台数据载入失败', e)
+    } finally {
+      loading.value = false
     }
-    Object.assign(members.value, memberSeed)
-
-    // 种子审计日志
-    auditLog.value = [
-      { id: nextId('audit'), actor: '周岚', action: 'CREATE', target: '数据分析师', detail: '创建角色「数据分析师」', at: daysAgo(20) },
-      { id: nextId('audit'), actor: '周岚', action: 'CREATE', target: '集成工程师', detail: '创建角色「集成工程师」', at: daysAgo(15) },
-      { id: nextId('audit'), actor: '陈野', action: 'ASSIGN', target: '数据分析师', detail: '分配成员「张数」到角色「数据分析师」', at: daysAgo(18) },
-      { id: nextId('audit'), actor: '陈野', action: 'UPDATE', target: '门店店长', detail: '更新角色「门店店长」权限：新增 ticket:create', at: daysAgo(5) },
-    ]
   }
 
   return {

@@ -29,4 +29,8 @@ public class RoleDef {
 
     @Column(length = 128)
     private String description;
+
+    /** 状态：启用 | 停用（停用角色不可再授予员工；内置矩阵角色恒启用，不可停用）。 */
+    @Column(length = 8)
+    private String status;
 }
