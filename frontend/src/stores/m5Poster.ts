@@ -1,25 +1,40 @@
 // ============================================================
-// M5-04 裂变海报 store
+// M5-04 裂变海报 store（已接真实 marketing-service）
 // - 海报模板（节日促销/新客礼/项目种草/会员日/转介绍/直播预约）
 // - 已生成海报：绑定推荐人、漏斗（分享→扫码→留资→到店→成交）、佣金试算
 // - 提交前由 view 调 useSensitiveWords.checkSensitive 拦截违禁词
 // 权限：poster:view / poster:edit
+//
+// 适配层（铁律：模板/样式零改动，只换数据源）：
+//  - 后端 dealAmount bigint 存「分」，前端活规格用「元」：fen2yuan
+//  - 后端 commissionRate = 百分比×10（5% = 50），前端用 0~1：rate50↔view（×1000 / ÷1000）
+//  - 字段名 templateId/posterId → id、templateName → name
+//  - 推荐人选项仍从转介绍关系链（referral mock）派生
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
 import { useReferralStore } from '@/stores/referral'
+import * as api from '@/api/marketing'
+import type { PosterTemplateDTO, PosterRecordDTO } from '@/api/marketing'
+import { fen2yuan } from '@/stores/m5Coupon'
 
 export type PosterStyle = 'FESTIVAL' | 'NEWBIE' | 'PROJECT' | 'MEMBER' | 'REFERRAL' | 'LIVE'
 export type PosterStatus = 'ENABLED' | 'DISABLED'
 export type PosterStage = 'DRAFT' | 'PUBLISHED'
 
-let _id = 0
-function nextId(p: string) { _id += 1; return `${p}-${Date.now().toString(36)}-${_id}` }
-function dayOffset(n: number) {
-  const d = new Date(); d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+/** yyyy-MM-dd（OffsetDateTime / LocalDate 均可直接截取） */
+function dayOf(s?: string | null): string {
+  return s ? s.slice(0, 10) : ''
+}
+/** 后端佣金（百分比×10，如 50 = 5%）→ 前端 0~1（0.05） */
+function rateView(v?: number | null): number {
+  return v ? v / 1000 : 0
+}
+/** 前端佣金 0~1（0.05）→ 后端（50） */
+function rate50(v: number): number {
+  return Math.round((v || 0) * 1000)
 }
 
 export interface PosterTemplate {
@@ -76,6 +91,46 @@ export const STAGE_PILL: Record<PosterStage, 'draft' | 'primary'> = { DRAFT: 'dr
 
 const DEFAULT_COMMISSION_RATE = 0.05
 
+/** 后端海报模板 → 前端活规格 */
+export function adaptTemplate(d: PosterTemplateDTO): PosterTemplate {
+  return {
+    id: d.templateId,
+    name: d.templateName,
+    style: d.style as PosterStyle,
+    status: (d.status === 'DISABLED' ? 'DISABLED' : 'ENABLED') as PosterStatus,
+    uses: d.uses ?? 0,
+    accent: (d.accent || 'brand') as PosterTemplate['accent'],
+    defaultTitle: d.defaultTitle || '',
+    defaultSubtitle: d.defaultSubtitle || '',
+  }
+}
+
+/** 后端海报记录 → 前端活规格（分→元、佣金 50→0.05） */
+export function adaptPoster(d: PosterRecordDTO): Poster {
+  return {
+    id: d.posterId,
+    templateId: d.templateId,
+    templateName: d.templateName || '',
+    style: d.style as PosterStyle,
+    accent: (d.accent || 'brand') as PosterTemplate['accent'],
+    title: d.title || '',
+    subtitle: d.subtitle || '',
+    project: d.project || '',
+    referrerName: d.referrerName || '',
+    status: (d.status === 'DRAFT' ? 'DRAFT' : 'PUBLISHED') as PosterStage,
+    funnel: {
+      share: d.share ?? 0,
+      scan: d.scan ?? 0,
+      lead: d.lead ?? 0,
+      visit: d.visit ?? 0,
+      deal: d.deal ?? 0,
+    },
+    dealAmount: fen2yuan(d.dealAmount),
+    commissionRate: rateView(d.commissionRate),
+    createdAt: dayOf(d.createdAt),
+  }
+}
+
 export const useM5PosterStore = defineStore('m5Poster', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
@@ -84,7 +139,7 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
   const templates = ref<PosterTemplate[]>([])
   const posters = ref<Poster[]>([])
   const filterStatus = ref<'ALL' | PosterStatus>('ALL')
-  const seeded = ref(false)
+  const loaded = ref(false)
 
   // 推荐人选项（去重，从转介绍关系链派生）
   const referrerOptions = computed(() => {
@@ -115,46 +170,46 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
   const totalCommission = computed(() =>
     posters.value.reduce((s, p) => s + Math.round(p.dealAmount * p.commissionRate), 0))
 
-  function toggleTemplateStatus(id: string) {
-    if (!auth.can('poster:edit')) return
+  /** 模板启用/停用翻转（后端幂等 changed；实际翻转才审计） */
+  async function toggleTemplateStatus(id: string) {
+    if (!auth.can('poster:edit')) throw new Error('无海报编辑权限')
     const t = templates.value.find((x) => x.id === id)
-    if (!t) return
-    t.status = t.status === 'ENABLED' ? 'DISABLED' : 'ENABLED'
-    activity.log(auth.user.name, `${t.status === 'ENABLED' ? '启用' : '停用'}海报模板「${t.name}」`, t.id)
+    const action = t?.status === 'ENABLED' ? '停用' : '启用'
+    const res = await api.togglePosterTemplate(id)
+    await seed(true)
+    if (res.data.changed && t) {
+      activity.log(auth.user?.name ?? '系统', `${action}海报模板「${t.name}」`, id)
+    }
   }
 
-  function createPoster(input: {
+  async function createPoster(input: {
     templateId: string
     title: string
     subtitle: string
     project: string
     referrerName: string
     commissionRate?: number
-  }): Poster | null {
-    if (!auth.can('poster:edit')) return null
+  }): Promise<Poster> {
+    if (!auth.can('poster:edit')) throw new Error('无海报编辑权限')
     const tpl = templates.value.find((t) => t.id === input.templateId)
-    if (!tpl) return null
+    if (!tpl) throw new Error('海报模板不存在')
     const rate = typeof input.commissionRate === 'number' ? input.commissionRate : DEFAULT_COMMISSION_RATE
-    const poster: Poster = {
-      id: nextId('mp'),
-      templateId: tpl.id,
-      templateName: tpl.name,
-      style: tpl.style,
-      accent: tpl.accent,
+    const cmd: api.PosterCmd = {
+      templateId: input.templateId,
       title: input.title,
       subtitle: input.subtitle,
       project: input.project,
       referrerName: input.referrerName,
-      status: 'PUBLISHED',
-      funnel: { share: 0, scan: 0, lead: 0, visit: 0, deal: 0 },
-      dealAmount: 0,
-      commissionRate: rate,
-      createdAt: dayOffset(0),
+      commissionRate: rate50(rate),
     }
-    posters.value.unshift(poster)
-    tpl.uses += 1
-    activity.log(auth.user.name, `生成裂变海报「${poster.title}」（模板：${tpl.name}，推荐人：${poster.referrerName}）`, poster.id)
-    return poster
+    const res = await api.createPoster(cmd)
+    activity.log(
+      auth.user?.name ?? '系统',
+      `生成裂变海报「${input.title}」（模板：${tpl.name}，推荐人：${input.referrerName}）`,
+      res.data.posterId,
+    )
+    await seed(true)
+    return posters.value.find((p) => p.id === res.data.posterId) ?? adaptPoster(res.data)
   }
 
   /** 佣金试算：成交金额 × 比例 */
@@ -162,45 +217,18 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
     return Math.round(Math.max(0, amount) * rate)
   }
 
-  function seed() {
-    if (seeded.value) return
+  /** 拉取真实模板 + 海报（幂等：已加载默认不重复，force 用于写后重拉）；推荐人选项仍走转介绍 mock */
+  async function seed(force = false) {
+    if (loaded.value && !force) return
     referral.seed()
-    templates.value = [
-      { id: nextId('tpl'), name: '双11 狂欢大促', style: 'FESTIVAL', status: 'ENABLED', uses: 128, accent: 'brand', defaultTitle: '双11 狂欢季 礼遇焕新', defaultSubtitle: '爆款项目限时直降，会员再享折上折' },
-      { id: nextId('tpl'), name: '新客 88 元体验礼', style: 'NEWBIE', status: 'ENABLED', uses: 96, accent: 'teal', defaultTitle: '新客专享 88 元体验', defaultSubtitle: '到店即赠皮肤检测一次，无隐形消费' },
-      { id: nextId('tpl'), name: '热玛吉抗衰种草', style: 'PROJECT', status: 'ENABLED', uses: 74, accent: 'purple', defaultTitle: '热玛吉 FLX 紧致提拉', defaultSubtitle: '正版仪器可验真，医师一对一定制方案' },
-      { id: nextId('tpl'), name: '周三会员日', style: 'MEMBER', status: 'ENABLED', uses: 210, accent: 'gold', defaultTitle: '会员日 双倍积分', defaultSubtitle: '每周三会员到店，积分翻倍兑好礼' },
-      { id: nextId('tpl'), name: '老带新双赢礼', style: 'REFERRAL', status: 'ENABLED', uses: 58, accent: 'orange', defaultTitle: '邀请好友 各得 200 元', defaultSubtitle: '好友到店成交，奖励自动到账' },
-      { id: nextId('tpl'), name: '医美直播预约', style: 'LIVE', status: 'DISABLED', uses: 32, accent: 'blue', defaultTitle: '院长直播 在线答疑', defaultSubtitle: '预约直播抽免单，限时福袋抢不停' },
-    ]
-
-    // 已生成海报（带漏斗数据）
-    const tpl = (i: number) => templates.value[i]
-    const mk = (i: number, title: string, subtitle: string, project: string, referrer: string,
-      f: PosterFunnel, dealAmount: number, day: number): Poster => ({
-      id: nextId('mp'), templateId: tpl(i).id, templateName: tpl(i).name, style: tpl(i).style, accent: tpl(i).accent,
-      title, subtitle, project, referrerName: referrer, status: 'PUBLISHED',
-      funnel: f, dealAmount, commissionRate: DEFAULT_COMMISSION_RATE, createdAt: dayOffset(day),
-    })
-    posters.value = [
-      mk(0, '双11 狂欢季 礼遇焕新', '爆款项目限时直降，会员再享折上折', '水光嫩肤年卡', '林晚',
-        { share: 420, scan: 286, lead: 124, visit: 58, deal: 22 }, 68000, -12),
-      mk(1, '新客专享 88 元体验', '到店即赠皮肤检测一次，无隐形消费', '皮肤检测 + 小气泡', '王蕊',
-        { share: 360, scan: 248, lead: 96, visit: 64, deal: 18 }, 12600, -8),
-      mk(4, '邀请好友 各得 200 元', '好友到店成交，奖励自动到账', '通用项目券', '陈思',
-        { share: 210, scan: 156, lead: 72, visit: 40, deal: 14 }, 38400, -6),
-      mk(2, '热玛吉 FLX 紧致提拉', '正版仪器可验真，医师一对一定制方案', '热玛吉面部', '张敏',
-        { share: 180, scan: 96, lead: 38, visit: 18, deal: 6 }, 58800, -3),
-      mk(3, '会员日 双倍积分', '每周三会员到店，积分翻倍兑好礼', '会员日到店礼', '李娜',
-        { share: 520, scan: 312, lead: 88, visit: 52, deal: 12 }, 9600, -2),
-      mk(5, '院长直播 在线答疑', '预约直播抽免单，限时福袋抢不停', '直播预约', '王芳',
-        { share: 90, scan: 64, lead: 20, visit: 4, deal: 0 }, 0, -1),
-    ]
-    seeded.value = true
+    const [tplRes, posterRes] = await Promise.all([api.listPosterTemplates(), api.listPosters()])
+    templates.value = tplRes.data.map(adaptTemplate)
+    posters.value = posterRes.data.map(adaptPoster)
+    loaded.value = true
   }
 
   return {
-    templates, posters, filterStatus, seeded,
+    templates, posters, filterStatus, loaded,
     referrerOptions, filteredTemplates,
     get, getPoster,
     totalShares, totalScans, totalDeals, totalCommission,

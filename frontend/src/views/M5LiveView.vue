@@ -17,11 +17,17 @@ import CTextarea from '@/components/CTextarea.vue'
 import CBarChart from '@/components/CBarChart.vue'
 import { useM5LiveStore } from '@/stores/m5Live'
 import { useM1MarketingStore } from '@/stores/m1Marketing'
+import { errMsg } from '@/stores/m5Coupon'
 import { checkSensitive } from '@/composables/useSensitiveWords'
+import { useToast } from '@/composables/useToast'
 
 const store = useM5LiveStore()
 const m1 = useM1MarketingStore()
-onMounted(() => { store.seed(); m1.seed() })
+const toast = useToast()
+onMounted(() => {
+  store.seed().catch((e) => toast.error('直播数据加载失败：' + errMsg(e)))
+  m1.seed().catch((e) => toast.error('券数据加载失败：' + errMsg(e)))
+})
 
 const selectedId = ref<string | null>(null)
 const selected = computed(() => {
@@ -72,20 +78,42 @@ function openCreate() {
   formError.value = ''
   showCreate.value = true
 }
-function submitCreate() {
+async function submitCreate() {
   formError.value = ''
   if (!form.value.title.trim()) { formError.value = '请输入直播标题'; return }
   if (!form.value.startTime) { formError.value = '请选择开播时间'; return }
   const chk = checkSensitive(form.value.intro)
   if (chk.hit) { formError.value = chk.message; return }
-  store.createSession({
-    title: form.value.title.trim(),
-    platform: form.value.platform as 'DOUYIN' | 'WECHAT_CHANNEL',
-    startTime: form.value.startTime.replace('T', ' '),
-    mountedCouponIds: form.value.couponId ? [form.value.couponId] : [],
-    intro: form.value.intro.trim(),
-  })
-  showCreate.value = false
+  try {
+    await store.createSession({
+      title: form.value.title.trim(),
+      platform: form.value.platform as 'DOUYIN' | 'WECHAT_CHANNEL',
+      startTime: form.value.startTime.replace('T', ' '),
+      mountedCouponIds: form.value.couponId ? [form.value.couponId] : [],
+      intro: form.value.intro.trim(),
+    })
+    showCreate.value = false
+    toast.success('直播场次已创建')
+  } catch (e) {
+    formError.value = errMsg(e)
+  }
+}
+
+async function onStartLive(s: { id: string; status: string }) {
+  try {
+    await store.startLive(s.id)
+    toast.success('直播已开播')
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
+}
+async function onEndLive(s: { id: string; status: string }) {
+  try {
+    await store.endLive(s.id)
+    toast.success('直播已结束')
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
 }
 
 function couponName(id: string) {
@@ -141,8 +169,8 @@ function couponName(id: string) {
           <div class="lv__td lv__td--num">{{ s.dealCount }}</div>
           <div class="lv__td lv__td--num lv__amount">{{ money(s.dealAmount) }}</div>
           <div class="lv__td lv__td--act" @click.stop>
-            <CButton v-if="s.status === 'NOT_STARTED'" variant="text" size="sm" @click="store.startLive(s.id)">开播</CButton>
-            <CButton v-else-if="s.status === 'LIVE'" variant="text" size="sm" @click="store.endLive(s.id)">结束</CButton>
+            <CButton v-if="s.status === 'NOT_STARTED'" variant="text" size="sm" @click="onStartLive(s)">开播</CButton>
+            <CButton v-else-if="s.status === 'LIVE'" variant="text" size="sm" @click="onEndLive(s)">结束</CButton>
             <span v-else class="lv__muted">—</span>
           </div>
         </button>

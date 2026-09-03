@@ -92,7 +92,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'coupon:create', 'coupon:edit', 'coupon:approve',
     'push:create', 'push:send', 'push:approve',
     'channel:edit', 'couponWriteoff:verify', 'landing:edit',
-    'poster:edit', 'calendar:edit', 'referralCampaign:edit',
+    'poster:edit', 'live:edit', 'calendar:edit', 'referralCampaign:edit',
     'asset:upload', 'm5settings:edit', 'marketing:export',
     // Wave 5 · T1 权限中台操作（角色/权限/组织 变更均走 T3-01 审批）
     'role:create', 'role:edit', 'role:delete', 'role:assign',
@@ -144,9 +144,9 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'risk:edit', 'risk:approve', 'm3settings:edit', 'insight:export',
     // M6 门店级财务：对账标记、开票申请、异常处置、导出（结算审批/财务设置归区域/财务）
     'finance:reconcile', 'finance:invoice:apply', 'finance:abnormal:dispose', 'finance:export',
-    // M5 门店级营销：发券/推送发送/核销/海报（审批、渠道配置、落地页、设置归区域）
+    // M5 门店级营销：发券/推送发送/核销/海报/直播（审批、渠道配置、落地页、设置归区域）
     'coupon:create', 'coupon:edit', 'push:create', 'push:send',
-    'couponWriteoff:verify', 'poster:edit', 'calendar:edit', 'marketing:export',
+    'couponWriteoff:verify', 'poster:edit', 'live:edit', 'calendar:edit', 'marketing:export',
     // Wave 5 · T1 门店级：可见但不可删角色/不可改组织架构
     'role:assign',
     // Wave 5 · T2 门店级：标签发布/数据服务申请

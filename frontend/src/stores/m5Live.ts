@@ -1,25 +1,46 @@
 // ============================================================
-// M5-05 直播/短视频 store
+// M5-05 直播/短视频 store（已接真实 marketing-service）
 // - 直播场次：平台（抖音/视频号）、状态（未开始/直播中/已结束）、观看/点击/成交漏斗
 // - 短视频库：平台、播放量、点赞、挂链成交
 // - 创建直播时从 m1.coupons 选挂载团购/券；简介由 view 调 checkSensitive
 // 权限：live:view / live:edit
+//
+// 适配层（铁律：模板/样式零改动，只换数据源）：
+//  - 后端 dealAmount bigint 存「分」，前端活规格用「元」：fen2yuan
+//  - startTime 为 LocalDateTime（ISO 'yyyy-MM-ddTHH:mm'），前端展示 'yyyy-MM-dd HH:mm'
+//  - mountedCouponIds / tags 为 JSON 数组字符串（parse 失败回落 []）
+//  - 字段名 sessionId/videoId → id；券名解析仍走 m1.coupons
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useM1MarketingStore } from '@/stores/m1Marketing'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
+import * as api from '@/api/marketing'
+import type { LiveSessionDTO, ShortVideoDTO } from '@/api/marketing'
+import { fen2yuan } from '@/stores/m5Coupon'
 
 export type LivePlatform = 'DOUYIN' | 'WECHAT_CHANNEL'
 export type LiveStatus = 'NOT_STARTED' | 'LIVE' | 'ENDED'
 export type VideoPlatform = 'DOUYIN' | 'WECHAT_CHANNEL' | 'XIAOHONGSHU'
 
-let _id = 0
-function nextId(p: string) { _id += 1; return `${p}-${Date.now().toString(36)}-${_id}` }
-function dayOffset(n: number) {
-  const d = new Date(); d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+/** yyyy-MM-dd（LocalDate / OffsetDateTime 均可直接截取） */
+function dayOf(s?: string | null): string {
+  return s ? s.slice(0, 10) : ''
+}
+/** LocalDateTime ISO（'yyyy-MM-ddTHH:mm:ss'）→ 前端 'yyyy-MM-dd HH:mm' */
+function minuteOf(s?: string | null): string {
+  return s ? s.slice(0, 16).replace('T', ' ') : ''
+}
+/** JSON 数组字符串 → string[]（失败回落 []） */
+function jsonArr(s?: string | null): string[] {
+  if (!s) return []
+  try {
+    const v = JSON.parse(s)
+    return Array.isArray(v) ? v.map((x) => String(x)) : []
+  } catch {
+    return []
+  }
 }
 
 export interface LiveFunnel {
@@ -68,6 +89,39 @@ export const LIVE_STATUS_PILL: Record<LiveStatus, 'default' | 'success' | 'disab
   NOT_STARTED: 'default', LIVE: 'success', ENDED: 'disabled',
 }
 
+/** 后端直播场次 → 前端活规格（分→元、时间格式化、挂载券 JSON.parse） */
+export function adaptSession(d: LiveSessionDTO): LiveSession {
+  return {
+    id: d.sessionId,
+    title: d.title || '',
+    platform: d.platform as LivePlatform,
+    status: (d.status || 'NOT_STARTED') as LiveStatus,
+    startTime: minuteOf(d.startTime),
+    viewers: d.viewers ?? 0,
+    linkClicks: d.linkClicks ?? 0,
+    dealCount: d.dealCount ?? 0,
+    dealAmount: fen2yuan(d.dealAmount),
+    mountedCouponIds: jsonArr(d.mountedCouponIds),
+    intro: d.intro || '',
+    host: d.host || '运营',
+  }
+}
+
+/** 后端短视频 → 前端活规格（分→元、标签 JSON.parse、发布日直取） */
+export function adaptVideo(d: ShortVideoDTO): ShortVideo {
+  return {
+    id: d.videoId,
+    title: d.title || '',
+    platform: d.platform as VideoPlatform,
+    plays: d.plays ?? 0,
+    likes: d.likes ?? 0,
+    dealCount: d.dealCount ?? 0,
+    dealAmount: fen2yuan(d.dealAmount),
+    tags: jsonArr(d.tags),
+    publishedAt: dayOf(d.publishedAt),
+  }
+}
+
 export const useM5LiveStore = defineStore('m5Live', () => {
   const m1 = useM1MarketingStore()
   const activity = useActivityStore()
@@ -76,7 +130,7 @@ export const useM5LiveStore = defineStore('m5Live', () => {
   const sessions = ref<LiveSession[]>([])
   const videos = ref<ShortVideo[]>([])
   const filterStatus = ref<'ALL' | LiveStatus>('ALL')
-  const seeded = ref(false)
+  const loaded = ref(false)
 
   const filteredSessions = computed(() => {
     if (filterStatus.value === 'ALL') return sessions.value
@@ -101,81 +155,70 @@ export const useM5LiveStore = defineStore('m5Live', () => {
       .map((s) => ({ label: s.title.length > 8 ? s.title.slice(0, 8) + '…' : s.title, values: [s.dealAmount] })),
   )
 
-  function createSession(input: {
+  async function createSession(input: {
     title: string
     platform: LivePlatform
     startTime: string
     mountedCouponIds: string[]
     intro: string
-  }): LiveSession {
-    const s: LiveSession = {
-      id: nextId('lv'),
+  }): Promise<LiveSession> {
+    if (!auth.can('live:edit')) throw new Error('无直播编辑权限')
+    const cmd: api.SessionCmd = {
       title: input.title,
       platform: input.platform,
-      status: 'NOT_STARTED',
       startTime: input.startTime,
-      viewers: 0,
-      linkClicks: 0,
-      dealCount: 0,
-      dealAmount: 0,
       mountedCouponIds: input.mountedCouponIds,
       intro: input.intro,
-      host: auth.user?.name ?? '运营',
     }
-    sessions.value.unshift(s)
-    activity.log(auth.user?.name ?? '运营', `创建直播「${s.title}」（${PLATFORM_LABEL[s.platform]}）`, s.id)
-    return s
+    const res = await api.createLiveSession(cmd)
+    activity.log(
+      auth.user?.name ?? '运营',
+      `创建直播「${input.title}」（${PLATFORM_LABEL[input.platform]}）`,
+      res.data.sessionId,
+    )
+    await seed(true)
+    return sessions.value.find((s) => s.id === res.data.sessionId) ?? adaptSession(res.data)
   }
 
-  function startLive(id: string) {
+  /** 开播：NOT_STARTED → LIVE（后端幂等 changed；实际翻转才审计） */
+  async function startLive(id: string) {
+    if (!auth.can('live:edit')) throw new Error('无直播编辑权限')
     const s = sessions.value.find((x) => x.id === id)
-    if (s && s.status === 'NOT_STARTED') {
-      s.status = 'LIVE'
-      activity.log(auth.user?.name ?? '运营', `开播「${s.title}」`, s.id)
-    }
-  }
-  function endLive(id: string) {
-    const s = sessions.value.find((x) => x.id === id)
-    if (s && s.status === 'LIVE') {
-      s.status = 'ENDED'
-      activity.log(auth.user?.name ?? '运营', `结束直播「${s.title}」，成交 ${s.dealCount} 单`, s.id)
+    const res = await api.startLiveSession(id)
+    await seed(true)
+    if (res.data.changed && s) {
+      activity.log(auth.user?.name ?? '运营', `开播「${s.title}」`, id)
     }
   }
 
-  function seed() {
-    if (seeded.value) return
-    m1.seed()
-    const couponIds = m1.coupons.map((c) => c.id)
+  /** 结束直播：LIVE → ENDED（后端幂等 changed；实际翻转才审计，成交单数取重拉后数据） */
+  async function endLive(id: string) {
+    if (!auth.can('live:edit')) throw new Error('无直播编辑权限')
+    const before = sessions.value.find((x) => x.id === id)
+    const res = await api.endLiveSession(id)
+    await seed(true)
+    if (res.data.changed) {
+      const after = sessions.value.find((x) => x.id === id)
+      activity.log(
+        auth.user?.name ?? '运营',
+        `结束直播「${after?.title ?? before?.title ?? id}」，成交 ${after?.dealCount ?? 0} 单`,
+        id,
+      )
+    }
+  }
 
-    const mk = (i: Partial<LiveSession> & { title: string; platform: LivePlatform; status: LiveStatus; startTime: string }): LiveSession => ({
-      id: nextId('lv'),
-      viewers: 0, linkClicks: 0, dealCount: 0, dealAmount: 0,
-      mountedCouponIds: couponIds.slice(0, 1), intro: '', host: '白桥',
-      ...i,
-    })
-
-    sessions.value = [
-      mk({ title: '暑期水光自由卡专场', platform: 'DOUYIN', status: 'LIVE', startTime: dayOffset(0) + ' 19:30', viewers: 8620, linkClicks: 1840, dealCount: 86, dealAmount: 128000, intro: '润致娃娃针次卡，直播间专属加赠面膜一盒', host: '林微' }),
-      mk({ title: '新客体验日·皮肤检测', platform: 'WECHAT_CHANNEL', status: 'LIVE', startTime: dayOffset(0) + ' 14:00', viewers: 3240, linkClicks: 680, dealCount: 32, dealAmount: 18600, intro: '新客 88 元体验，到店即赠皮肤检测', host: '苏晴' }),
-      mk({ title: '热玛吉抗衰院长答疑', platform: 'DOUYIN', status: 'NOT_STARTED', startTime: dayOffset(2) + ' 20:00', viewers: 0, linkClicks: 0, dealCount: 0, dealAmount: 0, intro: '正版仪器可验真，院长一对一定制方案', host: '白桥' }),
-      mk({ title: '会员日双倍积分直播', platform: 'WECHAT_CHANNEL', status: 'NOT_STARTED', startTime: dayOffset(5) + ' 19:00', viewers: 0, linkClicks: 0, dealCount: 0, dealAmount: 0, intro: '会员日积分翻倍，直播间专属福袋', host: '陈雅琳' }),
-      mk({ title: '光子嫩肤买3送1', platform: 'DOUYIN', status: 'ENDED', startTime: dayOffset(-7) + ' 19:30', viewers: 12400, linkClicks: 2680, dealCount: 124, dealAmount: 186000, intro: '光子嫩肤年卡限时买3送1', host: '林微' }),
-      mk({ title: '保妥适拼团夜', platform: 'DOUYIN', status: 'ENDED', startTime: dayOffset(-14) + ' 20:00', viewers: 6800, linkClicks: 1240, dealCount: 58, dealAmount: 86400, intro: '保妥适拼团 8.5 折', host: '白桥' }),
-      mk({ title: '乔雅登品鉴会', platform: 'WECHAT_CHANNEL', status: 'ENDED', startTime: dayOffset(-21) + ' 15:00', viewers: 2180, linkClicks: 420, dealCount: 18, dealAmount: 52400, intro: '乔雅登全系品鉴，私享优惠', host: '苏晴' }),
-    ]
-
-    videos.value = [
-      { id: nextId('vd'), title: '水光针全过程vlog', platform: 'DOUYIN', plays: 186000, likes: 12400, dealCount: 42, dealAmount: 38600, tags: ['水光', '种草'], publishedAt: dayOffset(-5) },
-      { id: nextId('vd'), title: '热玛吉避坑指南', platform: 'XIAOHONGSHU', plays: 92000, likes: 8600, dealCount: 28, dealAmount: 52400, tags: ['热玛吉', '科普'], publishedAt: dayOffset(-8) },
-      { id: nextId('vd'), title: '新客88元体验实拍', platform: 'DOUYIN', plays: 248000, likes: 18600, dealCount: 86, dealAmount: 24800, tags: ['新客', '体验'], publishedAt: dayOffset(-12) },
-      { id: nextId('vd'), title: '光子嫩肤效果对比', platform: 'WECHAT_CHANNEL', plays: 34000, likes: 2100, dealCount: 12, dealAmount: 18600, tags: ['光子', '效果'], publishedAt: dayOffset(-18) },
-      { id: nextId('vd'), title: '门店环境探店', platform: 'XIAOHONGSHU', plays: 56000, likes: 4200, dealCount: 8, dealAmount: 6800, tags: ['探店', '环境'], publishedAt: dayOffset(-25) },
-    ]
-    seeded.value = true
+  /** 拉取真实场次 + 短视频（幂等：已加载默认不重复，force 用于写后重拉）；券名解析依赖 m1.coupons */
+  async function seed(force = false) {
+    if (loaded.value && !force) return
+    await m1.seed()
+    const [sessionRes, videoRes] = await Promise.all([api.listLiveSessions(), api.listShortVideos()])
+    sessions.value = sessionRes.data.map(adaptSession)
+    videos.value = videoRes.data.map(adaptVideo)
+    loaded.value = true
   }
 
   return {
-    sessions, videos, filterStatus, seeded,
+    sessions, videos, filterStatus, loaded,
     filteredSessions, get,
     liveCount, monthSessions, totalViews, totalDealAmount, dealChartItems,
     createSession, startLive, endLive,

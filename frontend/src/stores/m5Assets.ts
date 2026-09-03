@@ -4,21 +4,20 @@
 // - 标签筛选；授权门店；分发到店
 // - 素材可被 M5-01 活动/直播/落地页引用（演示引用计数）
 // 权限：asset:view / asset:upload
+// 数据：真实 /api/marketing/assets（marketing-service）
+// 门店：真实门店主数据（storeContext），scope=ALL 按营业中门店展开
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import * as api from '@/api/marketing'
+import type { MarketingAssetDTO } from '@/api/marketing'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
+import { useStoreContext } from '@/stores/storeContext'
 
 export type AssetType = 'IMAGE' | 'VIDEO' | 'COPY' | 'LOGO'
 export type AssetScope = 'ALL' | 'SPECIFIED'
-
-let _id = 0
-function nextId(p: string) { _id += 1; return `${p}-${Date.now().toString(36)}-${_id}` }
-function dayOffset(n: number) {
-  const d = new Date(); d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
-}
+export type AssetAccent = 'brand' | 'teal' | 'orange' | 'purple' | 'blue' | 'gold'
 
 export interface Asset {
   id: string
@@ -30,7 +29,7 @@ export interface Asset {
   expireAt: string
   refCount: number
   /** 色块主题（仅引用 token 变量名，view 映射） */
-  accent: 'brand' | 'teal' | 'orange' | 'purple' | 'blue' | 'gold'
+  accent: AssetAccent
   content?: string // 文案素材内容
   createdAt: string
 }
@@ -45,17 +44,55 @@ export const SCOPE_LABEL: Record<AssetScope, string> = {
   ALL: '全部门店', SPECIFIED: '指定门店',
 }
 
-const ALL_STORES = ['上海静安旗舰店', '上海徐汇店', '北京国贸店', '杭州西湖店', '深圳南山店']
+const ACCENTS: AssetAccent[] = ['brand', 'teal', 'orange', 'purple', 'blue', 'gold']
+
+function dayOf(s: string | null | undefined): string {
+  return s ? s.slice(0, 10) : ''
+}
+function jsonArr(s: string | null | undefined): string[] {
+  if (!s) return []
+  try {
+    const v = JSON.parse(s)
+    return Array.isArray(v) ? v.map((x) => String(x)) : []
+  } catch {
+    return []
+  }
+}
 
 export const useM5AssetsStore = defineStore('m5Assets', () => {
   const activity = useActivityStore()
   const auth = useAuthStore()
+  const storeCtx = useStoreContext()
 
   const assets = ref<Asset[]>([])
   const filterTag = ref<string>('ALL')
   const filterType = ref<'ALL' | AssetType>('ALL')
   const selectedId = ref<string | null>(null)
-  const seeded = ref(false)
+  const loaded = ref(false)
+
+  /** 营业中门店（素材可授权/分发的范围；筹建中门店不下发素材） */
+  const activeStores = computed(() => storeCtx.stores.filter((s) => s.status === '营业中'))
+  const activeStoreNames = computed(() => activeStores.value.map((s) => s.storeName))
+  function nameOf(code: string): string {
+    return storeCtx.stores.find((s) => s.storeCode === code)?.storeName ?? code
+  }
+
+  function adaptAsset(d: MarketingAssetDTO): Asset {
+    const codes = jsonArr(d.storeCodes)
+    return {
+      id: d.assetId,
+      name: d.assetName,
+      type: (d.type || 'IMAGE') as AssetType,
+      tags: jsonArr(d.tags),
+      scope: d.scope === 'SPECIFIED' ? 'SPECIFIED' : 'ALL',
+      storeNames: d.scope === 'SPECIFIED' ? codes.map(nameOf) : [...activeStoreNames.value],
+      expireAt: dayOf(d.expireAt),
+      refCount: d.refCount ?? 0,
+      accent: (d.accent as AssetAccent) || 'brand',
+      content: d.content || undefined,
+      createdAt: dayOf(d.createdAt),
+    }
+  }
 
   const allTags = computed(() => {
     const set = new Set<string>()
@@ -96,7 +133,7 @@ export const useM5AssetsStore = defineStore('m5Assets', () => {
   const authorizedStores = computed(() => {
     const set = new Set<string>()
     assets.value.forEach((a) => {
-      if (a.scope === 'ALL') ALL_STORES.forEach((s) => set.add(s))
+      if (a.scope === 'ALL') activeStoreNames.value.forEach((s) => set.add(s))
       else a.storeNames.forEach((s) => set.add(s))
     })
     return set.size
@@ -104,7 +141,7 @@ export const useM5AssetsStore = defineStore('m5Assets', () => {
 
   function get(id: string) { return assets.value.find((a) => a.id === id) ?? null }
 
-  function upload(input: {
+  async function upload(input: {
     name: string
     type: AssetType
     tags: string[]
@@ -112,77 +149,78 @@ export const useM5AssetsStore = defineStore('m5Assets', () => {
     storeNames: string[]
     expireAt: string
     content?: string
-  }): Asset {
-    const accents: Asset['accent'][] = ['brand', 'teal', 'orange', 'purple', 'blue', 'gold']
-    const a: Asset = {
-      id: nextId('ast'),
+  }): Promise<Asset> {
+    if (!auth.can('asset:upload')) throw new Error('无素材上传权限')
+    const codes = input.scope === 'ALL'
+      ? []
+      : input.storeNames
+          .map((n) => storeCtx.stores.find((s) => s.storeName === n)?.storeCode)
+          .filter((c): c is string => !!c)
+    const res = await api.createAsset({
       name: input.name,
       type: input.type,
       tags: input.tags,
       scope: input.scope,
-      storeNames: input.scope === 'ALL' ? [...ALL_STORES] : input.storeNames,
-      expireAt: input.expireAt,
-      refCount: 0,
-      accent: accents[Math.floor(Math.random() * accents.length)],
-      content: input.content,
-      createdAt: dayOffset(0),
-    }
-    assets.value.unshift(a)
-    selectedId.value = a.id
-    activity.log(auth.user?.name ?? '运营', `上传素材「${a.name}」（${TYPE_LABEL[a.type]}）`, a.id)
-    return a
+      storeCodes: codes,
+      expireAt: input.expireAt || null,
+      accent: ACCENTS[Math.floor(Math.random() * ACCENTS.length)],
+      content: input.content || null,
+    })
+    activity.log(auth.user?.name ?? '运营', `上传素材「${input.name}」（${TYPE_LABEL[input.type]}）`, res.data.assetId)
+    await seed(true)
+    return assets.value.find((a) => a.id === res.data.assetId) ?? adaptAsset(res.data)
   }
 
-  function addTag(id: string, tag: string) {
+  async function addTag(id: string, tag: string) {
+    const t = tag.trim()
     const a = assets.value.find((x) => x.id === id)
-    if (a && tag.trim() && !a.tags.includes(tag.trim())) {
-      a.tags.push(tag.trim())
+    if (!a || !t || a.tags.includes(t)) return
+    const res = await api.addAssetTag(id, t)
+    await seed(true)
+    if (res.data.changed) {
+      activity.log(auth.user?.name ?? '运营', `素材「${a.name}」添加标签「${t}」`, id)
     }
   }
-  function removeTag(id: string, tag: string) {
+  async function removeTag(id: string, tag: string) {
     const a = assets.value.find((x) => x.id === id)
-    if (a) {
-      const i = a.tags.indexOf(tag)
-      if (i >= 0) a.tags.splice(i, 1)
+    if (!a) return
+    const res = await api.removeAssetTag(id, tag)
+    await seed(true)
+    if (res.data.changed) {
+      activity.log(auth.user?.name ?? '运营', `素材「${a.name}」移除标签「${tag}」`, id)
     }
   }
 
-  /** 分发到店：追加授权门店 */
-  function distribute(id: string, storeNames: string[]) {
+  /** 分发到店：追加授权门店（入参为门店名，view 复选框绑定口径） */
+  async function distribute(id: string, storeNames: string[]) {
+    if (!auth.can('asset:upload')) throw new Error('无素材分发权限')
     const a = assets.value.find((x) => x.id === id)
     if (!a) return
     if (a.scope === 'ALL') return
-    storeNames.forEach((s) => { if (!a.storeNames.includes(s)) a.storeNames.push(s) })
-    activity.log(auth.user?.name ?? '运营', `素材「${a.name}」分发到 ${storeNames.length} 家门店`, a.id)
+    const codes = storeNames
+      .map((n) => storeCtx.stores.find((s) => s.storeName === n)?.storeCode)
+      .filter((c): c is string => !!c)
+    if (!codes.length) return
+    const res = await api.distributeAsset(id, codes)
+    await seed(true)
+    if (res.data.changed) {
+      const names = codes.map(nameOf).join('、')
+      activity.log(auth.user?.name ?? '运营', `素材「${a.name}」分发到 ${codes.length} 家门店（${names}）`, id)
+    }
   }
 
-  const storeOptions = ALL_STORES.map((s) => ({ value: s, label: s }))
+  const storeOptions = computed(() => activeStores.value.map((s) => ({ value: s.storeName, label: s.storeName })))
 
-  function seed() {
-    if (seeded.value) return
-    const mk = (a: Partial<Asset> & { name: string; type: AssetType; tags: string[] }): Asset => ({
-      id: nextId('ast'), scope: 'ALL', storeNames: [...ALL_STORES], expireAt: dayOffset(90),
-      refCount: 0, accent: 'brand', createdAt: dayOffset(-Math.floor(Math.random() * 30)),
-      ...a,
-    })
-
-    assets.value = [
-      mk({ name: '暑期水光主海报', type: 'IMAGE', tags: ['暑期', '水光', '促销'], accent: 'brand', refCount: 12, expireAt: dayOffset(30) }),
-      mk({ name: '新客88元体验海报', type: 'IMAGE', tags: ['新客', '体验'], accent: 'teal', refCount: 8, scope: 'SPECIFIED', storeNames: ['上海静安旗舰店', '上海徐汇店'] }),
-      mk({ name: '热玛吉种草短视频', type: 'VIDEO', tags: ['热玛吉', '种草', '抗衰'], accent: 'purple', refCount: 6, expireAt: dayOffset(60) }),
-      mk({ name: '光子嫩肤对比视频', type: 'VIDEO', tags: ['光子', '效果'], accent: 'orange', refCount: 4 }),
-      mk({ name: '双11狂欢文案', type: 'COPY', tags: ['双11', '促销', '文案'], content: '双11 礼遇焕新，爆款项目限时直降，会员再享折上折！', accent: 'gold', refCount: 15, expireAt: dayOffset(20) }),
-      mk({ name: '新客体验邀约话术', type: 'COPY', tags: ['新客', '邀约', '文案'], content: '亲爱的，新客专享88元体验套餐已为您准备好，到店即赠皮肤检测一次。', accent: 'blue', refCount: 9 }),
-      mk({ name: '品牌Logo-横版', type: 'LOGO', tags: ['Logo', '品牌'], accent: 'brand', refCount: 24, expireAt: dayOffset(365) }),
-      mk({ name: '品牌Logo-竖版', type: 'LOGO', tags: ['Logo', '品牌'], accent: 'teal', refCount: 18, expireAt: dayOffset(365) }),
-      mk({ name: '会员日活动海报', type: 'IMAGE', tags: ['会员日', '促销'], accent: 'gold', refCount: 7, scope: 'SPECIFIED', storeNames: ['北京国贸店', '杭州西湖店'], expireAt: dayOffset(10) }),
-      mk({ name: '门店环境探店视频', type: 'VIDEO', tags: ['探店', '环境'], accent: 'teal', refCount: 3 }),
-    ]
-    seeded.value = true
+  async function seed(force = false) {
+    if (loaded.value && !force) return
+    await storeCtx.loadStores()
+    const res = await api.listAssets()
+    assets.value = (res.data || []).map(adaptAsset)
+    loaded.value = true
   }
 
   return {
-    assets, filterTag, filterType, selectedId, seeded,
+    assets, filterTag, filterType, selectedId, loaded,
     allTags, tagOptions, typeOptions, filtered, selected,
     totalCount, imageCount, videoCount, authorizedStores, storeOptions,
     select, get, upload, addTag, removeTag, distribute,

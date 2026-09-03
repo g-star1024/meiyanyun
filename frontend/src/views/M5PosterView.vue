@@ -18,10 +18,13 @@ import CProgressBar from '@/components/CProgressBar.vue'
 import { useM5PosterStore } from '@/stores/m5Poster'
 import { useAuthStore } from '@/stores/auth'
 import { checkSensitive } from '@/composables/useSensitiveWords'
+import { errMsg } from '@/stores/m5Coupon'
+import { useToast } from '@/composables/useToast'
 
 const store = useM5PosterStore()
 const auth = useAuthStore()
-onMounted(() => store.seed())
+const toast = useToast()
+onMounted(() => { store.seed().catch((e) => toast.error('海报数据加载失败：' + errMsg(e))) })
 
 const canEdit = computed(() => auth.can('poster:edit'))
 
@@ -118,7 +121,7 @@ const templateOptions = computed(() =>
 const referrerOptions = computed(() =>
   store.referrerOptions.map((r) => ({ value: r.name, label: `${r.name} · ${r.level} · 已推荐 ${r.total} 人` })))
 
-function submitCreate() {
+async function submitCreate() {
   formError.value = ''
   if (!form.value.templateId) { formError.value = '请选择海报模板'; return }
   if (!form.value.title.trim()) { formError.value = '请填写海报主标题'; return }
@@ -126,16 +129,29 @@ function submitCreate() {
   if (!form.value.referrerName) { formError.value = '请选择绑定推荐人'; return }
   const hit = checkSensitive(`${form.value.title} ${form.value.subtitle}`)
   if (hit.hit) { formError.value = hit.message; return }
-  const p = store.createPoster({
-    templateId: form.value.templateId,
-    title: form.value.title.trim(),
-    subtitle: form.value.subtitle.trim(),
-    project: form.value.project.trim(),
-    referrerName: form.value.referrerName,
-  })
-  if (p) {
+  try {
+    const p = await store.createPoster({
+      templateId: form.value.templateId,
+      title: form.value.title.trim(),
+      subtitle: form.value.subtitle.trim(),
+      project: form.value.project.trim(),
+      referrerName: form.value.referrerName,
+    })
     selectedId.value = p.templateId
     showCreate.value = false
+    toast.success('海报已生成')
+  } catch (e) {
+    formError.value = errMsg(e)
+  }
+}
+
+async function onToggleTemplate() {
+  if (!selected.value) return
+  try {
+    await store.toggleTemplateStatus(selected.value.id)
+    toast.success('模板状态已更新')
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
   }
 }
 </script>
@@ -198,7 +214,7 @@ function submitCreate() {
                 <span class="mp__uses">累计使用 {{ selected.uses }} 次</span>
               </div>
             </div>
-            <CButton v-if="canEdit" variant="text" size="sm" @click="store.toggleTemplateStatus(selected.id)">
+            <CButton v-if="canEdit" variant="text" size="sm" @click="onToggleTemplate">
               <CIcon name="settings" :size="14" />
               {{ selected.status === 'ENABLED' ? '停用模板' : '启用模板' }}
             </CButton>

@@ -40,6 +40,9 @@ public class MarketingController {
     private final MarketingCfgRepository cfgRepo;
     private final RateLimiter rateLimiter;
     private final DomainEventPublisher events;
+    private final MarketingAssetService assetService;
+    private final PosterService posterService;
+    private final LiveService liveService;
 
     private static final int PUSH_WINDOW_SECONDS = 7 * 24 * 3600; // 周频窗口
     private static final String PUSH_TOPIC = "meiyun.marketing.push-sent";
@@ -52,7 +55,10 @@ public class MarketingController {
                                ForbiddenWordService forbiddenWordService,
                                PushRecordRepository pushRepo, CouponWriteoffChainRepository chainRepo,
                                MarketingCfgRepository cfgRepo, RateLimiter rateLimiter,
-                               DomainEventPublisher events) {
+                               DomainEventPublisher events,
+                               MarketingAssetService assetService,
+                               PosterService posterService,
+                               LiveService liveService) {
         this.campaignService = campaignService;
         this.couponService = couponService;
         this.statsService = statsService;
@@ -62,6 +68,9 @@ public class MarketingController {
         this.cfgRepo = cfgRepo;
         this.rateLimiter = rateLimiter;
         this.events = events;
+        this.assetService = assetService;
+        this.posterService = posterService;
+        this.liveService = liveService;
     }
 
     // ==================== 配置 ====================
@@ -260,10 +269,106 @@ public class MarketingController {
         return Map.of("changed", forbiddenWordService.delete(id));
     }
 
+    // ==================== M5-13 素材库（上传 / 标签 / 分发到店） ====================
+
+    @GetMapping("/assets")
+    public List<MarketingAsset> assets() {
+        return assetService.list();
+    }
+
+    @PostMapping("/assets")
+    @RequirePerm("asset:upload")
+    public MarketingAsset uploadAsset(@RequestBody MarketingAssetService.AssetCmd cmd) {
+        return assetService.upload(cmd);
+    }
+
+    /** 素材新增标签（幂等：已存在 changed=false）。 */
+    @PostMapping("/assets/{id}/tags")
+    @RequirePerm("asset:upload")
+    public Map<String, Object> addAssetTag(@PathVariable String id,
+                                           @RequestBody @Valid TagReq cmd) {
+        return Map.of("changed", assetService.addTag(id, cmd.tag()));
+    }
+
+    /** 素材删除标签（幂等：不存在 changed=false）。 */
+    @PostMapping("/assets/{id}/tags/remove")
+    @RequirePerm("asset:upload")
+    public Map<String, Object> removeAssetTag(@PathVariable String id,
+                                              @RequestBody @Valid TagReq cmd) {
+        return Map.of("changed", assetService.removeTag(id, cmd.tag()));
+    }
+
+    /** 素材分发到店（追加授权门店，合并去重；全部门店素材无需分发）。 */
+    @PostMapping("/assets/{id}/distribute")
+    @RequirePerm("asset:upload")
+    public Map<String, Object> distributeAsset(@PathVariable String id,
+                                               @RequestBody MarketingAssetService.DistributeCmd cmd) {
+        return Map.of("changed", assetService.distribute(id, cmd.storeCodes()));
+    }
+
+    // ==================== M5-04 裂变海报（模板启停 / 生成海报） ====================
+
+    @GetMapping("/poster-templates")
+    public List<PosterTemplate> posterTemplates() {
+        return posterService.listTemplates();
+    }
+
+    @GetMapping("/posters")
+    public List<PosterRecord> posters() {
+        return posterService.listPosters();
+    }
+
+    /** 模板启用/停用翻转（每次实际翻转都审计）。 */
+    @PostMapping("/poster-templates/{id}/toggle")
+    @RequirePerm("poster:edit")
+    public Map<String, Object> togglePosterTemplate(@PathVariable String id) {
+        return Map.of("changed", posterService.toggleTemplate(id));
+    }
+
+    @PostMapping("/posters")
+    @RequirePerm("poster:edit")
+    public PosterRecord createPoster(@RequestBody PosterService.PosterCmd cmd) {
+        return posterService.createPoster(cmd);
+    }
+
+    // ==================== M5-05 直播团购（场次创建/开播/结束；短视频只读） ====================
+
+    @GetMapping("/live-sessions")
+    public List<LiveSession> liveSessions() {
+        return liveService.listSessions();
+    }
+
+    @GetMapping("/short-videos")
+    public List<ShortVideo> shortVideos() {
+        return liveService.listVideos();
+    }
+
+    @PostMapping("/live-sessions")
+    @RequirePerm("live:edit")
+    public LiveSession createLiveSession(@RequestBody LiveService.SessionCmd cmd) {
+        return liveService.createSession(cmd);
+    }
+
+    /** 开播：NOT_STARTED → LIVE（状态不符 changed=false）。 */
+    @PostMapping("/live-sessions/{id}/start")
+    @RequirePerm("live:edit")
+    public Map<String, Object> startLive(@PathVariable String id) {
+        return Map.of("changed", liveService.startLive(id));
+    }
+
+    /** 结束直播：LIVE → ENDED（状态不符 changed=false）。 */
+    @PostMapping("/live-sessions/{id}/end")
+    @RequirePerm("live:edit")
+    public Map<String, Object> endLive(@PathVariable String id) {
+        return Map.of("changed", liveService.endLive(id));
+    }
+
     // ==================== 命令 DTO ====================
 
     public record PushCmd(
             @NotBlank String customerId, @NotBlank String pushType, @NotBlank String content) {}
+
+    public record TagReq(@NotBlank String tag) {}
 
     public record CheckCopyCmd(@NotBlank String content) {}
 }

@@ -14,10 +14,13 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CTextarea from '@/components/CTextarea.vue'
 import { useM5AssetsStore } from '@/stores/m5Assets'
+import { errMsg } from '@/stores/m5Coupon'
 import { checkSensitive } from '@/composables/useSensitiveWords'
+import { useToast } from '@/composables/useToast'
 
 const store = useM5AssetsStore()
-onMounted(() => store.seed())
+const toast = useToast()
+onMounted(() => { store.seed().catch((e) => toast.error('素材数据加载失败：' + errMsg(e))) })
 
 const kpis = computed(() => [
   { label: '素材总数', icon: 'marketing', value: String(store.totalCount), tone: 'brand' as const },
@@ -52,33 +55,54 @@ const uploadTypeOptions = [
   { value: 'COPY', label: '文案' },
   { value: 'LOGO', label: 'Logo' },
 ]
-function submitUpload() {
+async function submitUpload() {
   formError.value = ''
   if (!form.value.name.trim()) { formError.value = '请输入素材名称'; return }
   if (!form.value.expireAt) { formError.value = '请选择有效期'; return }
+  if (form.value.scope === 'SPECIFIED' && form.value.storeNames.length === 0) {
+    formError.value = '请选择授权门店'; return
+  }
   if (form.value.type === 'COPY') {
     const chk = checkSensitive(form.value.content)
     if (chk.hit) { formError.value = chk.message; return }
   }
   const tags = form.value.tags.split(/[,，]/).map((t) => t.trim()).filter(Boolean)
-  store.upload({
-    name: form.value.name.trim(),
-    type: form.value.type as 'IMAGE' | 'VIDEO' | 'COPY' | 'LOGO',
-    tags,
-    scope: form.value.scope as 'ALL' | 'SPECIFIED',
-    storeNames: form.value.storeNames,
-    expireAt: form.value.expireAt,
-    content: form.value.content.trim() || undefined,
-  })
-  showUpload.value = false
+  try {
+    await store.upload({
+      name: form.value.name.trim(),
+      type: form.value.type as 'IMAGE' | 'VIDEO' | 'COPY' | 'LOGO',
+      tags,
+      scope: form.value.scope as 'ALL' | 'SPECIFIED',
+      storeNames: form.value.storeNames,
+      expireAt: form.value.expireAt,
+      content: form.value.content.trim() || undefined,
+    })
+    showUpload.value = false
+    toast.success('素材已上传')
+  } catch (e) {
+    formError.value = errMsg(e)
+  }
 }
 
 // 标签管理
 const newTag = ref('')
-function addTag() {
+async function addTag() {
   if (selected.value && newTag.value.trim()) {
-    store.addTag(selected.value.id, newTag.value.trim())
-    newTag.value = ''
+    const tag = newTag.value.trim()
+    try {
+      await store.addTag(selected.value.id, tag)
+      newTag.value = ''
+    } catch (e) {
+      toast.error('操作失败：' + errMsg(e))
+    }
+  }
+}
+async function removeTag(tag: string) {
+  if (!selected.value) return
+  try {
+    await store.removeTag(selected.value.id, tag)
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
   }
 }
 
@@ -94,11 +118,18 @@ function toggleStore(name: string) {
   if (i >= 0) distStores.value.splice(i, 1)
   else distStores.value.push(name)
 }
-function confirmDistribute() {
+async function confirmDistribute() {
   if (selected.value && distStores.value.length) {
-    store.distribute(selected.value.id, distStores.value)
+    try {
+      await store.distribute(selected.value.id, distStores.value)
+      showDistribute.value = false
+      toast.success('素材已分发到店')
+    } catch (e) {
+      toast.error('分发失败：' + errMsg(e))
+    }
+  } else {
+    showDistribute.value = false
   }
-  showDistribute.value = false
 }
 </script>
 
@@ -185,7 +216,7 @@ function confirmDistribute() {
             <div class="as__tag-list">
               <span v-for="t in selected.tags" :key="t" class="as__tag as__tag--removable">
                 {{ t }}
-                <button class="as__tag-x" @click="store.removeTag(selected.id, t)"><CIcon name="close" :size="10" /></button>
+                <button class="as__tag-x" @click="removeTag(t)"><CIcon name="close" :size="10" /></button>
               </span>
             </div>
             <div class="as__tag-add">

@@ -258,3 +258,148 @@ export const toggleForbiddenWord = (id: number, enabled: boolean) =>
 /** 删除违禁词（幂等：不存在返回 changed=false）。 */
 export const deleteForbiddenWord = (id: number) =>
   client.post<TransitResult>(`/marketing/forbidden-words/${id}/delete`)
+
+// -------------------- M5-13 素材库 --------------------
+// 金额口径：素材无金额；tags/storeCodes 为 JSON 数组字符串（前端 JSON.parse，失败回落 []）。
+
+export interface MarketingAssetDTO {
+  assetId: string
+  assetName: string
+  type: string
+  tags: string
+  scope: string
+  storeCodes: string
+  expireAt: string | null
+  refCount: number
+  accent: string
+  content: string | null
+  createdAt: string
+}
+
+export interface AssetCmd {
+  name: string
+  type: string
+  tags: string[]
+  scope: string
+  storeCodes: string[]
+  /** 有效期 yyyy-MM-dd，必传（空值后端 400「请选择素材有效期」）。 */
+  expireAt: string | null
+  accent: string
+  /** COPY 文案正文，其余类型可空（null）。 */
+  content: string | null
+}
+
+// -------------------- M5-04 裂变海报 --------------------
+// 金额口径：dealAmount bigint 存「分」；commissionRate = 百分比×10（5% = 50），前端用 0~1。
+
+export interface PosterTemplateDTO {
+  templateId: string
+  templateName: string
+  style: string
+  status: string
+  uses: number
+  accent: string
+  defaultTitle: string
+  defaultSubtitle: string
+  createdAt: string
+}
+
+export interface PosterRecordDTO {
+  posterId: string
+  templateId: string
+  templateName: string
+  style: string
+  accent: string
+  title: string
+  subtitle: string | null
+  project: string
+  referrerName: string | null
+  status: string
+  share: number
+  scan: number
+  lead: number
+  visit: number
+  deal: number
+  dealAmount: number
+  commissionRate: number
+  createdAt: string
+}
+
+export interface PosterCmd {
+  templateId: string
+  title: string
+  subtitle: string
+  project: string
+  referrerName: string
+  commissionRate: number
+}
+
+// -------------------- M5-05 直播团购 / 短视频 --------------------
+// 金额口径：dealAmount bigint 存「分」；startTime 为 LocalDateTime（ISO），前端展示 'yyyy-MM-dd HH:mm'；
+// mountedCouponIds / tags 为 JSON 数组字符串；短视频无 createdAt，发布日用 publishedAt（LocalDate）。
+
+export interface LiveSessionDTO {
+  sessionId: string
+  title: string
+  platform: string
+  status: string
+  startTime: string
+  viewers: number
+  linkClicks: number
+  dealCount: number
+  dealAmount: number
+  mountedCouponIds: string
+  intro: string | null
+  host: string | null
+  createdAt: string
+}
+
+export interface ShortVideoDTO {
+  videoId: string
+  title: string
+  platform: string
+  plays: number
+  likes: number
+  dealCount: number
+  dealAmount: number
+  tags: string
+  publishedAt: string
+}
+
+export interface SessionCmd {
+  title: string
+  platform: string
+  startTime: string
+  mountedCouponIds: string[]
+  intro: string
+}
+
+// -------------------- 素材库接口 --------------------
+
+export const listAssets = () => client.get<MarketingAssetDTO[]>('/marketing/assets')
+export const createAsset = (cmd: AssetCmd) => client.post<MarketingAssetDTO>('/marketing/assets', cmd)
+export const addAssetTag = (id: string, tag: string) =>
+  client.post<TransitResult>(`/marketing/assets/${id}/tags`, { tag })
+export const removeAssetTag = (id: string, tag: string) =>
+  client.post<TransitResult>(`/marketing/assets/${id}/tags/remove`, { tag })
+export const distributeAsset = (id: string, storeCodes: string[]) =>
+  client.post<TransitResult>(`/marketing/assets/${id}/distribute`, { storeCodes })
+
+// -------------------- 海报接口 --------------------
+
+export const listPosterTemplates = () => client.get<PosterTemplateDTO[]>('/marketing/poster-templates')
+export const listPosters = () => client.get<PosterRecordDTO[]>('/marketing/posters')
+export const togglePosterTemplate = (id: string) =>
+  client.post<TransitResult>(`/marketing/poster-templates/${id}/toggle`)
+export const createPoster = (cmd: PosterCmd) => client.post<PosterRecordDTO>('/marketing/posters', cmd)
+
+// -------------------- 直播 / 短视频接口 --------------------
+
+export const listLiveSessions = () => client.get<LiveSessionDTO[]>('/marketing/live-sessions')
+export const listShortVideos = () => client.get<ShortVideoDTO[]>('/marketing/short-videos')
+export const createLiveSession = (cmd: SessionCmd) =>
+  client.post<LiveSessionDTO>('/marketing/live-sessions', cmd)
+export const startLiveSession = (id: string) =>
+  client.post<TransitResult>(`/marketing/live-sessions/${id}/start`)
+export const endLiveSession = (id: string) =>
+  client.post<TransitResult>(`/marketing/live-sessions/${id}/end`)

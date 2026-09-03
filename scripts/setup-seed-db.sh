@@ -36,8 +36,10 @@ docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" -d "$SRC_DB" --no-owner --no-p
   | docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 >/dev/null
 
 echo "==> [2/4] 清空业务表（保留 sys_* / flyway_schema_history / schema_version）"
-# order_item 为新增业务表（订单收费子项），克隆源库可能尚未由 JPA ddl-auto 建出，
-# 这里幂等补建，保证后续 TRUNCATE / 灌种子不依赖服务启动顺序。逻辑外键（不建物理 FK）。
+# order_item 为新增业务表（订单收费子项）；marketing_asset / poster_template / poster_record /
+# live_session / short_video 为 M5 营销内容生产链路（素材库/海报/直播团购）新增业务表。
+# 克隆源库可能尚未由 JPA ddl-auto 建出，这里幂等补建，保证后续 TRUNCATE / 灌种子不依赖服务启动顺序。
+# 逻辑外键（不建物理 FK）；金额 bigint 存「分」；时间列按实体口径 date/timestamp/timestamptz。
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 CREATE TABLE IF NOT EXISTS order_item (
   item_id    bigserial PRIMARY KEY,
@@ -50,6 +52,77 @@ CREATE TABLE IF NOT EXISTS order_item (
   created_at timestamptz  NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_order_item_order_no ON order_item(order_no);
+
+CREATE TABLE IF NOT EXISTS marketing_asset (
+  asset_id    varchar(24)  PRIMARY KEY,
+  asset_name  varchar(64)  NOT NULL,
+  type        varchar(8)   NOT NULL,
+  tags        varchar(512) NOT NULL,
+  scope       varchar(10)  NOT NULL,
+  store_codes varchar(512) NOT NULL,
+  expire_at   date         NOT NULL,
+  ref_count   integer      NOT NULL,
+  accent      varchar(8)   NOT NULL,
+  content     varchar(1000),
+  created_at  timestamptz  NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS poster_template (
+  template_id      varchar(24)  PRIMARY KEY,
+  template_name    varchar(64)  NOT NULL,
+  style            varchar(12)  NOT NULL,
+  status           varchar(8)   NOT NULL,
+  uses             integer      NOT NULL,
+  accent           varchar(8)   NOT NULL,
+  default_title    varchar(64)  NOT NULL,
+  default_subtitle varchar(128) NOT NULL,
+  created_at       timestamptz  NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS poster_record (
+  poster_id       varchar(24)  PRIMARY KEY,
+  template_id     varchar(24)  NOT NULL,
+  template_name   varchar(64)  NOT NULL,
+  style           varchar(12)  NOT NULL,
+  accent          varchar(8)   NOT NULL,
+  title           varchar(64)  NOT NULL,
+  subtitle        varchar(128),
+  project         varchar(64)  NOT NULL,
+  referrer_name   varchar(32),
+  status          varchar(10)  NOT NULL,
+  share           integer      NOT NULL,
+  scan            integer      NOT NULL,
+  lead            integer      NOT NULL,
+  visit           integer      NOT NULL,
+  deal            integer      NOT NULL,
+  deal_amount     bigint       NOT NULL,
+  commission_rate integer      NOT NULL,
+  created_at      timestamptz  NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS live_session (
+  session_id         varchar(24)  PRIMARY KEY,
+  title              varchar(64)  NOT NULL,
+  platform           varchar(16)  NOT NULL,
+  status             varchar(12)  NOT NULL,
+  start_time         timestamp    NOT NULL,
+  viewers            integer      NOT NULL,
+  link_clicks        integer      NOT NULL,
+  deal_count         integer      NOT NULL,
+  deal_amount        bigint       NOT NULL,
+  mounted_coupon_ids varchar(512) NOT NULL,
+  intro              varchar(500),
+  host               varchar(32),
+  created_at         timestamptz  NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS short_video (
+  video_id     varchar(24)  PRIMARY KEY,
+  title        varchar(64)  NOT NULL,
+  platform     varchar(16)  NOT NULL,
+  plays        integer      NOT NULL,
+  likes        integer      NOT NULL,
+  deal_count   integer      NOT NULL,
+  deal_amount  bigint       NOT NULL,
+  tags         varchar(256) NOT NULL,
+  published_at date         NOT NULL
+);
 SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
@@ -61,7 +134,7 @@ TRUNCATE TABLE
   points_ledger, points_pool, prepay_pool, push_record, region_dist, repurchase,
   revenue_monthly, role_def, sign_role_pair, sign_tier, staff, store, tax, tenant,
   txn_card_cancel, txn_order, txn_refund, txn_writeoff, verification, writeoff_record,
-  order_item
+  order_item, marketing_asset, poster_template, poster_record, live_session, short_video
 RESTART IDENTITY CASCADE;
 SQL
 
@@ -92,6 +165,25 @@ else
 fi
 
 echo ""
+echo "==> [可选] 若 seed 联调栈 marketing-service 在运行，重启它以触发 M5 营销数据启动播种"
+# reset 会 TRUNCATE marketing_asset / poster_template / poster_record / live_session / short_video；
+# 素材库(10)/海报(6 模板+6 记录)/直播团购(7 场次+5 短视频) 的演示种子由 marketing-service 的
+# 三个 DataInitializer（@Order 30/31/32）在启动时幂等补齐。容器未起或为旧镜像（无播种器）则跳过。
+SEED_MKT_CONTAINER="${SEED_MKT_CONTAINER:-meiyun-seed-marketing-service}"
+if docker ps --format '{{.Names}}' | grep -qx "$SEED_MKT_CONTAINER"; then
+  echo "    重启 $SEED_MKT_CONTAINER 触发素材/海报/直播种子 ..."
+  docker restart "$SEED_MKT_CONTAINER" >/dev/null
+  echo "    等待 healthy ..."
+  for _ in $(seq 1 40); do
+    [ "$(docker inspect "$SEED_MKT_CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && break
+    sleep 3
+  done
+  echo "    $SEED_MKT_CONTAINER 已就绪，M5 营销种子可查。"
+else
+  echo "    $SEED_MKT_CONTAINER 未运行，跳过（起栈后 marketing-service 启动即自动播种）。"
+fi
+
+echo ""
 echo "✅ 完成。测试库 $SEED_DB 已就绪（可随时重跑本脚本 reset）。"
 echo "   行数核对："
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
@@ -103,4 +195,9 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
    UNION ALL SELECT 'appointment='||count(*) FROM appointment
    UNION ALL SELECT 'consultation='||count(*) FROM consultation
    UNION ALL SELECT 'staff='||count(*) FROM staff
+   UNION ALL SELECT 'marketing_asset='||count(*) FROM marketing_asset
+   UNION ALL SELECT 'poster_template='||count(*) FROM poster_template
+   UNION ALL SELECT 'poster_record='||count(*) FROM poster_record
+   UNION ALL SELECT 'live_session='||count(*) FROM live_session
+   UNION ALL SELECT 'short_video='||count(*) FROM short_video
    UNION ALL SELECT 'sys_dictionary(保留)='||count(*) FROM sys_dictionary;"
