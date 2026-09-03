@@ -43,7 +43,7 @@ public class WriteoffRecord {
     @Column(length = 32)
     private String operator;
 
-    /** 订单核销（/writeoff 页）记录状态：DONE=已核销、ABNORMAL=异常、VOID=已作废；卡扣次划扣记录为空（由 M2 划扣执行台消费）。 */
+    /** 记录状态：DONE=已核销/已划扣、ABNORMAL=异常、VOID=已作废。库表 NOT NULL DEFAULT 'DONE'，卡扣次划扣与订单核销均显式置 DONE。 */
     @Column(length = 16)
     private String status;
 

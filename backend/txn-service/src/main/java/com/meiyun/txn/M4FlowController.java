@@ -386,6 +386,7 @@ public class M4FlowController {
         w.setTimesUsed(cmd.timesUsed());
         w.setAmount(cmd.amount());
         w.setOperator(cmd.operator());
+        w.setStatus("DONE");
         w.setSign1(cmd.sign1());
         w.setSign2(cmd.sign2());
         writeoffRepo.save(w);

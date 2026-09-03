@@ -42,11 +42,14 @@ public class AppointmentController {
     private final AppointmentRepository repo;
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
+    private final WriteoffDeskService writeoffDeskService;
 
-    public AppointmentController(AppointmentRepository repo, AuditRecorder audit, ApptRefNameResolver names) {
+    public AppointmentController(AppointmentRepository repo, AuditRecorder audit, ApptRefNameResolver names,
+                                 WriteoffDeskService writeoffDeskService) {
         this.repo = repo;
         this.audit = audit;
         this.names = names;
+        this.writeoffDeskService = writeoffDeskService;
     }
 
     /** 创建预约（含外键/枚举/幂等校验）。 */
@@ -123,15 +126,20 @@ public class AppointmentController {
         return toView(saved);
     }
 
-    /** 到店签到（已预约 → 已到店）。 */
+    /**
+     * 到店签到（已预约 → 已到店）。签到成功同事务自动生成 M2 划扣核销台待划扣任务
+     * （来源 APPOINTMENT，绑客户本店在用最新卡；同一预约幂等仅一条，重复签到不重复建）。
+     */
     @PostMapping("/{no}/check-in")
     @RequirePerm("appointment:edit")
+    @org.springframework.transaction.annotation.Transactional
     public AppointmentView checkIn(@PathVariable String no) {
         Appointment a = getActive(no);
         a.setStatus(ST_ARRIVED);
         a.setArrivedAt(OffsetDateTime.now());
         Appointment saved = repo.save(a);
         audit.record("APPT", no, DataScope.currentActor(), "CHECK_IN", "{}");
+        writeoffDeskService.createFromAppointment(saved);
         return toView(saved);
     }
 

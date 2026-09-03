@@ -38,6 +38,12 @@ const selected = computed(() => list.value.find((i) => i.id === selectedId.value
 const confirmedAmount = computed(() => wd.done.reduce((s, i) => s + i.amount, 0))
 const pendingAmount = computed(() => wd.pending.reduce((s, i) => s + i.amount, 0))
 
+function fmtTime(iso?: string) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 const kpis = computed(() => [
   { label: '已双签确认收入', icon: 'check-square', value: `¥${confirmedAmount.value.toLocaleString('zh-CN')}`, tone: 'success' as const, sub: `${wd.done.length} 笔，计入营收` },
   { label: '待双签划扣', icon: 'check-square', value: `¥${pendingAmount.value.toLocaleString('zh-CN')}`, tone: 'warning' as const, sub: `${wd.pending.length} 笔，不计收入` },
@@ -49,7 +55,7 @@ function exportCsv() {
   if (!canExport.value) return
   const head = '划扣号,客户,项目,卡项,金额,操作人,复核人,来源,状态,时间\n'
   const rows = list.value.map((i) =>
-    [i.no, i.customerName, i.project, i.cardName, i.amount, i.operator, i.reviewer ?? '', wd.SOURCE_LABEL[i.source], wd.STATUS_LABEL[i.status], i.executedAt ?? i.appointmentTime].join(','),
+    [i.no, i.customerName, i.project, i.cardName, i.amount, i.operator, i.reviewer ?? '', wd.SOURCE_LABEL[i.source], wd.STATUS_LABEL[i.status], fmtTime(i.executedAt ?? i.appointmentTime)].join(','),
   ).join('\n')
   const blob = new Blob(['\uFEFF' + head + rows], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
@@ -125,8 +131,8 @@ function exportCsv() {
           <div><dt>剩余 / 总次数</dt><dd>{{ selected.remainingCount }} / {{ selected.totalCount }}</dd></div>
           <div><dt>操作人</dt><dd>{{ selected.operator }}</dd></div>
           <div><dt>复核人</dt><dd>{{ selected.reviewer ?? '待双签' }}</dd></div>
-          <div><dt>预约时间</dt><dd>{{ selected.appointmentTime }}</dd></div>
-          <div><dt>划扣时间</dt><dd>{{ selected.executedAt ?? '—' }}</dd></div>
+          <div><dt>预约时间</dt><dd>{{ fmtTime(selected.appointmentTime) }}</dd></div>
+          <div><dt>划扣时间</dt><dd>{{ fmtTime(selected.executedAt) }}</dd></div>
         </dl>
 
         <div v-if="selected.status === 'EXCEPTION'" class="exc-box">
@@ -140,7 +146,7 @@ function exportCsv() {
             <span class="tl__dot"></span>
             <div class="tl__body">
               <div class="tl__text">{{ t.text }}</div>
-              <div class="tl__by">{{ t.by }} · {{ t.at }}</div>
+              <div class="tl__by">{{ t.by }} · {{ fmtTime(t.at) }}</div>
             </div>
           </div>
         </div>

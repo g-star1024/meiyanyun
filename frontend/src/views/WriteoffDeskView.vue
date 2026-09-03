@@ -13,7 +13,8 @@ import CTextarea from '@/components/CTextarea.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
-import { useWriteoffDeskStore, type WriteoffDeskItem, type WdExceptionReason } from '@/stores/writeoffDesk'
+import { useWriteoffDeskStore, type WriteoffDeskItem, type WdExceptionReason, type WdCardOption } from '@/stores/writeoffDesk'
+import { searchCustomers, type CustomerDTO } from '@/api/customer'
 import { WRITEOFF_DESK_STATUS, dictPill } from '@/config/dictionary'
 import { useToast } from '@/composables/useToast'
 
@@ -58,39 +59,153 @@ function fmtTime(iso?: string) {
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// 执行划扣弹层（双签）
+// 执行划扣弹层（双签 + 卡选择器）
 const showExec = ref(false)
-const execForm = ref({ reviewer: '', remark: '' })
-const canExec = computed(() => execForm.value.reviewer.trim().length > 0)
-function openExec() {
+const execForm = ref({ reviewer: '', remark: '', cardNo: '' })
+const execCards = ref<WdCardOption[]>([])
+const execSubmitting = ref(false)
+const execCardOptions = computed(() =>
+  execCards.value.map((c) => ({
+    value: c.cardNo,
+    label: `${c.cardName} · 余 ${c.remainTimes}/${c.totalTimes} 次 · ¥${c.unitAmount.toLocaleString()}/次`,
+  })),
+)
+const execSingleCard = computed(() => (execCards.value.length === 1 ? execCards.value[0] : null))
+const canExec = computed(() => execForm.value.reviewer.trim().length > 0 && !execSubmitting.value)
+async function openExec() {
   if (!selected.value || selected.value.status !== 'PENDING') return
-  execForm.value = { reviewer: '', remark: '' }
+  execForm.value = { reviewer: '', remark: '', cardNo: selected.value.cardNo || '' }
+  execCards.value = []
   showExec.value = true
+  if (selected.value.customerId) {
+    execCards.value = await store.customerCards(selected.value.customerId, selected.value.storeCode)
+    const bound = execCards.value.find((c) => c.cardNo === selected.value?.cardNo)
+    execForm.value.cardNo = bound ? bound.cardNo : (execCards.value[0]?.cardNo || '')
+  }
 }
-function submitExec() {
+async function submitExec() {
   if (!selected.value || !canExec.value) return
-  const ok = store.execute(selected.value.id, execForm.value.reviewer)
-  if (ok) { showExec.value = false; toast.success(`双签划扣完成，复核人 ${execForm.value.reviewer}`) }
+  execSubmitting.value = true
+  try {
+    const res = await store.execute(
+      selected.value.id,
+      execForm.value.reviewer,
+      execForm.value.cardNo || undefined,
+      execForm.value.remark || undefined,
+    )
+    if (res.ok) {
+      showExec.value = false
+      toast.success(`双签划扣完成，复核人 ${execForm.value.reviewer.trim()}`)
+    } else {
+      toast.error(res.reason || '划扣失败')
+    }
+  } finally {
+    execSubmitting.value = false
+  }
 }
 
 // 异常标记弹层
 const showEx = ref(false)
 const exForm = ref<{ reason: WdExceptionReason; note: string }>({ reason: 'CUSTOMER_ABSENT', note: '' })
+const exSubmitting = ref(false)
 function openEx() {
   if (!selected.value || selected.value.status === 'DONE') return
   exForm.value = { reason: 'CUSTOMER_ABSENT', note: '' }
   showEx.value = true
 }
-function submitEx() {
-  if (!selected.value) return
-  store.markException(selected.value.id, exForm.value.reason, exForm.value.note || undefined)
-  showEx.value = false
-  toast.error('已标记异常，该单暂不可划扣')
+async function submitEx() {
+  if (!selected.value || exSubmitting.value) return
+  exSubmitting.value = true
+  try {
+    const res = await store.markException(selected.value.id, exForm.value.reason, exForm.value.note || undefined)
+    if (res.ok) {
+      showEx.value = false
+      toast.error('已标记异常，该单暂不可划扣')
+    } else {
+      toast.error(res.reason || '标记失败')
+    }
+  } finally {
+    exSubmitting.value = false
+  }
 }
-function doReset() {
+async function doReset() {
   if (!selected.value) return
-  store.resetToPending(selected.value.id)
-  toast.info('已解除异常，恢复待执行')
+  const res = await store.resetToPending(selected.value.id)
+  if (res.ok) toast.info('已解除异常，恢复待执行')
+  else toast.error(res.reason || '操作失败')
+}
+
+// 老客未预约直接到店：手工建单弹层
+const showWalkin = ref(false)
+const walkinForm = ref({ customerId: '', project: '', cardNo: '' })
+const walkinKeyword = ref('')
+const walkinResults = ref<CustomerDTO[]>([])
+const walkinCustomer = ref<CustomerDTO | null>(null)
+const walkinCards = ref<WdCardOption[]>([])
+const walkinSubmitting = ref(false)
+let walkinTimer: ReturnType<typeof setTimeout> | null = null
+
+function onWalkinSearch() {
+  if (walkinTimer) clearTimeout(walkinTimer)
+  const kw = walkinKeyword.value.trim()
+  if (!kw) { walkinResults.value = []; return }
+  walkinTimer = setTimeout(async () => {
+    try {
+      const res = await searchCustomers(kw)
+      walkinResults.value = res.data || []
+    } catch (e) {
+      console.error('[writeoff-desk] 客户搜索失败', e)
+    }
+  }, 300)
+}
+async function pickWalkinCustomer(c: CustomerDTO) {
+  walkinCustomer.value = c
+  walkinForm.value.customerId = c.customerId
+  walkinForm.value.cardNo = ''
+  walkinKeyword.value = `${c.name}（${c.phone}）`
+  walkinResults.value = []
+  walkinCards.value = await store.customerCards(c.customerId)
+}
+const walkinCardOptions = computed(() => [
+  ...(walkinCards.value.length > 1
+    ? [{ value: '', label: '不指定，使用本店最新在用卡' }]
+    : []),
+  ...walkinCards.value.map((c) => ({
+    value: c.cardNo,
+    label: `${c.cardName} · 余 ${c.remainTimes}/${c.totalTimes} 次 · ¥${c.unitAmount.toLocaleString()}/次`,
+  })),
+])
+const canWalkin = computed(
+  () => !!walkinCustomer.value && walkinCards.value.length > 0
+    && walkinForm.value.project.trim().length > 0 && !walkinSubmitting.value,
+)
+function openWalkin() {
+  walkinForm.value = { customerId: '', project: '', cardNo: '' }
+  walkinKeyword.value = ''
+  walkinResults.value = []
+  walkinCustomer.value = null
+  walkinCards.value = []
+  showWalkin.value = true
+}
+async function submitWalkin() {
+  if (!canWalkin.value) return
+  walkinSubmitting.value = true
+  try {
+    const res = await store.createWalkin({
+      customerId: walkinForm.value.customerId,
+      project: walkinForm.value.project,
+      cardNo: walkinForm.value.cardNo || undefined,
+    })
+    if (res.ok && res.item) {
+      showWalkin.value = false
+      selectedId.value = res.item.id
+      toast.success(`已建直接到店划扣任务 ${res.item.no}`)
+    } else {
+      toast.error(res.reason || '建单失败')
+    }
+  } finally {
+    walkinSubmitting.value = false
+  }
 }
 </script>
 
@@ -105,6 +220,12 @@ function doReset() {
     >
       <template #kpis>
         <CKpi v-for="k in kpis" :key="k.label" :label="k.label" :value="k.value" :tone="k.tone" :icon="k.icon" />
+      </template>
+
+      <template #toolbar>
+        <CButton variant="primary" size="sm" v-perm.disable="'writeoff:create'" @click="openWalkin">
+          <CIcon name="plus" :size="14" />直接到店建单
+        </CButton>
       </template>
 
       <!-- 左：列表 -->
@@ -215,6 +336,17 @@ function doReset() {
             <div class="sign-box__title"><CIcon name="shield" :size="16" /> 双签确认</div>
             <div class="sign-box__text">操作人：{{ selected?.operator }}　|　客户：{{ selected?.customerName }}（{{ selected?.project }}）</div>
           </div>
+          <div v-if="execCards.length > 1" class="form__row">
+            <label class="form__label">划扣所用卡</label>
+            <CSelect v-model="execForm.cardNo" :options="execCardOptions" width="100%" />
+          </div>
+          <div v-else-if="execSingleCard" class="form__row">
+            <label class="form__label">划扣所用卡</label>
+            <div class="card-line">
+              <CIcon name="card" :size="13" />
+              {{ execSingleCard.cardName }} · 余 {{ execSingleCard.remainTimes }}/{{ execSingleCard.totalTimes }} 次 · ¥{{ execSingleCard.unitAmount.toLocaleString() }}/次
+            </div>
+          </div>
           <div class="form__row">
             <label class="form__label">复核人 <span class="req">*</span></label>
             <CInput v-model="execForm.reviewer" placeholder="请输入复核人姓名，如：陈雅琳（店长）" />
@@ -246,7 +378,53 @@ function doReset() {
         </div>
         <template #footer>
           <CButton variant="ghost" @click="showEx = false">取消</CButton>
-          <CButton variant="danger" @click="submitEx">确认标记</CButton>
+          <CButton variant="danger" :disabled="exSubmitting" @click="submitEx">确认标记</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- 老客未预约直接到店：手工建单弹层 -->
+    <div v-if="showWalkin" class="modal-mask" @click.self="showWalkin = false">
+      <CCard class="modal" title="直接到店建单" padding="lg">
+        <div class="form">
+          <div class="sign-box">
+            <div class="sign-box__title"><CIcon name="store" :size="16" /> 老客未预约到店</div>
+            <div class="sign-box__text">新客请先走前台「登记 → 分诊 → 预约」流程；此处仅为已有档案的老客直接建划扣任务。</div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">到店客户 <span class="req">*</span></label>
+            <div class="cust-search">
+              <CInput v-model="walkinKeyword" placeholder="输入客户姓名 / 手机号搜索" @input="onWalkinSearch" />
+              <div v-if="walkinResults.length" class="cust-search__drop">
+                <button
+                  v-for="c in walkinResults" :key="c.customerId" type="button"
+                  class="cust-search__item" @click="pickWalkinCustomer(c)"
+                >
+                  <span class="cust-search__name">{{ c.name }}</span>
+                  <span class="cust-search__phone">{{ c.phone }}</span>
+                  <span class="cust-search__level">{{ c.level }}</span>
+                </button>
+              </div>
+            </div>
+            <div v-if="walkinCustomer" class="card-line">
+              <CIcon name="check" :size="13" /> 已选：{{ walkinCustomer.name }}（{{ walkinCustomer.phone }}）
+            </div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">核销项目 <span class="req">*</span></label>
+            <CInput v-model="walkinForm.project" placeholder="如：超声炮全脸提拉" />
+          </div>
+          <div v-if="walkinCardOptions.length > 0" class="form__row">
+            <label class="form__label">划扣所用卡</label>
+            <CSelect v-model="walkinForm.cardNo" :options="walkinCardOptions" width="100%" />
+          </div>
+          <div v-else-if="walkinCustomer && walkinCards.length === 0" class="form__row">
+            <div class="card-line is-danger">该客户在本门店无在用会员卡，无法建单</div>
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showWalkin = false">取消</CButton>
+          <CButton variant="primary" :disabled="!canWalkin" @click="submitWalkin">确认建单</CButton>
         </template>
       </CCard>
     </div>
@@ -315,6 +493,16 @@ function doReset() {
 .sign-box { background: var(--c-brand-soft); border-radius: var(--r-md); padding: var(--s-md); }
 .sign-box__title { display: flex; align-items: center; gap: var(--s-xs); font-size: var(--t-sm); font-weight: 600; color: var(--c-brand); margin-bottom: var(--s-xxs); }
 .sign-box__text { font-size: var(--t-sm); color: var(--c-text-2); }
+
+.card-line { display: flex; align-items: center; gap: var(--s-xs); font-size: var(--t-sm); color: var(--c-text-2); background: var(--c-disabled-bg); border-radius: var(--r-sm); padding: var(--s-xs) var(--s-sm); }
+.card-line.is-danger { color: var(--c-danger-fg); background: rgba(229,57,53,.08); }
+.cust-search { position: relative; }
+.cust-search__drop { position: absolute; z-index: 300; top: calc(100% + 4px); left: 0; right: 0; background: var(--c-bg, #fff); border: 1px solid var(--c-border); border-radius: var(--r-md); box-shadow: var(--shadow-pop); max-height: 220px; overflow-y: auto; padding: 4px; }
+.cust-search__item { display: flex; align-items: center; gap: var(--s-sm); width: 100%; text-align: left; padding: var(--s-xs) var(--s-sm); background: none; border: none; border-radius: var(--r-sm); cursor: pointer; font-size: var(--t-sm); }
+.cust-search__item:hover { background: var(--c-brand-soft); }
+.cust-search__name { font-weight: 600; color: var(--c-text); }
+.cust-search__phone { color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+.cust-search__level { margin-left: auto; font-size: var(--t-xs); color: var(--c-brand); background: var(--c-brand-soft); border-radius: var(--r-sm); padding: 1px 6px; }
 
 @media (max-width: 1024px) {
   .detail__head { flex-direction: column; gap: var(--s-sm); }

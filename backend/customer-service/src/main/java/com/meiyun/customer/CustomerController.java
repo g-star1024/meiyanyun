@@ -145,6 +145,25 @@ public class CustomerController {
         return m;
     }
 
+    /**
+     * 批量客户掩码手机号解析：GET /api/customer/phone-map?ids=SC001 → {"SC001":"138****2046"}。
+     * 手机号属敏感字段：无条件返回掩码（不开放明文），且仅服务间内部身份（X-Internal-Token）可调用；
+     * 普通登录人即便带 token 也无 internal:phone-map 权限 → 403。缺失的 id 不留 key。
+     */
+    @GetMapping("/phone-map")
+    @RequirePerm("internal:phone-map")
+    public Map<String, String> phoneMap(@RequestParam("ids") List<String> ids) {
+        List<String> distinct = ids.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();
+        Map<String, String> m = new LinkedHashMap<>();
+        if (distinct.isEmpty()) return m;
+        for (Customer c : customerRepo.findAllById(distinct)) {
+            if (c.getPhone() != null && !c.getPhone().isBlank()) {
+                m.put(c.getCustomerId(), CustomerService.maskPhone(c.getPhone(), false));
+            }
+        }
+        return m;
+    }
+
     // ---- 客户全文检索（ES，ES 不可用降级 DB 内存过滤） ----
     @GetMapping("/search")
     @RequirePerm("customer:view")

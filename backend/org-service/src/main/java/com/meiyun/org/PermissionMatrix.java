@@ -807,6 +807,7 @@ public final class PermissionMatrix {
                 "transfer:edit",
                 "transfer:create",
                 "writeoff:edit",
+                "writeoff:create",
                 "queue:edit",
                 "cashier:sign",
                 "cardcancel:sign",
@@ -975,7 +976,9 @@ public final class PermissionMatrix {
                 "schedule:view",
                 "workorder:view",
                 "workorder:create",
-                "daily:view"
+                "daily:view",
+                "writeoffdesk:view",
+                "writeoff:create"
         ));
         m.put("OPERATOR", List.of(
                 "marketing:view",
