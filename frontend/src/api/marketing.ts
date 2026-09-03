@@ -149,9 +149,54 @@ export interface CampaignStatsDTO {
   rows: CampaignStatsRowDTO[]
 }
 
+// -------------------- M5-14 营销看板：推送效果 / 漏斗 / 渠道 / 趋势 --------------------
+// 口径（后端 MarketingStatsService 聚合，金额「分」）：push_record 无到达/点击/转化回执字段，
+// 推送效果用「推送发送+内容曝光≈触达、内容互动≈点击、内容成交≈转化」真实表近似；
+// 漏斗为到店核销 O2O 链路严格递减；渠道营收/成交/线索取内容表（平台映射），投放取活动 spent 均摊。
+
+/** 推送/全域触达效果（ctr/cvr 为百分比，保留 1 位小数）。 */
+export interface PushStatsDTO {
+  sent: number
+  delivered: number
+  clicked: number
+  converted: number
+  ctr: number
+  cvr: number
+}
+
+/** 漏斗阶段（ratio 为相对上一级的百分比，首段 100；key: exposure/coupon/arrival/deal）。 */
+export interface FunnelStageDTO {
+  key: string
+  label: string
+  value: number
+  ratio: number
+}
+
+/** 渠道业绩排行（金额「分」，roi 为倍数两位；后端按营收降序）。 */
+export interface ChannelRankRowDTO {
+  key: string
+  name: string
+  revenue: number
+  spent: number
+  deals: number
+  leads: number
+  roi: number
+}
+
+/** 近 6 月触达/转化趋势点（month 为 yyyy-MM）。 */
+export interface TrendPointDTO {
+  month: string
+  reach: number
+  converted: number
+}
+
 export interface MarketingStatsDTO {
   coupon: CouponStatsDTO
   campaign: CampaignStatsDTO
+  push: PushStatsDTO
+  funnel: { stages: FunnelStageDTO[] }
+  channel: { rows: ChannelRankRowDTO[] }
+  trend: { points: TrendPointDTO[] }
 }
 
 // -------------------- 触达 / 核销链 --------------------
@@ -167,6 +212,35 @@ export interface PushQuota {
   sentLast7Days: number
   weeklyLimit: number
   remaining: number
+}
+
+// -------------------- M5-12 券核销 --------------------
+
+/** 核销流水 DTO（金额单位「分」；status: OK/DUPLICATE/FORGED/EXPIRED）。 */
+export interface CouponWriteoffDTO {
+  writeoffId: string
+  couponCode: string
+  couponId: string | null
+  couponName: string
+  customerName: string
+  customerPhone: string
+  storeCode: string
+  storeName: string
+  orderAmountFen: number
+  discountFen: number
+  channel: string
+  status: string
+  reason: string | null
+  operator: string
+  verifiedAt: string
+}
+
+/** 核销命令（金额单位「分」）。 */
+export interface CouponWriteoffCmd {
+  couponCode: string
+  customerName: string
+  customerPhone: string
+  orderAmountFen: number
 }
 
 /** 推送渠道码契约（与后端 MarketingController PUSH_TYPES 白名单一致；push_type 列 varchar(16)）。 */
@@ -229,6 +303,12 @@ export interface CheckCopyResult {
 export const getMarketingStats = () => client.get<MarketingStatsDTO>('/marketing/stats/overview')
 
 export const getWriteoffChain = () => client.get<WriteoffChain[]>('/marketing/writeoff-chain')
+
+/** M5-12 券核销流水（按核销时间倒序；伪造/重复/过期均落流水，不抛错）。 */
+export const listCouponWriteoffs = () => client.get<CouponWriteoffDTO[]>('/marketing/coupon-writeoffs')
+/** 扫码核销：后端顺序校验券码存在性→重复核销→状态/有效期/库存→计算抵扣；参数非法抛 400 中文。 */
+export const verifyCouponWriteoff = (cmd: CouponWriteoffCmd) =>
+  client.post<CouponWriteoffDTO>('/marketing/coupon-writeoff', cmd)
 export const getPushQuota = (customerId: string) =>
   client.get<PushQuota>(`/marketing/push/quota/${customerId}`)
 /** 发送触达（后端顺序校验：渠道白名单 → 违禁词 → 周频；失败抛 400 中文，前端取 errMsg 展示）。 */
@@ -403,3 +483,43 @@ export const startLiveSession = (id: string) =>
   client.post<TransitResult>(`/marketing/live-sessions/${id}/start`)
 export const endLiveSession = (id: string) =>
   client.post<TransitResult>(`/marketing/live-sessions/${id}/end`)
+
+// -------------------- M5-15 营销设置（GET/POST /config） --------------------
+// 金额口径：largeCouponThresholdFen bigint 存「分」，前端活规格用「元」，换算在 store 适配层；
+// defaultPushChannels/defaultAdChannels 后端存 JSON 数组文本，DTO 直接透出字符串由适配层 parse。
+
+export interface MarketingCfgDTO {
+  cfgId?: number
+  referralArrivedReward?: number | null
+  referralDealReward?: number | null
+  commissionRate?: number | null
+  weeklyPushLimit?: number | null
+  quietHoursEnabled?: boolean | null
+  quietStart?: string | null
+  quietEnd?: string | null
+  holidayExempt?: boolean | null
+  largeCouponThresholdFen?: number | null
+  pushRequiresApproval?: boolean | null
+  approvalLevel?: number | null
+  defaultPushChannels?: string | null
+  defaultAdChannels?: string | null
+}
+
+export interface MarketingCfgCmd {
+  weeklyLimit: number
+  quietHoursEnabled: boolean
+  quietStart: string
+  quietEnd: string
+  holidayExempt: boolean
+  /** 大额券审批阈值（分）。 */
+  largeCouponThresholdFen: number
+  pushRequiresApproval: boolean
+  approvalLevel: number
+  defaultPushChannels: string[]
+  defaultAdChannels: string[]
+}
+
+export const getMarketingConfig = () => client.get<MarketingCfgDTO>('/marketing/config')
+
+export const saveMarketingConfig = (cmd: MarketingCfgCmd) =>
+  client.post<TransitResult>('/marketing/config', cmd)

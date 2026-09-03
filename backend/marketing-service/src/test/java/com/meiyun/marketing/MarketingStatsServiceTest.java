@@ -26,12 +26,23 @@ class MarketingStatsServiceTest {
     CouponGrantRepository grantRepo;
     @Mock
     CampaignRepository campaignRepo;
+    @Mock
+    PushRecordRepository pushRepo;
+    @Mock
+    PosterRecordRepository posterRepo;
+    @Mock
+    LiveSessionRepository liveRepo;
+    @Mock
+    ShortVideoRepository videoRepo;
 
     MarketingStatsService service;
 
     @BeforeEach
     void setUp() {
-        service = new MarketingStatsService(couponRepo, grantRepo, campaignRepo);
+        // 推送/海报/直播/短视频四个仓储 Mockito 默认返回空 List，
+        // 全域看板新增的 push/funnel/channel/trend 四块在既有用例下自然回落 0/空
+        service = new MarketingStatsService(couponRepo, grantRepo, campaignRepo,
+                pushRepo, posterRepo, liveRepo, videoRepo);
     }
 
     @SuppressWarnings("unchecked")

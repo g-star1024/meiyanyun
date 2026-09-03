@@ -170,9 +170,12 @@ function requestSave() {
   }
   showConfirm.value = true
 }
-function confirmSave() {
-  const r = store.save({ ...draft })
-  if (!r.ok) return
+async function confirmSave() {
+  const r = await store.save({ ...draft })
+  if (!r.ok) {
+    toast.error(r.reason ?? '保存失败')
+    return
+  }
   syncFromStore()
   showConfirm.value = false
   toast.success('营销设置已保存')

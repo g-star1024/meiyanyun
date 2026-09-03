@@ -37,12 +37,13 @@ public class MarketingController {
     private final ForbiddenWordService forbiddenWordService;
     private final PushRecordRepository pushRepo;
     private final CouponWriteoffChainRepository chainRepo;
-    private final MarketingCfgRepository cfgRepo;
     private final RateLimiter rateLimiter;
     private final DomainEventPublisher events;
     private final MarketingAssetService assetService;
     private final PosterService posterService;
     private final LiveService liveService;
+    private final MarketingCfgService cfgService;
+    private final CouponWriteoffService writeoffService;
 
     private static final int PUSH_WINDOW_SECONDS = 7 * 24 * 3600; // 周频窗口
     private static final String PUSH_TOPIC = "meiyun.marketing.push-sent";
@@ -54,30 +55,43 @@ public class MarketingController {
                                MarketingStatsService statsService,
                                ForbiddenWordService forbiddenWordService,
                                PushRecordRepository pushRepo, CouponWriteoffChainRepository chainRepo,
-                               MarketingCfgRepository cfgRepo, RateLimiter rateLimiter,
+                               RateLimiter rateLimiter,
                                DomainEventPublisher events,
                                MarketingAssetService assetService,
                                PosterService posterService,
-                               LiveService liveService) {
+                               LiveService liveService,
+                               MarketingCfgService cfgService,
+                               CouponWriteoffService writeoffService) {
         this.campaignService = campaignService;
         this.couponService = couponService;
         this.statsService = statsService;
         this.forbiddenWordService = forbiddenWordService;
         this.pushRepo = pushRepo;
         this.chainRepo = chainRepo;
-        this.cfgRepo = cfgRepo;
         this.rateLimiter = rateLimiter;
         this.events = events;
         this.assetService = assetService;
         this.posterService = posterService;
         this.liveService = liveService;
+        this.cfgService = cfgService;
+        this.writeoffService = writeoffService;
     }
 
     // ==================== 配置 ====================
 
     @GetMapping("/config")
     public MarketingCfg config() {
-        return cfgRepo.findById(1).orElseGet(MarketingCfg::new);
+        return cfgService.get();
+    }
+
+    /**
+     * M5-15 保存营销设置（免打扰 / 审批流 / 默认渠道 / 周频上限）。
+     * 校验、幂等（全字段未变 changed=false 不审计）与全动作审计在 {@link MarketingCfgService}。
+     */
+    @PostMapping("/config")
+    @RequirePerm("m5settings:edit")
+    public Map<String, Object> saveConfig(@RequestBody MarketingCfgService.ConfigCmd cmd) {
+        return cfgService.save(cmd);
     }
 
     // ==================== M5-06 ROI 统计聚合 ====================
@@ -212,6 +226,24 @@ public class MarketingController {
     @GetMapping("/push/history/{customerId}")
     public List<PushRecord> history(@PathVariable String customerId) {
         return pushRepo.findByCustomerIdOrderBySentAtDesc(customerId);
+    }
+
+    // ==================== M5-12 券核销（扫码核销 + 重复/伪造/过期拦截） ====================
+
+    /** 核销流水（倒序）。 */
+    @GetMapping("/coupon-writeoffs")
+    public List<CouponWriteoffRecord> couponWriteoffs() {
+        return writeoffService.list();
+    }
+
+    /**
+     * 扫码核销：券码不存在/重复/过期返回 ok=false 异常流水（落库供告警），参数非法 400 中文错误；
+     * 正常核销回写券 usedQty 并审计。金额单位「分」。
+     */
+    @PostMapping("/coupon-writeoff")
+    @RequirePerm("couponWriteoff:verify")
+    public CouponWriteoffRecord couponWriteoff(@RequestBody CouponWriteoffService.VerifyCmd cmd) {
+        return writeoffService.verify(cmd);
     }
 
     // ==================== 核销链 ====================

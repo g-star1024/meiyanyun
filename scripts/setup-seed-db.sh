@@ -123,11 +123,28 @@ CREATE TABLE IF NOT EXISTS short_video (
   tags         varchar(256) NOT NULL,
   published_at date         NOT NULL
 );
+CREATE TABLE IF NOT EXISTS coupon_writeoff_record (
+  writeoff_id      varchar(24)  PRIMARY KEY,
+  coupon_code      varchar(32)  NOT NULL,
+  coupon_id        varchar(24),
+  coupon_name      varchar(64)  NOT NULL,
+  customer_name    varchar(32)  NOT NULL,
+  customer_phone   varchar(20)  NOT NULL,
+  store_code       varchar(16)  NOT NULL,
+  store_name       varchar(64)  NOT NULL,
+  order_amount_fen bigint       NOT NULL,
+  discount_fen     bigint       NOT NULL,
+  channel          varchar(16)  NOT NULL,
+  status           varchar(10)  NOT NULL,
+  reason           varchar(200),
+  operator         varchar(32)  NOT NULL,
+  verified_at      timestamptz  NOT NULL
+);
 SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
   account_mirror, appointment, appointment_month, audit_log, campaign, consultation,
-  contraindication, coupon_grant, coupon_template, coupon_writeoff_chain, cross_domain_coeff,
+  contraindication, coupon_grant, coupon_template, coupon_writeoff_chain, coupon_writeoff_record, cross_domain_coeff,
   customer, customer_tag, customer_tag_rel, dual_sign_ticket,
   inventory_item, inventory_log, mall_exchange, mall_product, marketing_cfg,
   member_card, member_level, org_unit, outbox_record, point_rule,

@@ -9,11 +9,11 @@ import CKpi from '@/components/CKpi.vue'
 import CSelect from '@/components/CSelect.vue'
 import CInput from '@/components/CInput.vue'
 import {
-  useM5CoreStore, WRITEOFF_STATUS_LABEL, WRITEOFF_STATUS_PILL, type WriteoffStatus,
-} from '@/stores/m5Core'
+  useM5WriteoffStore, WRITEOFF_STATUS_LABEL, WRITEOFF_STATUS_PILL, type WriteoffStatus,
+} from '@/stores/m5Writeoff'
 import { useAuthStore } from '@/stores/auth'
 
-const core = useM5CoreStore()
+const core = useM5WriteoffStore()
 const auth = useAuthStore()
 
 const filterStatus = ref('ALL')
@@ -37,18 +37,27 @@ const kpis = computed(() => [
   { label: '优惠抵扣额', icon: 'marketing', value: '¥' + core.writeoffStats.discount.toLocaleString(), tone: 'orange' as const },
 ])
 
-function doVerify() {
+const verifying = ref(false)
+
+async function doVerify() {
   verifyResult.value = null
   if (!verifyCode.value.trim()) { verifyResult.value = { ok: false, message: '请输入或扫描券码', record: { couponName: '', discount: 0, status: 'FORGED' } }; return }
   if (!customerName.value.trim() || !customerPhone.value.trim()) { verifyResult.value = { ok: false, message: '请填写客户姓名和手机号', record: { couponName: '', discount: 0, status: 'FORGED' } }; return }
   if (!amount.value || amount.value <= 0) { verifyResult.value = { ok: false, message: '请输入核销订单金额', record: { couponName: '', discount: 0, status: 'FORGED' } }; return }
-  const r = core.verifyCoupon(verifyCode.value.trim(), customerName.value.trim(), customerPhone.value.trim(), amount.value)
-  verifyResult.value = {
-    ok: r.ok,
-    message: r.ok ? `核销成功，优惠抵扣 ¥${r.record.discount.toLocaleString()}` : `核销拦截：${r.reason}`,
-    record: { couponName: r.record.couponName, discount: r.record.discount, status: r.record.status },
+  verifying.value = true
+  try {
+    const r = await core.verifyCoupon(verifyCode.value.trim(), customerName.value.trim(), customerPhone.value.trim(), amount.value)
+    verifyResult.value = {
+      ok: r.ok,
+      message: r.ok
+        ? (r.record.discount > 0 ? `核销成功，优惠抵扣 ¥${r.record.discount.toLocaleString()}` : '核销成功，订单未达使用门槛，本次未抵扣')
+        : `核销拦截：${r.reason}`,
+      record: { couponName: r.record.couponName, discount: r.record.discount, status: r.record.status },
+    }
+    if (r.ok) { verifyCode.value = ''; customerName.value = ''; customerPhone.value = ''; amount.value = null }
+  } finally {
+    verifying.value = false
   }
-  if (r.ok) { verifyCode.value = ''; customerName.value = ''; customerPhone.value = ''; amount.value = null }
 }
 
 function statusTone(s: WriteoffStatus): 'success' | 'warning' | 'danger' { return WRITEOFF_STATUS_PILL[s] }
@@ -77,7 +86,7 @@ onMounted(() => { core.seed() })
           <span class="yen">¥</span>
           <input v-model.number="amount" type="number" class="native-input native-input--yen" placeholder="订单金额" />
         </div>
-        <CButton variant="primary" block :disabled="!canVerify" @click="doVerify">
+        <CButton variant="primary" block :disabled="!canVerify || verifying" @click="doVerify">
           <CIcon name="check-square" :size="14" />确认核销
         </CButton>
         <div v-if="verifyResult" class="verify-result" :class="verifyResult.ok ? 'is-ok' : 'is-fail'">

@@ -11,6 +11,11 @@ import type { MarketingStatsDTO } from '@/api/marketing'
 
 function baseStatsDTO(over: Partial<MarketingStatsDTO> = {}): MarketingStatsDTO {
   return {
+    // 全域看板新增四块在 ROI 适配层单测中不消费，给空态即可
+    push: { sent: 0, delivered: 0, clicked: 0, converted: 0, ctr: 0, cvr: 0 },
+    funnel: { stages: [] },
+    channel: { rows: [] },
+    trend: { points: [] },
     coupon: {
       couponKinds: 1,
       totalStock: 100,

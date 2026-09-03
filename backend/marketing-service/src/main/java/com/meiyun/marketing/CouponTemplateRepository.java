@@ -10,4 +10,7 @@ public interface CouponTemplateRepository extends JpaRepository<CouponTemplate, 
 
     /** 单据号生成：取当日同前缀最大号（参数如 CPN20260902-%）。 */
     Optional<CouponTemplate> findTopByCouponIdLikeOrderByCouponIdDesc(String prefix);
+
+    /** 核销扫码：按展示券码查券（大小写不敏感）。 */
+    Optional<CouponTemplate> findByCouponCodeIgnoreCase(String couponCode);
 }
