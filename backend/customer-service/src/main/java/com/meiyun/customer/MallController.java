@@ -26,14 +26,17 @@ public class MallController {
     private final PointRuleRepository ruleRepo;
     private final MallExchangeRepository exchangeRepo;
     private final CustomerService customerService;
+    private final CustomerRepository customerRepo;
     private final AtomicLong seq = new AtomicLong(System.nanoTime() % 1_000_000);
 
     public MallController(MallProductRepository productRepo, PointRuleRepository ruleRepo,
-                          MallExchangeRepository exchangeRepo, CustomerService customerService) {
+                          MallExchangeRepository exchangeRepo, CustomerService customerService,
+                          CustomerRepository customerRepo) {
         this.productRepo = productRepo;
         this.ruleRepo = ruleRepo;
         this.exchangeRepo = exchangeRepo;
         this.customerService = customerService;
+        this.customerRepo = customerRepo;
     }
 
     // ==================== 商品管理 ====================
@@ -104,13 +107,20 @@ public class MallController {
     }
 
     /**
-     * C 端兑换入口：客户提交兑换申请（生成「待审核」单，不立即扣积分/库存，
+     * 兑换申请入口：客户提交兑换申请（生成「待审核」单，不立即扣积分/库存，
      * 双签审核通过时同事务扣减——走 B 端 review 链）。
      * 红线：仅已上架商品可兑；库存须充足；数量须大于 0。
+     * 权限：须登录（points:view 登录门槛），且 customerId 必须为真实存在的客户——
+     * 禁止匿名刷单、禁止请求体自报不存在的客户；C 端会员独立 token 体系上线前，
+     * customerId 由 B 端代客下单/已登录会话带入，不做匿名开放。
      */
     @PostMapping("/exchange")
+    @RequirePerm("points:view")
     @Transactional
     public MallExchange placeExchange(@RequestBody @Valid PlaceExchangeCmd cmd) {
+        if (!customerRepo.existsById(cmd.customerId())) {
+            throw new CustomerService.BadReq("客户不存在: " + cmd.customerId());
+        }
         MallProduct p = productRepo.findById(cmd.productId())
                 .orElseThrow(() -> new CustomerService.NotFound("商品不存在: " + cmd.productId()));
         if (!"已上架".equals(p.getStatus())) {

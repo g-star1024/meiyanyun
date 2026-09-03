@@ -584,6 +584,9 @@ export const AUTH_ONLY = '__AUTH__'
 /** 动作型子页面（不在主导航出现，但需权限守卫）path → permission */
 const ACTION_ROUTE_PERMISSION: Record<string, string> = {
   '/appointment/new': 'appointment:create',
+  // 字典管理页（写页面）：与后端 /api/customer/dictionaries/manage 的 settings:view 门槛对齐；
+  // 无 settings:view 者由路由守卫挡在 /no-auth，避免能进页面却被后端 403 打空白。
+  '/admin/dictionary/manage': 'settings:view',
 }
 
 /** 动态路由前缀 → 所需权限（/customers/C-201、/customers/C-201/360 等；/m 前缀走独立会员体系不拦） */

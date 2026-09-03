@@ -45,8 +45,8 @@ meiyun:
       - /api/org/auth/dev-login
       - /actuator/health
       - /error
-      # C 端积分商城兑换入口（小程序/App 调用，非员工权限域；生成待审核单，不扣分不发货）
-      - /api/customer/mall/exchange
+      # 注：/api/customer/mall/exchange 已收回登录态内（points:view 门槛 + customerId 存在性校验）。
+      # C 端小程序兑换待会员独立 token 体系上线后再开放匿名/会员通道，不在此白名单。
 
 logging:
   level:

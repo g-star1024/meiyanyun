@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { getManageDictionaries, createDictionary, updateDictionary, getCategories } from '@/api/dictionary'
 import type { DictionaryDTO } from '@/api/dictionary'
 import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
@@ -13,9 +14,12 @@ import CIcon from '@/components/CIcon.vue'
 
 const router = useRouter()
 const toast = useToast()
+const auth = useAuthStore()
 
-/** 管理端暂无登录体系，审计操作人统一记 admin（后续接入 RBAC 后替换为当前登录人） */
-const OPERATOR = 'admin'
+const canEdit = computed(() => auth.can('settings:edit'))
+
+/** 审计操作人：RBAC 已落地，取当前登录人 staffId；服务端审计以 JWT 为准，此值仅作前端留痕 */
+const OPERATOR = auth.user.staffId || 'admin'
 
 function errMsg(e: any, fallback: string) {
   return e?.response?.data?.message || e?.message || fallback
@@ -196,7 +200,7 @@ onMounted(loadData)
             <CIcon name="layers" :size="16" />
             字典库查阅
           </CButton>
-          <CButton variant="primary" @click="openCreateForm">
+          <CButton v-if="canEdit" variant="primary" @click="openCreateForm">
             <CIcon name="plus" :size="16" />
             新增字典项
           </CButton>
@@ -248,7 +252,7 @@ onMounted(loadData)
               {{ item.description }}
             </div>
           </div>
-          <div class="dict-item__actions">
+          <div v-if="canEdit" class="dict-item__actions">
             <CButton variant="text" size="sm" @click="openEditForm(item)">
               <CIcon name="edit" :size="14" />
               编辑
