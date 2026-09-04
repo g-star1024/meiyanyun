@@ -27,8 +27,8 @@ import java.util.Map;
  *   <li>客户号（customer_id）→ customer-service {@code /api/customer/name-map}（姓名）</li>
  *   <li>客户号 → customer-service {@code /api/customer/phone-map}（掩码手机号 138****2046）</li>
  * </ul>
- * 手机号属敏感字段：phone-map 端点要求服务间内部身份，故该调用携带 X-Internal-Token；
- * 姓名/门店/员工 name-map 为公开富化端点，沿用匿名调用。任一被调方不可用均降级为空 Map，不阻断主流程。
+ * 手机号与真实姓名均属敏感字段：phone-map / name-map 端点均要求服务间内部身份（X-Internal-Token），
+ * 四个解析调用一律以系统身份携带令牌；任一被调方不可用均降级为空 Map，不阻断主流程。
  */
 @Component
 public class ApptRefNameResolver {
@@ -54,17 +54,17 @@ public class ApptRefNameResolver {
 
     /** 员工工号 → 姓名。 */
     public Map<String, String> staffNames(Collection<String> ids) {
-        return fetch(orgBaseUrl + "/api/org/staff/name-map", "ids", ids, "员工名", false);
+        return fetch(orgBaseUrl + "/api/org/staff/name-map", "ids", ids, "员工名", true);
     }
 
     /** 门店编码 → 门店名。 */
     public Map<String, String> storeNames(Collection<String> codes) {
-        return fetch(storeBaseUrl + "/api/stores/name-map", "codes", codes, "门店名", false);
+        return fetch(storeBaseUrl + "/api/stores/name-map", "codes", codes, "门店名", true);
     }
 
     /** 客户号 → 客户名。 */
     public Map<String, String> customerNames(Collection<String> ids) {
-        return fetch(customerBaseUrl + "/api/customer/name-map", "ids", ids, "客户名", false);
+        return fetch(customerBaseUrl + "/api/customer/name-map", "ids", ids, "客户名", true);
     }
 
     /** 客户号 → 掩码手机号（138****2046）。敏感端点，携带 X-Internal-Token 以系统身份调用。 */

@@ -2,6 +2,7 @@ package com.meiyun.org;
 
 import com.meiyun.security.JwtTokenUtil;
 import com.meiyun.security.LoginUser;
+import com.meiyun.security.SecurityContext;
 import com.meiyun.security.SecurityProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -131,6 +132,11 @@ public class AuthController {
 
     @GetMapping("/permissions")
     public Map<String, Object> permissions() {
+        // 矩阵是前端路由/按钮门控的真源：任何登录人都需要拉取自检，但匿名不得访问
+        // （不加 @RequirePerm：一线角色不持 permission:view，门控语义应为「登录即可」而非「职能权限」）。
+        if (SecurityContext.get() == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "未登录或登录已失效，请重新登录");
+        }
         Map<String, Object> out = new LinkedHashMap<>();
         List<String> dict = permRepo.findAll().stream()
                 .map(PermissionDef::getPermissionCode).sorted().toList();

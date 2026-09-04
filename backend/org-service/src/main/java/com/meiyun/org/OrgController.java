@@ -158,6 +158,7 @@ public class OrgController {
      * 例：GET /api/org/staff/name-map?ids=SE006,SE007 → {"SE006":"沈咨询","SE007":"古医生"}
      */
     @GetMapping("/staff/name-map")
+    @RequirePerm("internal:name-map")
     public Map<String, String> staffNameMap(@RequestParam(value = "ids", required = false) List<String> ids) {
         Map<String, String> out = new LinkedHashMap<>();
         if (ids == null) return out;

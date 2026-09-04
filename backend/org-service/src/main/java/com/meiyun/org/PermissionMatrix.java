@@ -320,7 +320,6 @@ public final class PermissionMatrix {
             "complaint:create",
             "writeoff:create",
             "cashier:sign",
-            "cardcancel:sign",
             "consult:create",
             "prescription:create",
             "emr:create",
@@ -334,6 +333,7 @@ public final class PermissionMatrix {
             "refund:create",
             "refund:sign",
             "cardcancel:create",
+            "cardcancel:sign",
             "cashier:approve",
             "finance:margin:view"
     );
@@ -810,7 +810,6 @@ public final class PermissionMatrix {
                 "writeoff:create",
                 "queue:edit",
                 "cashier:sign",
-                "cardcancel:sign",
                 "customer:merge",
                 "customer:transfer:owner",
                 "settings:edit",

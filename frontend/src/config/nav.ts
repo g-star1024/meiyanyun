@@ -424,6 +424,7 @@ export const PAGE_TITLES: Record<string, PageTitle> = {
   '/refund': { breadcrumb: '交易管理 / 退款管理', title: '退款管理', hideTopbar: true },
   '/customer-profile': { breadcrumb: '客户管理 / 客户画像', title: '客户画像' },
   '/consultation': { breadcrumb: '工作台 / 咨询工作台', title: '咨询工作台', hideTopbar: true },
+  '/doctor': { breadcrumb: '工作台 / 医师工作台', title: '医师工作台', hideTopbar: true },
   '/writeoff': { breadcrumb: '工作台 / 划扣核销', title: '划扣核销', hideTopbar: true },
   '/emr': { breadcrumb: '工作台 / 电子病历管理', title: '电子病历管理', hideTopbar: true },
   '/recall': { breadcrumb: '工作台 / 复诊提醒管理', title: '复诊提醒管理', hideTopbar: true },
@@ -584,6 +585,7 @@ export const AUTH_ONLY = '__AUTH__'
 /** 动作型子页面（不在主导航出现，但需权限守卫）path → permission */
 const ACTION_ROUTE_PERMISSION: Record<string, string> = {
   '/appointment/new': 'appointment:create',
+  '/appointment/detail': 'appointment:view',
   // 字典管理页（写页面）：与后端 /api/customer/dictionaries/manage 的 settings:view 门槛对齐；
   // 无 settings:view 者由路由守卫挡在 /no-auth，避免能进页面却被后端 403 打空白。
   '/admin/dictionary/manage': 'settings:view',

@@ -79,7 +79,7 @@ public class TxnController {
 
     /** 财务终审确认退款/退卡完成：PENDING_FINANCE → REFUNDED（资金出入账 M6 补）。 */
     @PostMapping("/{txnNo}/confirm")
-    @RequirePerm({"refund:approve", "cardcancel:approve"})
+    @RequirePerm({"refund:sign", "cardcancel:sign"})
     public void confirm(@PathVariable String txnNo, @RequestBody(required = false) TxnService.ApprovalCmd cmd) {
         txnService.confirmRefund(txnNo, cmd == null ? new TxnService.ApprovalCmd(null, null) : cmd);
     }

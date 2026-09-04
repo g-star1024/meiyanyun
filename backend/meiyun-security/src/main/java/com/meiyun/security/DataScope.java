@@ -37,7 +37,7 @@ public final class DataScope {
     private DataScope() {
     }
 
-    /** 当前登录人；无上下文返回 null（服务间匿名通道）。 */
+    /** 当前登录人；无上下文返回 null（未经认证的公共通道）。 */
     public static LoginUser current() {
         return SecurityContext.get();
     }

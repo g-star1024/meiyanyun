@@ -271,18 +271,34 @@ public class RbacDataInitializer implements ApplicationRunner {
     }
 
     private void seedRolePermissions() {
+        Map<String, Set<String>> matrix = new LinkedHashMap<>();
+        for (Map.Entry<String, List<String>> e : PermissionMatrix.rolePermissions().entrySet()) {
+            Set<String> perms = new HashSet<>();
+            for (String perm : e.getValue()) {
+                if (!"*".equals(perm)) perms.add(perm); // 超管通配由代码判定，不落库
+            }
+            matrix.put(e.getKey(), perms);
+        }
+        // 内置 8 角色以矩阵为唯一真源：既补齐缺失授权，也回收矩阵已移除的旧授权
+        // （矩阵收权后若只增不删，DB 旧授权会让收权永久不生效）。
+        List<RolePermission> rows = rolePermRepo.findByRoleCodeIn(List.copyOf(matrix.keySet()));
         Map<String, Set<String>> existing = new HashMap<>();
-        for (RolePermission rp : rolePermRepo.findAll()) {
+        for (RolePermission rp : rows) {
             existing.computeIfAbsent(rp.getRoleCode(), k -> new HashSet<>()).add(rp.getPermissionCode());
         }
-        for (Map.Entry<String, List<String>> e : PermissionMatrix.rolePermissions().entrySet()) {
+        for (Map.Entry<String, Set<String>> e : matrix.entrySet()) {
             String role = e.getKey();
+            Set<String> want = e.getValue();
             Set<String> have = existing.computeIfAbsent(role, k -> new HashSet<>());
-            for (String perm : e.getValue()) {
-                if ("*".equals(perm)) continue; // 超管通配由代码判定，不落库
+            for (String perm : want) {
                 if (!have.contains(perm)) {
                     rolePermRepo.save(new RolePermission(role, perm));
                     have.add(perm);
+                }
+            }
+            for (String perm : List.copyOf(have)) {
+                if (!want.contains(perm)) {
+                    rolePermRepo.delete(new RolePermission(role, perm));
                 }
             }
         }

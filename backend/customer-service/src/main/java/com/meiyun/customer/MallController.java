@@ -1,5 +1,6 @@
 package com.meiyun.customer;
 
+import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -93,6 +94,7 @@ public class MallController {
     // ==================== 积分规则 ====================
 
     @GetMapping("/rule")
+    @RequirePerm("points:view")
     public PointRule rule() {
         return ruleRepo.findById(1).orElseGet(PointRule::new);
     }
@@ -100,7 +102,7 @@ public class MallController {
     // ==================== 兑换审核（双签） ====================
 
     @GetMapping("/exchanges")
-    @RequirePerm("points:view")
+    @RequirePerm("points:approve")
     public List<MallExchange> exchanges(@RequestParam(required = false) String status) {
         return status == null ? exchangeRepo.findAllByOrderByCreatedAtDesc()
                 : exchangeRepo.findByStatusOrderByCreatedAtDesc(status);
@@ -145,10 +147,15 @@ public class MallController {
         return exchangeRepo.save(e);
     }
 
-    /** C 端「我的兑换」：按客户查兑换记录及审核状态。 */
+    /** C 端「我的兑换」：按客户查兑换记录及审核状态；须通过该客户数据域断言，越权/不存在统一 404。 */
     @GetMapping("/exchanges/my")
     @RequirePerm({"points:view", "customer:view"})
     public List<MallExchange> myExchanges(@RequestParam String customerId) {
+        Customer c = customerRepo.findById(customerId)
+                .orElseThrow(() -> new CustomerService.NotFound("数据不存在或无权查看"));
+        if (!DataScope.canReadOwned(c.getStoreCode(), c.getOwnerStaffId())) {
+            throw new CustomerService.NotFound("数据不存在或无权查看");
+        }
         return exchangeRepo.findByCustomerIdOrderByCreatedAtDesc(customerId);
     }
 

@@ -1,9 +1,12 @@
 package com.meiyun.marketing;
 
+import com.meiyun.security.AuthInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
@@ -31,6 +34,9 @@ public class StoreNameResolver {
     @Value("${store.service.url:http://127.0.0.1:8085}")
     private String storeBaseUrl;
 
+    @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
+    private String internalToken;
+
     public StoreNameResolver(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
@@ -51,8 +57,10 @@ public class StoreNameResolver {
                     .fromHttpUrl(storeBaseUrl + "/api/stores/name-map")
                     .queryParam("codes", String.join(",", distinct))
                     .toUriString();
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
             ResponseEntity<Map<String, String>> resp = restTemplate.exchange(
-                    url, HttpMethod.GET, null,
+                    url, HttpMethod.GET, new HttpEntity<>(headers),
                     new ParameterizedTypeReference<Map<String, String>>() {});
             if (resp.getBody() != null) {
                 out.putAll(resp.getBody());

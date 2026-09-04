@@ -132,9 +132,12 @@ public class CustomerController {
     /**
      * 批量客户名解析：GET /api/customer/name-map?ids=SC001&ids=SC002 → {"SC001":"王女士"}。
      * 供交易域（预约/订单列表）服务间调用富化客户名，缺失的 id 不留 key。
+     * 客户真实姓名属敏感字段：仅服务间内部身份（X-Internal-Token）可调用，
+     * 普通登录人即便带 token 也无 internal:name-map 权限 → 403。
      * 注：精确路径 /name-map 优先于 /{id} 匹配，不会被当成客户号。
      */
     @GetMapping("/name-map")
+    @RequirePerm("internal:name-map")
     public Map<String, String> nameMap(@RequestParam("ids") List<String> ids) {
         List<String> distinct = ids.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();
         Map<String, String> m = new LinkedHashMap<>();

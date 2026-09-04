@@ -59,6 +59,7 @@ public class StoreController {
      * 注：精确路径 /name-map 优先于 /{code} 匹配，不会被当成门店编码。
      */
     @GetMapping("/name-map")
+    @RequirePerm("internal:name-map")
     public Map<String, String> nameMap(@RequestParam(value = "codes", required = false) List<String> codes) {
         Map<String, String> out = new LinkedHashMap<>();
         if (codes == null) return out;

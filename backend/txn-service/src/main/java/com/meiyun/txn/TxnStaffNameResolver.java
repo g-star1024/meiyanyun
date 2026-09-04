@@ -1,9 +1,12 @@
 package com.meiyun.txn;
 
+import com.meiyun.security.AuthInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
@@ -35,6 +38,9 @@ public class TxnStaffNameResolver {
     @Value("${org.service.url:http://127.0.0.1:8086}")
     private String orgBaseUrl;
 
+    @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
+    private String internalToken;
+
     public TxnStaffNameResolver(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
@@ -47,8 +53,10 @@ public class TxnStaffNameResolver {
             UriComponentsBuilder builder =
                     UriComponentsBuilder.fromHttpUrl(orgBaseUrl + "/api/org/staff/name-map");
             ids.forEach(v -> builder.queryParam("ids", v));
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
             ResponseEntity<Map<String, String>> resp =
-                    restTemplate.exchange(builder.toUriString(), HttpMethod.GET, null, MAP_TYPE);
+                    restTemplate.exchange(builder.toUriString(), HttpMethod.GET, new HttpEntity<>(headers), MAP_TYPE);
             Map<String, String> body = resp.getBody();
             return body != null ? body : new HashMap<>();
         } catch (Exception e) {

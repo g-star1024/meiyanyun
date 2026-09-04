@@ -1,9 +1,12 @@
 package com.meiyun.customer;
 
+import com.meiyun.security.AuthInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Component;
@@ -41,6 +44,9 @@ public class RefNameResolver {
     @Value("${store.service.url:http://127.0.0.1:8085}")
     private String storeBaseUrl;
 
+    @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
+    private String internalToken;
+
     public RefNameResolver(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
     }
@@ -59,13 +65,15 @@ public class RefNameResolver {
         return fetchNameMap(storeBaseUrl + "/api/stores/name-map", "codes", codes, "门店名");
     }
 
-    /** 通用批量名解析：GET base?param=v1&amp;param=v2 → Map&lt;code,name&gt;，失败降级空 Map。 */
+    /** 通用批量名解析：GET base?param=v1&amp;param=v2 → Map&lt;code,name&gt;，失败降级空 Map。name-map 为内部端点，携带 X-Internal-Token。 */
     private Map<String, String> fetchNameMap(String baseUrl, String param, List<String> values, String label) {
         try {
             UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(baseUrl);
             values.forEach(v -> builder.queryParam(param, v));
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
             ResponseEntity<Map<String, String>> resp =
-                    restTemplate.exchange(builder.toUriString(), HttpMethod.GET, null, MAP_TYPE);
+                    restTemplate.exchange(builder.toUriString(), HttpMethod.GET, new HttpEntity<>(headers), MAP_TYPE);
             Map<String, String> body = resp.getBody();
             return body != null ? body : new HashMap<>();
         } catch (Exception e) {
