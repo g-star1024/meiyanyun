@@ -1,6 +1,7 @@
 package com.meiyun.customer;
 
 import com.meiyun.security.DataScope;
+import com.meiyun.security.SecurityContext;
 import jakarta.persistence.criteria.Predicate;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -13,12 +14,24 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 public class CustomerService {
 
+    /** 性别取值白名单（对齐 customer gender CHECK 约束）。 */
+    private static final Set<String> GENDERS = Set.of("女", "男", "其他");
+    /** 获客渠道白名单（对齐真实库 7 码 + CUSTOMER_SOURCE 字典）。 */
+    private static final Set<String> CHANNELS =
+            Set.of("WALK_IN", "REFERRAL", "WECHAT", "DOUYIN", "XIAOHONGSHU", "MEITUAN", "OTHER");
+    /** 大陆手机号：1 开头、第二位 3-9、共 11 位数字。 */
+    private static final Pattern PHONE_RE = Pattern.compile("^1[3-9]\\d{9}$");
+
     private final CustomerRepository customerRepo;
+    private final MemberLevelRepository levelRepo;
     private final MemberCardRepository cardRepo;
     private final PointsLedgerRepository ledgerRepo;
     private final PointsPoolRepository pointsPoolRepo;
@@ -26,11 +39,13 @@ public class CustomerService {
     private final CustomerTagRepository tagRepo;
     private final RefNameResolver nameResolver;
 
-    public CustomerService(CustomerRepository customerRepo, MemberCardRepository cardRepo,
+    public CustomerService(CustomerRepository customerRepo, MemberLevelRepository levelRepo,
+                           MemberCardRepository cardRepo,
                            PointsLedgerRepository ledgerRepo, PointsPoolRepository pointsPoolRepo,
                            CustomerTagRelRepository tagRelRepo, CustomerTagRepository tagRepo,
                            RefNameResolver nameResolver) {
         this.customerRepo = customerRepo;
+        this.levelRepo = levelRepo;
         this.cardRepo = cardRepo;
         this.ledgerRepo = ledgerRepo;
         this.pointsPoolRepo = pointsPoolRepo;
@@ -182,6 +197,77 @@ public class CustomerService {
         log.setBalanceAfter(after);
         log.setReason(reason);
         return ledgerRepo.save(log);
+    }
+
+    /**
+     * 新建客户（写接口四件套：校验 / 防重 / 审计 / 中文错误）。
+     * 编号由后端按库内最大 M 序号生成（synchronized + max 查询防重号，禁内存自增）；
+     * 归属门店/归属人取登录上下文，前端不可伪造；status/points/消费等聚合字段一律服务端置默认。
+     * 同门店同手机号撞单直接中文拒绝（避免重复建档）。审计由 Controller 落 CUSTOMER/CREATE。
+     */
+    @Transactional
+    public synchronized Customer create(Customer input) {
+        if (input == null) throw new BadReq("请求体不能为空");
+        String name = trim(input.getName());
+        String phone = trim(input.getPhone());
+        String gender = trim(input.getGender());
+        String level = trim(input.getLevel());
+        String channel = trim(input.getChannel());
+
+        if (name.isEmpty()) throw new BadReq("请填写客户姓名");
+        if (name.length() > 32) throw new BadReq("客户姓名最长 32 字");
+        if (phone.isEmpty()) throw new BadReq("请填写手机号");
+        if (!PHONE_RE.matcher(phone).matches()) throw new BadReq("手机号格式不正确（需 11 位大陆手机号）");
+        if (!GENDERS.contains(gender)) throw new BadReq("性别取值非法：女 / 男 / 其他");
+        if (level.isEmpty()) level = "普通";
+        if (!levelRepo.existsById(level)) throw new BadReq("会员等级不存在：" + level);
+        if (channel.isEmpty()) channel = "WALK_IN";
+        if (!CHANNELS.contains(channel)) throw new BadReq("获客渠道取值非法：" + channel);
+
+        // 归属门店/归属人由登录上下文权威注入（SELF/STORE 有门店；GROUP/REGION 无门店则进公海）
+        String storeCode = DataScope.current() != null ? trim(DataScope.current().storeCode()) : "";
+        if (storeCode.isEmpty()) storeCode = null;
+        String ownerStaffId = trim(SecurityContext.currentStaffId());
+        if (ownerStaffId.isEmpty()) ownerStaffId = null;
+
+        // 撞单：同门店同手机号拒绝（公海客户全局查重），提示已有客户号
+        Optional<Customer> dup = storeCode != null
+                ? customerRepo.findFirstByStoreCodeAndPhone(storeCode, phone)
+                : customerRepo.findFirstByStoreCodeIsNullAndPhone(phone);
+        if (dup.isPresent()) {
+            throw new BadReq("该手机号已建档（客户号 " + dup.get().getCustomerId() + "），请勿重复新建");
+        }
+
+        Customer c = new Customer();
+        c.setCustomerId(nextCustomerId());
+        c.setName(name);
+        c.setPhone(phone);
+        c.setGender(gender);
+        c.setLevel(level);
+        c.setChannel(channel);
+        c.setBirthDate(input.getBirthDate());
+        c.setStoreCode(storeCode);
+        c.setOwnerStaffId(ownerStaffId);
+        // points/status/totalSpend/visitCount/createdAt 由 @PrePersist 置默认（0/活跃/0 元/0 次/当前时间）
+        return customerRepo.save(c);
+    }
+
+    /** 生成下一个客户编号：M+3 位序号，基于库内最大号递增（synchronized 防并发重号）。 */
+    private String nextCustomerId() {
+        String max = customerRepo.maxMId();
+        int seq = 0;
+        if (max != null && max.startsWith("M")) {
+            try {
+                seq = Integer.parseInt(max.substring(1));
+            } catch (NumberFormatException ignored) {
+                seq = 0;
+            }
+        }
+        return String.format("M%03d", seq + 1);
+    }
+
+    private static String trim(String s) {
+        return s == null ? "" : s.trim();
     }
 
     /** 业务异常 → HTTP 状态码映射（由 GlobalExceptionHandler 处理）。 */

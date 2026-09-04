@@ -24,7 +24,7 @@ const ALL_VIEW = [
   'report:view', 'tenant:view', 'org:view', 'rbac:view', 'inventory:view', 'brand:view',
   'marketing:view', 'dispatch:view', 'compliance:view', 'audit:view', 'health:view',
   'sop:view', 'target:view', 'screen:view', 'settings:view',
-  'schedule:view', 'approval:view', 'notification:view',
+  'schedule:view', 'approval:view',
   'workorder:view', 'daily:view',
   'requisition:view', 'wastage:view', 'room:view', 'equipment:view',
   'performance:view', 'weekly:view', 'pricelist:view', 'catalog:view',
@@ -69,11 +69,10 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'contract:edit', 'marketing:edit', 'handover:edit', 'handover:create', 'sop:edit', 'dispatch:edit',
     'brand:edit', 'inventory:edit', 'tenant:edit', 'org:edit', 'rbac:edit',
     'consult:review', // 区域/门店主管可二次审核方案单
-    'compliance:edit', 'target:edit', 'health:edit', 'screen:edit', 'recall:edit', 'recall:create',
+    'compliance:edit', 'target:edit', 'health:edit', 'recall:edit', 'recall:create',
     'transfer:edit', 'transfer:create', 'writeoff:edit', 'queue:edit', 'complaint:approve', 'transfer:approve',
-    'dispatch:approve', 'tenant:approve', 'org:approve', 'rbac:approve', 'compliance:approve',
     'target:approve', 'sop:approve', 'inventory:approve', 'brand:approve',
-    'customer:merge', 'customer:transfer:owner', 'settings:edit',
+    'customer:merge', 'settings:edit',
     'report:export', 'schedule:edit', 'schedule:approve',
     'workorder:edit', 'workorder:create', 'workorder:close', 'daily:edit', 'daily:submit',
     'requisition:create', 'requisition:edit', 'requisition:sign', 'wastage:create', 'wastage:edit', 'wastage:sign',
@@ -84,41 +83,34 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'care:edit', 'care:send', 'churn:edit', 'referral:edit', 'referral:approve',
     'nps:edit', 'private:edit', 'segment:edit', 'io:import', 'io:export',
     'risk:edit', 'risk:approve', 'm3settings:edit', 'insight:export',
-    // M6 财务操作（资金链隔离：仅对账标记/调平/结算生成/导出，绝不碰资金池）
-    'finance:reconcile', 'finance:reconcile:approve', 'finance:settlement:generate',
-    'finance:settlement:approve', 'finance:invoice:apply', 'finance:commission:approve',
+    // M6 财务操作（资金链隔离：仅对账标记/调平/结算审批/导出，绝不碰资金池）
+    'finance:reconcile', 'finance:reconcile:approve',
+    'finance:settlement:approve', 'finance:commission:approve',
     'finance:budget:edit', 'finance:settings:edit', 'finance:abnormal:dispose', 'finance:export',
     // M5 营销操作（活动已有 marketing:edit；券/推送/渠道/核销/落地页/海报/日历）
-    'coupon:create', 'coupon:edit', 'coupon:approve',
-    'push:create', 'push:send', 'push:approve',
+    'coupon:create', 'coupon:edit',
+    'push:create', 'push:send',
     'channel:edit', 'couponWriteoff:verify', 'landing:edit',
     'poster:edit', 'live:edit', 'calendar:edit', 'referralCampaign:edit',
     'asset:upload', 'm5settings:edit', 'marketing:export',
     // Wave 5 · T1 权限中台操作（角色/权限/组织 变更均走 T3-01 审批）
     'role:create', 'role:edit', 'role:delete', 'role:assign',
-    'permission:edit', 'permission:diff', 'org:edit',
+    'permission:edit', 'org:edit',
     // Wave 5 · T2 数据中台操作
     'collect:create', 'collect:edit', 'collect:sync',
     'govern:rule:create', 'govern:rule:edit',
     'tagFactory:create', 'tagFactory:edit', 'tagFactory:publish', 'tagFactory:approve',
     'dataService:publish', 'dataService:apply',
     // Wave 5 · T3 工单中心 + 集成中心
-    'ticket:create', 'ticket:dispatch', 'ticket:close', 'ticket:sla:config',
+    'ticket:create', 'ticket:dispatch', 'ticket:close',
     'integration:create', 'integration:edit', 'integration:sync', 'integration:reconcile',
     // Wave 5 · T4 AI 中台（模型发布需 T3-01 审批；不自动上线）
     'model:register', 'model:version', 'model:release', 'model:rollback',
     'compute:alloc', 'compute:edit',
     'feature:register', 'feature:edit', 'feature:publish',
     'monitor:rule:create', 'monitor:rule:edit',
-    // Wave 6 · A1 AI 中心操作（REGION_MGR 可管理 AI 配置/审批/内容；模型发布走 T3-01 审批）
-    'aiSensitive:edit', 'aiSensitive:markFalse',
-    'aiScript:create', 'aiScript:edit', 'aiScript:insert',
-    'aiScheduling:generate', 'aiScheduling:apply',
-    'aiContent:create', 'aiContent:edit', 'aiContent:dispatch',
-    'aiKnowledge:create', 'aiKnowledge:edit',
-    'aiGovern:approve', 'aiGovern:reject', 'aiGovern:experiment',
-    'aiPrivacy:edit', 'aiPrivacy:export',
-    'aiGateway:edit',
+    // Wave 6 · A1 AI 中心：操作端页面（话术/排班/内容/知识库/治理/隐私/网关）尚未落地，
+    // 对应操作码字典已回收；仅 AI 管理台配置码有真实端点门控，予以保留。
     'aiAdmin:edit',
   ],
   STORE_MGR: [
@@ -128,9 +120,9 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'contract:edit', 'marketing:edit', 'handover:edit', 'handover:create', 'sop:edit', 'dispatch:edit',
     'brand:edit', 'inventory:edit', 'refund:approve', 'cardcancel:approve',
     'complaint:create', 'complaint:approve', 'transfer:approve', 'tenant:edit', 'org:edit', 'rbac:edit',
-    'compliance:edit', 'target:edit', 'health:edit', 'screen:edit', 'recall:edit', 'recall:create',
+    'compliance:edit', 'target:edit', 'health:edit', 'recall:edit', 'recall:create',
     'transfer:edit', 'transfer:create', 'writeoff:edit', 'writeoff:create', 'queue:edit', 'cashier:sign',
-    'customer:merge', 'customer:transfer:owner', 'settings:edit',
+    'customer:merge', 'settings:edit',
     'consult:review', // 门店主管可二次审核/改单/作废审核中方案
     'report:export', 'schedule:edit', 'schedule:approve',
     'workorder:edit', 'workorder:create', 'workorder:close', 'daily:edit', 'daily:submit',
@@ -142,8 +134,8 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'care:edit', 'care:send', 'churn:edit', 'referral:edit', 'referral:approve',
     'nps:edit', 'private:edit', 'segment:edit', 'io:import', 'io:export',
     'risk:edit', 'risk:approve', 'm3settings:edit', 'insight:export',
-    // M6 门店级财务：对账标记、开票申请、异常处置、导出（结算审批/财务设置归区域/财务）
-    'finance:reconcile', 'finance:invoice:apply', 'finance:abnormal:dispose', 'finance:export',
+    // M6 门店级财务：对账标记、异常处置、导出（开票/结算审批/财务设置归区域/财务）
+    'finance:reconcile', 'finance:abnormal:dispose', 'finance:export',
     // M5 门店级营销：发券/推送发送/核销/海报/直播（审批、渠道配置、落地页、设置归区域）
     'coupon:create', 'coupon:edit', 'push:create', 'push:send',
     'couponWriteoff:verify', 'poster:edit', 'live:edit', 'calendar:edit', 'marketing:export',
@@ -154,8 +146,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     // Wave 5 · T3 门店级：工单创建/关闭（跨模块路由）
     'ticket:create', 'ticket:close',
     // Wave 5 · T4 门店级：模型/特征只读，无操作权限
-    // Wave 6 · A1 门店级：话术插入/排班采纳/内容查看
-    'aiScript:insert', 'aiScheduling:apply',
+    // Wave 6 · A1 门店级：AI 操作端页面尚未落地，操作码字典已回收（AI 各页 view 随 ALL_VIEW 可见）
   ],
   CONSULTANT: [
     'customer:view', 'customer:create', 'customer:edit',
@@ -168,13 +159,13 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'recall:view', 'recall:create', 'handover:view', 'report:view',
     'schedule:view',
     'customer:phone:decrypt', // 咨询师对本人客户可解密手机号
-    'aiScript:view', 'aiScript:insert', // A1-06 智能话术插入咨询工作台
+    'aiScript:view', // A1-06 智能话术工作台（操作端未落地，插入码字典已回收）
   ],
   DOCTOR: [
     'emr:view', 'emr:create', 'emr:edit',
     'prescription:view', 'prescription:create', 'prescription:edit',
     'consult:view', 'consult:create', 'consult:edit', 'consult:review', // 医生二次审核/改单
-    'writeoff:view', 'writeoff:create', 'writeoff:sign',
+    'writeoff:view', 'writeoff:create',
     'appointment:view', 'appointment:create', 'customer:view', 'course:view', 'complaint:view',
     'followup:view', 'followup:create', 'followup:edit', 'reception:view',
     'recall:view', 'recall:create', 'schedule:view',
@@ -183,8 +174,8 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'customer:phone:decrypt',
   ],
   FRONT_DESK: [
-    'reception:view', 'reception:create', 'reception:edit',
-    'queue:view', 'queue:create', 'queue:edit',
+    'reception:view', 'reception:edit',
+    'queue:view', 'queue:edit',
     'appointment:view', 'appointment:create', 'appointment:edit',
     'customer:view', 'customer:create',
     'cashier:view', 'cashier:create', 'cashier:sign',
@@ -205,7 +196,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'approval:view', // 财务需处理退款/结算/调拨等审批
     'refund:view', 'refund:create', 'refund:approve', 'refund:sign',
     'cardcancel:view', 'cardcancel:create', 'cardcancel:approve', 'cardcancel:sign',
-    'report:view', 'cashier:view', 'cashier:approve', 'audit:view',
+    'report:view', 'cashier:view', 'audit:view',
     'course:view', 'customer:view', 'contract:view', 'target:view',
     'compliance:view', 'health:view', 'inventory:view', 'tenant:view',
     'org:view', 'rbac:view', 'brand:view', 'dispatch:view', 'marketing:view',
@@ -219,8 +210,9 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'finance:cost:view', 'finance:commission:view', 'finance:writeoff:view', 'finance:prepay:view',
     'finance:cardbalance:view', 'finance:abnormal:view', 'finance:tax:view', 'finance:cashdaily:view',
     'finance:monthly:view', 'finance:budget:view', 'finance:settings:view',
-    'finance:reconcile', 'finance:reconcile:approve', 'finance:settlement:generate',
-    'finance:settlement:approve', 'finance:invoice:apply', 'finance:commission:approve',
+    'finance:reconcile', 'finance:reconcile:approve',
+    'finance:settlement:approve', 'finance:settlement:edit',
+    'finance:invoice:edit', 'finance:invoice:approve', 'finance:commission:edit', 'finance:commission:approve',
     'finance:budget:edit', 'finance:settings:edit', 'finance:abnormal:dispose', 'finance:export',
   ],
 }
@@ -416,11 +408,18 @@ export const useAuthStore = defineStore('auth', () => {
     applySession(res)
   }
 
-  /** 兼容旧调用：以单角色视角进入（优先走真实 dev-login，失败回退离线） */
+  /** 兼容旧调用：以单角色视角进入（优先走真实 dev-login，仅后端网络不可达时回退离线） */
   async function loginAs(role: Role) {
     try {
       await loginByRole(role)
-    } catch {
+    } catch (e: any) {
+      // 业务拒绝（如 403 开发期登录已关闭、404 角色无可用员工）必须如实抛出，
+      // 不能静默落离线假会话（否则无 token 继续操作会全站 401 的假交互）；
+      // 仅后端网络不可达（无 response）时才回退离线演示视角。
+      if (e?.response) {
+        const data = e.response.data
+        throw new Error(data?.message || data?.error || '角色切换失败，请使用工号密码登录')
+      }
       // 后端不可用时的离线演示兜底（不写 token）
       session.value = null
       currentRoles.value = [role]

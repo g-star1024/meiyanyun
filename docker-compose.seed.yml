@@ -43,6 +43,8 @@ services:
       STORE_SERVICE_URL: "http://meiyun-seed-store-service:8085"
       AUDIT_SERVICE_URL: "http://meiyun-seed-audit-service:8084"
       CUSTOMER_SERVICE_URL: "http://meiyun-seed-customer-service:8082"
+      # 开发期免密登录：默认关闭，演示时宿主环境或 .env 显式 MEIYUN_DEV_LOGIN=true 开启。
+      MEIYUN_DEV_LOGIN: "${MEIYUN_DEV_LOGIN:-false}"
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8082' && exit 0 || exit 1"]
       interval: 15s

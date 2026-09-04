@@ -239,8 +239,8 @@ function fmtDate(iso: string) {
                 <span class="lg lg--success">可编辑 {{ countFieldLevel('EDIT') }}</span>
               </div>
             </div>
-            <div v-if="selected.builtin" class="builtin-tip">
-              <CIcon name="alert" :size="14" /> 内置角色字段策略由系统统一管控，不可修改；如需差异化请新建自定义角色。
+            <div class="builtin-tip builtin-tip--brand">
+              <CIcon name="alert" :size="14" /> 字段级访问管控正在规划中：当前矩阵仅展示内置角色默认策略草案，配置暂不生效；上方「数据范围」与下方「功能权限」为真实配置、即时生效。
             </div>
             <div class="field-matrix">
               <div class="fm-row fm-row--head">
@@ -259,7 +259,7 @@ function fmtDate(iso: string) {
                       size="sm"
                       :model-value="isFieldAccess(selected.fields[f.key])"
                       :options="accessSegments"
-                      :disabled="selected.builtin || !canEdit"
+                      :disabled="true"
                       @update:model-value="(v) => canEdit && rbac.setField(selected!.id, f.key, v as FieldAccess)"
                     />
                   </div>
@@ -313,7 +313,7 @@ function fmtDate(iso: string) {
             <label class="field field--full"><span class="field__label">角色说明</span><CTextarea v-model="form.desc" placeholder="描述该角色的职责范围（可选）" :rows="2" /></label>
           </div>
           <div v-if="formErr" class="form-err">{{ formErr }}</div>
-          <p class="modal-tip">创建后可在右侧面板配置字段级访问与功能权限，保存即时生效。</p>
+          <p class="modal-tip">创建后可在右侧面板配置数据范围与功能权限，保存即时生效；字段级访问管控正在规划中，暂不可配。</p>
         </div>
         <div class="modal__foot">
           <CButton variant="secondary" @click="showModal = false">取消</CButton>

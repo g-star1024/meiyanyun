@@ -30,7 +30,7 @@ meiyun:
     # JWT 签名密钥 / 内部服务令牌 / dev-login 开关：生产经环境变量注入，dev-login 生产必须置 false
     secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}
     internal-token: ${MEIYUN_INTERNAL_TOKEN:meiyun-dev-internal-token-please-change-in-prod}
-    dev-login: ${MEIYUN_DEV_LOGIN:true}
+    dev-login: ${MEIYUN_DEV_LOGIN:false}
     # public-paths 配置整体覆盖默认列表，四个默认放行项须显式带全
     public-paths:
       - /api/org/auth/login

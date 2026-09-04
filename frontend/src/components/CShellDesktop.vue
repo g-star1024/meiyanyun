@@ -116,8 +116,15 @@ const ALL_ROLES: { key: Role; label: string }[] = [
 
 async function switchRole(r: Role) {
   roleSwitching.value = r
-  // 优先走后端 dev-login 换发该角色真实 token；后端不可用时回退离线演示视角
-  await auth.loginAs(r)
+  // 优先走后端 dev-login 换发该角色真实 token；仅后端网络不可达时回退离线演示视角。
+  // 业务拒绝（如生产环境关闭免密登录）弹中文提示，不落无 token 假会话。
+  try {
+    await auth.loginAs(r)
+  } catch (e: any) {
+    window.alert(e?.message || '角色切换失败，请退出后使用工号密码登录')
+    roleSwitching.value = ''
+    return
+  }
   roleSwitching.value = ''
   userMenuOpen.value = false
   // 切角色后回到工作台频道首页，避免停在无权限页

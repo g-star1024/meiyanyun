@@ -36,7 +36,7 @@ public class Customer {
     private String storeCode;
 
     @Column(name = "channel", length = 16)
-    private String channel;                   // 来源：WALK_IN/REFERRAL/ONLINE_APPT/MARKETING
+    private String channel;                   // 获客渠道：WALK_IN/REFERRAL/WECHAT/DOUYIN/XIAOHONGSHU/MEITUAN/OTHER
 
     @Column(name = "total_spend", precision = 12, scale = 2)
     private java.math.BigDecimal totalSpend;  // 累计消费（元）

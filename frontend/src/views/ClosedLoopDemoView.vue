@@ -51,7 +51,8 @@ function toggleRole(r: Role) {
   auth.toggleRole(r)
 }
 function comboMgrConsult() {
-  auth.loginAs('STORE_MGR')
+  // 免密登录被关闭（生产）时静默留在当前会话，演示页角色叠加仍可离线使用
+  auth.loginAs('STORE_MGR').catch(() => {})
   auth.toggleRole('CONSULTANT')
 }
 

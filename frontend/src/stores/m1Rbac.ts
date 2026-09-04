@@ -1,15 +1,24 @@
+// ============================================================
+// M1 集团管控 · RBAC store（对接 org-service /api/org/admin/*）
+// - 角色 = 内置角色（后端矩阵权威源，只读）+ 自定义角色（可增删/改数据域/改功能权限）
+// - 角色 CRUD / 功能权限 / 数据域 全部走真实端点（与 T1 权限中台同源）
+// - 字段级权限矩阵（HIDE/MASK/READ/EDIT）后端能力尚未落地：
+//   仅按内置角色默认策略只读展示规划草案，任何修改不落库、不生效（「字段级管控规划中」）。
+// - 审计由后端落 audit-service；后端事实：角色无继承、超管 "*" 不落库（前端补）。
+// ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import type { DataScope, Role } from '@/types/domain'
-import { useAuthStore } from '@/stores/auth'
-
-// ============================================================
-// 字段级 RBAC store（M1 集团管控 / 字段级RBAC）
-// - 角色 = 内置角色（只读）+ 自定义角色（可增删改）
-// - 字段级权限：每个敏感字段可配置 访问级别（HIDE 隐藏 / MASK 脱敏 / READ 只读 / EDIT 可编辑）
-// - 自定义角色保存时通过 auth.registerCustomRole 注册，实时生效于 v-perm/can()
-// - 数据域 scope（SELF/STORE/BRAND/REGION/GROUP）
-// ============================================================
+import type { DataScope } from '@/types/domain'
+import {
+  listRoles,
+  getRolePermissions,
+  getRoleMembers,
+  createRole as apiCreateRole,
+  updateRole as apiUpdateRole,
+  deleteRole as apiDeleteRole,
+  updateRolePermissions,
+  type RoleDef,
+} from '@/api/org'
 
 export type FieldAccess = 'HIDE' | 'MASK' | 'READ' | 'EDIT'
 
@@ -18,7 +27,7 @@ export const FIELD_ACCESS_LABEL: Record<FieldAccess, string> = {
 }
 export const FIELD_ACCESS_ORDER: FieldAccess[] = ['HIDE', 'MASK', 'READ', 'EDIT']
 
-// 受字段级管控的敏感字段（按模块分组）
+// 受字段级管控的敏感字段（按模块分组）——字段级能力后端规划中，此处仅作展示草案
 export interface FieldDef { key: string; label: string; module?: string; desc?: string }
 export const FIELD_GROUPS: { module: string; fields: FieldDef[] }[] = [
   {
@@ -59,8 +68,14 @@ export const FIELD_GROUPS: { module: string; fields: FieldDef[] }[] = [
 ]
 export const ALL_FIELDS: FieldDef[] = FIELD_GROUPS.flatMap((g) => g.fields)
 
-// 内置角色的默认字段访问策略（只读展示，不可改）
-const BUILTIN_FIELD_DEFAULTS: Record<Role, Partial<Record<string, FieldAccess>>> = {
+/** 内置矩阵角色码（与后端 RbacAdminController.BUILTIN_ROLES 同源） */
+const BUILTIN_ROLE_CODES = new Set([
+  'SUPER_ADMIN', 'REGION_MGR', 'STORE_MGR', 'CONSULTANT',
+  'DOCTOR', 'FRONT_DESK', 'OPERATOR', 'FINANCE',
+])
+
+// 内置角色的字段访问策略【规划草案】：后端字段级能力落地前仅只读展示，不代表实际生效
+const BUILTIN_FIELD_DEFAULTS: Record<string, Partial<Record<string, FieldAccess>>> = {
   SUPER_ADMIN: Object.fromEntries(ALL_FIELDS.map((f) => [f.key, 'EDIT' as FieldAccess])),
   REGION_MGR: { 'customer.phone': 'READ', 'customer.address': 'READ', 'customer.consumption': 'READ', 'order.commission': 'READ', 'staff.performance': 'READ', 'emr.diagnosis': 'READ' },
   STORE_MGR: { 'customer.phone': 'MASK', 'customer.address': 'READ', 'customer.consumption': 'READ', 'order.commission': 'READ', 'staff.performance': 'READ', 'emr.diagnosis': 'READ' },
@@ -69,12 +84,6 @@ const BUILTIN_FIELD_DEFAULTS: Record<Role, Partial<Record<string, FieldAccess>>>
   FRONT_DESK: { 'customer.phone': 'READ', 'customer.address': 'READ', 'order.payment': 'READ' },
   OPERATOR: { 'customer.phone': 'MASK', 'customer.consumption': 'READ' },
   FINANCE: { 'customer.phone': 'MASK', 'order.cost': 'EDIT', 'order.margin': 'EDIT', 'order.payment': 'READ', 'order.commission': 'READ' },
-}
-
-const BUILTIN_LABEL: Record<Role, string> = {
-  SUPER_ADMIN: '集团管理员', REGION_MGR: '区域经理', STORE_MGR: '门店店长',
-  CONSULTANT: '咨询顾问', DOCTOR: '医生', FRONT_DESK: '前台/收银',
-  OPERATOR: '运营', FINANCE: '财务',
 }
 
 const SCOPE_LABEL: Record<DataScope, string> = {
@@ -86,75 +95,90 @@ export interface RbacRole {
   key: string
   label: string
   builtin: boolean
-  builtinRole?: Role
   scope: DataScope
-  permissions: string[] // 功能权限（resource:action）
-  fields: Record<string, FieldAccess> // 字段 key -> 访问级别
+  permissions: string[] // 功能权限（resource:action），超管为 ['*']
+  fields: Record<string, FieldAccess> // 字段 key -> 访问级别（规划草案，不落库）
   desc?: string
-  headcount?: number // 挂该角色的人数（内置角色给固定值，自定义角色 seed）
+  headcount?: number // 挂该角色的人数（后端 role-members 聚合真实值）
   updatedAt: string
 }
 
-let _cid = 0
-function cid(prefix: string) {
-  _cid += 1
-  return `${prefix}-${Date.now().toString(36)}-${_cid}`
+/** 后端中文数据域 → 前端枚举（后端仅 门店/区域/集团 三档） */
+function scopeFromCn(cn: string | undefined): DataScope {
+  if (cn === '区域') return 'REGION'
+  if (cn === '集团') return 'GROUP'
+  return 'STORE'
 }
 
-function now() { return new Date().toISOString() }
+/** 前端枚举 → 后端中文数据域（SELF/BRAND 为视图历史选项，分别就近落 门店/区域） */
+function scopeToCn(scope: DataScope): string {
+  if (scope === 'REGION' || scope === 'BRAND') return '区域'
+  if (scope === 'GROUP') return '集团'
+  return '门店'
+}
+
+function errMsg(e: unknown, fallback = '网络异常，请稍后重试'): string {
+  const anyE = e as { response?: { data?: { message?: string } }; message?: string }
+  return anyE?.response?.data?.message || anyE?.message || fallback
+}
 
 export const useM1RbacStore = defineStore('m1Rbac', () => {
-  const auth = useAuthStore()
-
   const roles = ref<RbacRole[]>([])
-  const seeded = ref(false)
+  const loaded = ref(false)
+  const loading = ref(false)
 
-  function fieldAccess(role: RbacRole, key: string): FieldAccess {
-    return role.fields[key] ?? 'HIDE'
-  }
-
-  function buildBuiltin(): RbacRole[] {
-    const counts: Record<Role, number> = {
-      SUPER_ADMIN: 2, REGION_MGR: 5, STORE_MGR: 18, CONSULTANT: 64,
-      DOCTOR: 42, FRONT_DESK: 30, OPERATOR: 12, FINANCE: 8,
+  // ---- 适配：后端角色定义 + 角色权限 + 成员聚合 → 视图模型 ----
+  function adaptRole(
+    r: RoleDef,
+    perms: Record<string, string[]>,
+    members: Record<string, unknown[]>,
+    nowIso: string,
+  ): RbacRole {
+    const builtin = BUILTIN_ROLE_CODES.has(r.roleCode)
+    let actions = perms[r.roleCode] ? [...perms[r.roleCode]] : []
+    // 超管 "*" 不落库：前端补通配，功能权限区按通配灰显
+    if (r.roleCode === 'SUPER_ADMIN') actions = ['*']
+    return {
+      id: r.roleCode,
+      key: r.roleCode,
+      label: r.roleName,
+      builtin,
+      scope: scopeFromCn(r.dataScope),
+      permissions: actions,
+      // 字段级管控后端规划中：内置角色展示默认策略草案；自定义角色暂无字段策略（默认隐藏）
+      fields: builtin
+        ? Object.fromEntries(
+            Object.entries(BUILTIN_FIELD_DEFAULTS[r.roleCode] ?? {}).filter(([, v]) => v !== undefined),
+          ) as Record<string, FieldAccess>
+        : {},
+      desc: r.description || undefined,
+      headcount: members[r.roleCode]?.length ?? 0,
+      updatedAt: nowIso,
     }
-    return (Object.keys(BUILTIN_LABEL) as Role[]).map((r) => ({
-      id: `builtin-${r}`,
-      key: r,
-      label: BUILTIN_LABEL[r],
-      builtin: true,
-      builtinRole: r,
-      scope: authScopeFor(r),
-      permissions: builtinPermissions(r),
-      fields: Object.fromEntries(
-        Object.entries(BUILTIN_FIELD_DEFAULTS[r] ?? {}).filter(([, v]) => v !== undefined),
-      ) as Record<string, FieldAccess>,
-      headcount: counts[r],
-      updatedAt: now(),
-    }))
   }
 
   function seed() {
-    if (seeded.value) return
-    roles.value = buildBuiltin()
-    // 两笔自定义角色 seed
-    roles.value.push({
-      id: cid('role'), key: 'CLINIC_NURSE', label: '皮肤科护士', builtin: false,
-      scope: 'STORE',
-      permissions: ['emr:view', 'writeoff:view', 'writeoff:create', 'customer:view', 'appointment:view'],
-      fields: { 'customer.phone': 'MASK', 'emr.diagnosis': 'READ', 'emr.treatment': 'READ', 'emr.allergy': 'READ' },
-      desc: '门店护士：可执行核销、查看病历（只读）、手机号脱敏',
-      headcount: 15, updatedAt: now(),
-    })
-    roles.value.push({
-      id: cid('role'), key: 'CHAIN_AUDITOR', label: '连锁稽核', builtin: false,
-      scope: 'GROUP',
-      permissions: ['audit:view', 'compliance:view', 'report:view', 'finance:margin:view', 'tenant:view', 'org:view'],
-      fields: { 'order.cost': 'READ', 'order.margin': 'READ', 'customer.phone': 'MASK', 'customer.idCard': 'MASK' },
-      desc: '集团稽核：跨店只读、财务字段只读、敏感信息脱敏',
-      headcount: 3, updatedAt: now(),
-    })
-    seeded.value = true
+    if (loaded.value || loading.value) return
+    loading.value = true
+    void (async () => {
+      try {
+        const [rolesRes, rolePermsRes, membersRes] = await Promise.all([
+          listRoles(),
+          getRolePermissions(),
+          getRoleMembers(),
+        ])
+        const nowIso = new Date().toISOString()
+        roles.value = rolesRes.data
+          .map((r) => adaptRole(r, rolePermsRes.data, membersRes.data as Record<string, unknown[]>, nowIso))
+          .sort((a, b) => (a.builtin === b.builtin ? a.key.localeCompare(b.key) : a.builtin ? -1 : 1))
+        loaded.value = true
+      } catch (e) {
+        // 403/网络失败：保留空表，不弹扰（页面门控本身已按权限隐藏入口）
+        console.error('[m1Rbac] 角色数据载入失败', e)
+      } finally {
+        loading.value = false
+      }
+    })()
   }
 
   const builtinRoles = computed(() => roles.value.filter((r) => r.builtin))
@@ -171,109 +195,99 @@ export const useM1RbacStore = defineStore('m1Rbac', () => {
     return roles.value.find((r) => r.id === id)
   }
 
-  // ---- 字段级权限更新 ----
-  function setField(roleId: string, fieldKey: string, access: FieldAccess) {
-    const r = get(roleId)
-    if (!r || r.builtin) return
-    if (access === 'HIDE') delete r.fields[fieldKey]
-    else r.fields[fieldKey] = access
-    r.updatedAt = now()
-    registerToAuth(r)
+  // ---- 字段级权限：后端能力规划中，修改不落库、不生效（视图矩阵整体只读 + 规划中标识） ----
+  function setField(_roleId: string, _fieldKey: string, _access: FieldAccess) {
+    // no-op：字段级管控待后端落地，禁止假保存
   }
 
+  // ---- 数据域：自定义角色可改，PUT /admin/roles/{code} 全量乐观更新 + 失败回滚 ----
   function setScope(roleId: string, scope: DataScope) {
     const r = get(roleId)
     if (!r || r.builtin) return
+    const prev = r.scope
     r.scope = scope
-    r.updatedAt = now()
-    registerToAuth(r)
+    r.updatedAt = new Date().toISOString()
+    void (async () => {
+      try {
+        await apiUpdateRole(r.key, { dataScope: scopeToCn(scope) })
+      } catch (e) {
+        r.scope = prev
+        window.alert(errMsg(e, '数据范围更新失败，请稍后重试'))
+      }
+    })()
   }
 
+  // ---- 功能权限：勾选即全量覆写 PUT permissions（后端只存自定义角色授权集），失败回滚 ----
   function togglePermission(roleId: string, perm: string) {
     const r = get(roleId)
     if (!r || r.builtin) return
+    const prev = [...r.permissions]
     const i = r.permissions.indexOf(perm)
     if (i >= 0) r.permissions.splice(i, 1)
     else r.permissions.push(perm)
-    r.updatedAt = now()
-    registerToAuth(r)
+    r.updatedAt = new Date().toISOString()
+    void (async () => {
+      try {
+        await updateRolePermissions(r.key, [...r.permissions])
+      } catch (e) {
+        r.permissions = prev
+        window.alert(errMsg(e, '功能权限更新失败，请稍后重试'))
+      }
+    })()
   }
 
-  // ---- 增删 ----
+  // ---- 新建自定义角色：乐观入列并返回（视图随即选中），POST roles 失败回滚 + 中文报错 ----
   function create(payload: { key: string; label: string; scope: DataScope; desc?: string }): RbacRole {
     const role: RbacRole = {
-      id: cid('role'), key: payload.key.trim().toUpperCase(), label: payload.label.trim(),
-      builtin: false, scope: payload.scope, permissions: [], fields: {},
-      desc: payload.desc?.trim() || undefined, headcount: 0, updatedAt: now(),
+      id: payload.key.trim().toUpperCase(),
+      key: payload.key.trim().toUpperCase(),
+      label: payload.label.trim(),
+      builtin: false,
+      scope: payload.scope,
+      permissions: [],
+      fields: {},
+      desc: payload.desc?.trim() || undefined,
+      headcount: 0,
+      updatedAt: new Date().toISOString(),
     }
     roles.value.push(role)
-    registerToAuth(role)
+
+    void (async () => {
+      try {
+        await apiCreateRole({
+          roleCode: role.key,
+          roleName: role.label,
+          dataScope: scopeToCn(role.scope),
+          description: role.desc,
+        })
+      } catch (e) {
+        roles.value = roles.value.filter((x) => x.id !== role.id)
+        window.alert(errMsg(e, '角色创建失败，请稍后重试'))
+      }
+    })()
     return role
   }
 
-  function update(id: string, patch: Partial<Pick<RbacRole, 'label' | 'desc' | 'key'>>) {
-    const r = get(id)
-    if (!r || r.builtin) return
-    if (patch.label !== undefined) r.label = patch.label
-    if (patch.key !== undefined) r.key = patch.key.trim().toUpperCase()
-    if (patch.desc !== undefined) r.desc = patch.desc.trim() || undefined
-    r.updatedAt = now()
-    registerToAuth(r)
-  }
-
+  // ---- 删除自定义角色：乐观移除，DELETE 失败回滚 + 中文报错（内置角色后端 400） ----
   function remove(id: string) {
     const r = get(id)
     if (!r || r.builtin) return
+    const prevRoles = roles.value
     roles.value = roles.value.filter((x) => x.id !== id)
-  }
-
-  // 注册到 auth store：自定义角色的功能权限 + 由字段权限推导出的功能点
-  function registerToAuth(r: RbacRole) {
-    const perms = new Set(r.permissions)
-    // 字段权限 -> 对应功能点：任何字段可见(READ/MASK/EDIT) 即隐含该模块 :view
-    const moduleView: Record<string, string> = {
-      customer: 'customer:view', order: 'cashier:view', emr: 'emr:view', staff: 'org:view',
-    }
-    for (const f of ALL_FIELDS) {
-      const acc = r.fields[f.key]
-      if (acc === 'READ' || acc === 'MASK' || acc === 'EDIT') {
-        const mod = f.key.split('.')[0]
-        if (moduleView[mod]) perms.add(moduleView[mod])
+    void (async () => {
+      try {
+        await apiDeleteRole(r.key)
+      } catch (e) {
+        roles.value = prevRoles
+        window.alert(errMsg(e, '角色删除失败，请稍后重试'))
       }
-    }
-    auth.registerCustomRole(r.key, { label: r.label, permissions: [...perms], scope: r.scope })
+    })()
   }
 
   return {
     roles, builtinRoles, customRoles, stats, FIELD_GROUPS, ALL_FIELDS,
     FIELD_ACCESS_LABEL, FIELD_ACCESS_ORDER, SCOPE_LABEL,
-    seed, get, fieldAccess, setField, setScope, togglePermission,
-    create, update, remove,
+    seed, get, setField, setScope, togglePermission,
+    create, remove,
   }
 })
-
-// ---- helpers（模块级，避免 store 内循环引用 ROLE_PERMISSIONS）----
-function authScopeFor(r: Role): DataScope {
-  const m: Record<Role, DataScope> = {
-    SUPER_ADMIN: 'GROUP', REGION_MGR: 'REGION', STORE_MGR: 'STORE', CONSULTANT: 'SELF',
-    DOCTOR: 'STORE', FRONT_DESK: 'STORE', OPERATOR: 'STORE', FINANCE: 'REGION',
-  }
-  return m[r]
-}
-
-// 从 auth store 读取内置角色权限集（此处通过 import 动态读取更稳妥，这里直接内联一份只读引用）
-function builtinPermissions(r: Role): string[] {
-  // 复用 auth 的 ROLE_PERMISSIONS 不直接导出，这里通过 useAuthStore 已在 seed 时可用；
-  // 为避免耦合，返回一个代表性子集用于矩阵展示（实际鉴权以 auth 为准）。
-  const map: Record<Role, string[]> = {
-    SUPER_ADMIN: ['*'],
-    REGION_MGR: ['tenant:edit', 'org:edit', 'rbac:edit', 'brand:edit', 'inventory:edit', 'compliance:edit', 'transfer:approve', 'complaint:approve', 'report:view'],
-    STORE_MGR: ['tenant:edit', 'org:edit', 'rbac:edit', 'complaint:approve', 'refund:approve', 'transfer:create', 'cashier:sign', 'settings:edit'],
-    CONSULTANT: ['customer:edit', 'consult:edit', 'appointment:create', 'emr:view', 'customer:phone:decrypt'],
-    DOCTOR: ['emr:edit', 'prescription:edit', 'writeoff:sign', 'consult:edit', 'customer:phone:decrypt'],
-    FRONT_DESK: ['reception:edit', 'cashier:sign', 'appointment:create', 'queue:edit', 'complaint:create'],
-    OPERATOR: ['marketing:edit', 'followup:edit', 'recall:edit', 'complaint:create'],
-    FINANCE: ['refund:approve', 'refund:sign', 'cashier:approve', 'finance:margin:view', 'transfer:approve', 'audit:view'],
-  }
-  return map[r]
-}

@@ -21,7 +21,7 @@ public class SecurityProperties {
 
     private String secret = "meiyun-dev-jwt-secret-please-change-in-prod-0123456789";
     private Duration ttl = Duration.ofHours(12);
-    private boolean devLogin = true;
+    private boolean devLogin = false;
     private String internalToken = "meiyun-dev-internal-token-please-change-in-prod";
     private List<String> publicPaths = new ArrayList<>(List.of(
             "/api/org/auth/login",

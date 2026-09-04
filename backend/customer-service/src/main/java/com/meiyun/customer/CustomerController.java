@@ -1,8 +1,10 @@
 package com.meiyun.customer;
 
+import com.meiyun.customer.audit.AuditRecorder;
 import com.meiyun.customer.search.CustomerSearchService;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
@@ -25,6 +27,9 @@ public class CustomerController {
     private final CustomerTagRepository tagRepo;
     private final CustomerTagRelRepository tagRelRepo;
     private final CustomerSearchService searchService;
+
+    @Autowired
+    private AuditRecorder audit;
 
     public CustomerController(CustomerService service, CustomerRepository customerRepo,
                               MemberLevelRepository levelRepo, MemberCardRepository cardRepo,
@@ -61,10 +66,26 @@ public class CustomerController {
         return service.getDetail(id);
     }
 
+    /** 新建客户：编号生成 / 字段校验 / 撞单 / 归属上下文均由 service 权威处理；落 CUSTOMER/CREATE 审计。 */
     @PostMapping
     @RequirePerm("customer:create")
     public Customer create(@RequestBody Customer c) {
-        return customerRepo.save(c);
+        Customer created = service.create(c);
+        audit.record("CUSTOMER", created.getCustomerId(), DataScope.currentActor(), "CREATE",
+                payload(created));
+        return created;
+    }
+
+    /** 审计 payload 必须是合法 JSON（audit_log.payload 为 jsonb），手机号不在审计中留明文。 */
+    private String payload(Customer c) {
+        return "{\"customerId\":\"" + esc(c.getCustomerId()) + "\",\"name\":\"" + esc(c.getName())
+                + "\",\"gender\":\"" + esc(c.getGender()) + "\",\"level\":\"" + esc(c.getLevel())
+                + "\",\"channel\":\"" + esc(c.getChannel()) + "\",\"storeCode\":\"" + esc(c.getStoreCode())
+                + "\",\"ownerStaffId\":\"" + esc(c.getOwnerStaffId()) + "\"}";
+    }
+
+    private String esc(String s) {
+        return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     // ---- 会员等级聚合（ID-5：五级合计 48,600） ----
