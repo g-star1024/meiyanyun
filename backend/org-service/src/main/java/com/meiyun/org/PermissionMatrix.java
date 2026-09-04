@@ -318,6 +318,7 @@ public final class PermissionMatrix {
             "refund:approve",
             "cardcancel:approve",
             "complaint:create",
+            "writeoff:create",
             "cashier:sign",
             "cardcancel:sign",
             "consult:create",
@@ -325,7 +326,6 @@ public final class PermissionMatrix {
             "emr:create",
             "followup:create",
             "customer:phone:decrypt",
-            "writeoff:create",
             "writeoff:sign",
             "reception:create",
             "queue:create",
@@ -978,6 +978,7 @@ public final class PermissionMatrix {
                 "workorder:create",
                 "daily:view",
                 "writeoffdesk:view",
+                "writeoff:view",
                 "writeoff:create"
         ));
         m.put("OPERATOR", List.of(

@@ -2,7 +2,7 @@
 // Order 聚合 API（对接 txn-service 订单/收款域）
 // 正向交易：开单（可含多收费子项）→ 双签确认 → 收款。逆向见 refund.ts。
 // 库内状态中文四态：待签核/待收款/已收款/已取消；金额单位「分」。
-// 读模型冗余客户名/门店名/咨询师中文名 + 收费子项。
+// 读模型冗余客户名/掩码手机/门店名/咨询师中文名 + 收费子项。
 // ============================================================
 import client from './client'
 
@@ -18,6 +18,8 @@ export interface OrderViewDTO {
   orderNo: string
   customerId: string
   customerName: string | null
+  /** 客户掩码手机号（如 138****2046），由 customer-service 富化 */
+  phoneMask: string | null
   storeCode: string | null
   storeName: string | null
   project: string

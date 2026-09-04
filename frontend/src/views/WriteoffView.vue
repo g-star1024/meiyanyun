@@ -12,7 +12,6 @@ import CButton from '@/components/CButton.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import { useStoreContext } from '@/stores/storeContext'
-import { useCustomerStore } from '@/stores/customer'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { listOrders, type OrderViewDTO } from '@/api/order'
@@ -30,6 +29,8 @@ interface UiOrder {
   orderNo: string
   customerId: string
   customerName: string
+  phoneMask: string
+  project: string
   items: UiItem[]
   amount: number // 元
   paidAt?: string
@@ -50,7 +51,6 @@ interface UiRecord {
   abnormalReason?: string
 }
 
-const customer = useCustomerStore()
 const auth = useAuthStore()
 const toast = useToast()
 const storeCtx = useStoreContext()
@@ -63,6 +63,8 @@ function adaptOrder(d: OrderViewDTO): UiOrder {
     orderNo: d.orderNo,
     customerId: d.customerId,
     customerName: d.customerName || d.customerId,
+    phoneMask: d.phoneMask || '—',
+    project: d.project || '—',
     items: (d.items || []).map((it) => ({ name: it.itemName, qty: it.qty, price: fen2yuan(it.unitPrice) })),
     amount: fen2yuan(d.amount),
     paidAt: d.createdAt || undefined,
@@ -158,6 +160,8 @@ const selectedRecord = computed<UiRecord | null>(() => {
   return history.value[0] ?? null
 })
 
+const selectedTimes = computed(() => selectedOrder.value?.items[0]?.qty ?? 1)
+
 function selectOrder(id: string) {
   selectedId.value = id
   selectedRecordId.value = null
@@ -208,10 +212,9 @@ function fmtTime(iso?: string) {
 const customerName = (id: string) =>
   orders.value.find((o) => o.customerId === id)?.customerName ||
   records.value.find((r) => r.customerId === id)?.customerName ||
-  customer.get?.(id)?.name ||
-  customer.customers.find((c) => c.id === id)?.name ||
   id
-const phoneMask = (id: string) => customer.customers.find((c) => c.id === id)?.phoneMask || '—'
+const phoneMask = (id: string) =>
+  orders.value.find((o) => o.customerId === id)?.phoneMask || '—'
 
 // 历史记录列表
 const history = computed(() => {
@@ -232,7 +235,7 @@ const history = computed(() => {
     >
       <template #kpis>
         <CKpi label="待核销笔数" :value="String(pendingList.length)" tone="warning" icon="check-square" />
-        <CKpi label="本月已核销" :value="String(writeoff.doneRecords.length)" tone="brand" icon="check" />
+        <CKpi label="累计已核销" :value="String(writeoff.doneRecords.length)" tone="brand" icon="check" />
         <CKpi label="异常笔数" :value="String(writeoff.abnormalRecords.length)" tone="danger" icon="alert" />
       </template>
 
@@ -266,7 +269,7 @@ const history = computed(() => {
               <CStatusPill status="warning">待核销</CStatusPill>
             </div>
             <div class="ord__cust">{{ customerName(o.customerId) }} · {{ phoneMask(o.customerId) }}</div>
-            <div class="ord__proj">{{ o.items[0]?.name }}</div>
+            <div class="ord__proj">{{ o.items[0]?.name || o.project }}</div>
             <div class="ord__meta">
               <span>{{ fmtMoney(o.amount) }}</span>
               <span>{{ fmtTime(o.paidAt) }}</span>
@@ -329,6 +332,15 @@ const history = computed(() => {
             <div class="item__right">
               <span class="item__qty">×{{ it.qty }}</span>
               <span class="item__price">{{ fmtMoney(it.price * it.qty) }}</span>
+            </div>
+          </div>
+          <div v-if="selectedOrder.items.length === 0" class="item">
+            <div class="item__main">
+              <span class="item__name">{{ selectedOrder.project }}</span>
+            </div>
+            <div class="item__right">
+              <span class="item__qty">×{{ selectedTimes }}</span>
+              <span class="item__price">{{ fmtMoney(selectedOrder.amount) }}</span>
             </div>
           </div>
         </div>
@@ -398,7 +410,7 @@ const history = computed(() => {
             @click="confirmWriteoff"
           >
             <CIcon name="check-square" :size="16" />
-            确认核销（扣 {{ selectedOrder.items[0]?.qty }} 次）
+            确认核销（扣 {{ selectedTimes }} 次）
           </CButton>
         </template>
       </template>

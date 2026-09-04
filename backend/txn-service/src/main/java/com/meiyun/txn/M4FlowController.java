@@ -236,6 +236,7 @@ public class M4FlowController {
                         Sort.by(Sort.Order.desc("createdAt"))));
         List<TxnOrder> orders = page.getContent();
         Map<String, String> custNames = names.customerNames(orders.stream().map(TxnOrder::getCustomerId).toList());
+        Map<String, String> phones = names.customerPhones(orders.stream().map(TxnOrder::getCustomerId).toList());
         Map<String, String> storeNames = names.storeNames(orders.stream().map(TxnOrder::getStoreCode).toList());
         Map<String, String> consultantNames = names.staffNames(orders.stream().map(TxnOrder::getConsultant).toList());
         // 批量取子项
@@ -245,7 +246,7 @@ public class M4FlowController {
                 paymentService.loadByOrders(orders.stream().map(TxnOrder::getOrderNo).toList());
 
         return page.map(o -> new OrderView(
-                o.getOrderNo(), o.getCustomerId(), custNames.get(o.getCustomerId()),
+                o.getOrderNo(), o.getCustomerId(), custNames.get(o.getCustomerId()), phones.get(o.getCustomerId()),
                 o.getStoreCode(), o.getStoreCode() == null ? null : storeNames.get(o.getStoreCode()),
                 o.getProject(), o.getAmount(), o.getStatus(),
                 consultantNames.get(o.getConsultant()), o.getContraCheck(),
@@ -426,7 +427,7 @@ public class M4FlowController {
      * ③ 全程审计（WRITEOFF/ORDER_WRITEOFF，JSON payload）；④ 金额取订单额（单位分），核销号 DB 当日序号。
      */
     @PostMapping("/order-writeoff")
-    @RequirePerm("writeoff:sign")
+    @RequirePerm("writeoff:create")
     @Transactional
     public synchronized WriteoffView orderWriteoff(@RequestBody @Valid OrderWriteoffCmd cmd) {
         TxnOrder o = requireOrder(cmd.orderNo());
@@ -569,6 +570,7 @@ public class M4FlowController {
 
     private OrderView toOrderView(TxnOrder o, List<OrderItem> items) {
         Map<String, String> cust = names.customerNames(List.of(o.getCustomerId()));
+        Map<String, String> phones = names.customerPhones(List.of(o.getCustomerId()));
         Map<String, String> stores = o.getStoreCode() == null ? Map.of()
                 : names.storeNames(List.of(o.getStoreCode()));
         Map<String, String> consultants = o.getConsultant() == null ? Map.of()
@@ -576,7 +578,7 @@ public class M4FlowController {
         List<OrderPayment> pays = paymentService.loadByOrders(List.of(o.getOrderNo()))
                 .getOrDefault(o.getOrderNo(), List.of());
         return new OrderView(
-                o.getOrderNo(), o.getCustomerId(), cust.get(o.getCustomerId()),
+                o.getOrderNo(), o.getCustomerId(), cust.get(o.getCustomerId()), phones.get(o.getCustomerId()),
                 o.getStoreCode(), o.getStoreCode() == null ? null : stores.get(o.getStoreCode()),
                 o.getProject(), o.getAmount(), o.getStatus(),
                 o.getConsultant() == null ? null : consultants.get(o.getConsultant()),
@@ -627,9 +629,9 @@ public class M4FlowController {
     /** 订单整单核销命令：operator 为执行人工号（解析姓名展示）。 */
     public record OrderWriteoffCmd(@NotBlank String orderNo, String operator) {}
 
-    /** 订单读模型：冗余客户名/门店名/咨询师中文名 + 收费子项 + 收款明细；金额单位「分」。 */
+    /** 订单读模型：冗余客户名/掩码手机/门店名/咨询师中文名 + 收费子项 + 收款明细；金额单位「分」。 */
     public record OrderView(
-            String orderNo, String customerId, String customerName,
+            String orderNo, String customerId, String customerName, String phoneMask,
             String storeCode, String storeName,
             String project, Long amount, String status,
             String consultantName, String contraCheck,

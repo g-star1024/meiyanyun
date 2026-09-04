@@ -526,12 +526,13 @@ public class ConsultPlanService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "订单不存在: " + orderNo));
         List<OrderItem> items = orderItemRepo.findByOrderNoIn(List.of(orderNo));
         Map<String, String> cust = names.customerNames(List.of(o.getCustomerId()));
+        Map<String, String> phones = names.customerPhones(List.of(o.getCustomerId()));
         Map<String, String> stores = blank(o.getStoreCode()) ? Map.of() : names.storeNames(List.of(o.getStoreCode()));
         Map<String, String> consultants = blank(o.getConsultant()) ? Map.of() : names.staffNames(List.of(o.getConsultant()));
         List<CustomerViewController.OrderItemView> iv = items.stream()
                 .map(it -> new CustomerViewController.OrderItemView(it.getItemName(), it.getQty(), it.getUnitPrice(), it.getAmount()))
                 .toList();
-        return new M4FlowController.OrderView(o.getOrderNo(), o.getCustomerId(), cust.get(o.getCustomerId()),
+        return new M4FlowController.OrderView(o.getOrderNo(), o.getCustomerId(), cust.get(o.getCustomerId()), phones.get(o.getCustomerId()),
                 o.getStoreCode(), blank(o.getStoreCode()) ? null : stores.get(o.getStoreCode()),
                 o.getProject(), o.getAmount(), o.getStatus(),
                 blank(o.getConsultant()) ? null : consultants.get(o.getConsultant()),

@@ -129,7 +129,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'brand:edit', 'inventory:edit', 'refund:approve', 'cardcancel:approve',
     'complaint:create', 'complaint:approve', 'transfer:approve', 'tenant:edit', 'org:edit', 'rbac:edit',
     'compliance:edit', 'target:edit', 'health:edit', 'screen:edit', 'recall:edit', 'recall:create',
-    'transfer:edit', 'transfer:create', 'writeoff:edit', 'queue:edit', 'cashier:sign', 'cardcancel:sign',
+    'transfer:edit', 'transfer:create', 'writeoff:edit', 'writeoff:create', 'queue:edit', 'cashier:sign', 'cardcancel:sign',
     'customer:merge', 'customer:transfer:owner', 'settings:edit',
     'consult:review', // 门店主管可二次审核/改单/作废审核中方案
     'report:export', 'schedule:edit', 'schedule:approve',
@@ -192,6 +192,8 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'consult:view', 'emr:view', 'course:view', 'followup:view', 'complaint:view', 'complaint:create',
     'recall:view', 'recall:edit', 'schedule:view',
     'workorder:view', 'workorder:create', 'daily:view',
+    // 划扣核销台（M2-01 执行台 + /writeoff 整单核销）：前台可建单/执行/查看
+    'writeoffdesk:view', 'writeoff:view', 'writeoff:create',
   ],
   OPERATOR: [
     'marketing:view', 'marketing:create', 'marketing:edit',
