@@ -11,6 +11,9 @@ import CSelect from '@/components/CSelect.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import { useT1RbacStore, MATRIX_MODULES, type PermissionConflict } from '@/stores/t1Rbac'
 import { useAuthStore } from '@/stores/auth'
+import {
+  FIELD_GROUPS, FIELD_ACCESS_LABEL, FIELD_ACCESS_ORDER, fieldAccessOf,
+} from '@/config/fieldRbac'
 
 const rbac = useT1RbacStore()
 const auth = useAuthStore()
@@ -24,12 +27,13 @@ const conflicts = computed<PermissionConflict[]>(() => rbac.detectConflicts())
 const kpiConflicts = computed(() => conflicts.value.length)
 
 // ---------- 标签 ----------
-type Tab = 'matrix' | 'conflict' | 'diff'
+type Tab = 'matrix' | 'conflict' | 'diff' | 'fields'
 const tab = ref<Tab>('matrix')
 const tabOptions = [
   { label: '矩阵视图', value: 'matrix' },
   { label: '冲突检测', value: 'conflict' },
   { label: '差异对比', value: 'diff' },
+  { label: '字段级权限', value: 'fields' },
 ]
 
 // ---------- 矩阵 ----------
@@ -60,6 +64,15 @@ const diff = computed(() => {
   return rbac.diffRoles(diffA.value, diffB.value)
 })
 const nameOf = (id: string) => rbac.get(id)?.name ?? '—'
+
+// ---------- 字段级权限（规划草案，只读） ----------
+// 有任意字段非「隐藏」策略的内置角色才进矩阵列；自定义角色暂无字段策略
+const ALL_FIELDS_KEYS = FIELD_GROUPS.flatMap((g) => g.fields.map((f) => f.key))
+function roleHasFieldPolicy(code: string) {
+  return ALL_FIELDS_KEYS.some((k) => fieldAccessOf(code, k) !== 'HIDE')
+}
+const fieldColumns = computed(() => rbac.activeRoles.filter((r) => r.builtin && roleHasFieldPolicy(r.code)))
+const fieldLegend = FIELD_ACCESS_ORDER.map((v) => ({ value: v, label: FIELD_ACCESS_LABEL[v] }))
 
 // ---------- 导出矩阵 ----------
 function exportMatrix() {
@@ -116,8 +129,11 @@ function exportMatrix() {
           <span class="tab-tip" v-else-if="tab === 'conflict'">
             基于职责分离（SoD）与数据范围差异规则，自动检测高风险权限组合
           </span>
-          <span class="tab-tip" v-else>
+          <span class="tab-tip" v-else-if="tab === 'diff'">
             对比两个启用角色的有效权限（含父角色继承），展示独有/共有权限码
+          </span>
+          <span class="tab-tip" v-else>
+            敏感字段按角色的访问级别草案（隐藏/脱敏/只读/可编辑），规划中、暂不生效
           </span>
           <CButton
             v-if="auth.can('role:view')"
@@ -224,7 +240,7 @@ function exportMatrix() {
       </div>
 
       <!-- 差异对比 -->
-      <div v-else class="diff-wrap">
+      <div v-else-if="tab === 'diff'" class="diff-wrap">
         <div class="diff-pickers">
           <div class="picker">
             <span class="picker__label">角色 A</span>
@@ -294,6 +310,57 @@ function exportMatrix() {
           <CIcon name="alert" :size="20" />
           请选择两个不同的启用角色进行对比。
         </div>
+      </div>
+
+      <!-- 字段级权限（规划草案，只读） -->
+      <div v-else-if="tab === 'fields'" class="field-wrap">
+        <div class="field-banner">
+          <CIcon name="alert" :size="14" />
+          字段级访问管控正在规划中：当前矩阵仅展示内置角色默认策略草案，<b>配置暂不生效</b>；字段级能力上线后将由后端策略实时驱动。角色的功能权限与数据范围请在「角色管理」中配置。
+        </div>
+        <div class="field-legend">
+          <span
+            v-for="lg in fieldLegend"
+            :key="lg.value"
+            class="field-lg"
+            :class="`field-lg--${lg.value.toLowerCase()}`"
+          >{{ lg.label }}</span>
+        </div>
+        <div class="field-table-wrap">
+          <table class="field-table">
+            <thead>
+              <tr>
+                <th class="field-table__field-col">敏感字段</th>
+                <th v-for="r in fieldColumns" :key="r.id">
+                  <div class="field-role-name">{{ r.name }}</div>
+                  <div class="field-role-code">{{ r.code }}</div>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <template v-for="g in FIELD_GROUPS" :key="g.module">
+                <tr class="field-module-row">
+                  <td :colspan="fieldColumns.length + 1">{{ g.module }}</td>
+                </tr>
+                <tr v-for="f in g.fields" :key="f.key">
+                  <td class="field-table__field-col">
+                    <span class="field-name">{{ f.label }}</span>
+                    <span v-if="f.desc" class="field-desc">{{ f.desc }}</span>
+                  </td>
+                  <td v-for="r in fieldColumns" :key="r.id" class="field-cell">
+                    <span
+                      class="field-badge"
+                      :class="`field-badge--${fieldAccessOf(r.code, f.key).toLowerCase()}`"
+                    >{{ FIELD_ACCESS_LABEL[fieldAccessOf(r.code, f.key)] }}</span>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <p class="field-foot">
+          共 {{ FIELD_GROUPS.length }} 个字段组、{{ ALL_FIELDS_KEYS.length }} 个敏感字段；自定义角色暂不支持字段级策略。
+        </p>
       </div>
     </CCard>
   </div>
@@ -533,4 +600,97 @@ function exportMatrix() {
   border-radius: var(--r-lg);
   font-size: var(--t-sm);
 }
+
+/* ---- 字段级权限（规划草案，只读） ---- */
+.field-wrap { padding: var(--s-lg); display: flex; flex-direction: column; gap: var(--s-md); }
+.field-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-sm);
+  padding: var(--s-sm) var(--s-md);
+  background: var(--c-brand-soft);
+  color: var(--c-brand);
+  border-radius: var(--r-lg);
+  font-size: var(--t-sm);
+  line-height: var(--lh-base);
+}
+.field-banner b { font-weight: 700; }
+.field-legend {
+  display: flex;
+  align-items: center;
+  gap: var(--s-xs);
+  flex-wrap: wrap;
+}
+.field-lg {
+  font-size: var(--t-xs);
+  padding: 3px 12px;
+  border-radius: var(--r-capsule);
+  border: 1px solid var(--c-border);
+  color: var(--c-text-2);
+}
+.field-lg--hide { color: var(--c-text-3); }
+.field-lg--mask { background: var(--c-warning-bg); color: var(--c-warning-fg); border-color: transparent; }
+.field-lg--read { background: var(--c-info-bg); color: var(--c-info-fg); border-color: transparent; }
+.field-lg--edit { background: var(--c-success-bg); color: var(--c-success-fg); border-color: transparent; }
+
+.field-table-wrap { overflow-x: auto; border: 1px solid var(--c-border-light); border-radius: var(--r-lg); }
+.field-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--t-sm);
+  min-width: 720px;
+}
+.field-table th {
+  background: var(--c-bg-page);
+  padding: var(--s-sm) var(--s-md);
+  text-align: center;
+  font-weight: 600;
+  font-size: var(--t-xs);
+  color: var(--c-text-2);
+  white-space: nowrap;
+  border-bottom: 1px solid var(--c-border);
+}
+.field-table tbody td {
+  padding: var(--s-xs) var(--s-md);
+  border-bottom: 1px solid var(--c-border-light);
+  text-align: center;
+  vertical-align: middle;
+}
+.field-table__field-col {
+  position: sticky;
+  left: 0;
+  background: var(--c-surface);
+  text-align: left !important;
+  min-width: 180px;
+  border-right: 1px solid var(--c-border);
+  white-space: nowrap;
+}
+.field-table thead .field-table__field-col { background: var(--c-bg-page); z-index: 1; }
+.field-name { font-weight: 600; color: var(--c-text); }
+.field-desc { margin-left: var(--s-xs); font-size: var(--t-xs); color: var(--c-text-3); }
+.field-module-row td {
+  background: var(--c-bg-page);
+  text-align: left;
+  font-weight: 600;
+  font-size: var(--t-xs);
+  color: var(--c-text-3);
+  padding: var(--s-xs) var(--s-md);
+}
+.field-cell { padding: var(--s-xs) var(--s-sm); }
+.field-badge {
+  display: inline-block;
+  min-width: 52px;
+  text-align: center;
+  font-size: var(--t-xs);
+  padding: 3px 10px;
+  border-radius: var(--r-capsule);
+  border: 1px solid var(--c-border-light);
+  color: var(--c-text-3);
+}
+.field-badge--hide { color: var(--c-text-4); background: transparent; }
+.field-badge--mask { background: var(--c-warning-bg); color: var(--c-warning-fg); border-color: transparent; }
+.field-badge--read { background: var(--c-info-bg); color: var(--c-info-fg); border-color: transparent; }
+.field-badge--edit { background: var(--c-success-bg); color: var(--c-success-fg); border-color: transparent; }
+.field-foot { margin: 0; font-size: var(--t-xs); color: var(--c-text-3); }
+
 </style>

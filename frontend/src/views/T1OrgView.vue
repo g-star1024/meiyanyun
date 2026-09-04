@@ -185,8 +185,35 @@ function submitForm() {
   drawerOpen.value = false
 }
 
+// ---------- 停用/启用确认 ----------
+const statusConfirmOpen = ref(false)
+const confirmTarget = ref<OrgNode | null>(null)
+const confirmTo = ref<OrgStatus>('ACTIVE')
+const confirmReason = ref('')
+const confirmErr = ref('')
+
 function onToggleStatus(n: OrgNode) {
-  org.setStatus(n.id, n.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')
+  const to: OrgStatus = n.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+  confirmTarget.value = n
+  confirmTo.value = to
+  confirmReason.value = ''
+  confirmErr.value = ''
+  statusConfirmOpen.value = true
+}
+
+function confirmStatus() {
+  if (!confirmTarget.value) return
+  const reason = confirmReason.value.trim()
+  if (confirmTo.value === 'INACTIVE' && !reason) {
+    confirmErr.value = '请填写停用原因'
+    return
+  }
+  try {
+    org.setStatus(confirmTarget.value.id, confirmTo.value, reason || undefined)
+    statusConfirmOpen.value = false
+  } catch (e) {
+    confirmErr.value = e instanceof Error ? e.message : '操作失败'
+  }
 }
 
 // ---------- 工具 ----------
@@ -419,6 +446,10 @@ const OrgTreeNode = defineComponent({
                 <div class="info-label">排序</div>
                 <div class="info-value">{{ selected.sort }}</div>
               </div>
+              <div class="info-cell info-cell--full" v-if="selected.status === 'INACTIVE'">
+                <div class="info-label">停用原因</div>
+                <div class="info-value">{{ selected.inactiveReason || '—' }}</div>
+              </div>
               <div class="info-cell info-cell--full" v-if="selected.remark">
                 <div class="info-label">备注</div>
                 <div class="info-value">{{ selected.remark }}</div>
@@ -587,6 +618,39 @@ const OrgTreeNode = defineComponent({
         </CButton>
       </template>
     </CDrawer>
+
+    <!-- 停用/启用确认 -->
+    <div v-if="statusConfirmOpen" class="modal-mask" @click.self="statusConfirmOpen = false">
+      <div class="modal modal--sm">
+        <div class="modal__head">
+          <h3>{{ confirmTo === 'INACTIVE' ? '停用组织单元' : '启用组织单元' }}</h3>
+          <button class="modal__close" @click="statusConfirmOpen = false"><CIcon name="close" :size="18" /></button>
+        </div>
+        <div class="modal__body">
+          <p class="confirm-txt">
+            确认将「<b>{{ confirmTarget?.name }}</b>」{{ confirmTo === 'INACTIVE' ? '停用' : '启用' }}？
+            {{ confirmTo === 'INACTIVE' ? '停用后该组织单元及其下级统计将标记为不可用。' : '启用后该组织单元恢复可用。' }}
+          </p>
+          <label v-if="confirmTo === 'INACTIVE'" class="field">
+            <span class="field__label">停用原因 <i>*</i></span>
+            <CTextarea v-model="confirmReason" placeholder="请说明停用原因，将记入审计日志" :rows="3" />
+          </label>
+          <div v-if="confirmErr" class="form-err">
+            <CIcon name="alert" :size="14" /> {{ confirmErr }}
+          </div>
+        </div>
+        <div class="modal__foot">
+          <CButton variant="secondary" @click="statusConfirmOpen = false">取消</CButton>
+          <CButton
+            variant="primary"
+            :disabled="confirmTo === 'INACTIVE' && !confirmReason.trim()"
+            @click="confirmStatus"
+          >
+            确认{{ confirmTo === 'INACTIVE' ? '停用' : '启用' }}
+          </CButton>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -851,4 +915,53 @@ const OrgTreeNode = defineComponent({
   border-radius: var(--r-md);
   font-size: var(--t-sm);
 }
+
+/* ---- 停用/启用确认弹窗 ---- */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal {
+  background: var(--c-surface);
+  border-radius: var(--r-xl);
+  width: 480px;
+  max-width: calc(100vw - 48px);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.18);
+}
+.modal--sm { width: 420px; }
+.modal__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--s-md) var(--s-lg);
+  border-bottom: 1px solid var(--c-border-light);
+}
+.modal__head h3 { margin: 0; font-size: var(--t-lg); font-weight: 700; }
+.modal__close {
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--c-text-3);
+  padding: 4px;
+  display: flex;
+  border-radius: var(--r-sm);
+}
+.modal__close:hover { color: var(--c-text); }
+.modal__body { padding: var(--s-lg); display: flex; flex-direction: column; gap: var(--s-md); }
+.modal__foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-sm);
+  padding: var(--s-md) var(--s-lg);
+  border-top: 1px solid var(--c-border-light);
+}
+.confirm-txt { margin: 0; font-size: var(--t-sm); color: var(--c-text-2); line-height: var(--lh-base); }
+.confirm-txt b { color: var(--c-text); }
 </style>

@@ -351,8 +351,6 @@ export const NAV_GROUPS: NavGroup[] = [
     domain: 'admin',
     title: '权限中台',
     items: [
-      { to: '/m1-org', label: '组织架构权限', icon: 'org', permission: 'org:view' },
-      { to: '/m1-rbac', label: '字段级RBAC', icon: 'sign', permission: 'rbac:view' },
       { to: '/admin/staff', label: '员工管理', icon: 'customer', permission: 'rbac:view' },
       { to: '/admin/roles', label: '角色管理', icon: 'shield', permission: 'role:view' },
       { to: '/admin/permissions', label: '权限矩阵', icon: 'check-square', permission: 'permission:view' },
@@ -520,8 +518,6 @@ export const PAGE_TITLES: Record<string, PageTitle> = {
   '/m1-matrix': { breadcrumb: '管理后台 / 指标矩阵', title: '指标矩阵' },
   '/m1-compare': { breadcrumb: '管理后台 / 门店对标', title: '门店对标' },
   '/m1-tenant': { breadcrumb: '门店运营 / 门店主数据', title: '门店主数据' },
-  '/m1-org': { breadcrumb: '管理后台 / 组织架构权限', title: '组织架构权限' },
-  '/m1-rbac': { breadcrumb: '管理后台 / 字段级RBAC', title: '字段级RBAC' },
   '/m1-procurement': { breadcrumb: '门店运营 / 采购供应链', title: '采购供应链' },
   '/m1-brand': { breadcrumb: '管理后台 / 品牌品类', title: '品牌品类' },
   '/m1-audit-log': { breadcrumb: '管理后台 / 审计日志', title: '审计日志' },

@@ -19,6 +19,8 @@ export interface OrgNode {
   status: OrgStatus
   sort: number
   remark?: string
+  /** 停用时必填的原因（本地演示数据，记入本地活动日志；后端组织写接口落地后随写接口持久化） */
+  inactiveReason?: string
   createdAt: string
 }
 
@@ -97,7 +99,11 @@ export const useM1OrgStore = defineStore('m1Org', () => {
     if (!auth.can('org:edit')) throw new Error('无组织架构编辑权限')
     const n = get(id)
     if (!n) return
+    if (status === 'INACTIVE' && (!reason || !reason.trim())) {
+      throw new Error('停用组织单元必须填写原因')
+    }
     n.status = status
+    n.inactiveReason = status === 'INACTIVE' ? reason!.trim() : undefined
     activity.log(auth.user.name, `组织「${n.name}」${status === 'ACTIVE' ? '启用' : '停用'}${reason ? `：${reason}` : ''}`, id)
   }
 

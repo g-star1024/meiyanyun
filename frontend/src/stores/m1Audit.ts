@@ -78,7 +78,7 @@ export const useM1AuditStore = defineStore('m1Audit', () => {
       mk({ at: hoursAgo(18), actor: '苏晴', actorRole: '门店店长', module: 'INVENTORY', action: '入库登记', target: '采购单 PO20260818003', risk: 'LOW', ip: '10.12.12.7', result: 'SUCCESS', before: '润致娃娃针 库存 12', after: '润致娃娃针 库存 62', detail: '入库 50 支，批次 BHX0825，质检合格' }),
       mk({ at: hoursAgo(26), actor: '周岚', actorRole: '集团管理员', module: 'AUTH', action: '代操作（impersonate）', target: '苏晴（静安店长）', risk: 'HIGH', ip: '10.12.21.45', result: 'SUCCESS', detail: '开始代操作，理由：处理工单#T20260824 审批异常；会话 47 分钟后结束' }),
       mk({ at: hoursAgo(30), actor: '顾屿', actorRole: '医生', module: 'EMR', action: '查看敏感信息', target: '客户 138****6677 身份证号', risk: 'MEDIUM', ip: '10.12.12.31', result: 'SUCCESS', detail: '解密查看身份证号（emr:edit 授权），操作已留痕' }),
-      mk({ at: hoursAgo(40), actor: '张强', actorRole: '—', module: 'AUTH', action: '越权访问拦截', target: '/m1-rbac', risk: 'HIGH', ip: '10.12.12.77', result: 'FAILED', detail: '前台角色尝试访问字段级RBAC页，缺少 rbac:view，已拦截并记录' }),
+      mk({ at: hoursAgo(40), actor: '张强', actorRole: '—', module: 'AUTH', action: '越权访问拦截', target: '/admin/permissions', risk: 'HIGH', ip: '10.12.12.77', result: 'FAILED', detail: '前台角色尝试访问权限矩阵页，缺少 permission:view，已拦截并记录' }),
     ]
     seeded.value = true
   }
