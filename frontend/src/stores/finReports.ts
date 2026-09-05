@@ -9,6 +9,29 @@ import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { useFinanceCoreStore } from './financeCore'
+import { useStoreContext } from './storeContext'
+import { getCardsBalance, getTax, getCosts } from '@/api/finance'
+import type { CardBalanceDTO, Tax as TaxDTO, CostAggregate } from '@/api/finance'
+
+/** 分 → 元（finance 卡余额/税务镜像金额以「分」存储，台账聚合已换算为元） */
+const fen2yuan = (f: number | null | undefined) => (f == null ? 0 : Math.round(f) / 100)
+
+/** finance 聚合卡余额 DTO → MemberCard（卡明细流水无数据源，txns 回落空数组） */
+function adaptCard(dto: CardBalanceDTO): MemberCard {
+  return {
+    id: dto.id,
+    cardNo: dto.cardNo,
+    customerName: dto.customerName,
+    type: dto.type,
+    balance: dto.balance,
+    giftBalance: dto.giftBalance,
+    timesTotal: dto.timesTotal,
+    timesRemain: dto.timesRemain,
+    lastConsumeAt: dto.lastConsumeAt,
+    status: dto.status,
+    txns: [],
+  }
+}
 
 // ============ 会员卡余额 ============
 export type CardType = 'STORED' | 'TIMES' | 'GIFT'
@@ -36,7 +59,8 @@ export interface MemberCard {
 }
 
 // ============ 异常账务 ============
-export type AbnormalType = 'LONG' | 'SHORT' | 'REVERSED' | 'PENDING'
+// LONG/SHORT/REVERSED/PENDING 为演示 seed 的三方回单差异态；DIFF 为真实台账人工标记差异（待双签调平）
+export type AbnormalType = 'LONG' | 'SHORT' | 'REVERSED' | 'PENDING' | 'DIFF'
 export type AbnormalStatus = 'OPEN' | 'PROCESSING' | 'RESOLVED'
 export type DisposeMethod = 'ADJUST' | 'LOSS' | 'ACCOUNTABILITY' | 'PENDING'
 
@@ -49,8 +73,12 @@ export interface AbnormalItem {
   occurredAt: string
   status: AbnormalStatus
   cashier: number   // 收银记账
-  channelAck: number // 渠道回单
-  bankAck: number    // 银行到账
+  /** 渠道回单金额：真实台账三方回单 B6 接入前为 null（不伪造） */
+  channelAck: number | null
+  /** 银行到账金额：真实台账三方回单 B6 接入前为 null（不伪造） */
+  bankAck: number | null
+  /** 真实 finance-service outbox 项（可人工标记/调平）；演示 seed 为 false */
+  writable?: boolean
   disposeMethod?: DisposeMethod
   reviewer?: string
   remark?: string
@@ -78,6 +106,9 @@ export interface ChannelFlow {
   channel: string
   income: number
   expense: number
+  reconciled: boolean
+  /** 桶内含混合支付单（一单多渠道，按主渠道归桶）时展示「混合（主：xx）」 */
+  mixed?: boolean
 }
 export interface MonthlyRow {
   month: string
@@ -108,10 +139,10 @@ const CARD_TXN_LABEL: Record<CardTxn['type'], string> = {
 }
 
 const ABNORMAL_TYPE_LABEL: Record<AbnormalType, string> = {
-  LONG: '长款', SHORT: '短款', REVERSED: '冲正', PENDING: '待对账',
+  LONG: '长款', SHORT: '短款', REVERSED: '冲正', PENDING: '待对账', DIFF: '人工标记差异',
 }
 const ABNORMAL_TYPE_PILL: Record<AbnormalType, 'success' | 'warning' | 'danger' | 'primary'> = {
-  LONG: 'success', SHORT: 'danger', REVERSED: 'warning', PENDING: 'primary',
+  LONG: 'success', SHORT: 'danger', REVERSED: 'warning', PENDING: 'primary', DIFF: 'danger',
 }
 const ABNORMAL_STATUS_LABEL: Record<AbnormalStatus, string> = {
   OPEN: '待处置', PROCESSING: '处置中', RESOLVED: '已处置',
@@ -170,10 +201,8 @@ export const useFinCardBalanceStore = defineStore('finCardBalance', () => {
     return true
   }
 
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
+  /** 演示数据（API 失败/未接通时回落，活规格） */
+  function seedMock() {
     const d = (day: number) => `2026-08-${String(day).padStart(2, '0')}`
     const tx = (id: string, date: string, type: CardTxn['type'], amount: number, memo: string): CardTxn => ({ id, date, type, amount, memo })
     const data: Array<Omit<MemberCard, 'id'>> = [
@@ -194,7 +223,26 @@ export const useFinCardBalanceStore = defineStore('finCardBalance', () => {
       { cardNo: 'MC-8801-0008', customerName: '李晓彤', type: 'TIMES', balance: 0, giftBalance: 0, timesTotal: 5, timesRemain: 2, lastConsumeAt: d(12), status: 'NORMAL',
         txns: [tx('t1', d(2), 'RECHARGE', 9800, '光子嫩肤5次卡'), tx('t2', d(12), 'CONSUME', 0, '第3次')] },
     ]
-    data.forEach((d) => cards.value.push({ id: nextId('card'), ...d }))
+    data.forEach((row) => cards.value.push({ id: nextId('card'), ...row }))
+  }
+
+  let seeded = false
+  let seeding: Promise<void> | null = null
+  /** 从 finance-service 拉取真实会员卡余额（幂等；force 强制刷新）；失败回落演示数据 */
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (seeded && !force) return Promise.resolve()
+    seeding = (async () => {
+      try {
+        const { data } = await getCardsBalance()
+        cards.value = data.cards.map(adaptCard)
+        seeded = true
+      } catch (e) {
+        console.error('[finCardBalance] 加载卡余额失败，回落演示数据', e)
+        if (cards.value.length === 0) seedMock()
+      }
+    })()
+    return seeding
   }
 
   return {
@@ -229,14 +277,37 @@ export const useFinAbnormalStore = defineStore('finAbnormal', () => {
 
   function get(id: string) { return items.value.find((i) => i.id === id) }
 
-  /** 从 financeCore.outbox 同步异常（LONG/SHORT/REVERSED/PENDING），幂等 */
+  /** 从 financeCore.outbox 同步异常，幂等。
+   *  演示 seed（writable=false）：LONG/SHORT/REVERSED/PENDING 为本地演示的三方回单差异，保留伪造 triad。
+   *  真实台账（writable=true）：仅 DIFF（人工标记差异，待双签调平）纳入；PENDING 属正常待对账（回单 B6 未接入，
+   *  不臆造差异），MATCHED/ADJUSTED 已闭环跳过；回单金额一律 null，页面诚实展示「回单未接入」。 */
   function syncFromCore() {
     for (const o of core.outbox) {
-      if (o.status === 'MATCHED') continue
+      if (o.writable) {
+        if (o.status !== 'DIFF') continue
+        if (!items.value.some((i) => i.txnNo === o.txnNo)) {
+          items.value.unshift({
+            id: nextId('ab'),
+            txnNo: o.txnNo,
+            type: 'DIFF',
+            amount: o.amount,
+            channel: o.channel,
+            occurredAt: o.occurredAt,
+            status: 'OPEN',
+            cashier: o.amount,
+            channelAck: null,
+            bankAck: null,
+            writable: true,
+          })
+        }
+        continue
+      }
+      if (o.status === 'MATCHED' || o.status === 'ADJUSTED') continue
       const type: AbnormalType =
         o.status === 'LONG' ? 'LONG' :
         o.status === 'SHORT' ? 'SHORT' :
-        o.status === 'REVERSED' ? 'REVERSED' : 'PENDING'
+        o.status === 'REVERSED' ? 'REVERSED' :
+        o.status === 'DIFF' ? 'DIFF' : 'PENDING'
       if (!items.value.some((i) => i.txnNo === o.txnNo)) {
         const base = o.amount
         items.value.unshift({
@@ -250,6 +321,7 @@ export const useFinAbnormalStore = defineStore('finAbnormal', () => {
           cashier: base,
           channelAck: type === 'LONG' ? base : base - 6,
           bankAck: type === 'LONG' ? base + Math.round(base * 0.0185 * 100) / 100 : base - 6,
+          writable: false,
         })
       }
     }
@@ -270,18 +342,20 @@ export const useFinAbnormalStore = defineStore('finAbnormal', () => {
   }
 
   let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    syncFromCore()
-    // 补一条已处置样例
-    items.value.push({
-      id: nextId('ab'), txnNo: 'TX20260810022', type: 'SHORT', amount: 12,
-      channel: '微信支付', occurredAt: '2026-08-10 15:20', status: 'RESOLVED',
-      cashier: 3200, channelAck: 3188, bankAck: 3188,
-      disposeMethod: 'ADJUST', reviewer: '陈雅琳（财务主管）',
-      remark: '渠道手续费误扣，按手续费差额调平', disposedAt: '2026-08-11T09:30',
-    })
+  let seeding: Promise<void> | null = null
+  /** 先确保 financeCore 真实台账拉取完成，再从 outbox 镜像派生异常（幂等；force 强制刷新）。
+   *  注意：core 的台账是 store 初始化时 void seed() 触发的异步 fetch，本函数必须 await core.seed()
+   *  之后再 syncFromCore()，否则会在 outbox 仍为空时快照成永久空列表（异步竞态）。
+   *  镜像无三方回单差异时列表为空（不插入演示样例，避免伪造收银/渠道/银行三方金额与处置记录）。 */
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (seeded && !force) return Promise.resolve()
+    seeding = (async () => {
+      await core.seed(force)
+      syncFromCore()
+      seeded = true
+    })()
+    return seeding
   }
 
   return {
@@ -294,81 +368,194 @@ export const useFinAbnormalStore = defineStore('finAbnormal', () => {
 // ============================================================
 // Store 3: 三报表（税务 / 资金日报 / 经营月报）
 // ============================================================
+/** 渠道码 → 中文渠道名（对齐 order_payment 支付方式；order_payment 空→未标记渠道） */
+const CHANNEL_LABEL: Record<string, string> = {
+  cash: '现金', wxpay: '微信支付', alipay: '支付宝', card: '刷卡',
+  balance: '储值余额', transfer: '转账', bank: '银行转账',
+}
+const r2 = (v: number) => Math.round(v * 100) / 100
+
 export const useFinReportsStore = defineStore('finReports', () => {
   const core = useFinanceCoreStore()
+  const ctx = useStoreContext()
 
-  // ----- 税务 -----
+  // ----- B5 成本聚合（/finance/cost，Long 分；月报/门店毛利的成本权威源） -----
+  const costAggs = ref<CostAggregate[]>([])
+  /** 门店编码 → 中文名（台账 store 为中文名，成本聚合为编码，需对齐） */
+  const nameOf = (code: string) => ctx.stores.find((s) => s.storeCode === code)?.storeName ?? code
+
+  // ----- 税务（finance 镜像端点；种子库 tax 表空→空态，金额「分」→「元」） -----
   const taxRows = ref<TaxRow[]>([])
   const taxableRevenue = computed(() => taxRows.value.reduce((s, r) => s + r.base, 0))
   const outputTax = computed(() => taxRows.value.reduce((s, r) => s + r.amount, 0))
-  const inputDeduct = ref(1860)
+  // 进项抵扣无数据源（采购/供应商发票未建），诚实为 0
+  const inputDeduct = ref(0)
   const taxPayable = computed(() => Math.max(0, outputTax.value - inputDeduct.value))
 
-  // ----- 资金日报 -----
-  const dailyFlows = ref<DailyFlow[]>([])
-  const channelFlows = ref<ChannelFlow[]>([])
-  const todayIncome = computed(() => core.netRevenue > 0 ? core.totalRevenue : dailyFlows.value[dailyFlows.value.length - 1]?.income ?? 0)
-  const todayExpense = computed(() => core.totalRefund + core.totalCost)
+  // ----- 资金日报（从真实台账派生） -----
+  // 收入 = RF-REVENUE IN；支出 = RF-REFUND/TK* OUT（RF-DEPOSIT OUT 为预收内部转出，不重复计流出）
+  const dailyFlows = computed<DailyFlow[]>(() => {
+    const byDate = new Map<string, { income: number; expense: number }>()
+    for (const e of core.entries) {
+      const slot = byDate.get(e.date) ?? { income: 0, expense: 0 }
+      if (e.direction === 'IN' && e.subject === 'RF-REVENUE') slot.income += e.amount
+      else if (e.direction === 'OUT' && (e.subject === 'RF-REFUND' || e.subject.startsWith('TK'))) slot.expense += e.amount
+      byDate.set(e.date, slot)
+    }
+    let running = 0
+    return [...byDate.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([date, v]) => {
+        running = r2(running + v.income - v.expense)
+        return { date: date.slice(5), income: r2(v.income), expense: r2(v.expense), net: r2(v.income - v.expense), balance: running }
+      })
+  })
+
+  // 渠道明细：与「本日」KPI 同口径——仅取最近营业日（按 RF-REVENUE/RF-REFUND 聚合），
+  // 不把整期累计塞进「当日」表；order_payment 支付渠道未采集时渠道回落「未标记渠道」。
+  const latestDate = computed<string | null>(() => {
+    const dates = core.entries.map((e) => e.date).filter(Boolean).sort()
+    return dates.length ? dates[dates.length - 1] : null
+  })
+  const channelFlows = computed<ChannelFlow[]>(() => {
+    // 桶位按主渠道码归并（混合支付单取入账额最大一笔渠道，保证 Σ各渠道 = 收银实收）；
+    // 展示名：桶内出现混合单 → 「混合（主：xx）」，无渠道码 → 「未标记渠道」。
+    const m = new Map<string, ChannelFlow>()
+    const ensure = (code: string) => {
+      let row = m.get(code)
+      if (!row) {
+        const label = code === '__NONE__' ? '未标记渠道' : (CHANNEL_LABEL[code] ?? code)
+        row = { channel: label, income: 0, expense: 0, reconciled: true }
+        m.set(code, row)
+      }
+      return row
+    }
+    for (const e of core.entries) {
+      if (e.date !== latestDate.value) continue
+      if (e.subject !== 'RF-REVENUE' && e.subject !== 'RF-REFUND') continue
+      const code = e.channel ?? '__NONE__'
+      const row = ensure(code)
+      if (e.mixed) {
+        row.mixed = true
+        row.channel = `混合（主：${CHANNEL_LABEL[code] ?? code}）`
+      }
+      if (e.subject === 'RF-REVENUE' && e.direction === 'IN') row.income = r2(row.income + e.amount)
+      if (e.subject === 'RF-REFUND' && e.direction === 'OUT') row.expense = r2(row.expense + e.amount)
+      if (!e.reconciled) row.reconciled = false
+    }
+    return [...m.values()]
+  })
+
+  // 「本日」取台账最近一个有流水的营业日（种子数据跨度多日，非严格自然今日），
+  // 不拿整期累计充当本日，避免真实数据下 KPI 误导。
+  const latestDay = computed<DailyFlow | null>(() =>
+    dailyFlows.value.length ? dailyFlows.value[dailyFlows.value.length - 1] : null)
+  const todayIncome = computed(() => latestDay.value?.income ?? 0)
+  const todayExpense = computed(() => latestDay.value?.expense ?? 0)
   const todayNet = computed(() => todayIncome.value - todayExpense.value)
   const endBalance = computed(() => core.depositBalance)
 
-  // ----- 经营月报 -----
-  const monthlyTrend = ref<MonthlyRow[]>([])
-  const storeMonthly = ref<StoreMonthly[]>([])
+  // ----- 经营月报：收入从真实台账派生，成本取 /finance/cost 月聚合（毛利=收入-成本） -----
+  const costByMonth = computed<Map<string, number>>(() => {
+    const m = new Map<string, number>()
+    for (const a of costAggs.value) {
+      const key = (a.periodMonth || '').slice(0, 7)
+      m.set(key, r2((m.get(key) ?? 0) + fen2yuan(a.total)))
+    }
+    return m
+  })
+
+  const monthlyTrend = computed<MonthlyRow[]>(() => {
+    const byMonth = new Map<string, number>()
+    for (const e of core.entries) {
+      if (e.subject === 'RF-REVENUE' && e.direction === 'IN') {
+        const m = e.date.slice(0, 7)
+        byMonth.set(m, (byMonth.get(m) ?? 0) + e.amount)
+      }
+    }
+    for (const key of costByMonth.value.keys()) {
+      if (!byMonth.has(key)) byMonth.set(key, 0)
+    }
+    return [...byMonth.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : 1))
+      .map(([month, revenue]) => {
+        const cost = costByMonth.value.get(month) ?? 0
+        const grossProfit = r2(revenue - cost)
+        return {
+          month: `${Number(month.slice(5))}月`,
+          revenue: r2(revenue),
+          cost,
+          grossProfit,
+          grossRate: revenue ? Math.round((grossProfit / revenue) * 1000) / 10 : 0,
+        }
+      })
+  })
+
+  const costByStore = computed<Map<string, number>>(() => {
+    // 键统一用门店中文名（与台账 e.store 对齐）
+    const m = new Map<string, number>()
+    for (const a of costAggs.value) {
+      const key = nameOf(a.storeCode)
+      m.set(key, r2((m.get(key) ?? 0) + fen2yuan(a.total)))
+    }
+    return m
+  })
+
+  const storeMonthly = computed<StoreMonthly[]>(() => {
+    const byStore = new Map<string, number>()
+    for (const e of core.entries) {
+      if (e.subject === 'RF-REVENUE' && e.direction === 'IN') {
+        byStore.set(e.store, (byStore.get(e.store) ?? 0) + e.amount)
+      }
+    }
+    // 仅有成本无收入的门店（新开店/当月无营收）也要列示
+    for (const key of costByStore.value.keys()) {
+      if (!byStore.has(key)) byStore.set(key, 0)
+    }
+    return [...byStore.entries()]
+      .sort(([, a], [, b]) => b - a)
+      .map(([store, revenue]) => {
+        const cost = costByStore.value.get(store) ?? 0
+        const grossProfit = r2(revenue - cost)
+        return {
+          store,
+          revenue: r2(revenue),
+          cost,
+          grossProfit,
+          grossRate: revenue ? Math.round((grossProfit / revenue) * 1000) / 10 : 0,
+        }
+      })
+  })
 
   let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-
-    // 税务
-    taxRows.value = [
-      { id: nextId('tax'), taxName: '增值税（医疗服务6%）', base: 186000, rate: 0.06, amount: 10528.30 },
-      { id: nextId('tax'), taxName: '增值税（产品销售13%）', base: 42600, rate: 0.13, amount: 4902.65 },
-      { id: nextId('tax'), taxName: '城建税及附加', base: 15430.95, rate: 0.12, amount: 1851.71 },
-      { id: nextId('tax'), taxName: '企业所得税（预缴）', base: 96800, rate: 0.25, amount: 24200 },
-    ]
-
-    // 近7日资金
-    const days: DailyFlow[] = []
-    let bal = 286000
-    for (let i = 6; i >= 0; i--) {
-      const day = 17 - i
-      const income = [38600, 45200, 32100, 52800, 41300, 48900, 53000][6 - i]
-      const expense = [12400, 18600, 9800, 21300, 15200, 17800, 16400][6 - i]
-      bal += income - expense
-      days.push({ date: `08-${String(day).padStart(2, '0')}`, income, expense, net: income - expense, balance: bal })
-    }
-    dailyFlows.value = days
-    channelFlows.value = [
-      { channel: '微信支付', income: 28600, expense: 2800 },
-      { channel: '支付宝', income: 12400, expense: 0 },
-      { channel: '刷卡', income: 8600, expense: 0 },
-      { channel: '现金', income: 2200, expense: 0 },
-      { channel: '储值划扣', income: 1200, expense: 0 },
-      { channel: '退款支出', income: 0, expense: 2800 },
-      { channel: '耗材/成本', income: 0, expense: 10800 },
-    ]
-
-    // 近6月趋势
-    monthlyTrend.value = [
-      { month: '3月', revenue: 486000, cost: 218000, grossProfit: 268000, grossRate: 55.1 },
-      { month: '4月', revenue: 512000, cost: 232000, grossProfit: 280000, grossRate: 54.7 },
-      { month: '5月', revenue: 568000, cost: 248000, grossProfit: 320000, grossRate: 56.3 },
-      { month: '6月', revenue: 598000, cost: 265000, grossProfit: 333000, grossRate: 55.7 },
-      { month: '7月', revenue: 642000, cost: 281000, grossProfit: 361000, grossRate: 56.2 },
-      { month: '8月', revenue: Math.round(core.netRevenue + 620000), cost: core.totalCost + 268000, grossProfit: core.grossProfit + 352000, grossRate: 57.2 },
-    ]
-    storeMonthly.value = [
-      { store: '静安旗舰店', revenue: 386000, cost: 162000, grossProfit: 224000, grossRate: 58.0 },
-      { store: '万象城店', revenue: 218000, cost: 98000, grossProfit: 120000, grossRate: 55.0 },
-      { store: '徐汇滨江店', revenue: 128000, cost: 62000, grossProfit: 66000, grossRate: 51.6 },
-    ]
+  let seeding: Promise<void> | null = null
+  /** 拉取 finance 税务镜像 + B5 成本聚合（幂等；force 强制刷新）；失败静默回落空态 */
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (seeded && !force) return Promise.resolve()
+    seeding = (async () => {
+      try {
+        await ctx.loadStores()
+        const [tax, cost] = await Promise.all([getTax(), getCosts()])
+        taxRows.value = ((tax.data as TaxDTO[]) ?? []).map((t) => ({
+          id: nextId('tax'),
+          taxName: t.cat,
+          base: fen2yuan(t.base),
+          rate: t.rate,
+          amount: fen2yuan(t.amount),
+        }))
+        costAggs.value = cost.data ?? []
+        seeded = true
+      } catch (e) {
+        console.error('[finReports] 加载税务/成本镜像失败，回落空态', e)
+      }
+    })()
+    return seeding
   }
 
   return {
     taxRows, taxableRevenue, outputTax, inputDeduct, taxPayable,
-    dailyFlows, channelFlows, todayIncome, todayExpense, todayNet, endBalance,
+    dailyFlows, channelFlows, latestDate, todayIncome, todayExpense, todayNet, endBalance,
     monthlyTrend, storeMonthly, seed,
   }
 })

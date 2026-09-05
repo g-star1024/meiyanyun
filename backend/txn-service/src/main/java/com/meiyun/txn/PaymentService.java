@@ -32,13 +32,18 @@ public class PaymentService {
     private final OrderPaymentRepository payRepo;
     private final ConsultPlanService planService;
     private final AuditRecorder audit;
+    private final FinanceEventPublisher financeEvents;
+    private final CustomerCardClient cardClient;
 
     public PaymentService(TxnOrderRepository orderRepo, OrderPaymentRepository payRepo,
-                          ConsultPlanService planService, AuditRecorder audit) {
+                          ConsultPlanService planService, AuditRecorder audit,
+                          FinanceEventPublisher financeEvents, CustomerCardClient cardClient) {
         this.orderRepo = orderRepo;
         this.payRepo = payRepo;
         this.planService = planService;
         this.audit = audit;
+        this.financeEvents = financeEvents;
+        this.cardClient = cardClient;
     }
 
     /** 单笔支付流水读模型。 */
@@ -56,9 +61,10 @@ public class PaymentService {
      * @param method   支付方式 cash/card/wxpay/alipay/balance
      * @param tendered 客户实付（分）；现金为递交现金，非现金等于实际扣款
      * @param operator 收银员
+     * @param cardNo   储值余额支付（balance）时的会员卡号；其他方式忽略
      */
     @Transactional
-    public PayResult pay(String orderNo, String method, Long tendered, String operator) {
+    public PayResult pay(String orderNo, String method, Long tendered, String operator, String cardNo) {
         // 操作人一律取 JWT 登录人工号（请求体 operator 不可信，忽略）；无上下文回落 system
         operator = DataScope.currentActor();
         TxnOrder o = orderRepo.findById(orderNo)
@@ -92,6 +98,8 @@ public class PaymentService {
             o.setStatus("已收款");
             orderRepo.save(o);
             planService.markPaidByOrder(orderNo, operator);
+            // B3 合规写：收齐同事务入资金事件 outbox（幂等：finance 侧 idem_key 去重）
+            financeEvents.emitOrderPaid(o);
             return new PayResult(null, o.getAmount(), paidBefore, 0L, true, o.getStatus());
         }
 
@@ -111,6 +119,24 @@ public class PaymentService {
             }
             posted = t;
             change = 0L;
+        }
+
+        if ("balance".equals(method)) {
+            // B4 储值实扣：card_ledger 以 orderNo 为幂等键（一单只能一笔储值扣款，重放不双扣）
+            if (cardNo == null || cardNo.isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "储值余额支付必须提供会员卡号 cardNo");
+            }
+            boolean alreadyBalance = payRepo.findByOrderNoOrderByPaymentIdAsc(orderNo).stream()
+                    .anyMatch(p -> "balance".equals(p.getPayMethod()));
+            if (alreadyBalance) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "本订单已使用储值余额支付过一笔（储值扣款按订单幂等，不支持同单分次储值）；"
+                                + "剩余待收请改用现金/微信/支付宝/银行卡");
+            }
+            // 顺序（DESIGN §6.1）：先扣卡（customer）→ 再写 order_payment → 收齐联动。
+            // 余额不足 customer 抛 422 中文；跨服务失败抛异常 → 本事务整体回滚，绝不出现「收款成功但卡没扣」。
+            cardClient.consume(cardNo.trim(), o.getCustomerId(), posted, orderNo);
         }
 
         long paidAfter = paidBefore + posted;
@@ -140,6 +166,8 @@ public class PaymentService {
         if (completed) {
             // 诊疗方案单联动：READY_PAY → PAID（零售单无方案单，内部空操作）
             planService.markPaidByOrder(orderNo, operator);
+            // B3 合规写：收齐同事务入资金事件 outbox（订单收款收入分录，渠道=最大笔收款渠道）
+            financeEvents.emitOrderPaid(o);
         }
 
         return new PayResult(toView(p), o.getAmount(), paidAfter, change, completed, o.getStatus());

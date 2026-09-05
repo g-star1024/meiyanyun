@@ -6,6 +6,7 @@
  * 红线：从 financeCore.outbox 只读镜像；处置仅登记记录，不反向动账。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
@@ -16,6 +17,7 @@ import CKpi from '@/components/CKpi.vue'
 import { useFinAbnormalStore, type AbnormalItem, type DisposeMethod } from '@/stores/finReports'
 
 const store = useFinAbnormalStore()
+const router = useRouter()
 onMounted(() => store.seed())
 
 const selectedId = ref<string | null>(null)
@@ -37,13 +39,36 @@ const typeOptions = [
   { value: 'SHORT', label: '短款' },
   { value: 'REVERSED', label: '冲正' },
   { value: 'PENDING', label: '待对账' },
+  { value: 'DIFF', label: '人工标记差异' },
 ]
 
-function money(n: number) {
-  return `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+function money(n: number | null | undefined) {
+  return n == null ? '回单未接入' : `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
-function diff(it: AbnormalItem) {
+/** 差异金额：真实台账三方回单 B6 未接入（bankAck=null），差异金额以回单核对为准，不臆造 */
+function diff(it: AbnormalItem): number | null {
+  if (it.bankAck == null) return null
   return Math.abs(it.bankAck - it.cashier)
+}
+function diffText(it: AbnormalItem) {
+  const d = diff(it)
+  return d == null ? '待回单核对' : money(d)
+}
+/** 三方回单侧标签文案：null = 回单未接入（真实台账），否则按一致/差异 */
+function ackText(it: AbnormalItem, side: 'channel' | 'bank') {
+  const v = side === 'channel' ? it.channelAck : it.bankAck
+  if (v == null) return '回单未接入'
+  if (v === it.cashier) return '一致'
+  return side === 'bank' ? (it.type === 'LONG' ? '长款' : '短款') : '差异'
+}
+function ackCls(it: AbnormalItem, side: 'channel' | 'bank') {
+  const v = side === 'channel' ? it.channelAck : it.bankAck
+  if (v == null) return 'tri__tag--warn'
+  return v === it.cashier ? 'tri__tag--ok' : side === 'bank' ? 'tri__tag--danger' : 'tri__tag--warn'
+}
+/** 真实台账人工标记差异（DIFF）：调平动作在对账中心双签完成，本页仅登记处置记录 */
+function goReconcile() {
+  router.push('/m6-reconcile')
 }
 
 // 处置双签
@@ -83,6 +108,7 @@ function submitDispose() {
           <div v-if="store.filtered.length === 0" class="empty">
             <CIcon name="check-square" :size="28" class="empty__icon" />
             <div>暂无异常账务</div>
+            <div class="empty__hint">真实台账三方回单（渠道/银行）待 B6 接入，回单长短款不臆造；对账中心人工标记的差异将在此列出</div>
           </div>
           <button
             v-for="it in store.filtered" :key="it.id"
@@ -95,8 +121,8 @@ function submitDispose() {
             </div>
             <div class="row__sub">{{ it.channel }} · {{ it.occurredAt }}</div>
             <div class="row__bottom">
-              <span class="row__amt" :class="{ 'row__amt--long': it.type === 'LONG', 'row__amt--short': it.type === 'SHORT' }">
-                {{ it.type === 'LONG' ? '+' : it.type === 'SHORT' ? '−' : '' }}{{ money(diff(it)) }}
+              <span class="row__amt" :class="{ 'row__amt--long': it.type === 'LONG', 'row__amt--short': it.type === 'SHORT' || it.type === 'DIFF' }">
+                {{ diff(it) == null ? '待回单核对' : `${it.type === 'LONG' ? '+' : it.type === 'SHORT' ? '−' : ''}${money(diff(it))}` }}
               </span>
               <CStatusPill :status="store.ABNORMAL_STATUS_PILL[it.status]">{{ store.ABNORMAL_STATUS_LABEL[it.status] }}</CStatusPill>
             </div>
@@ -114,7 +140,7 @@ function submitDispose() {
             </div>
             <div class="ab__detail-ops">
               <CStatusPill :status="store.ABNORMAL_STATUS_PILL[selected.status]" dot>{{ store.ABNORMAL_STATUS_LABEL[selected.status] }}</CStatusPill>
-              <CButton variant="secondary" size="sm" @click="store.syncFromCore()">
+              <CButton variant="secondary" size="sm" @click="void store.seed(true)">
                 <CIcon name="loading" :size="14" />同步
               </CButton>
               <CButton variant="secondary" size="sm" v-perm.disable="'finance:export'">
@@ -139,26 +165,22 @@ function submitDispose() {
               </div>
               <div class="tri__col">
                 <div class="tri__label">渠道回单</div>
-                <div class="tri__value" :class="{ 'tri__value--diff': selected.channelAck !== selected.cashier }">{{ money(selected.channelAck) }}</div>
-                <div class="tri__tag" :class="selected.channelAck === selected.cashier ? 'tri__tag--ok' : 'tri__tag--warn'">
-                  {{ selected.channelAck === selected.cashier ? '一致' : '差异' }}
-                </div>
+                <div class="tri__value" :class="{ 'tri__value--diff': selected.channelAck != null && selected.channelAck !== selected.cashier, 'tri__value--miss': selected.channelAck == null }">{{ money(selected.channelAck) }}</div>
+                <div class="tri__tag" :class="ackCls(selected, 'channel')">{{ ackText(selected, 'channel') }}</div>
               </div>
               <div class="tri__op">
                 <CIcon name="chevron-right" :size="16" />
               </div>
               <div class="tri__col">
                 <div class="tri__label">银行到账</div>
-                <div class="tri__value" :class="{ 'tri__value--diff': selected.bankAck !== selected.cashier }">{{ money(selected.bankAck) }}</div>
-                <div class="tri__tag" :class="selected.bankAck === selected.cashier ? 'tri__tag--ok' : 'tri__tag--danger'">
-                  {{ selected.bankAck === selected.cashier ? '一致' : (selected.type === 'LONG' ? '长款' : '短款') }}
-                </div>
+                <div class="tri__value" :class="{ 'tri__value--diff': selected.bankAck != null && selected.bankAck !== selected.cashier, 'tri__value--miss': selected.bankAck == null }">{{ money(selected.bankAck) }}</div>
+                <div class="tri__tag" :class="ackCls(selected, 'bank')">{{ ackText(selected, 'bank') }}</div>
               </div>
             </div>
             <div class="diff-bar">
               <span>差异金额</span>
               <b :class="selected.type === 'LONG' ? 'is-long' : 'is-short'">
-                {{ selected.type === 'LONG' ? '+' : '−' }}{{ money(diff(selected)) }}
+                {{ diffText(selected) }}
               </b>
             </div>
           </div>
@@ -176,10 +198,18 @@ function submitDispose() {
 
           <!-- 操作 -->
           <div v-if="selected.status !== 'RESOLVED'" class="ops">
-            <CButton variant="primary" size="sm" v-perm.disable="'finance:abnormal:dispose'" @click="openDispose">
+            <template v-if="selected.writable">
+              <CButton variant="primary" size="sm" v-perm.disable="'finance:reconcile:approve'" @click="goReconcile">
+                <CIcon name="shield" :size="14" />前往对账中心调平（双签）
+              </CButton>
+              <CButton variant="secondary" size="sm" v-perm.disable="'finance:abnormal:dispose'" @click="openDispose">
+                <CIcon name="check-square" :size="14" />登记处置记录
+              </CButton>
+            </template>
+            <CButton v-else variant="primary" size="sm" v-perm.disable="'finance:abnormal:dispose'" @click="openDispose">
               <CIcon name="shield" :size="14" />人工处置（双签）
             </CButton>
-            <span class="ops__hint">需 finance:abnormal:dispose 权限 + 复核人双签</span>
+            <span class="ops__hint">{{ selected.writable ? '真实调平在对账中心补调平分录（需 finance:reconcile:approve 双签）；本页仅登记处置留痕' : '需 finance:abnormal:dispose 权限 + 复核人双签' }}</span>
           </div>
 
           <p class="redline">
@@ -191,20 +221,21 @@ function submitDispose() {
 
       <CCard v-else class="ab__detail ab__detail--empty" title="异常详情" padding="lg">
         <div class="detail-empty">
-          <CIcon name="alert" :size="40" class="detail-empty__icon" />
-          <p>请选择一条异常记录</p>
+          <CIcon name="check-square" :size="40" class="detail-empty__icon" />
+          <p>当前无异常记录</p>
+          <p class="detail-empty__hint">真实台账三方回单（渠道回单 / 银行到账）待 B6 接入，长短款不臆造；对账中心人工标记的差异（DIFF）将在此列出，并引导前往对账中心双签调平。</p>
         </div>
       </CCard>
     </div>
 
     <!-- 处置双签弹层 -->
     <div v-if="showDispose" class="modal-mask" @click.self="showDispose = false">
-      <CCard class="modal" title="异常人工处置（双签）" padding="lg">
+      <CCard class="modal" :title="selected?.writable ? '异常处置登记（双签留痕）' : '异常人工处置（双签）'" padding="lg">
         <div class="form">
           <div class="sign-box">
             <div class="sign-box__title"><CIcon name="shield" :size="16" /> 双签确认</div>
             <div class="sign-box__text">异常单：{{ selected?.txnNo }}（{{ selected ? store.ABNORMAL_TYPE_LABEL[selected.type] : '' }}）</div>
-            <div class="sign-box__text">差异金额：<b>{{ selected ? money(diff(selected)) : '' }}</b></div>
+            <div class="sign-box__text">差异金额：<b>{{ selected ? diffText(selected) : '' }}</b></div>
           </div>
           <label class="form__label">处置方式</label>
           <CSelect v-model="form.method" width="100%" :options="methodOptions" />
@@ -212,7 +243,7 @@ function submitDispose() {
           <CInput v-model="form.reviewer" placeholder="请输入复核人姓名，如：陈雅琳（财务主管）" />
           <label class="form__label">处置说明 <span class="req">*</span></label>
           <CInput v-model="form.remark" placeholder="说明差异原因与处置依据" />
-          <p class="form__tip form__tip--warn">处置仅登记记录，不直接修改资金；提交后状态置为「已处置」。</p>
+          <p class="form__tip form__tip--warn">{{ selected?.writable ? '真实调平请先在对账中心完成双签（补调平分录并留痕），再回本页登记处置记录；本页不直接修改资金。' : '处置仅登记记录，不直接修改资金；提交后状态置为「已处置」。' }}</p>
         </div>
         <template #footer>
           <CButton variant="ghost" @click="showDispose = false">取消</CButton>
@@ -236,6 +267,7 @@ function submitDispose() {
 .list { max-height: 640px; overflow-y: auto; }
 .empty { display: flex; flex-direction: column; align-items: center; gap: var(--s-sm); padding: var(--s-xxl) var(--s-lg); color: var(--c-text-3); font-size: var(--t-sm); }
 .empty__icon { color: var(--c-success-fg); }
+.empty__hint { font-size: var(--t-xs); color: var(--c-text-4); text-align: center; line-height: 1.7; }
 
 .row { display: block; width: 100%; text-align: left; padding: var(--s-md) var(--s-lg); background: none; border: none; border-bottom: 1px solid var(--c-border-light); cursor: pointer; }
 .row:hover { background: var(--c-brand-soft); }
@@ -263,6 +295,7 @@ function submitDispose() {
 .tri__label { font-size: var(--t-xs); color: var(--c-text-3); }
 .tri__value { font-size: var(--t-md); font-weight: 700; color: var(--c-text); font-variant-numeric: tabular-nums; }
 .tri__value--diff { color: var(--c-danger-fg); }
+.tri__value--miss { color: var(--c-text-4); font-size: var(--t-sm); font-weight: 600; }
 .tri__tag { font-size: var(--t-xs); padding: 2px 8px; border-radius: var(--r-sm); }
 .tri__tag--ok { background: var(--c-success-bg); color: var(--c-success-fg); }
 .tri__tag--warn { background: var(--c-warning-bg); color: var(--c-warning-fg); }
@@ -286,6 +319,8 @@ function submitDispose() {
 .redline { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--c-warning-fg); background: var(--c-warn-soft-bg); padding: var(--s-xs) var(--s-sm); border-radius: var(--r-sm); margin: 0; }
 .detail-empty { display: flex; flex-direction: column; align-items: center; gap: var(--s-md); padding: var(--s-xxl) var(--s-lg); color: var(--c-text-3); }
 .detail-empty__icon { color: var(--c-text-4); }
+.detail-empty p { margin: 0; font-size: var(--t-sm); }
+.detail-empty__hint { font-size: var(--t-xs) !important; color: var(--c-text-4); line-height: 1.8; text-align: center; max-width: 420px; }
 
 .modal-mask { position: fixed; inset: 0; background: rgba(20, 21, 43, .45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: var(--s-lg); }
 .modal { width: 460px; max-width: 100%; box-shadow: var(--shadow-pop); }

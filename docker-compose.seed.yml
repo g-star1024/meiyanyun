@@ -38,11 +38,14 @@ services:
       # 默认池(10)会打满连接，故限每服务 5（14×5=70，留余量给运维/迁移连接）。
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
-      # 服务间 REST 调用（seed 栈内按 seed 容器名寻址）：名解析 + 审计追加。
+      # 服务间 REST 调用（seed 栈内按 seed 容器名寻址）：名解析 + 审计追加 + 财务聚合拉交易流水。
       ORG_SERVICE_URL: "http://meiyun-seed-org-service:8086"
       STORE_SERVICE_URL: "http://meiyun-seed-store-service:8085"
       AUDIT_SERVICE_URL: "http://meiyun-seed-audit-service:8084"
       CUSTOMER_SERVICE_URL: "http://meiyun-seed-customer-service:8082"
+      TXN_SERVICE_URL: "http://meiyun-seed-txn-service:8083"
+      # B4：customer 充值资金事件 outbox 投递 finance（/api/finance/internal/entries）。
+      FINANCE_SERVICE_URL: "http://meiyun-seed-finance-service:8087"
       # 开发期免密登录：默认关闭，演示时宿主环境或 .env 显式 MEIYUN_DEV_LOGIN=true 开启。
       MEIYUN_DEV_LOGIN: "${MEIYUN_DEV_LOGIN:-false}"
     healthcheck:

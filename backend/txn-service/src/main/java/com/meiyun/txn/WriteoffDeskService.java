@@ -51,17 +51,20 @@ public class WriteoffDeskService {
     private final WriteoffNoGenerator noGen;
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
+    private final FinanceEventPublisher financeEvents;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public WriteoffDeskService(WriteoffDeskTaskRepository wdRepo, MemberCardRepository cardRepo,
                                WriteoffRepository writeoffRepo, WriteoffNoGenerator noGen,
-                               AuditRecorder audit, ApptRefNameResolver names) {
+                               AuditRecorder audit, ApptRefNameResolver names,
+                               FinanceEventPublisher financeEvents) {
         this.wdRepo = wdRepo;
         this.cardRepo = cardRepo;
         this.writeoffRepo = writeoffRepo;
         this.noGen = noGen;
         this.audit = audit;
         this.names = names;
+        this.financeEvents = financeEvents;
     }
 
     // ==================== 任务生成 ====================
@@ -208,6 +211,9 @@ public class WriteoffDeskService {
         w.setSign1(actor);
         w.setSign2(reviewer.trim());
         writeoffRepo.save(w);
+
+        // B3 合规写：卡扣划扣完成同事务入资金事件 outbox（预收转出+确认收入成对；unit=0 纯扣次跳过）
+        financeEvents.emitWriteoffDone(w);
 
         t.setStatus(ST_DONE);
         t.setReviewer(reviewer.trim());

@@ -21,7 +21,9 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -50,13 +52,14 @@ public class M4FlowController {
     private final ConsultPlanService planService;
     private final OrderNoGenerator orderNoGen;
     private final PaymentService paymentService;
+    private final FinanceEventPublisher financeEvents;
 
     public M4FlowController(ConsultationRepository consultRepo, TxnOrderRepository orderRepo,
                             OrderItemRepository itemRepo,
                             WriteoffRepository writeoffRepo, MemberCardRepository cardRepo,
                             AuditRecorder audit, ApptRefNameResolver names,
                             ConsultPlanService planService, OrderNoGenerator orderNoGen,
-                            PaymentService paymentService) {
+                            PaymentService paymentService, FinanceEventPublisher financeEvents) {
         this.consultRepo = consultRepo;
         this.orderRepo = orderRepo;
         this.itemRepo = itemRepo;
@@ -67,6 +70,7 @@ public class M4FlowController {
         this.planService = planService;
         this.orderNoGen = orderNoGen;
         this.paymentService = paymentService;
+        this.financeEvents = financeEvents;
     }
 
     // ==================== M4-06 客情咨询 ====================
@@ -290,8 +294,10 @@ public class M4FlowController {
 
     /**
      * 收款：登记一笔支付明细（支持组合支付 / 部分收款 / 现金找零），收齐即「待收款 → 已收款」。
-     * body: {"operator":"SE002","method":"cash|card|wxpay|alipay|balance","tendered":客户实付(分)}。
-     * 幂等：已收款单重复收款直接返回当前态（不重复记流水）。收齐联动方案单 READY_PAY → PAID。
+     * body: {"operator":"SE002","method":"cash|card|wxpay|alipay|balance","tendered":客户实付(分),"cardNo":"余额支付卡号"}。
+     * balance 储值支付须带 cardNo：先经 customer 内部端点实扣 member_card.balance（余额不足 422 中文），
+     * 再落 order_payment；跨服务失败整笔回滚。幂等：已收款单重复收款直接返回当前态（不重复记流水）。
+     * 收齐联动方案单 READY_PAY → PAID。
      */
     @PostMapping("/order/{no}/pay")
     @RequirePerm("cashier:sign")
@@ -302,7 +308,9 @@ public class M4FlowController {
         String method = (body == null || body.get("method") == null)
                 ? "wxpay" : String.valueOf(body.get("method"));
         long tendered = parseAmount(body == null ? null : body.get("tendered"));
-        return paymentService.pay(no, method, tendered, operator);
+        String cardNo = (body == null || body.get("cardNo") == null)
+                ? null : String.valueOf(body.get("cardNo"));
+        return paymentService.pay(no, method, tendered, operator, cardNo);
     }
 
     /** 某订单的支付明细流水（已收记录 / 找零对账）。 */
@@ -392,6 +400,9 @@ public class M4FlowController {
         w.setSign2(cmd.sign2());
         writeoffRepo.save(w);
 
+        // B3 合规写：卡扣划扣完成同事务入资金事件 outbox（预收转出+确认收入成对；amount=0 纯扣次跳过）
+        financeEvents.emitWriteoffDone(w);
+
         audit.record("WRITEOFF", w.getWriteoffId(), DataScope.currentActor(),
                 "WRITEOFF", "{\"card\":\"" + cmd.cardNo() + "\",\"times\":" + cmd.timesUsed()
                         + ",\"amount\":" + cmd.amount() + "}");
@@ -410,12 +421,43 @@ public class M4FlowController {
         return w;
     }
 
-    /** 划扣记录列表：数据域强制注入（STORE 本店、REGION 本区、GROUP 全量）。 */
+    /**
+     * 划扣记录列表：数据域强制注入（STORE 本店、REGION 本区、GROUP 全量）。
+     * 可选过滤：cardNo（卡 360 划扣历史，精确）、customerId（客户 360 划扣记录，精确）、
+     * from/to（yyyy-MM-dd，created_at 闭区间，UTC 日界）；排序保持时间倒序。
+     */
     @GetMapping("/writeoff")
     @RequirePerm("writeoff:view")
-    public List<WriteoffRecord> listWriteoff() {
-        return writeoffRepo.findAll(DataScope.storeSpec("storeCode"),
-                Sort.by(Sort.Order.desc("createdAt")));
+    public List<WriteoffRecord> listWriteoff(@RequestParam(required = false) String cardNo,
+                                             @RequestParam(required = false) String customerId,
+                                             @RequestParam(required = false) String from,
+                                             @RequestParam(required = false) String to) {
+        Specification<WriteoffRecord> spec = DataScope.storeSpec("storeCode");
+        if (cardNo != null && !cardNo.isBlank()) {
+            spec = spec.and((root, q, cb) -> cb.equal(root.get("cardNo"), cardNo.trim()));
+        }
+        if (customerId != null && !customerId.isBlank()) {
+            spec = spec.and((root, q, cb) -> cb.equal(root.get("customerId"), customerId.trim()));
+        }
+        if (from != null && !from.isBlank()) {
+            spec = spec.and((root, q, cb) ->
+                    cb.greaterThanOrEqualTo(root.get("createdAt"), parseDayStart(from)));
+        }
+        if (to != null && !to.isBlank()) {
+            spec = spec.and((root, q, cb) ->
+                    cb.lessThan(root.get("createdAt"), parseDayStart(to).plusDays(1)));
+        }
+        return writeoffRepo.findAll(spec, Sort.by(Sort.Order.desc("createdAt")));
+    }
+
+    /** yyyy-MM-dd → 当日 UTC 00:00；非法格式抛中文 400（公开端点，防 500）。 */
+    private OffsetDateTime parseDayStart(String day) {
+        try {
+            return LocalDate.parse(day.trim()).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        } catch (DateTimeParseException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "日期格式须为 yyyy-MM-dd（示例：2026-09-01），收到: " + day);
+        }
     }
 
     // ==================== 订单整单核销（/writeoff 核销页） ====================

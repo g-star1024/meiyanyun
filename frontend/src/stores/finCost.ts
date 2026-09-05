@@ -1,11 +1,16 @@
 /* ============================================================
  * M6-06 成本分析 store（只读镜像，TK 成本类）
  * 耗材 / 设备折旧 / 报损 / 人工分摊 四大成本，按门店与科目归集
- * 总额与 useFinanceCoreStore 对齐，明细来自 M2 库存/设备/报损镜像
+ * B5：权威数据源为 finance-service GET /finance/cost（月×店聚合，Long 分）
+ * 耗材/报损由双签工单终审自动落账，折旧/人工由财务手工录入；
+ * 后端仅有月×店科目聚合、无逐笔明细，明细行按聚合结果合成展示（诚实降级），
+ * 接口不可用且无数据时回落内置演示数据。
  * ============================================================ */
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
 import { useFinanceCoreStore } from './financeCore'
+import { useStoreContext } from './storeContext'
+import { getCosts, type CostAggregate } from '@/api/finance'
 
 export type CostSubject = 'MATERIAL' | 'DEPRECIATION' | 'LOSS' | 'LABOR'
 
@@ -36,10 +41,13 @@ const SUBJECT_LABEL: Record<CostSubject, string> = {
   LABOR: '人工分摊',
 }
 
+const SUBJECT_ORDER: CostSubject[] = ['MATERIAL', 'DEPRECIATION', 'LOSS', 'LABOR']
+
 let _id = 0
 const nextId = (p: string) => `${p}-${++_id}`
 
-function seed(): CostRow[] {
+/** 接口不可用时的离线演示数据（金额「元」） */
+function mockRows(): CostRow[] {
   const stores = ['旗舰店', '万象城店', '科技园店']
   const data: Array<[CostSubject, string, number, string, string]> = [
     ['MATERIAL', '玻尿酸原液 10ml', 3200, '库存出库', '治疗室领用'],
@@ -67,17 +75,76 @@ function seed(): CostRow[] {
   }))
 }
 
+/** 分 → 元（保留两位小数） */
+const fen2yuan = (fen: number) => Math.round((fen || 0) / 1) / 100
+
+/**
+ * 月×店科目聚合 → 合成明细行：
+ * 后端 /finance/cost 不提供逐笔明细，每个「月份×门店×科目」聚合为一条展示行，
+ * itemName 取科目中文名、source 标注「成本归集」，金额与 KPI/甜甜圈/门店对比完全同源。
+ */
+function aggregateToRows(list: CostAggregate[], nameOf: (code: string) => string): CostRow[] {
+  const out: CostRow[] = []
+  const sorted = [...list].sort((a, b) => (a.periodMonth < b.periodMonth ? 1 : -1))
+  for (const agg of sorted) {
+    const month = (agg.periodMonth || '').slice(0, 7)
+    const store = nameOf(agg.storeCode) || agg.storeCode
+    for (const subject of SUBJECT_ORDER) {
+      const fen = Number(agg[subject.toLowerCase() as 'material' | 'depreciation' | 'loss' | 'labor']) || 0
+      if (fen <= 0) continue
+      out.push({
+        id: `COST-${agg.periodMonth}-${agg.storeCode}-${subject}`,
+        subject,
+        itemName: SUBJECT_LABEL[subject],
+        store,
+        amount: fen2yuan(fen),
+        occurredAt: month,
+        source: '成本归集',
+        memo: `${month} 月度${SUBJECT_LABEL[subject]}归集（${store}）`,
+      })
+    }
+  }
+  return out
+}
+
 export const useFinCostStore = defineStore('finCost', () => {
   const fin = useFinanceCoreStore()
+  const ctx = useStoreContext()
   const rows = ref<CostRow[]>([])
   const filterSubject = ref<CostSubject | 'ALL'>('ALL')
   const filterStore = ref<string>('ALL')
-  const _seeded = ref(false)
+  const loaded = ref(false)
 
+  /** 拉取真实成本聚合（finance-service）；失败或空库回落演示数据，不阻断页面 */
+  let seeding: Promise<void> | null = null
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (loaded.value && !force) return Promise.resolve()
+    seeding = (async () => {
+      try {
+        await ctx.loadStores()
+        const { data } = await getCosts()
+        const list = data || []
+        const nameOf = (code: string) =>
+          ctx.stores.find((s) => s.storeCode === code)?.storeName ?? code
+        if (list.length > 0) {
+          rows.value = aggregateToRows(list, nameOf)
+        } else if (!loaded.value) {
+          rows.value = mockRows()
+        }
+        loaded.value = true
+      } catch (e) {
+        console.error('[finCost] 加载成本聚合失败，回落演示数据', e)
+        if (rows.value.length === 0) rows.value = mockRows()
+      }
+    })()
+    return seeding
+  }
+  void seed()
+
+  /** 视图 onMounted 兼容入口 */
   function init() {
-    if (_seeded.value) return
-    rows.value = seed()
-    _seeded.value = true
+    return seed()
   }
 
   const stores = computed(() => Array.from(new Set(rows.value.map((r) => r.store))))
@@ -98,7 +165,7 @@ export const useFinCostStore = defineStore('finCost', () => {
   )
 
   // 与 financeCore 镜像口径对齐校验（明细合计 ≈ 核心镜像）
-  const mirrorDiff = computed(() => totalCost.value - fin.totalCost)
+  const mirrorDiff = computed(() => Math.round((totalCost.value - fin.totalCost) * 100) / 100)
 
   const byStore = computed<CostByStore[]>(() => {
     const map = new Map<string, CostByStore>()
@@ -110,17 +177,30 @@ export const useFinCostStore = defineStore('finCost', () => {
       b[r.subject === 'MATERIAL' ? 'material' : r.subject === 'DEPRECIATION' ? 'depreciation' : r.subject === 'LOSS' ? 'loss' : 'labor'] += r.amount
       b.total += r.amount
     }
-    return Array.from(map.values()).sort((a, b) => b.total - a.total)
+    return Array.from(map.values())
+      .map((b) => ({
+        ...b,
+        material: r2(b.material),
+        depreciation: r2(b.depreciation),
+        loss: r2(b.loss),
+        labor: r2(b.labor),
+        total: r2(b.total),
+      }))
+      .sort((a, b) => b.total - a.total)
   })
 
   function by(list: CostRow[], s: CostSubject) {
-    return list.filter((r) => r.subject === s).reduce((sum, r) => sum + r.amount, 0)
+    return r2(list.filter((r) => r.subject === s).reduce((sum, r) => sum + r.amount, 0))
+  }
+
+  function r2(v: number) {
+    return Math.round(v * 100) / 100
   }
 
   return {
     rows, filtered, stores, byStore,
     filterSubject, filterStore,
     totalMaterial, totalDepreciation, totalLoss, totalLabor, totalCost, mirrorDiff,
-    SUBJECT_LABEL, init,
+    SUBJECT_LABEL, init, seed, loaded,
   }
 })

@@ -41,16 +41,21 @@ public class TxnService {
     private final MemberCardRepository cardRepo;
     private final AuditRecorder audit;
     private final ApprovalService approvalService;
+    private final FinanceEventPublisher financeEvents;
+    private final CustomerCardClient cardClient;
 
     public TxnService(TxnRefundRepository refundRepo, TxnCardCancelRepository cancelRepo,
                       TxnOrderRepository orderRepo, MemberCardRepository cardRepo,
-                      AuditRecorder audit, @Lazy ApprovalService approvalService) {
+                      AuditRecorder audit, @Lazy ApprovalService approvalService,
+                      FinanceEventPublisher financeEvents, CustomerCardClient cardClient) {
         this.refundRepo = refundRepo;
         this.cancelRepo = cancelRepo;
         this.orderRepo = orderRepo;
         this.cardRepo = cardRepo;
         this.audit = audit;
         this.approvalService = approvalService;
+        this.financeEvents = financeEvents;
+        this.cardClient = cardClient;
     }
 
     // ---------------- 退款 RF ----------------
@@ -242,7 +247,7 @@ public class TxnService {
         }
     }
 
-    /** 财务终审确认退款/退卡完成：PENDING_FINANCE → REFUNDED。资金出入账由 M6 补。 */
+    /** 财务终审确认退款/退卡完成：PENDING_FINANCE → REFUNDED；资金分录同事务入 outbox，卡台账远程联动失败整体回滚。 */
     @Transactional
     public void confirmRefund(String txnNo, ApprovalCmd cmd) {
         OffsetDateTime now = OffsetDateTime.now();
@@ -253,13 +258,26 @@ public class TxnService {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "当前状态「" + r.getStatus() + "」不可财务确认（仅待财务复核单据可确认退款）");
             }
+            // B4.1 客户资金损失修复：含储值余额支付的订单，退款终审须把余额部分回加储值卡——
+            // 先按 order_payment 拆出余额回加额（min(原单余额实付, 退款额)），远程回写 customer 卡台账
+            // （REFUND 正额、RF 单号幂等、防超退、卡已退卡 422）；远程失败抛异常 → 终审事务整体回滚，
+            // 退款单不置 REFUNDED，杜绝「退款已终审但储值未回加」。customer 以 RF 单号幂等，终审重试安全。
+            long balanceRefund = financeEvents.balanceRefundForOrder(r.getOrderNo(),
+                    r.getRefundAmt() == null ? 0L : r.getRefundAmt());
+            if (balanceRefund > 0) {
+                cardClient.refundForOrder(r.getTxnNo(), r.getOrderNo(), balanceRefund);
+            }
             r.setStatus("REFUNDED");
             r.setFinanceBy(actor);
             r.setRefundedAt(now);
             refundRepo.save(r);
             audit.record("REFUND", txnNo, actor, "CONFIRM",
                     "{\"from\":\"PENDING_FINANCE\",\"to\":\"REFUNDED\",\"refundAmt\":" + r.getRefundAmt()
+                            + ",\"balanceRefund\":" + balanceRefund
                             + ",\"financeBy\":\"" + actor + "\"}");
+            // B3/B4.1 合规写：退款终审同事务入资金事件 outbox（余额部分 RF-DEPOSIT/IN/ERP 冲回预收，
+            // 法币部分 RF-REFUND/OUT/CASHIER，法币渠道仅反查非 balance 收款流水）
+            financeEvents.emitRefundConfirmed(r);
         } else {
             TxnCardCancel c = requireCardCancel(txnNo);
             if (!"PENDING_FINANCE".equals(c.getStatus())) {
@@ -273,6 +291,11 @@ public class TxnService {
             audit.record("CARD_CANCEL", txnNo, actor, "CONFIRM",
                     "{\"from\":\"PENDING_FINANCE\",\"to\":\"REFUNDED\",\"refundAmt\":" + c.getRefundAmt()
                             + ",\"financeBy\":\"" + actor + "\"}");
+            // B3 合规写：退卡终审同事务入资金事件 outbox（实退+冲预收+违约金三条，依 balance=refundAmt+fee）
+            financeEvents.emitCardCancelConfirmed(c);
+            // B4 退卡联动：回写 customer 卡台账（card_ledger REFUND 负额、status=已退卡、余额清零；
+            // 以 CC 单号 cancelNo 幂等，远程失败抛异常 → 终审事务整体回滚，杜绝「终审已过但卡未退」）
+            cardClient.refundCard(c.getCardNo(), c.getTxnNo());
         }
     }
 

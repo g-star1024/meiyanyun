@@ -48,7 +48,7 @@ const totalExpense = computed(() => store.channelFlows.reduce((s, c) => s + c.ex
     <CCard padding="none">
       <template #header>
         <div class="card-head">
-          <h3 class="card-head__title">当日渠道收支明细（2026-08-17）</h3>
+          <h3 class="card-head__title">渠道收支明细（最近营业日{{ store.latestDate ? ` ${store.latestDate}` : '' }}）</h3>
           <CButton variant="secondary" size="sm" v-perm.disable="'finance:export'">
             <CIcon name="export" :size="14" />导出报表
           </CButton>
@@ -72,7 +72,10 @@ const totalExpense = computed(() => store.channelFlows.reduce((s, c) => s + c.ex
             <td class="tar" :class="c.income - c.expense >= 0 ? 'is-in' : 'is-out'">
               {{ c.income - c.expense >= 0 ? '+' : '' }}{{ (c.income - c.expense).toLocaleString('zh-CN') }}
             </td>
-            <td><CStatusPill status="success">已对账</CStatusPill></td>
+            <td>
+              <CStatusPill v-if="c.reconciled" status="success">已对账</CStatusPill>
+              <CStatusPill v-else status="warning">待对账</CStatusPill>
+            </td>
           </tr>
           <tr class="ctable__sum">
             <td>合计</td>
@@ -85,7 +88,7 @@ const totalExpense = computed(() => store.channelFlows.reduce((s, c) => s + c.ex
       </table>
       <p class="redline">
         <CIcon name="shield" :size="14" />
-        资金日报仅镜像聚合收银与支付渠道流水，真实资金以银行到账为准；本系统不直接划付。
+        资金日报镜像聚合收银流水（按台账最近营业日口径）；渠道取自 order_payment 真实收款流水，一单多渠道支付按入账额最大一笔归桶并标注「混合」，无流水单据回落「未标记渠道」；真实资金以银行到账为准，本系统不直接划付。
       </p>
     </CCard>
   </div>

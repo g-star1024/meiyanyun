@@ -3,11 +3,22 @@
 // 业财一体红线：发票仅作为"业务凭证登记/镜像"，开票动作由外部开票系统完成，
 // 本 store 只登记发票抬头、税额、关联订单、状态，并与 financeCore 流水勾稽。
 // 不直接触达资金池。
+// B5：持久化到 finance-service /finance/invoices（票号/税额服务端生成，
+// 状态机 DRAFT→ISSUED→VOIDED/RED_FLUSHED，idemKey 幂等，全审计）。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useStoreContext } from './storeContext'
+import {
+  getInvoices,
+  createInvoice as apiCreateInvoice,
+  issueInvoice as apiIssueInvoice,
+  voidInvoice as apiVoidInvoice,
+  redFlushInvoice as apiRedFlushInvoice,
+  type InvoiceDTO,
+} from '@/api/finance'
 
 export type InvoiceType = 'NORMAL' | 'SPECIAL' | 'ELECTRONIC'
 export type InvoiceStatus = 'DRAFT' | 'ISSUED' | 'VOIDED' | 'RED_FLUSHED'
@@ -58,14 +69,38 @@ const STATUS_PILL: Record<InvoiceStatus, 'primary' | 'success' | 'disabled' | 'w
 
 const RATES = [0, 0.01, 0.03, 0.06, 0.13] as const
 
+function dtoToItem(d: InvoiceDTO): InvoiceItem {
+  return {
+    id: String(d.id),
+    invoiceNo: d.invoiceNo,
+    type: d.type,
+    category: d.category,
+    title: d.title,
+    taxNo: d.taxNo ?? '',
+    amount: d.amount,
+    taxAmount: d.taxAmount,
+    taxRate: d.taxRate,
+    buyerName: d.buyerName ?? '',
+    orderRefs: d.orderRefs ?? [],
+    store: d.store || d.storeCode,
+    status: d.status,
+    issuedAt: d.issuedAt ?? '',
+    operator: d.operator ?? '',
+    reviewer: d.reviewer ?? undefined,
+    remark: d.remark ?? undefined,
+  }
+}
+
 export const useFinInvoiceStore = defineStore('finInvoice', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const storeCtx = useStoreContext()
 
   const items = ref<InvoiceItem[]>([])
   const filterStatus = ref<InvoiceStatus | 'ALL'>('ALL')
   const filterType = ref<InvoiceType | 'ALL'>('ALL')
   const keyword = ref('')
+  const loaded = ref(false)
 
   const issued = computed(() => items.value.filter((i) => i.status === 'ISSUED'))
   const drafts = computed(() => items.value.filter((i) => i.status === 'DRAFT'))
@@ -106,63 +141,103 @@ export const useFinInvoiceStore = defineStore('finInvoice', () => {
           i.taxNo.toLowerCase().includes(kw),
       )
     }
-    return [...list].sort((a, b) => new Date(b.issuedAt).getTime() - new Date(a.issuedAt).getTime())
+    return [...list].sort((a, b) => {
+      const ta = a.issuedAt ? Date.parse(a.issuedAt) : 0
+      const tb = b.issuedAt ? Date.parse(b.issuedAt) : 0
+      return tb - ta
+    })
   })
 
   function get(id: string) {
     return items.value.find((i) => i.id === id)
   }
 
-  /** 新建发票草稿（不实际开票，开票由外部系统回传状态） */
-  function create(input: Omit<InvoiceItem, 'id' | 'invoiceNo' | 'status' | 'operator' | 'issuedAt'>): InvoiceItem | null {
+  /** 视图传入中文店名，按门店列表反查编码；查不到回落当前上下文门店 */
+  function resolveStoreCode(nameOrCode: string): string {
+    const hit = storeCtx.stores.find((s) => s.storeName === nameOrCode || s.storeCode === nameOrCode)
+    return hit?.storeCode || storeCtx.currentStoreCode
+  }
+
+  async function fetchInvoices() {
+    const { data } = await getInvoices()
+    items.value = (data ?? []).map(dtoToItem)
+    loaded.value = true
+  }
+
+  /** 新建发票草稿（票号/税额由服务端生成，idemKey 防重复提交） */
+  async function create(
+    input: Omit<InvoiceItem, 'id' | 'invoiceNo' | 'status' | 'operator' | 'issuedAt'>,
+  ): Promise<InvoiceItem | null> {
     if (!auth.can('finance:invoice:edit')) {
       console.warn('[finInvoice] 无 finance:invoice:edit 权限')
       return null
     }
-    const now = new Date().toISOString()
-    const seq = items.value.length + 1
-    const inv: InvoiceItem = {
-      id: nextId('inv'),
-      invoiceNo: `INV-${now.slice(0, 10).replace(/-/g, '')}-${String(seq).padStart(4, '0')}`,
-      status: 'DRAFT',
-      operator: auth.user.name,
-      issuedAt: now,
-      ...input,
+    try {
+      const { data } = await apiCreateInvoice({
+        type: input.type,
+        category: input.category,
+        title: input.title,
+        taxNo: input.taxNo || undefined,
+        amount: input.amount,
+        taxRate: input.taxRate,
+        buyerName: input.buyerName,
+        orderRefs: input.orderRefs,
+        storeCode: resolveStoreCode(input.store),
+        idemKey: `WEB-${Date.now()}-${Math.round(input.amount * 100)}`,
+      })
+      const inv = dtoToItem(data)
+      items.value.unshift(inv)
+      activity.log(auth.user.name, `创建发票草稿 ${inv.invoiceNo}：${inv.title}`, inv.id)
+      return inv
+    } catch (e) {
+      console.error('[finInvoice] 创建发票草稿失败', e)
+      return null
     }
-    items.value.unshift(inv)
-    activity.log(auth.user.name, `创建发票草稿 ${inv.invoiceNo}：${inv.title}`, inv.id)
-    return inv
   }
 
   /** 标记已开票（模拟外部开票系统回传） */
-  function markIssued(id: string, reviewer: string): boolean {
-    const it = items.value.find((i) => i.id === id)
-    if (!it || it.status !== 'DRAFT' || !auth.can('finance:invoice:edit')) return false
-    it.status = 'ISSUED'
-    it.reviewer = reviewer.trim() || auth.user.name
-    it.issuedAt = new Date().toISOString()
-    activity.log(auth.user.name, `发票 ${it.invoiceNo} 已开具，价税合计 ¥${it.amount}`, it.id)
-    return true
+  async function markIssued(id: string, reviewer: string): Promise<boolean> {
+    if (!auth.can('finance:invoice:edit')) return false
+    try {
+      const { data } = await apiIssueInvoice(Number(id), reviewer.trim() || undefined)
+      const idx = items.value.findIndex((i) => i.id === id)
+      if (idx >= 0) items.value[idx] = dtoToItem(data)
+      activity.log(auth.user.name, `发票 ${data.invoiceNo} 已开具，价税合计 ¥${data.amount}`, id)
+      return true
+    } catch (e) {
+      console.error('[finInvoice] 开具失败', e)
+      return false
+    }
   }
 
   /** 作废（仅当月未抄税可作废） */
-  function voidInvoice(id: string, reason: string): boolean {
-    const it = items.value.find((i) => i.id === id)
-    if (!it || it.status !== 'ISSUED' || !auth.can('finance:invoice:edit')) return false
-    it.status = 'VOIDED'
-    it.remark = reason
-    activity.log(auth.user.name, `发票 ${it.invoiceNo} 作废：${reason}`, it.id)
-    return true
+  async function voidInvoice(id: string, reason: string): Promise<boolean> {
+    if (!auth.can('finance:invoice:edit')) return false
+    try {
+      const { data } = await apiVoidInvoice(Number(id), reason)
+      const idx = items.value.findIndex((i) => i.id === id)
+      if (idx >= 0) items.value[idx] = dtoToItem(data)
+      activity.log(auth.user.name, `发票 ${data.invoiceNo} 作废：${reason}`, id)
+      return true
+    } catch (e) {
+      console.error('[finInvoice] 作废失败', e)
+      return false
+    }
   }
 
   /** 红冲（跨月或已抄税） */
-  function redFlush(id: string, reason: string): boolean {
-    const it = items.value.find((i) => i.id === id)
-    if (!it || it.status !== 'ISSUED' || !auth.can('finance:invoice:approve')) return false
-    it.status = 'RED_FLUSHED'
-    it.remark = reason
-    activity.log(auth.user.name, `发票 ${it.invoiceNo} 红冲：${reason}`, it.id)
-    return true
+  async function redFlush(id: string, reason: string): Promise<boolean> {
+    if (!auth.can('finance:invoice:approve')) return false
+    try {
+      const { data } = await apiRedFlushInvoice(Number(id), reason)
+      const idx = items.value.findIndex((i) => i.id === id)
+      if (idx >= 0) items.value[idx] = dtoToItem(data)
+      activity.log(auth.user.name, `发票 ${data.invoiceNo} 红冲：${reason}`, id)
+      return true
+    } catch (e) {
+      console.error('[finInvoice] 红冲失败', e)
+      return false
+    }
   }
 
   /** 按税率统计 */
@@ -177,11 +252,9 @@ export const useFinInvoiceStore = defineStore('finInvoice', () => {
     return [...map.values()].sort((a, b) => a.rate - b.rate)
   })
 
-  // ===== 种子 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
+  // ===== 种子：优先拉真实数据，失败回落内置演示数据 =====
+  let seeding: Promise<void> | null = null
+  function seedMock() {
     const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
     const data: Array<Omit<InvoiceItem, 'id'>> = [
       {
@@ -229,11 +302,27 @@ export const useFinInvoiceStore = defineStore('finInvoice', () => {
         store: '静安旗舰店', status: 'DRAFT', issuedAt: hoursAgo(1), operator: '夏沫（前台）',
       },
     ]
-    data.forEach((d) => items.value.push({ id: nextId('inv'), ...d }))
+    items.value = data.map((d) => ({ id: nextId('inv'), ...d }))
   }
 
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (loaded && !force) return Promise.resolve()
+    seeding = (async () => {
+      try {
+        await storeCtx.loadStores()
+        await fetchInvoices()
+      } catch (e) {
+        console.error('[finInvoice] 加载发票失败，回落演示数据', e)
+        if (items.value.length === 0) seedMock()
+      }
+    })()
+    return seeding
+  }
+  void seed()
+
   return {
-    items, filterStatus, filterType, keyword,
+    items, filterStatus, filterType, keyword, loaded,
     issued, drafts, voided, monthIssuedAmount, monthTaxAmount, filtered, taxBreakdown,
     get, create, markIssued, voidInvoice, redFlush, seed,
     TYPE_LABEL, CATEGORY_LABEL, STATUS_LABEL, STATUS_PILL, RATES,

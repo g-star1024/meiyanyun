@@ -97,7 +97,7 @@ function exportCsv() {
   const head = '日期,交易号,科目,方向,金额,渠道,来源,关联单,门店,摘要,对账\n'
   const rows = filtered.value.map((e) =>
     [e.date, e.txnId, `${e.subject} ${SUBJECT_LABEL[e.subject]}`, e.direction === 'IN' ? '收入' : '支出',
-      e.amount, e.channel ? CHANNEL_LABEL[e.channel] : '', e.source, `${e.refType}:${e.refNo}`, e.store, e.memo, e.reconciled ? '已对' : '待对'].join(',')).join('\n')
+      e.amount, e.channel ? `${CHANNEL_LABEL[e.channel]}${e.mixed ? '（混合）' : ''}` : '', e.source, `${e.refType}:${e.refNo}`, e.store, e.memo, e.reconciled ? '已对' : '待对'].join(',')).join('\n')
   const blob = new Blob(['\uFEFF' + head + rows], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -152,7 +152,9 @@ function exportCsv() {
                   <span class="subj" :class="`subj--${e.subject.slice(0, 2).toLowerCase()}`">{{ e.subject }}</span>
                   <span class="dim subj-name">{{ SUBJECT_LABEL[e.subject] }}</span>
                 </td>
-                <td class="dim">{{ e.channel ? CHANNEL_LABEL[e.channel] : '—' }}</td>
+                <td class="dim">
+                  {{ e.channel ? CHANNEL_LABEL[e.channel] : '—' }}<span v-if="e.mixed">（混合）</span>
+                </td>
                 <td class="num amt" :class="{ 'amt--in': e.direction === 'IN', 'amt--out': e.direction === 'OUT' }">
                   {{ e.direction === 'IN' ? '+' : '−' }}{{ money(e.amount) }}
                 </td>

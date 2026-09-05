@@ -18,6 +18,40 @@ spring:
           lob:
             non_contextual_creation: true
     open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # 全库共享 flyway_schema_history（customer-service 已建 V1/V2/V3）；
+    # 存量库由 JPA 建表，baseline-version=0 标记基线，finance 的 V4+ 迁移正常执行
+    baseline-on-migrate: true
+    baseline-version: 0
+    baseline-description: "JPA 自动建表基线"
+    table: flyway_schema_history
+    validate-on-migrate: true
+    # 全库共享 flyway_schema_history（customer-service 持有 V1/V2/V3/V5，finance 持有 V4）；
+    # 他服务脚本在 finance 类路径缺失分两种状态，均须忽略：
+    #   missing = 已应用但本地缺失且版本早于本地最新迁移（V1/V2/V3 这类「洞」）；
+    #   future  = 已应用但本地缺失且版本新于本地最新迁移（如 customer 的 V5 卡账本）；
+    # 注意：显式配置 ignore-migration-patterns 后默认 ignoreFutureMigrations=true 被覆盖，
+    # 不写 *:future 则他服务新增高版本迁移会让 finance 启动校验失败（APPLIED_MIGRATION_NOT_RESOLVED）。
+    # finance 自己的 V4+ 迁移仍严格校验（checksum/类型错误不匹配这两个通配状态）。
+    ignore-migration-patterns:
+      - "*:missing"
+      - "*:future"
+
+# 服务间读时聚合被调方地址（生产经环境变量/部署脚本覆盖）
+txn:
+  service:
+    url: ${TXN_SERVICE_URL:http://127.0.0.1:8083}
+customer:
+  service:
+    url: ${CUSTOMER_SERVICE_URL:http://127.0.0.1:8082}
+store:
+  service:
+    url: ${STORE_SERVICE_URL:http://127.0.0.1:8085}
+audit:
+  service:
+    url: ${AUDIT_SERVICE_URL:http://127.0.0.1:8084}
 
 meiyun:
   security:

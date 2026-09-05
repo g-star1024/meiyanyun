@@ -121,9 +121,16 @@ export const confirmOrder = (no: string, sign1: string, sign2: string) =>
  * 登记一笔收款（组合支付 / 现金找零 / 部分收款），收齐即 PAID。
  * @param method   cash/card/wxpay/alipay/balance
  * @param tendered 客户实付（分）；现金为递交现金（后端按待收封顶入账+找零），非现金等于实际扣款
+ * @param cardNo   储值余额支付（balance）必填的会员卡号；其他方式不传
  */
-export const payOrder = (no: string, method: string, tendered: number, operator: string) =>
-  client.post<PayResultDTO>(`/txn/order/${no}/pay`, { method, tendered, operator })
+export const payOrder = (
+  no: string,
+  method: string,
+  tendered: number,
+  operator: string,
+  cardNo?: string,
+) =>
+  client.post<PayResultDTO>(`/txn/order/${no}/pay`, { method, tendered, operator, cardNo })
 
 /** 某订单的支付明细流水。 */
 export const listOrderPayments = (no: string) =>

@@ -12,9 +12,12 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
+import CInput from '@/components/CInput.vue'
+import CSelect from '@/components/CSelect.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
 import { CUSTOMER_SOURCE } from '@/config/dictionary'
 import {
   getCustomer,
@@ -22,9 +25,12 @@ import {
   listPointsLog,
   listAllTags,
   listCustomerTagRels,
+  rechargeCard,
+  listCardLedger,
   type CustomerDTO,
   type MemberCardDTO,
   type PointsLedgerDTO,
+  type CardLedgerDTO,
 } from '@/api/customer'
 import {
   listCustomerOrders,
@@ -36,12 +42,14 @@ import {
   type CustomerApptView,
   type CustomerRfmView,
 } from '@/api/customerView'
+import { listWriteoffs, type WriteoffRecordDTO } from '@/api/writeoff'
 
 type PillStatus = 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info' | 'disabled' | 'draft'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
+const toast = useToast()
 
 const customerId = computed(() => (route.params.id as string) || '')
 
@@ -57,6 +65,7 @@ const orders = ref<CustomerOrderView[]>([])
 const consults = ref<CustomerConsultView[]>([])
 const appts = ref<CustomerApptView[]>([])
 const rfm = ref<CustomerRfmView | null>(null)
+const writeoffs = ref<WriteoffRecordDTO[]>([])
 
 const canSeePhone = computed(() => auth.can('customer:phone:decrypt'))
 
@@ -131,6 +140,13 @@ function apptStatusPill(s: string): PillStatus {
   if (s === '已取消') return 'disabled'
   return 'info' // 已预约
 }
+// 划扣状态（DONE/ABNORMAL/VOID）→ 胶囊色 + 中文
+function writeoffStatus(s: string): { pill: PillStatus; text: string } {
+  if (s === 'DONE') return { pill: 'success', text: '已划扣' }
+  if (s === 'ABNORMAL') return { pill: 'warning', text: '异常' }
+  if (s === 'VOID') return { pill: 'disabled', text: '已作废' }
+  return { pill: 'draft', text: s }
+}
 function fmtDateTime(s?: string) {
   if (!s) return '—'
   const d = new Date(s)
@@ -141,6 +157,89 @@ function fmtDateTime(s?: string) {
 const recentAppts = computed(() => appts.value.slice(0, 3))
 
 const cardBalanceTotal = computed(() => cards.value.reduce((s, c) => s + (c.balance ?? 0), 0))
+
+// ---- B4 储值：充值弹层（POST /customer/cards/{cardNo}/recharge，金额元→分；充值渠道剔除 balance） ----
+// 充值支付方式：cash/card/wxpay/alipay（储值余额不能给储值卡充值，后端同样拒绝 balance）
+const RECHARGE_METHODS = [
+  { value: 'cash', label: '现金' },
+  { value: 'wxpay', label: '微信支付' },
+  { value: 'alipay', label: '支付宝' },
+  { value: 'card', label: '银行卡' },
+]
+const rechargeShow = ref(false)
+const rechargeCardNo = ref('')
+const rechargeCardItem = ref('')
+const rechargeAmountYuan = ref('')
+const rechargeMethod = ref('cash')
+const recharging = ref(false)
+
+// ---- B4 储值：储值流水弹层（GET /customer/cards/{cardNo}/ledger，amount 带符号分） ----
+const ledgerShow = ref(false)
+const ledgerCardNo = ref('')
+const ledgerCardItem = ref('')
+const ledgerRows = ref<CardLedgerDTO[]>([])
+const ledgerLoading = ref(false)
+
+const rechargeAmountFen = computed(() => {
+  const n = Number(rechargeAmountYuan.value)
+  if (!isFinite(n) || n <= 0) return 0
+  return Math.round(n * 100)
+})
+const canRecharge = computed(() => rechargeAmountFen.value > 0 && !!rechargeMethod.value && !recharging.value)
+
+const LEDGER_TYPE_TEXT: Record<string, string> = {
+  RECHARGE: '充值',
+  CONSUME: '消费扣款',
+  REFUND: '退卡退款',
+}
+function ledgerTypeText(t: string) {
+  return LEDGER_TYPE_TEXT[t] ?? t
+}
+// 带符号分 → 带符号元（充值 +、消费/退款 -）
+function fmtSignedYuan(cent: number) {
+  const sign = cent > 0 ? '+' : cent < 0 ? '-' : ''
+  return `${sign}${fmtMoneyYuan(Math.abs(cent))}`
+}
+
+function openRecharge(c: MemberCardDTO) {
+  rechargeCardNo.value = c.cardNo
+  rechargeCardItem.value = c.cardItem
+  rechargeAmountYuan.value = ''
+  rechargeMethod.value = 'cash'
+  rechargeShow.value = true
+}
+
+async function submitRecharge() {
+  if (!canRecharge.value) return
+  recharging.value = true
+  try {
+    const res = await rechargeCard(rechargeCardNo.value, rechargeAmountFen.value, rechargeMethod.value)
+    toast.success(`充值成功，单号 ${res.data.bizRef}，卡余额 ${fmtMoneyYuan(res.data.balanceAfter)}`)
+    rechargeShow.value = false
+    await load()
+  } catch (e: any) {
+    toast.error('充值失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    recharging.value = false
+  }
+}
+
+async function openLedger(c: MemberCardDTO) {
+  ledgerCardNo.value = c.cardNo
+  ledgerCardItem.value = c.cardItem
+  ledgerRows.value = []
+  ledgerShow.value = true
+  ledgerLoading.value = true
+  try {
+    const res = await listCardLedger(c.cardNo)
+    // 后端账龄正序，弹层倒序展示（最近一笔在最上）
+    ledgerRows.value = (res.data ?? []).slice().sort((a, b) => b.ledgerId - a.ledgerId)
+  } catch (e: any) {
+    toast.error('储值流水加载失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    ledgerLoading.value = false
+  }
+}
 
 // 4 KPI（全部真实字段，无 LTV/沉睡天数等臆造指标）
 const kpis = computed(() => [
@@ -193,19 +292,24 @@ async function load() {
     loading.value = false
   }
 
-  // txn 域（订单/面诊/预约）独立容错：服务未就绪时对应 tab 显空态，不影响客户域
+  // txn 域（订单/面诊/预约/划扣）独立容错：服务未就绪时对应 tab 显空态，不影响客户域
   try {
     const id = customerId.value
-    const [o, cn, ap, rf] = await Promise.allSettled([
+    const [o, cn, ap, rf, wo] = await Promise.allSettled([
       listCustomerOrders(id),
       listCustomerConsultations(id),
       listCustomerAppointments(id),
       getCustomerRfm(id),
+      listWriteoffs({ customerId: id }),
     ])
     orders.value = o.status === 'fulfilled' ? (o.value.data ?? []) : []
     consults.value = cn.status === 'fulfilled' ? (cn.value.data ?? []) : []
     appts.value = ap.status === 'fulfilled' ? (ap.value.data ?? []) : []
     rfm.value = rf.status === 'fulfilled' ? (rf.value.data ?? null) : null
+    // 后端已按 createdAt 倒序；只展示卡扣次/扣额划扣（cardNo 非空），订单整单核销不在客户消费轨迹重复列
+    writeoffs.value = wo.status === 'fulfilled'
+      ? (wo.value.data ?? []).filter((w) => !!w.cardNo)
+      : []
   } catch (e) {
     console.error('[CustomerProfile] 加载交易域数据失败', e)
   }
@@ -400,6 +504,14 @@ const compliance = [
                 <span class="card-row__name">{{ c.cardItem }}</span>
                 <CStatusPill :status="c.status === '在用' ? 'success' : 'default'">{{ c.status }}</CStatusPill>
                 <strong class="card-row__amt">{{ fmtMoneyYuan(c.balance) }}</strong>
+                <CButton
+                  v-if="c.status === '在用'"
+                  variant="primary"
+                  size="sm"
+                  v-perm.disable="'customer:card:recharge'"
+                  @click="openRecharge(c)"
+                >充值</CButton>
+                <CButton variant="ghost" size="sm" @click="openLedger(c)">储值流水</CButton>
               </div>
               <div class="card-row__sub">
                 {{ c.cardNo }} · 剩余 {{ c.remainTimes ?? '—' }}/{{ c.totalTimes ?? '—' }} 次
@@ -447,6 +559,20 @@ const compliance = [
               </div>
               <div class="card-row__sub">
                 {{ o.orderNo }} · {{ o.consultantName ? `咨询师 ${o.consultantName} · ` : '' }}{{ fmtDateTime(o.createdAt) }}
+              </div>
+            </div>
+
+            <div class="cp__sub-title" style="margin-top: var(--s-lg)">卡项划扣记录（{{ writeoffs.length }}）</div>
+            <div v-if="!writeoffs.length" class="cp__empty">暂无卡项划扣记录</div>
+            <div v-for="w in writeoffs" :key="w.writeoffId" class="card-row">
+              <div class="card-row__line">
+                <CIcon name="order" :size="15" class="card-row__ic" />
+                <span class="card-row__name">{{ w.project || '卡项划扣' }}<span v-if="w.timesUsed" class="card-row__count">扣 {{ w.timesUsed }} 次</span></span>
+                <CStatusPill :status="writeoffStatus(w.status).pill">{{ writeoffStatus(w.status).text }}</CStatusPill>
+                <strong class="card-row__amt">{{ fmtMoneyYuan(w.amount ?? 0) }}</strong>
+              </div>
+              <div class="card-row__sub">
+                {{ w.writeoffId }}<template v-if="w.cardNo"> · {{ w.cardNo }}</template><template v-if="w.abnormalReason"> · {{ w.abnormalReason }}</template> · {{ fmtDateTime(w.createdAt ?? undefined) }}
               </div>
             </div>
           </CCard>
@@ -525,6 +651,55 @@ const compliance = [
         </aside>
       </div>
     </template>
+
+    <!-- B4 会员卡充值弹层（照 CardCancelView modal 样板；金额元→分，充值渠道剔除 balance） -->
+    <div v-if="rechargeShow" class="modal-mask" @click.self="rechargeShow = false">
+      <CCard class="modal" :title="`会员卡充值 · ${rechargeCardItem}`" padding="lg">
+        <div class="form">
+          <div class="form__row">
+            <label class="form__label">会员卡号</label>
+            <div class="recharge-cardno">{{ rechargeCardNo }}</div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">充值金额（元）</label>
+            <CInput v-model="rechargeAmountYuan" type="number" placeholder="请输入充值金额，如 1000" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">收款方式</label>
+            <CSelect v-model="rechargeMethod" :options="RECHARGE_METHODS" width="100%" />
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="rechargeShow = false">取消</CButton>
+          <CButton variant="primary" :disabled="!canRecharge" @click="submitRecharge">
+            {{ recharging ? '提交中…' : `确认充值${rechargeAmountFen > 0 ? ' ' + fmtMoneyYuan(rechargeAmountFen) : ''}` }}
+          </CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- B4 储值流水弹层（GET /customer/cards/{cardNo}/ledger；amount 带符号分） -->
+    <div v-if="ledgerShow" class="modal-mask" @click.self="ledgerShow = false">
+      <CCard class="modal" :title="`储值流水 · ${ledgerCardItem}`" padding="lg">
+        <div class="recharge-cardno">{{ ledgerCardNo }}</div>
+        <div v-if="ledgerLoading" class="cp__empty">流水加载中…</div>
+        <div v-else-if="!ledgerRows.length" class="cp__empty">暂无储值流水</div>
+        <div v-else class="cl-ledger">
+          <div v-for="l in ledgerRows" :key="l.ledgerId" class="cl-row">
+            <div class="cl-row__line">
+              <CStatusPill :status="l.changeType === 'RECHARGE' ? 'success' : l.changeType === 'REFUND' ? 'warning' : 'default'">{{ ledgerTypeText(l.changeType) }}</CStatusPill>
+              <strong class="cl-row__amt" :class="{ 'is-pos': l.amount > 0 }">{{ fmtSignedYuan(l.amount) }}</strong>
+            </div>
+            <div class="cl-row__sub">
+              余额 {{ fmtMoneyYuan(l.balanceAfter) }} · {{ l.bizRef || '—' }} · {{ l.operator || '—' }} · {{ fmtDateTime(l.createdAt) }}
+            </div>
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="ledgerShow = false">关闭</CButton>
+        </template>
+      </CCard>
+    </div>
   </div>
 </template>
 
@@ -658,6 +833,20 @@ const compliance = [
 .reminder__dot--danger { background: var(--c-danger-fg); }
 .reminder__dot--warning { background: var(--c-warning-fg); }
 .reminder__dot--success { background: var(--c-teal); }
+
+/* B4 充值 / 储值流水弹层（modal 样板照抄 CardCancelView） */
+.modal-mask { position: fixed; inset: 0; background: rgba(20,21,43,.45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: var(--s-lg); }
+.modal { width: 560px; max-width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-pop); }
+.form { display: flex; flex-direction: column; gap: var(--s-md); }
+.form__row { display: flex; flex-direction: column; gap: var(--s-xs); }
+.form__label { font-size: var(--t-xs); color: var(--c-text-3); }
+.recharge-cardno { font-size: var(--t-sm); color: var(--c-text-2); font-variant-numeric: tabular-nums; padding: 10px 12px; background: var(--c-bg-page); border-radius: var(--r-sm); }
+.cl-ledger { display: flex; flex-direction: column; margin-top: var(--s-sm); }
+.cl-row { padding: var(--s-sm) 0; border-bottom: 1px dashed var(--c-border-light); }
+.cl-row__line { display: flex; align-items: center; gap: var(--s-xs); }
+.cl-row__amt { margin-left: auto; font-size: var(--t-sm); font-weight: 700; color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+.cl-row__amt.is-pos { color: var(--c-teal-dark, var(--c-teal)); }
+.cl-row__sub { font-size: var(--t-xs); color: var(--c-text-3); padding-left: 23px; margin-top: 2px; }
 
 @media (max-width: 1024px) {
   .cp__body { grid-template-columns: 1fr; }

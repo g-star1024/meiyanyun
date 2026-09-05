@@ -70,12 +70,17 @@ const toast = ref('')
 function requestSave() {
   showConfirm.value = true
 }
-function confirmSave() {
-  if (store.save({ ...draft }, draftSubjects.value.map((s) => ({ ...s })))) {
+async function confirmSave() {
+  const ok = await store.save({ ...draft }, draftSubjects.value.map((s) => ({ ...s })))
+  if (ok) {
     syncFromStore()
     showConfirm.value = false
     toast.value = '财务设置已保存'
     setTimeout(() => (toast.value = ''), 2400)
+  } else {
+    showConfirm.value = false
+    toast.value = '保存失败：无权限或服务端异常（本地已回滚）'
+    setTimeout(() => (toast.value = ''), 3200)
   }
 }
 function resetDraft() {

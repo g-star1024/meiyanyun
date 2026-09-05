@@ -1,0 +1,118 @@
+package com.meiyun.txn;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.meiyun.security.AuthInterceptor;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpStatusCodeException;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.util.Map;
+
+/**
+ * txn → customer 服务间客户端（B4 储值实扣 / 退卡回写）：交易域不直写客户域卡台账，
+ * 一律经 customer 内部端点以系统身份（X-Internal-Token，perms=["*"]）调用，拆库后零改动。
+ *
+ * <p>错误口径：customer 返回 4xx（404 卡不存在 / 400 参数或卡状态 / 409 冲突 / 422 余额不足）
+ * → 透传其状态码与中文 message（前端直接可读，收款事务回滚，不写 order_payment）；
+ * 网络异常 / 5xx → 502 中文（同样回滚，杜绝「订单收款成功但卡没扣」）。
+ * customer 侧以 orderNo / cancelNo 为幂等键，本客户端失败重试安全（不双扣/不双写）。
+ */
+@Component
+public class CustomerCardClient {
+
+    private static final Logger log = LoggerFactory.getLogger(CustomerCardClient.class);
+    private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    private final RestTemplate restTemplate;
+
+    @Value("${customer.service.url:http://127.0.0.1:8082}")
+    private String customerBaseUrl;
+    @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
+    private String internalToken;
+
+    public CustomerCardClient(RestTemplate restTemplate) {
+        this.restTemplate = restTemplate;
+    }
+
+    /** 储值消费扣款：POST /api/customer/internal/cards/consume（行锁扣余额 + CONSUME 流水）。 */
+    public void consume(String cardNo, String customerId, long amount, String orderNo) {
+        Map<String, Object> body = Map.of(
+                "cardNo", nz(cardNo),
+                "customerId", nz(customerId),
+                "amount", amount,
+                "orderNo", nz(orderNo));
+        post("/api/customer/internal/cards/consume", body, "储值扣款");
+    }
+
+    /** 退卡终审回写：POST /api/customer/internal/cards/refund（卡置「已退卡」、余额清零、REFUND 流水）。 */
+    public void refundCard(String cardNo, String cancelNo) {
+        Map<String, Object> body = Map.of(
+                "cardNo", nz(cardNo),
+                "cancelNo", nz(cancelNo));
+        post("/api/customer/internal/cards/refund", body, "退卡回写");
+    }
+
+    /**
+     * 订单退款回加储值（B4.1，退款终审 RF）：POST /api/customer/internal/cards/refund-order。
+     * customer 经原订单 CONSUME 流水反查扣款卡，写 REFUND 正额流水并加回余额；refundNo 幂等、
+     * 防超退、卡已退卡 422 均由 customer 侧裁决，4xx 中文透传（终审事务回滚，退款单不置 REFUNDED）。
+     */
+    public void refundForOrder(String refundNo, String orderNo, long amount) {
+        Map<String, Object> body = Map.of(
+                "refundNo", nz(refundNo),
+                "orderNo", nz(orderNo),
+                "amount", amount);
+        post("/api/customer/internal/cards/refund-order", body, "退款回加储值");
+    }
+
+    private void post(String path, Map<String, Object> body, String label) {
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            restTemplate.postForEntity(customerBaseUrl + path, new HttpEntity<>(body, headers), Map.class);
+        } catch (HttpStatusCodeException e) {
+            int status = e.getStatusCode().value();
+            String msg = extractMessage(e.getResponseBodyAsString());
+            if (status >= 400 && status < 500) {
+                // 业务拒绝（余额不足 422 / 卡不存在 404 / 冲突 409 / 参数 400）：原样透传中文，调用方据此中止
+                log.info("{}被 customer 拒绝 status={} msg={}", label, status, msg);
+                throw new ResponseStatusException(HttpStatus.valueOf(status), msg);
+            }
+            log.error("{} customer 服务端错误 status={} body={}", label, status, e.getResponseBodyAsString());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    label + "失败：客户服务暂不可用，请稍后重试（本笔操作已回滚，未扣款未记账）");
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("{} customer 调用异常: {}", label, e.getMessage());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    label + "失败：无法连接客户服务，请稍后重试（本笔操作已回滚，未扣款未记账）");
+        }
+    }
+
+    /** 从 customer 错误体 {"code":"...","message":"中文"} 提取中文原因；解析失败回落通用文案。 */
+    private static String extractMessage(String body) {
+        if (body != null && body.contains("\"message\"")) {
+            try {
+                String m = MAPPER.readTree(body).path("message").asText(null);
+                if (m != null && !m.isBlank()) return m;
+            } catch (Exception ignored) {
+                // 落到兜底文案
+            }
+        }
+        return "客户服务拒绝了本次操作，请核对卡状态与余额后重试";
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
+    }
+}

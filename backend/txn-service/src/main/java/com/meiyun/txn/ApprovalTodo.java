@@ -72,6 +72,10 @@ public class ApprovalTodo {
     @Column(name = "store_name", length = 64)
     private String storeName;
 
+    /** 业务明细负载（B5 领用/报损：SKU 行 JSON 数组 [{skuCode,name,qty,remark}]，终审解析后回传库存域扣库）。 */
+    @Column(name = "payload", columnDefinition = "TEXT")
+    private String payload;
+
     /** 当前指派人（转交后变化）；空表示按角色自动路由。 */
     @Column(length = 64)
     private String assignee;

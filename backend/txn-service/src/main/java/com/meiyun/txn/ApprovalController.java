@@ -66,4 +66,25 @@ public class ApprovalController {
     public ApprovalTodo addSigner(@PathVariable String todoNo, @RequestBody ApprovalService.AddSignerCmd cmd) {
         return approvalService.addSigner(todoNo, cmd);
     }
+
+    /**
+     * 耗材领用提交（B5）：明细 SKU 行存待办 payload，固定双签（店长一审 → 财务终审），
+     * 终审通过回调库存域扣库并落 TK-MATERIAL 成本。方法级权限覆盖类级 approval:view
+     * （矩阵既有 requisition:edit，申领岗可提交但不可浏览审批台）；操作人取 JWT 登录人。
+     */
+    @PostMapping("/requisition")
+    @RequirePerm("requisition:edit")
+    public ApprovalTodo submitRequisition(@RequestBody ApprovalService.RequisitionCmd cmd) {
+        return approvalService.submitRequisition(cmd);
+    }
+
+    /**
+     * 耗材报损提交（B5）：损失额（分）决定签署层级（&lt;¥5000 财务单签，≥¥5000 店长+财务双签），
+     * 终审通过回调库存域扣 SCRAP 库存并落 TK-LOSS 成本。方法级权限 wastage:edit 覆盖类级。
+     */
+    @PostMapping("/loss-report")
+    @RequirePerm("wastage:edit")
+    public ApprovalTodo submitLossReport(@RequestBody ApprovalService.LossReportCmd cmd) {
+        return approvalService.submitLossReport(cmd);
+    }
 }

@@ -19,6 +19,11 @@ audit:
   service:
     url: ${AUDIT_SERVICE_URL:http://localhost:8084}
 
+# finance-service 地址（B3 合规写：资金事件 outbox 投递落账入口）
+finance:
+  service:
+    url: ${FINANCE_SERVICE_URL:http://localhost:8087}
+
 meiyun:
   security:
     # 生产经环境变量注入；dev 默认值仅供本地联调

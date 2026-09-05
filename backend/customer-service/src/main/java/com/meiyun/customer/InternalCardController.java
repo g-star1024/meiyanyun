@@ -1,0 +1,126 @@
+package com.meiyun.customer;
+
+import com.meiyun.security.RequirePerm;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 服务间内部端点（非业务页面）：finance 卡余额只读投影 + txn 储值扣款/退卡回写。
+ *
+ * <p>红线边界：会员卡余额/客户真实姓名属敏感财务字段，仅以系统身份（X-Internal-Token，
+ * perms=["*"]）开放；普通登录人无 {@code internal:card-balance} / {@code internal:card-write}
+ * 权限 → 403。财务域不直读 member_card / customer 表，交易域不直写卡台账，
+ * 由客户域按自身实体语义提供投影/动作，拆库后零改动成立。
+ */
+@RestController
+@RequestMapping("/api/customer/internal")
+public class InternalCardController {
+
+    private final MemberCardRepository cardRepo;
+    private final CustomerRepository customerRepo;
+    private final CardLedgerService ledgerService;
+
+    public InternalCardController(MemberCardRepository cardRepo, CustomerRepository customerRepo,
+                                  CardLedgerService ledgerService) {
+        this.cardRepo = cardRepo;
+        this.customerRepo = customerRepo;
+        this.ledgerService = ledgerService;
+    }
+
+    /**
+     * 会员卡余额批量投影：GET /api/customer/internal/card-balances?storeCode=SST01。
+     * 返回客户域全量（或单店）会员卡，客户姓名已解析；数据权限收敛由 finance-service 二次过滤。
+     */
+    @GetMapping("/card-balances")
+    @RequirePerm("internal:card-balance")
+    public List<CardBalanceDTO> cardBalances(
+            @RequestParam(value = "storeCode", required = false) String storeCode) {
+
+        List<MemberCard> cards = (storeCode == null || storeCode.isBlank())
+                ? cardRepo.findAll()
+                : cardRepo.findByStoreCodeOrderByCardNoDesc(storeCode);
+        if (cards.isEmpty()) return List.of();
+
+        List<String> customerIds = cards.stream().map(MemberCard::getCustomerId).distinct().toList();
+        Map<String, String> nameMap = new HashMap<>();
+        for (Customer c : customerRepo.findAllById(customerIds)) {
+            if (c.getName() != null) nameMap.put(c.getCustomerId(), c.getName());
+        }
+
+        return cards.stream()
+                .map(c -> new CardBalanceDTO(c.getCardNo(), c.getCustomerId(),
+                        nameMap.getOrDefault(c.getCustomerId(), c.getCustomerId()),
+                        c.getCardItem(), c.getStoreCode(), c.getTotalTimes(), c.getRemainTimes(),
+                        c.getBalance(), c.getStatus(), c.getCreatedAt()))
+                .toList();
+    }
+
+    /**
+     * 储值余额消费扣款（txn balance 支付实扣）：POST /api/customer/internal/cards/consume。
+     * 行锁扣 member_card.balance 并写 card_ledger（CONSUME 负额，bizRef=订单号）；
+     * 余额不足 422 中文拦截；同订单号重放幂等返回既有流水（网络重试不双扣）。
+     */
+    @PostMapping("/cards/consume")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> consume(@RequestBody ConsumeCmd cmd) {
+        if (cmd == null) throw new CardLedgerService.BadReq("请求体不能为空");
+        CardLedger l = ledgerService.consume(cmd.cardNo(), cmd.customerId(),
+                cmd.amount() == null ? 0L : cmd.amount(), cmd.orderNo());
+        return Map.of(
+                "ledgerId", l.getLedgerId(),
+                "changeType", l.getChangeType(),
+                "balanceAfter", l.getBalanceAfter());
+    }
+
+    /**
+     * 退卡终审联动（txn 退卡 CC 终审后回调）：POST /api/customer/internal/cards/refund。
+     * card_ledger 写 REFUND（负额）、member_card.status=已退卡、余额清零（balance_after=0）；
+     * 同退卡单号重放幂等返回。资金分录由 txn 域 outbox 投递，本端点只动卡台账。
+     */
+    @PostMapping("/cards/refund")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> refund(@RequestBody RefundCmd cmd) {
+        if (cmd == null) throw new CardLedgerService.BadReq("请求体不能为空");
+        CardLedger l = ledgerService.refund(cmd.cardNo(), cmd.cancelNo());
+        return Map.of(
+                "ledgerId", l.getLedgerId(),
+                "changeType", l.getChangeType(),
+                "balanceAfter", l.getBalanceAfter(),
+                "status", "已退卡");
+    }
+
+    /**
+     * 订单退款回加储值（B4.1，txn 退款终审 RF 后回调）：POST /api/customer/internal/cards/refund-order。
+     * 经原订单 CONSUME 流水反查扣款卡，card_ledger 写 REFUND <b>正额</b>（bizRef=退款单号、order_no=订单号）、
+     * member_card.balance 加回；累计回加 ≤ 原扣款（防超退）；同退款单号重放幂等返回；卡已退卡 422 中文拦截。
+     */
+    @PostMapping("/cards/refund-order")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> refundOrder(@RequestBody RefundOrderCmd cmd) {
+        if (cmd == null) throw new CardLedgerService.BadReq("请求体不能为空");
+        CardLedger l = ledgerService.refundForOrder(cmd.refundNo(), cmd.orderNo(),
+                cmd.amount() == null ? 0L : cmd.amount());
+        return Map.of(
+                "ledgerId", l.getLedgerId(),
+                "changeType", l.getChangeType(),
+                "cardNo", l.getCardNo(),
+                "balanceAfter", l.getBalanceAfter());
+    }
+
+    /** 储值扣款入参：cardNo/customerId/amount（分，&gt;0）/orderNo（幂等键）。 */
+    public record ConsumeCmd(String cardNo, String customerId, Long amount, String orderNo) {}
+
+    /** 退卡回写入参：cardNo/cancelNo（退卡 CC 单号，幂等键）。 */
+    public record RefundCmd(String cardNo, String cancelNo) {}
+
+    /** 订单退款回加入参：refundNo（退款 RF 单号，幂等键）/orderNo（原订单号，反查扣款卡）/amount（分，&gt;0）。 */
+    public record RefundOrderCmd(String refundNo, String orderNo, Long amount) {}
+}

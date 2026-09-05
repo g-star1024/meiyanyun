@@ -14,6 +14,8 @@ import java.time.OffsetDateTime;
 public class OutboxRecord {
 
     @Id
+    @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "outbox_id_seq")
+    @SequenceGenerator(name = "outbox_id_seq", sequenceName = "outbox_record_outbox_id_seq", allocationSize = 1)
     @Column(name = "outbox_id")
     private Long outboxId;
 
@@ -26,10 +28,10 @@ public class OutboxRecord {
     @Column(nullable = false)
     private Long amount;
 
-    @Column(length = 8)
+    @Column(length = 16)
     private String channel;
 
-    @Column(length = 8)
+    @Column(length = 16)
     private String status;
 
     @Column(name = "created_at", nullable = false)

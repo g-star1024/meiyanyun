@@ -41,3 +41,32 @@ export const orderWriteoff = (orderNo: string, operator: string) =>
 /** 订单核销记录列表：status 传 DONE/ABNORMAL 过滤，不传全量（card_no 为空的订单维度记录）。 */
 export const listOrderWriteoffs = (status?: string) =>
   client.get<OrderWriteoffDTO[]>('/txn/order-writeoff', { params: status ? { status } : {} })
+
+/** 划扣记录读模型（M4FlowController WriteoffRecord 裸投影）。金额单位「分」。 */
+export interface WriteoffRecordDTO {
+  writeoffId: string
+  orderNo: string | null
+  cardNo: string | null // 卡划扣非空；订单整单核销为 null
+  customerId: string | null
+  storeCode: string
+  project: string | null
+  timesUsed: number | null
+  amount: number | null
+  operator: string | null
+  status: string // DONE/ABNORMAL/VOID
+  abnormalReason: string | null
+  sign1: string | null
+  sign2: string | null
+  createdAt: string | null
+}
+
+/**
+ * 划扣记录列表：cardNo（卡 360）/ customerId（客户 360）精确过滤，
+ * from/to（yyyy-MM-dd）按 created_at 闭区间；均为可选，不传走数据域全量。
+ */
+export const listWriteoffs = (params: {
+  cardNo?: string
+  customerId?: string
+  from?: string
+  to?: string
+}) => client.get<WriteoffRecordDTO[]>('/txn/writeoff', { params })

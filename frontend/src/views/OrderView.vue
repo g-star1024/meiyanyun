@@ -14,9 +14,11 @@ import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
 import { useToast } from '@/composables/useToast'
 import { listOrders, payOrder, type OrderViewDTO, type OrderPaymentDTO } from '@/api/order'
+import { listCustomerCards, type MemberCardDTO } from '@/api/customer'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
+import CSelect from '@/components/CSelect.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
@@ -161,11 +163,46 @@ function selectOrder(id: string) {
   selectedId.value = id
   inputAmt.value = ''
   activeMethod.value = 'wxpay'
+  // 切换订单后重置储值卡选择，防止把 A 客户卡号用到 B 订单
+  balanceCards.value = []
+  balanceCardNo.value = ''
 }
 
 // ---- 支付录入 ----
 const activeMethod = ref<PayMethod>('wxpay')
 const inputAmt = ref('')
+
+// B4 会员储值支付：balance 方式必须选会员卡号（后端先扣卡后写流水，cardNo 缺失 400）
+const balanceCards = ref<MemberCardDTO[]>([])
+const balanceCardNo = ref('')
+const balanceCardsLoading = ref(false)
+async function loadBalanceCards(order: UiOrder) {
+  balanceCards.value = []
+  balanceCardNo.value = ''
+  balanceCardsLoading.value = true
+  if (!order.customerId) {
+    balanceCardsLoading.value = false
+    return
+  }
+  try {
+    const res = await listCustomerCards(order.customerId)
+    balanceCards.value = (res.data ?? []).filter((c) => c.status === '在用' && c.balance > 0)
+  } catch {
+    // 拉取失败不阻断：置空，收银员选 balance 时由前端拦截提示；强行提交后端 400/422 中文透传
+  } finally {
+    balanceCardsLoading.value = false
+  }
+}
+const balanceCardOptions = computed(() =>
+  balanceCards.value.map((c) => ({
+    value: c.cardNo,
+    label: `${c.cardItem}（${c.cardNo}）余额 ${money(fen2yuan(c.balance))}`,
+  })),
+)
+function pickMethod(m: PayMethod) {
+  activeMethod.value = m
+  if (m === 'balance' && selected.value) void loadBalanceCards(selected.value)
+}
 const received = computed(() => (selected.value ? paidAmount(selected.value) : 0))
 const rest = computed(() => (selected.value ? selected.value.amount - received.value : 0))
 const done = computed(() => !!selected.value && rest.value <= 0)
@@ -191,6 +228,11 @@ async function addPayment() {
   const amt = effectiveAmount()
   if (amt <= 0) return
   const target = selected.value
+  // B4 会员储值：必须选定会员卡号（后端先扣卡后写流水）；无可用卡前端拦截，避免无效请求
+  if (activeMethod.value === 'balance' && !balanceCardNo.value) {
+    toast.error('请先选择用于扣款的会员储值卡（该客户无在用储值卡时不可使用会员储值支付）')
+    return
+  }
   // 现金传"客户实付"（后端按待收封顶入账并计算找零）；非现金传实际扣款额
   const tenderedYuan = activeMethod.value === 'cash' ? (Number(inputAmt.value) || 0) : amt
   paying.value = true
@@ -200,6 +242,7 @@ async function addPayment() {
       activeMethod.value,
       Math.round(tenderedYuan * 100),
       auth.user.staffId || 'cashier',
+      activeMethod.value === 'balance' ? balanceCardNo.value : undefined,
     )
     if (res.data.changeAmount > 0) {
       toast.success(`收款成功，现金找零 ¥${(res.data.changeAmount / 100).toLocaleString('zh-CN')}`)
@@ -399,11 +442,23 @@ const paidCount = computed(() => orders.value.filter((o) => o.status === 'PAID')
                 class="method"
                 :class="{ 'is-on': activeMethod === m.key }"
                 :disabled="!canCashier"
-                @click="activeMethod = m.key"
+                @click="pickMethod(m.key)"
               >
                 <CIcon :name="m.icon" :size="18" class="method__ic" />
                 <span class="method__label">{{ m.label }}</span>
               </button>
+            </div>
+            <!-- B4 会员储值：选扣款卡号（后端先扣卡后写流水；同单第二笔 balance 后端 409） -->
+            <div v-if="activeMethod === 'balance'" class="balance-card">
+              <CSelect
+                v-model="balanceCardNo"
+                :options="balanceCardOptions"
+                :placeholder="balanceCardsLoading ? '会员储值卡加载中…' : '选择扣款的会员储值卡'"
+                width="100%"
+              />
+              <p v-if="!balanceCardsLoading && !balanceCards.length" class="balance-card__empty">
+                该客户暂无在用且有余额的储值卡，不可使用会员储值支付；可先到客户 360 页充值。
+              </p>
             </div>
             <div class="entry__row">
               <CInput v-model="inputAmt" type="number" :placeholder="`收款金额，待收 ${money(Math.max(rest, 0))}`" />
@@ -416,7 +471,7 @@ const paidCount = computed(() => orders.value.filter((o) => o.status === 'PAID')
               v-perm.disable="'cashier:create'"
               variant="primary"
               block
-              :disabled="effectiveAmount() <= 0 || paying"
+              :disabled="effectiveAmount() <= 0 || paying || (activeMethod === 'balance' && !balanceCardNo)"
               @click="addPayment"
             >确认收款 {{ money(effectiveAmount()) }}</CButton>
             <p v-if="!canCashier" class="no-perm">当前角色无收银权限。</p>
@@ -523,6 +578,8 @@ const paidCount = computed(() => orders.value.filter((o) => o.status === 'PAID')
 .method__label { font-size: var(--t-xs); }
 .entry__row { display: flex; gap: var(--s-xs); }
 .entry__row :deep(.c-input) { flex: 1; }
+.balance-card { display: flex; flex-direction: column; gap: var(--s-xs); }
+.balance-card__empty { margin: 0; font-size: var(--t-xs); color: var(--c-warning-fg); line-height: 1.5; }
 .change { font-size: var(--t-sm); color: var(--c-text-2); background: var(--c-bg-page); padding: var(--s-xs) var(--s-sm); border-radius: var(--r-md); }
 .change strong { color: var(--c-brand); }
 .no-perm { color: var(--c-danger-fg); font-size: var(--t-xs); text-align: center; margin: 0; }

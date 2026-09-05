@@ -2,12 +2,16 @@
 // finSettings —— M6-17 财务设置
 // 业财一体红线：仅配置会计科目展示、税率、结算周期、对账与镜像参数；
 // 镜像源（金蝶/用友）单向同步，仅做读取/对账，绝不反向写资金池。
+// B5：持久化到 finance-service /finance/settings（单例配置 + 科目启用表 +
+// 变更日志，保存逐字段 diff 落库，全审计）。localStorage 仅作本地同步缓存，
+// 让视图 draft 在 setup 阶段即可取到上次加载值，真实数据以服务端为准。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { SUBJECT_LABEL, type SubjectCode } from './financeCore'
+import { getFinSettings, saveFinSettings as apiSaveFinSettings } from '@/api/finance'
 
 export type FinGroupKey = 'SUBJECT' | 'TAX' | 'SETTLE' | 'RECONCILE'
 
@@ -67,11 +71,23 @@ const DEFAULT_SETTINGS: FinSettings = {
   outboxRetry: 3,
 }
 
+const CACHE_KEY = 'meiyun:fin-settings'
+
+function restoreCache(): FinSettings {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY)
+    if (raw) return { ...DEFAULT_SETTINGS, ...(JSON.parse(raw) as Partial<FinSettings>) }
+  } catch {
+    // 缓存损坏回落默认
+  }
+  return { ...DEFAULT_SETTINGS }
+}
+
 export const useFinSettingsStore = defineStore('finSettings', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
 
-  const settings = ref<FinSettings>({ ...DEFAULT_SETTINGS })
+  const settings = ref<FinSettings>(restoreCache())
 
   /** 会计科目启用表（从 financeCore SUBJECT_LABEL 镜像，只读展示 + 启用开关） */
   const subjectEnable = ref<SubjectEnable[]>(
@@ -83,6 +99,7 @@ export const useFinSettingsStore = defineStore('finSettings', () => {
   )
 
   const logs = ref<FinChangeLog[]>([])
+  const loaded = ref(false)
 
   function fmtValue(key: keyof FinSettings, v: string | number | boolean): string {
     if (key === 'vatRate' || key === 'surtaxRate' || key === 'incomeTaxRate') {
@@ -115,20 +132,65 @@ export const useFinSettingsStore = defineStore('finSettings', () => {
     if (row) row.enabled = !row.enabled
   }
 
-  /** 批量保存（弹层二次确认后调用），记录差异，需 finance:settings:edit */
-  function save(next: FinSettings, subjects: SubjectEnable[]): boolean {
+  function applyBundle(data: {
+    settings: {
+      vatRate: number; surtaxRate: number; incomeTaxRate: number
+      settleDay: number; commissionPayDay: number; reconcileTn: number
+      diffThresholdYuan: number; mirrorKingdee: boolean; mirrorYonyou: boolean; outboxRetry: number
+    }
+    subjects: Array<{ code: string; enabled: boolean }>
+    logs: Array<{ id: number; by: string; at: string; field: string; oldValue: string | null; newValue: string | null }>
+  }) {
+    const s = data.settings
+    settings.value = {
+      vatRate: Number(s.vatRate) || 0,
+      surtaxRate: Number(s.surtaxRate) || 0,
+      incomeTaxRate: Number(s.incomeTaxRate) || 0,
+      settleDay: Number(s.settleDay) || 5,
+      commissionPayDay: Number(s.commissionPayDay) || 10,
+      reconcileTn: Number(s.reconcileTn) || 0,
+      diffThreshold: Math.max(0, Math.round(Number(s.diffThresholdYuan) || 0)),
+      mirrorKingdee: !!s.mirrorKingdee,
+      mirrorYonyou: !!s.mirrorYonyou,
+      outboxRetry: Number(s.outboxRetry) || 0,
+    }
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(settings.value))
+    } catch {
+      // 缓存写入失败忽略
+    }
+    for (const row of subjectEnable.value) {
+      const hit = data.subjects?.find((x) => x.code === row.code)
+      if (hit) row.enabled = !!hit.enabled
+    }
+    logs.value = (data.logs ?? []).map((l) => ({
+      id: String(l.id),
+      by: l.by,
+      at: l.at,
+      field: l.field,
+      oldValue: l.oldValue ?? '',
+      newValue: l.newValue ?? '',
+    }))
+  }
+
+  /** 批量保存（弹层二次确认后调用），需 finance:settings:edit；乐观更新后持久化，失败回拉。 */
+  async function save(next: FinSettings, subjects: SubjectEnable[]): Promise<boolean> {
     if (!auth.can('finance:settings:edit')) {
       console.warn('[finSettings] 无 finance:settings:edit 权限')
       return false
     }
+    const prevSettings = { ...settings.value }
+    const prevSubjects = subjectEnable.value.map((s) => ({ ...s }))
+
     let changed = 0
     const cur = settings.value as unknown as Record<string, string | number | boolean>
     const nxt = next as unknown as Record<string, string | number | boolean>
+    const localLogs: FinChangeLog[] = []
     ;(Object.keys(next) as Array<keyof FinSettings>).forEach((k) => {
       if (cur[k] !== nxt[k]) {
         const old = cur[k]
         cur[k] = nxt[k]
-        logs.value.unshift({
+        localLogs.push({
           id: nextId('flog'),
           by: auth.user.name,
           at: new Date().toISOString(),
@@ -139,26 +201,54 @@ export const useFinSettingsStore = defineStore('finSettings', () => {
         changed += 1
       }
     })
-    // 科目启用状态
     for (const s of subjects) {
-      const cur = subjectEnable.value.find((x) => x.code === s.code)
-      if (cur && cur.enabled !== s.enabled) {
-        cur.enabled = s.enabled
-        logs.value.unshift({
+      const curRow = subjectEnable.value.find((x) => x.code === s.code)
+      if (curRow && curRow.enabled !== s.enabled) {
+        curRow.enabled = s.enabled
+        localLogs.push({
           id: nextId('flog'),
           by: auth.user.name,
           at: new Date().toISOString(),
           field: `科目「${SUBJECT_LABEL[s.code]}」`,
-          oldValue: cur.enabled ? '启用' : '停用',
+          oldValue: s.enabled ? '停用' : '启用',
           newValue: s.enabled ? '启用' : '停用',
         })
         changed += 1
       }
     }
-    if (changed > 0) {
-      activity.log(auth.user.name, `保存财务设置，共 ${changed} 项变更（作用于全 M6 财务页）`)
+    logs.value = [...localLogs, ...logs.value]
+    try {
+      localStorage.setItem(CACHE_KEY, JSON.stringify(settings.value))
+    } catch {
+      // 缓存写入失败忽略
     }
-    return true
+    try {
+      await apiSaveFinSettings({
+        vatRate: next.vatRate,
+        surtaxRate: next.surtaxRate,
+        incomeTaxRate: next.incomeTaxRate,
+        settleDay: next.settleDay,
+        commissionPayDay: next.commissionPayDay,
+        reconcileTn: next.reconcileTn,
+        diffThreshold: next.diffThreshold,
+        mirrorKingdee: next.mirrorKingdee,
+        mirrorYonyou: next.mirrorYonyou,
+        outboxRetry: next.outboxRetry,
+        subjects: subjects.map((s) => ({ code: s.code, enabled: s.enabled })),
+      })
+      if (changed > 0) {
+        activity.log(auth.user.name, `保存财务设置，共 ${changed} 项变更（作用于全 M6 财务页）`)
+      }
+      // 以服务端返回的权威日志为准回拉一次
+      seed(true).catch(() => {})
+      return true
+    } catch (e) {
+      console.error('[finSettings] 财务设置保存失败，回滚本地值', e)
+      settings.value = prevSettings
+      subjectEnable.value = prevSubjects.map((s) => ({ ...s }))
+      logs.value = logs.value.slice(localLogs.length)
+      return false
+    }
   }
 
   function resetDefault() {
@@ -168,21 +258,36 @@ export const useFinSettingsStore = defineStore('finSettings', () => {
   const canEdit = computed(() => auth.can('finance:settings:edit'))
   const enabledSubjectCount = computed(() => subjectEnable.value.filter((s) => s.enabled).length)
 
-  // ===== 种子审计记录 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
+  // ===== 种子：优先拉真实数据，失败回落默认值 + 内置审计记录 =====
+  let seeding: Promise<void> | null = null
+  function seedMockLogs() {
     const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
-    logs.value.push(
+    logs.value = [
       { id: nextId('flog'), by: '钱进（财务审核）', at: hoursAgo(26), field: FIELD_LABEL.diffThreshold, oldValue: '¥50', newValue: '¥100' },
       { id: nextId('flog'), by: '钱进（财务审核）', at: hoursAgo(72), field: FIELD_LABEL.reconcileTn, oldValue: 'T+0', newValue: 'T+1' },
       { id: nextId('flog'), by: '陈野（区域经理）', at: hoursAgo(24 * 9), field: FIELD_LABEL.mirrorKingdee, oldValue: '关闭', newValue: '开启' },
-    )
+    ]
   }
 
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (loaded && !force) return Promise.resolve()
+    seeding = (async () => {
+      try {
+        const { data } = await getFinSettings()
+        applyBundle(data)
+        loaded.value = true
+      } catch (e) {
+        console.error('[finSettings] 加载财务设置失败，回落默认值', e)
+        if (logs.value.length === 0) seedMockLogs()
+      }
+    })()
+    return seeding
+  }
+  void seed()
+
   return {
-    settings, subjectEnable, logs, canEdit, enabledSubjectCount,
+    settings, subjectEnable, logs, canEdit, enabledSubjectCount, loaded,
     updateSetting, toggleSubject, save, resetDefault, seed,
     SUBJECT_LABEL, FIELD_LABEL,
   }

@@ -13,6 +13,7 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CInput from '@/components/CInput.vue'
 import CTextarea from '@/components/CTextarea.vue'
+import CSelect from '@/components/CSelect.vue'
 import { useFinanceCoreStore, type OutboxItem } from '@/stores/financeCore'
 import { useAuthStore } from '@/stores/auth'
 
@@ -25,65 +26,167 @@ const canExport = computed(() => auth.can('finance:export'))
 const selectedId = ref<string | null>(null)
 const selected = computed<OutboxItem | null>(() => {
   if (selectedId.value) return fin.outbox.find((o) => o.outboxId === selectedId.value) ?? null
-  return fin.outbox.find((o) => o.status !== 'MATCHED') ?? fin.outbox[0] ?? null
+  return fin.outbox.find((o) => o.status !== 'MATCHED' && o.status !== 'ADJUSTED') ?? fin.outbox[0] ?? null
 })
 
-const totalMatched = computed(() => fin.outbox.filter((o) => o.status === 'MATCHED').length)
+const totalMatched = computed(() => fin.outboxMatched)
 const totalRecords = computed(() => fin.outbox.length)
 const matchRate = computed(() => totalRecords.value ? Math.round((totalMatched.value / totalRecords.value) * 100) : 0)
-const diffCount = computed(() => fin.outbox.filter((o) => o.status === 'LONG' || o.status === 'SHORT').length)
+const diffCount = computed(() => fin.outbox.filter((o) => o.status === 'LONG' || o.status === 'SHORT').length + fin.outboxDiffCount)
+// 真实台账（finance-service outbox，writable=true，支持人工标记一致/差异/调平写，后端全审计）；
+// demoMode = 后端整体不可用降级的演示 seed（writable=false，仅本地演示三方回单轧平，不发起后端写）
+const liveMode = computed(() => fin.outboxLiveCount > 0)
+const demoMode = computed(() => totalRecords.value > 0 && !liveMode.value)
+const busy = ref(false)
 
 const kpis = computed(() => [
-  { label: '对账总笔数', icon: 'finance', value: `${totalRecords.value} 笔`, tone: 'brand' as const, sub: 'Outbox 镜像' },
-  { label: '已轧平', icon: 'finance', value: `${totalMatched.value} 笔`, tone: 'success' as const, sub: `匹配率 ${matchRate.value}%` },
-  { label: '长款 / 短款', icon: 'alert', value: `¥${fin.outboxLong.toLocaleString('zh-CN')} / ¥${fin.outboxShort.toLocaleString('zh-CN')}`, tone: diffCount.value ? ('danger' as const) : ('text' as const), sub: `${diffCount.value} 笔差异待处理` },
-  { label: '待对账 / 冲正', icon: 'refund', value: `${fin.outboxPending} 笔`, tone: fin.outboxPending ? ('warning' as const) : ('text' as const), sub: 'T+1 三方核对' },
+  { label: '对账总笔数', icon: 'finance', value: `${totalRecords.value} 笔`, tone: 'brand' as const, sub: liveMode.value ? `真实对账台账 ${fin.outboxLiveCount} 笔` : '演示数据（离线降级）' },
+  { label: '已轧平', icon: 'finance', value: `${totalMatched.value} 笔`, tone: 'success' as const, sub: liveMode.value ? '含已调平留痕' : `匹配率 ${matchRate.value}%` },
+  { label: '长短款 / 差异', icon: 'alert', value: liveMode.value ? `${fin.outboxDiffCount} 笔差异` : `¥${fin.outboxLong.toLocaleString('zh-CN')} / ¥${fin.outboxShort.toLocaleString('zh-CN')}`, tone: diffCount.value ? ('danger' as const) : ('text' as const), sub: liveMode.value ? '人工标记差异待调平' : `${diffCount.value} 笔演示长短款` },
+  { label: '待对账 / 冲正', icon: 'refund', value: `${fin.outboxPending} 笔`, tone: fin.outboxPending ? ('warning' as const) : ('text' as const), sub: liveMode.value ? '待人工标记一致/差异' : 'T+1 三方核对（演示）' },
 ])
 
 const BIZ_LABEL: Record<string, string> = {
   ORDER_PAY: '收银支付', REFUND: '退款', RECHARGE: '充值', WRITEOFF: '划扣', SETTLE: '结算',
 }
 const STATUS_PILL: Record<OutboxItem['status'], 'success' | 'warning' | 'danger' | 'info' | 'primary'> = {
-  MATCHED: 'success', PENDING: 'warning', LONG: 'info', SHORT: 'danger', REVERSED: 'primary',
+  MATCHED: 'success', PENDING: 'warning', LONG: 'info', SHORT: 'danger', REVERSED: 'primary', DIFF: 'danger', ADJUSTED: 'primary',
 }
 const STATUS_LABEL: Record<OutboxItem['status'], string> = {
-  MATCHED: '已平', PENDING: '待对账', LONG: '长款', SHORT: '短款', REVERSED: '冲正',
+  MATCHED: '已平', PENDING: '待对账', LONG: '长款', SHORT: '短款', REVERSED: '冲正', DIFF: '差异', ADJUSTED: '已调平',
 }
 
-// 三方金额（用于详情对比；演示：长款银行多、短款银行少）
-function triad(o: OutboxItem) {
+// 三方金额：演示 seed 为三方回单演示态（长款银行多、短款渠道/银行少）；
+// 真实台账（writable）渠道/银行回单 B6 才接入，不伪造金额——回单列返回 null，页面诚实展示「回单未接入」
+function triad(o: OutboxItem): { cashier: number; channel: number | null; bank: number | null } {
   const cashier = o.amount
-  let channel = o.amount
-  let bank = o.amount
+  if (o.writable) return { cashier, channel: null, bank: null }
+  let channel: number | null = o.amount
+  let bank: number | null = o.amount
   if (o.status === 'LONG') { bank = o.amount + 100 }
   if (o.status === 'SHORT') { channel = o.amount - 6; bank = o.amount - 6 }
   if (o.status === 'PENDING') { bank = 0 }
   if (o.status === 'REVERSED') { bank = 0; channel = 0 }
   return { cashier, channel, bank }
 }
-
-function runAuto() {
-  const n = fin.runReconcile()
-  flash.value = `一键对账完成：本次轧平 ${n} 笔`
-  setTimeout(() => (flash.value = ''), 3000)
+function triadText(v: number | null) {
+  return v == null ? '回单未接入' : `¥${v.toLocaleString('zh-CN')}`
 }
+// 演示长短款差额（真实台账不伪造回单金额，该值仅 LONG/SHORT 演示项可达）
+function demoDiffAmount(o: OutboxItem): number | null {
+  if (o.writable) return null
+  const t = triad(o)
+  if (o.status === 'LONG' && t.bank != null) return t.bank - o.amount
+  if (o.status === 'SHORT' && t.bank != null) return o.amount - t.bank
+  return null
+}
+
 const flash = ref('')
+function flashMsg(msg: string, ms = 3500) {
+  flash.value = msg
+  setTimeout(() => (flash.value = ''), ms)
+}
+
+// 一键对账：真实台账三方回单未接入（B6），真实 PENDING 笔走人工标记；本按钮仅演示态本地轧平
+async function runAuto() {
+  if (busy.value) return
+  busy.value = true
+  try {
+    const n = fin.runReconcile()
+    flashMsg(`一键对账完成：演示轧平 ${n} 笔`)
+  } catch (e) {
+    flashMsg(e instanceof Error ? e.message : '对账失败')
+  } finally {
+    busy.value = false
+  }
+}
+
+// 人工标记弹层（PENDING → 标记一致 RECONCILED / 标记差异 DIFF；二级确认，全审计）
+const showMark = ref(false)
+const markForm = ref({ remark: '' })
+function openMark() {
+  if (!selected.value || !selected.value.writable || selected.value.status !== 'PENDING') return
+  markForm.value = { remark: '' }
+  showMark.value = true
+}
+async function submitMark(kind: 'ok' | 'diff') {
+  if (!selected.value || busy.value) return
+  busy.value = true
+  try {
+    const remark = markForm.value.remark.trim() || undefined
+    if (kind === 'ok') {
+      await fin.markReconciled(selected.value.outboxId, remark)
+      flashMsg('已人工标记「三方一致」：状态置为已对账（全审计留痕）')
+    } else {
+      await fin.markDiff(selected.value.outboxId, remark)
+      flashMsg('已人工标记「存在差异」：请在差异处置中调平（全审计留痕）')
+    }
+    showMark.value = false
+  } catch (e) {
+    flashMsg(e instanceof Error ? e.message : '操作失败')
+  } finally {
+    busy.value = false
+  }
+}
 
 // 人工调平双签弹层
 const showAdjust = ref(false)
-const adjustForm = ref({ reviewer: '', remark: '' })
-const canSubmitAdjust = computed(() => adjustForm.value.reviewer.trim().length > 1 && adjustForm.value.remark.trim().length > 1)
+const SUBJECT_OPTIONS = [
+  { label: '主营业务收入 RF-REVENUE', value: 'RF-REVENUE' },
+  { label: '退款（收入抵减）RF-REFUND', value: 'RF-REFUND' },
+  { label: '预收账款 RF-DEPOSIT', value: 'RF-DEPOSIT' },
+]
+const CHANNEL_OPTIONS = [
+  { label: '现金', value: 'cash' },
+  { label: '刷卡', value: 'card' },
+  { label: '微信支付', value: 'wxpay' },
+  { label: '支付宝', value: 'alipay' },
+  { label: '储值余额', value: 'balance' },
+  { label: '银行转账', value: 'transfer' },
+]
+const adjustForm = ref({ direction: 'IN', amount: '', subject: 'RF-REVENUE', channel: 'cash', reviewer: '', remark: '' })
+const canSubmitAdjust = computed(() => {
+  const amt = parseFloat(adjustForm.value.amount)
+  return adjustForm.value.reviewer.trim().length > 1
+    && adjustForm.value.remark.trim().length > 1
+    && Number.isFinite(amt) && amt > 0
+})
 function openAdjust() {
   if (!selected.value) return
-  adjustForm.value = { reviewer: '', remark: '' }
+  const live = selected.value.writable
+  adjustForm.value = {
+    direction: 'IN',
+    amount: live ? '' : String(selected.value.amount),
+    subject: 'RF-REVENUE',
+    channel: 'cash',
+    reviewer: '',
+    remark: '',
+  }
   showAdjust.value = true
 }
-function submitAdjust() {
-  if (!selected.value || !canSubmitAdjust.value) return
-  fin.adjustOutbox(selected.value.outboxId, `${adjustForm.value.remark}（复核：${adjustForm.value.reviewer}）`)
-  showAdjust.value = false
-  flash.value = '差异已人工调平（仅记调平记录，未反向动账）'
-  setTimeout(() => (flash.value = ''), 3500)
+async function submitAdjust() {
+  if (!selected.value || !canSubmitAdjust.value || busy.value) return
+  busy.value = true
+  try {
+    const { direction, amount, subject, channel, reviewer, remark } = adjustForm.value
+    if (selected.value.writable) {
+      // 真实台账：调 finance-service 补 ADJUST 分录（DIFF → ADJUSTED），金额元转分，全审计
+      await fin.adjustOutbox(
+        selected.value.outboxId,
+        { direction: direction as 'IN' | 'OUT', amountYuan: parseFloat(amount), subject, channel, memo: remark.trim() },
+        reviewer.trim(),
+      )
+    } else {
+      // 演示/离线降级：仅本地置已平，不发起后端写
+      await fin.adjustOutbox(selected.value.outboxId, `${remark.trim()}（复核：${reviewer.trim()}）`)
+    }
+    showAdjust.value = false
+    flashMsg('差异已人工调平（补调平分录并留痕，未反向动业务账）')
+  } catch (e) {
+    flashMsg(e instanceof Error ? e.message : '调平失败')
+  } finally {
+    busy.value = false
+  }
 }
 
 function exportReport() {
@@ -91,7 +194,9 @@ function exportReport() {
   const head = 'Outbox号,业务类型,交易号,金额,渠道,收银,渠道回单,银行到账,状态\n'
   const rows = fin.outbox.map((o) => {
     const t = triad(o)
-    return [o.outboxId, BIZ_LABEL[o.bizType], o.txnNo, o.amount, o.channel, t.cashier, t.channel, t.bank, STATUS_LABEL[o.status]].join(',')
+    const c = t.channel == null ? '回单未接入' : t.channel
+    const b = t.bank == null ? '回单未接入' : t.bank
+    return [o.outboxId, BIZ_LABEL[o.bizType], o.txnNo, o.amount, o.channel, t.cashier, c, b, STATUS_LABEL[o.status]].join(',')
   }).join('\n')
   const blob = new Blob(['\uFEFF' + head + rows], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
@@ -107,6 +212,26 @@ function exportReport() {
     <div class="rc__head">
       <CKpi v-for="k in kpis" :key="k.label" :label="k.label" :value="k.value" :tone="k.tone" :icon="k.icon" />
     </div>
+
+    <CCard v-if="liveMode" class="rc__mirror-note" padding="md">
+      <div class="mirror-line">
+        <CIcon name="finance" :size="16" />
+        <span>
+          当前为 <strong>finance-service 真实对账台账</strong>（共 {{ totalRecords }} 笔，业务事件随收退款/划扣实时落账）。
+          支付渠道 / 银行 <strong>三方回单 B6 接入</strong>，在此之前长短款不自动判定；待对账笔可由财务
+          <strong>人工「标记一致 / 标记差异」</strong>，差异笔经<strong>双签复核后调平</strong>（补调平分录，全审计留痕，不反向动业务账）。
+        </span>
+      </div>
+    </CCard>
+    <CCard v-else-if="demoMode" class="rc__mirror-note rc__mirror-note--demo" padding="md">
+      <div class="mirror-line">
+        <CIcon name="alert" :size="16" />
+        <span>
+          finance-service 暂不可达，当前为 <strong>演示数据（离线降级）</strong>：长短款/冲正与一键轧平均为本地演示，
+          <strong>不会发起任何后端写操作</strong>；服务恢复后自动切换为真实对账台账。
+        </span>
+      </div>
+    </CCard>
 
     <CCard v-if="flash" class="rc__flash" padding="md">
       <div class="flash-line"><CIcon name="check" :size="16" />{{ flash }}</div>
@@ -136,7 +261,10 @@ function exportReport() {
               <span class="ob-row__amount">¥{{ o.amount.toLocaleString('zh-CN') }}</span>
             </div>
             <div class="ob-row__sub">{{ o.txnNo }} · {{ o.channel }} · {{ o.occurredAt }}</div>
-            <div class="triad-mini">
+            <div v-if="o.writable" class="triad-mini">
+              <span class="t live">收银已记账 · 三方回单未接入</span>
+            </div>
+            <div v-else class="triad-mini">
               <span class="t" :class="{ on: o.cashier }">收银</span>
               <span class="arr">→</span>
               <span class="t" :class="{ on: o.channelAck }">渠道</span>
@@ -159,13 +287,13 @@ function exportReport() {
             <CButton variant="secondary" size="sm" :disabled="!canExport" @click="exportReport">
               <CIcon name="export" :size="14" />导出
             </CButton>
-            <CButton variant="primary" size="sm" :disabled="!canReconcile" @click="runAuto">
-              <CIcon name="check-square" :size="14" />对账
+            <CButton v-if="!selected.writable" variant="primary" size="sm" :disabled="!canReconcile || busy" @click="runAuto">
+              <CIcon name="check-square" :size="14" />一键对账（演示）
             </CButton>
           </div>
         </div>
 
-        <!-- 三方金额对比 -->
+        <!-- 三方金额对比：收银已落账；渠道/银行回单 B6 接入，真实台账回单列为空时诚实展示「回单未接入」 -->
         <div class="triad">
           <template v-for="(col, i) in [
             { label: '收银记账', key: 'cashier', icon: 'pos', ack: selected.cashier },
@@ -176,9 +304,9 @@ function exportReport() {
               <div class="triad__label">
                 <CIcon :name="col.icon as 'pos'|'marketing'|'finance'" :size="15" />{{ col.label }}
               </div>
-              <div class="triad__amount">¥{{ triad(selected)[col.key as 'cashier'|'channel'|'bank'].toLocaleString('zh-CN') }}</div>
+              <div class="triad__amount">{{ triadText(triad(selected)[col.key as 'cashier'|'channel'|'bank']) }}</div>
               <div class="triad__ack" :class="col.ack ? 'is-ok' : 'is-miss'">
-                <CIcon :name="col.ack ? 'check' : 'clock'" :size="12" />{{ col.ack ? '已确认' : '未到账' }}
+                <CIcon :name="col.ack ? 'check' : 'clock'" :size="12" />{{ col.ack ? '已确认' : '回单未接入' }}
               </div>
             </div>
             <div v-if="i < 2" class="triad__arrow">
@@ -187,37 +315,64 @@ function exportReport() {
           </template>
         </div>
 
-        <!-- 差异说明 -->
-        <div v-if="selected.status === 'LONG' || selected.status === 'SHORT' || selected.status === 'REVERSED'" class="diff-box" :class="`diff-box--${selected.status.toLowerCase()}`">
+        <!-- 差异说明：真实台账回单未接入，长短款不自动判定；PENDING 走人工标记、DIFF 走双签调平、ADJUSTED 留痕 -->
+        <div v-if="selected.status === 'PENDING' && selected.writable" class="diff-box diff-box--pending">
+          <CIcon name="clock" :size="16" />
+          <div>
+            <div class="diff-box__title">收银已记账，等待人工对账确认</div>
+            <div class="diff-box__hint">支付渠道 / 银行回单 B6 自动接入；在回单到达前，可由财务人工<strong>「标记一致」或「标记差异」</strong>（全审计留痕）。</div>
+          </div>
+        </div>
+        <div v-else-if="selected.status === 'DIFF'" class="diff-box diff-box--diff">
           <CIcon name="alert" :size="16" />
           <div>
-            <div v-if="selected.status === 'LONG'" class="diff-box__title">长款 ¥{{ (triad(selected).bank - selected.amount).toLocaleString('zh-CN') }}：银行实际到账多于收银记录</div>
-            <div v-else-if="selected.status === 'SHORT'" class="diff-box__title">短款 ¥{{ (selected.amount - triad(selected).bank).toLocaleString('zh-CN') }}：渠道/银行到账少于收银金额（疑手续费误扣）</div>
-            <div v-else class="diff-box__title">冲正交易：退款已发起，等待渠道/银行回单</div>
+            <div class="diff-box__title">人工标记「存在差异」，待双签复核调平</div>
+            <div class="diff-box__hint">差异金额以回单核对为准；调平仅<strong>补调平分录并留痕，不反向动业务账</strong>，复核人双人确认。</div>
+          </div>
+        </div>
+        <div v-else-if="selected.status === 'ADJUSTED'" class="diff-box diff-box--adjusted">
+          <CIcon name="shield" :size="16" />
+          <div>
+            <div class="diff-box__title">该笔差异已人工调平（补调平分录，已留痕）</div>
+            <div class="diff-box__hint">调平记录含差异原因与复核人，可在审计日志中追溯；Outbox 状态置为已调平。</div>
+          </div>
+        </div>
+        <div v-else-if="selected.status === 'LONG' || selected.status === 'SHORT' || selected.status === 'REVERSED'" class="diff-box" :class="`diff-box--${selected.status.toLowerCase()}`">
+          <CIcon name="alert" :size="16" />
+          <div>
+            <div v-if="selected.status === 'LONG'" class="diff-box__title">长款 ¥{{ (demoDiffAmount(selected) ?? 0).toLocaleString('zh-CN') }}：银行实际到账多于收银记录（演示）</div>
+            <div v-else-if="selected.status === 'SHORT'" class="diff-box__title">短款 ¥{{ (demoDiffAmount(selected) ?? 0).toLocaleString('zh-CN') }}：渠道/银行到账少于收银金额（演示，疑手续费误扣）</div>
+            <div v-else class="diff-box__title">冲正交易：退款已发起，等待渠道/银行回单（演示）</div>
             <div class="diff-box__hint">差异需人工复核后调平；<strong>调平只记调平记录，不反向修改资金系统数据</strong>。</div>
           </div>
         </div>
         <div v-else-if="selected.status === 'PENDING'" class="diff-box diff-box--pending">
           <CIcon name="clock" :size="16" />
           <div>
-            <div class="diff-box__title">等待银行到账回单（T+1）</div>
+            <div class="diff-box__title">等待银行到账回单（T+1，演示）</div>
             <div class="diff-box__hint">银行回单到达后，「一键对账」将自动轧平。</div>
           </div>
         </div>
         <div v-else class="diff-box diff-box--ok">
           <CIcon name="check" :size="16" />
           <div>
-            <div class="diff-box__title">三方金额一致，账实相符</div>
+            <div class="diff-box__title">{{ selected.writable ? '人工标记三方一致，账实相符' : '三方金额一致，账实相符' }}</div>
             <div class="diff-box__hint">Outbox 以 transaction_id 幂等，该笔已完成对账闭环。</div>
           </div>
         </div>
 
         <div class="det-ops">
-          <CButton variant="secondary" size="sm" :disabled="!canReconcile" @click="runAuto">
-            <CIcon name="check-square" :size="14" />重新对账
+          <CButton v-if="!selected.writable" variant="secondary" size="sm" :disabled="!canReconcile || busy" @click="runAuto">
+            <CIcon name="check-square" :size="14" />重新对账（演示轧平）
           </CButton>
-          <CButton v-if="selected.status !== 'MATCHED'" variant="primary" size="sm" :disabled="!canApprove" @click="openAdjust">
+          <CButton v-if="selected.writable && selected.status === 'PENDING'" variant="primary" size="sm" :disabled="!canReconcile || busy" @click="openMark">
+            <CIcon name="check-square" :size="14" />标记一致 / 差异
+          </CButton>
+          <CButton v-if="selected.writable && selected.status === 'DIFF'" variant="primary" size="sm" :disabled="!canApprove || busy" @click="openAdjust">
             <CIcon name="shield" :size="14" />人工调平（双签）
+          </CButton>
+          <CButton v-if="!selected.writable && selected.status !== 'MATCHED'" variant="primary" size="sm" :disabled="!canApprove || busy" @click="openAdjust">
+            <CIcon name="shield" :size="14" />人工调平（双签·演示）
           </CButton>
         </div>
 
@@ -235,20 +390,61 @@ function exportReport() {
       </CCard>
     </div>
 
-    <!-- 人工调平双签弹层 -->
-    <div v-if="showAdjust" class="modal-mask" @click.self="showAdjust = false">
-      <CCard class="modal" title="人工调平（双签复核）" padding="lg">
+    <!-- 人工调平双签弹层：真实台账需补调平分录四要素（方向/金额/科目/渠道）；演示态仅备注+复核人 -->
+    <div v-if="showAdjust && selected" class="modal-mask" @click.self="showAdjust = false">
+      <CCard class="modal" :class="{ 'modal--wide': selected.writable }" title="人工调平（双签复核）" padding="lg">
         <div class="sign-box">
           <div class="sign-box__title"><CIcon name="shield" :size="16" /> 红线提示</div>
-          <div class="sign-box__text">调平仅记录复核结论与差异原因，<strong>不会反向修改支付/银行系统的任何金额</strong>。重大差异需财务双人复核。</div>
+          <div class="sign-box__text">
+            调平仅在财务账补一笔调平分录，<strong>不会反向修改支付/银行系统的任何金额</strong>；
+            {{ selected.writable ? '分录金额（分）、科目、渠道随调平请求落账并全审计。' : '当前为演示数据，调平仅本地置平，不发起后端写。' }}
+          </div>
+        </div>
+        <div v-if="selected.writable" class="form-grid">
+          <div>
+            <label class="form__label">调平方向</label>
+            <CSelect v-model="adjustForm.direction" width="100%" :options="[{ label: '入账 IN（补收钱方向）', value: 'IN' }, { label: '出账 OUT（补退款/扣款方向）', value: 'OUT' }]" />
+          </div>
+          <div>
+            <label class="form__label">调平金额（元）</label>
+            <CInput v-model="adjustForm.amount" type="number" placeholder="按回单核对的差异金额，单位元" />
+          </div>
+          <div>
+            <label class="form__label">对方科目</label>
+            <CSelect v-model="adjustForm.subject" width="100%" :options="SUBJECT_OPTIONS" />
+          </div>
+          <div>
+            <label class="form__label">资金渠道</label>
+            <CSelect v-model="adjustForm.channel" width="100%" :options="CHANNEL_OPTIONS" />
+          </div>
         </div>
         <label class="form__label">差异原因 / 调平说明</label>
         <CTextarea v-model="adjustForm.remark" :rows="3" placeholder="如：手续费误扣，计入财务费用；长款计入营业外收入" />
         <label class="form__label">复核人姓名（二次确认）</label>
         <CInput v-model="adjustForm.reviewer" placeholder="请输入复核人姓名，与操作人不同" />
         <template #footer>
-          <CButton variant="ghost" @click="showAdjust = false">取消</CButton>
-          <CButton variant="primary" :disabled="!canSubmitAdjust || !canApprove" @click="submitAdjust">确认调平</CButton>
+          <CButton variant="ghost" :disabled="busy" @click="showAdjust = false">取消</CButton>
+          <CButton variant="primary" :disabled="!canSubmitAdjust || !canApprove || busy" @click="submitAdjust">确认调平</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- 人工标记弹层（真实台账 PENDING：标记一致 RECONCILED / 标记差异 DIFF，二级确认） -->
+    <div v-if="showMark && selected" class="modal-mask" @click.self="showMark = false">
+      <CCard class="modal" title="人工对账标记（二次确认）" padding="lg">
+        <div class="sign-box">
+          <div class="sign-box__title" style="color: var(--c-primary, #5e72e4);"><CIcon name="check-square" :size="16" /> 标记留痕</div>
+          <div class="sign-box__text">
+            三方回单自动对账 B6 接入；本次人工结论将<strong>直接写入对账台账并全审计留痕</strong>：
+            「标记一致」置为已对账；「标记差异」转入差异处置，待双签调平。
+          </div>
+        </div>
+        <label class="form__label">对账依据 / 备注（可选）</label>
+        <CTextarea v-model="markForm.remark" :rows="3" placeholder="如：已与微信商户后台账单逐笔核对一致；银行流水见 9/5 对账单" />
+        <template #footer>
+          <CButton variant="ghost" :disabled="busy" @click="showMark = false">取消</CButton>
+          <CButton variant="secondary" :disabled="!canReconcile || busy" @click="submitMark('diff')">标记差异</CButton>
+          <CButton variant="primary" :disabled="!canReconcile || busy" @click="submitMark('ok')">标记一致</CButton>
         </template>
       </CCard>
     </div>
@@ -263,6 +459,14 @@ function exportReport() {
 
 .rc__flash { background: var(--c-success-soft, rgba(22,163,110,.1)); border: 1px solid var(--c-success-fg); }
 .flash-line { display: flex; align-items: center; gap: var(--s-sm); color: var(--c-success-fg); font-size: var(--t-sm); font-weight: 600; }
+
+.rc__mirror-note { background: var(--c-brand-soft, rgba(94,114,228,.08)); border: 1px solid var(--c-primary, #5e72e4); }
+.mirror-line { display: flex; align-items: flex-start; gap: var(--s-sm); color: var(--c-text-2); font-size: var(--t-xs); line-height: 1.7; }
+.mirror-line .ci { flex-shrink: 0; margin-top: 2px; color: var(--c-primary, #5e72e4); }
+.triad-mirror { display: flex; flex-direction: column; gap: 6px; padding: var(--s-md) var(--s-lg); background: rgba(245,158,11,.08); border-radius: var(--r-md); font-size: var(--t-xs); color: var(--c-warning-fg, #f59e0b); }
+.triad-mirror__title { font-size: var(--t-md); font-weight: 700; color: var(--c-text); font-variant-numeric: tabular-nums; }
+.triad-mirror__hint { color: var(--c-text-3); line-height: 1.7; }
+.triad-mini .t.mirror { background: var(--c-brand-soft, rgba(94,114,228,.12)); color: var(--c-primary, #5e72e4); }
 
 .rc__body { display: grid; grid-template-columns: 380px 1fr; gap: var(--s-lg); align-items: start; }
 .rc__list { min-width: 0; }
@@ -348,4 +552,17 @@ function exportReport() {
   .ident__grid { grid-template-columns: 1fr; }
   .ob-list { max-height: 360px; }
 }
+
+/* B3：真实台账 / 离线降级两态 + DIFF/ADJUSTED 状态 + 双签弹层栅格（仅追加） */
+.rc__mirror-note--demo { background: rgba(245,158,11,.08); border-color: var(--c-warning-fg, #f59e0b); }
+.rc__mirror-note--demo .mirror-line { color: var(--c-warning-fg, #f59e0b); }
+.triad-mini .t.live { background: var(--c-brand-soft, rgba(94,114,228,.12)); color: var(--c-primary, #5e72e4); }
+.ob-row--matched { border-left-color: transparent; }
+.ob-row--diff { border-left-color: var(--c-danger-fg); }
+.ob-row--adjusted { border-left-color: var(--c-primary); }
+.diff-box--diff { background: rgba(229,57,53,.1); color: var(--c-danger-fg); }
+.diff-box--adjusted { background: var(--c-brand-soft, rgba(94,114,228,.1)); color: var(--c-primary, #5e72e4); }
+.modal--wide { width: 600px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-md); }
+@media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } }
 </style>

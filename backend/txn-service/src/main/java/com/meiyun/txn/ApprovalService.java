@@ -1,5 +1,6 @@
 package com.meiyun.txn;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.LoginUser;
 import com.meiyun.txn.audit.AuditRecorder;
@@ -13,7 +14,10 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 统一审批中心服务（T3-01）：审批待办提交 / 同意 / 驳回 / 转交 / 加签，全链路留痕。
@@ -23,22 +27,35 @@ import java.util.List;
  * REVIEW 同意 → txn.approve（PENDING_REVIEW→PENDING_FINANCE）；
  * FINANCE 同意 → txn.confirmRefund（PENDING_FINANCE→REFUNDED，终审）；
  * 任一阶段驳回 → txn.reject（→REJECTED，原因透传）。
- * 其余六类业务（TRANSFER/LEAVE/PROCUREMENT/PRICE_CHANGE/LOSS_REPORT/REQUISITION）
- * 后端暂无落地业务单，支持待办存储与展示，回写在对应域上线后接入（M5+）。
+ * 耗材领用（REQUISITION）/ 报损（LOSS_REPORT）为 B5 双签闭环业务（口径定案并入审批中心）：
+ * 提交时明细 SKU 行存 payload（TEXT JSON），终审（FINANCE）通过同事务回调库存域扣库
+ * （{@link StoreConsumableClient}，远程失败整事务回滚）并由 {@link FinanceEventPublisher}
+ * 入 outbox 落 TK-MATERIAL/TK-LOSS 成本；REVIEW 一审仅推进财务，无下游动作。
+ * 其余四类（TRANSFER/LEAVE/PROCUREMENT/PRICE_CHANGE）后端暂无落地业务单，回写在对应域上线后接入（M5+）。
  */
 @Service
 public class ApprovalService {
 
     private static final DateTimeFormatter NO_DATE = DateTimeFormatter.ofPattern("yyyyMMdd");
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ApprovalTodoRepository repo;
     private final TxnService txnService;
     private final AuditRecorder audit;
+    private final StoreConsumableClient storeConsumableClient;
+    private final FinanceEventPublisher financeEventPublisher;
+    private final ApptRefNameResolver nameResolver;
 
-    public ApprovalService(ApprovalTodoRepository repo, @Lazy TxnService txnService, AuditRecorder audit) {
+    public ApprovalService(ApprovalTodoRepository repo, @Lazy TxnService txnService, AuditRecorder audit,
+                           StoreConsumableClient storeConsumableClient,
+                           FinanceEventPublisher financeEventPublisher,
+                           ApptRefNameResolver nameResolver) {
         this.repo = repo;
         this.txnService = txnService;
         this.audit = audit;
+        this.storeConsumableClient = storeConsumableClient;
+        this.financeEventPublisher = financeEventPublisher;
+        this.nameResolver = nameResolver;
     }
 
     // ---------------- 提交待办（退款/退卡创建同事务联动） ----------------
@@ -80,6 +97,175 @@ public class ApprovalService {
         return t;
     }
 
+    /**
+     * 耗材领用提交（B5）：领用单金额以库存移动平均成本出库时定格，提交端无金额，
+     * 固定双签（店长一审 REVIEW → 财务终审 FINANCE），终审通过回调 store 扣 USE 库存并落 TK-MATERIAL 成本。
+     */
+    @Transactional
+    public ApprovalTodo submitRequisition(RequisitionCmd cmd) {
+        List<ConsumableLine> lines = validLines(cmd.lines(), "领用");
+        guardWriteStore(cmd.storeCode());
+        String purpose = nz(cmd.purpose(), "耗材领用");
+        return submitConsumable("REQUISITION", cmd.storeCode(), purpose, "耗材领用", lines, null);
+    }
+
+    /**
+     * 耗材报损提交（B5）：损失额（分，前端元换算）决定签署层级——&lt;¥5000 财务单签直达，
+     * ≥¥5000 店长一审 + 财务终审；终审通过回调 store 扣 SCRAP 库存并落 TK-LOSS 成本。
+     */
+    @Transactional
+    public ApprovalTodo submitLossReport(LossReportCmd cmd) {
+        if (cmd.amount() == null || cmd.amount() <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "报损必须填写损失金额（分，且大于 0）");
+        }
+        List<ConsumableLine> lines = validLines(cmd.lines(), "报损");
+        guardWriteStore(cmd.storeCode());
+        String reason = nz(cmd.reason(), "耗材报损");
+        return submitConsumable("LOSS_REPORT", cmd.storeCode(), reason, "耗材报损", lines, cmd.amount());
+    }
+
+    /** 领用/报损统一建单：tier 报损按金额（tierFor）、领用固定 L2；payload 存 SKU 行 JSON（终审扣库依据）。 */
+    private ApprovalTodo submitConsumable(String bizType, String storeCode, String reason,
+                                          String label, List<ConsumableLine> lines, Long amount) {
+        String tier = amount == null ? "L2" : TxnService.tierFor(amount);
+        String todoNo = nextNo();
+        ApprovalTodo t = new ApprovalTodo();
+        t.setTodoNo(todoNo);
+        t.setBizType(bizType);
+        t.setBizNo(todoNo);
+        StringBuilder detail = new StringBuilder();
+        for (int i = 0; i < lines.size(); i++) {
+            if (i > 0) detail.append("、");
+            detail.append(nz(lines.get(i).name(), lines.get(i).skuCode())).append("×").append(lines.get(i).qty());
+        }
+        t.setTitle(label + " · " + reason);
+        t.setSummary(truncate(detail + (amount != null ? "（损失 ¥" + (amount / 100.0) + "）" : ""), 255));
+        t.setAmount(amount);
+        t.setStoreCode(storeCode);
+        t.setStoreName(storeName(storeCode));
+        t.setApplicant(currentActor());
+        t.setApplicantRole("OPERATOR");
+        t.setSignTier(tier);
+        t.setStatus("PENDING");
+        t.setStage("L1".equals(tier) ? "FINANCE" : "REVIEW");
+        t.setPriority(amount != null && amount >= 2_000_000L ? "HIGH" : "MEDIUM");
+        OffsetDateTime now = OffsetDateTime.now();
+        t.setSubmittedAt(now);
+        t.setCoSigners("");
+        t.setHistory(historyJson(new HistoryEntry(currentActor(), "SUBMIT", "提交审批", now)));
+        t.setPayload(payloadJson(lines));
+        repo.save(t);
+        audit.record("APPROVAL", todoNo, currentActor(), "SUBMIT",
+                String.format("{\"bizType\":\"%s\",\"bizNo\":\"%s\",\"tier\":\"%s\",\"stage\":\"%s\",\"lines\":%d,\"amount\":%s}",
+                        bizType, todoNo, tier, t.getStage(), lines.size(), amount == null ? "null" : amount.toString()));
+        return t;
+    }
+
+    /** 明细行校验：非空、逐行 skuCode 必填、qty 为正整数；重复 SKU 报 400（扣库逐行独立，防重复行）。 */
+    private static List<ConsumableLine> validLines(List<ConsumableLine> lines, String label) {
+        if (lines == null || lines.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + "明细不能为空（至少一行耗材）");
+        }
+        List<ConsumableLine> out = new ArrayList<>();
+        List<String> seen = new ArrayList<>();
+        for (ConsumableLine l : lines) {
+            if (l == null || l.skuCode() == null || l.skuCode().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, label + "明细每行必须选择耗材（skuCode 必填）");
+            }
+            if (l.qty() <= 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "耗材「" + nz(l.name(), l.skuCode()) + "」数量必须为正整数");
+            }
+            if (seen.contains(l.skuCode())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "耗材「" + nz(l.name(), l.skuCode()) + "」重复出现，请合并为同一行");
+            }
+            seen.add(l.skuCode());
+            out.add(l);
+        }
+        return out;
+    }
+
+    /** 写闸门：登录人须对目标门店有数据域权限（门店角色仅本店；越权统一 404 不泄露门店存在性）。 */
+    private static void guardWriteStore(String storeCode) {
+        if (storeCode == null || storeCode.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "必须指定所属门店（storeCode 必填）");
+        }
+        if (!DataScope.canReadStore(storeCode)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权操作该门店");
+        }
+    }
+
+    /** 门店名回填（name-map 失败降级空名，不阻断提交）。 */
+    private String storeName(String storeCode) {
+        try {
+            return nameResolver.storeNames(List.of(storeCode)).get(storeCode);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 明细行序列化 payload（[{skuCode,name,qty,remark}]）；失败属编程错误快速失败回滚。 */
+    private static String payloadJson(List<ConsumableLine> lines) {
+        try {
+            List<Map<String, Object>> arr = new ArrayList<>();
+            for (ConsumableLine l : lines) {
+                Map<String, Object> m = new LinkedHashMap<>();
+                m.put("skuCode", l.skuCode());
+                m.put("name", l.name());
+                m.put("qty", l.qty());
+                m.put("remark", l.remark());
+                arr.add(m);
+            }
+            return MAPPER.writeValueAsString(arr);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "领用明细内容序列化失败");
+        }
+    }
+
+    /**
+     * 终审扣库（仅 FINANCE 终审、仅领用/报损）：解析 payload 明细 → 系统身份回调 store 扣库
+     * （bizRef=待办号幂等；远程失败抛异常整事务回滚，待办不置 APPROVED）→ 成本事件入 outbox。
+     * 幂等重放由 store 侧（同 bizRef+SKU 不双扣、回返原行定格金额）与 finance idem_key 双保险。
+     */
+    private void deductOnFinalApprove(ApprovalTodo t, String actor) {
+        boolean scrap = "LOSS_REPORT".equals(t.getBizType());
+        List<StoreConsumableClient.DeductLine> lines;
+        try {
+            List<Map<String, Object>> raw = MAPPER.readValue(
+                    t.getPayload() == null ? "[]" : t.getPayload(),
+                    MAPPER.getTypeFactory().constructCollectionType(List.class, Map.class));
+            lines = new ArrayList<>();
+            for (Map<String, Object> m : raw) {
+                Object sku = m.get("skuCode");
+                Object qty = m.get("qty");
+                if (sku == null || String.valueOf(sku).isBlank()) continue;
+                int q = qty instanceof Number n ? n.intValue() : 0;
+                lines.add(new StoreConsumableClient.DeductLine(String.valueOf(sku), q,
+                        m.get("remark") == null ? null : String.valueOf(m.get("remark"))));
+            }
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "审批明细内容缺失或已损坏，无法出库，请联系管理员核对该待办明细");
+        }
+        if (lines.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "审批明细内容缺失或已损坏，无法出库，请联系管理员核对该待办明细");
+        }
+        StoreConsumableClient.DeductResult result = storeConsumableClient.deduct(
+                t.getTodoNo(), t.getStoreCode(), scrap ? "SCRAP" : "USE", actor, lines);
+        financeEventPublisher.emitConsumableCost(
+                t.getTodoNo(), t.getStoreCode(), scrap ? "SCRAP" : "USE", result.totalAmountFen());
+    }
+
+    private static String nz(String s, String fallback) {
+        return (s == null || s.isBlank()) ? fallback : s;
+    }
+
+    private static String truncate(String s, int max) {
+        if (s == null) return null;
+        return s.length() <= max ? s : s.substring(0, max);
+    }
+
     // ---------------- 审批动作 ----------------
 
     /**
@@ -106,6 +292,10 @@ public class ApprovalService {
             } else {
                 txnService.approve(t.getBizNo(), writeback);
             }
+        } else if (("REQUISITION".equals(t.getBizType()) || "LOSS_REPORT".equals(t.getBizType()))
+                && finalStage) {
+            // 领用/报损：REVIEW 一审仅推进财务无下游；FINANCE 终审通过回调库存域扣库 + 成本入 outbox（失败抛异常回滚）
+            deductOnFinalApprove(t, actor);
         }
 
         if (finalStage) {
@@ -333,5 +523,18 @@ public class ApprovalService {
 
     /** 加签落参。 */
     public record AddSignerCmd(String actor, String who) {
+    }
+
+    /** 领用/报损明细行（前端选 SKU；name 仅展示留痕，扣库以 skuCode 为准）。 */
+    public record ConsumableLine(String skuCode, String name, int qty, String remark) {
+    }
+
+    /** 耗材领用提交落参（操作人取 JWT 登录人，actor 忽略；无金额，成本出库时定格）。 */
+    public record RequisitionCmd(String actor, String storeCode, String purpose, List<ConsumableLine> lines) {
+    }
+
+    /** 耗材报损提交落参（amount=损失金额分，前端元换算；决定签署层级）。 */
+    public record LossReportCmd(String actor, String storeCode, String reason, Long amount,
+                                List<ConsumableLine> lines) {
     }
 }

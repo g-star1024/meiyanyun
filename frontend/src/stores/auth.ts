@@ -27,6 +27,7 @@ const ALL_VIEW = [
   'schedule:view', 'approval:view',
   'workorder:view', 'daily:view',
   'requisition:view', 'wastage:view', 'room:view', 'equipment:view',
+  'inventory:consumable:view',
   'performance:view', 'weekly:view', 'pricelist:view', 'catalog:view',
   'writeoffdesk:view', 'checkin:view', 'inspection:view',
   'acquisition:view', 'reactivate:view', 'exception:view',
@@ -76,6 +77,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'report:export', 'schedule:edit', 'schedule:approve',
     'workorder:edit', 'workorder:create', 'workorder:close', 'daily:edit', 'daily:submit',
     'requisition:create', 'requisition:edit', 'requisition:sign', 'wastage:create', 'wastage:edit', 'wastage:sign',
+    'inventory:consumable:edit', // B5 耗材建档/入库（领用/报损走 requisition/wastage 双签）
     'room:edit', 'equipment:edit', 'performance:edit', 'weekly:submit',
     'pricelist:edit', 'catalog:edit', 'checkin:create', 'inspection:create', 'inspection:edit',
     'acquisition:edit', 'reactivate:edit', 'exception:edit', 'm2settings:edit',
@@ -86,7 +88,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     // M6 财务操作（资金链隔离：仅对账标记/调平/结算审批/导出，绝不碰资金池）
     'finance:reconcile', 'finance:reconcile:approve',
     'finance:settlement:approve', 'finance:commission:approve',
-    'finance:budget:edit', 'finance:settings:edit', 'finance:abnormal:dispose', 'finance:export',
+    'finance:cost:edit', 'finance:budget:edit', 'finance:settings:edit', 'finance:abnormal:dispose', 'finance:export',
     // M5 营销操作（活动已有 marketing:edit；券/推送/渠道/核销/落地页/海报/日历）
     'coupon:create', 'coupon:edit',
     'push:create', 'push:send',
@@ -122,11 +124,13 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'complaint:create', 'complaint:approve', 'transfer:approve', 'tenant:edit', 'org:edit', 'rbac:edit',
     'compliance:edit', 'target:edit', 'health:edit', 'recall:edit', 'recall:create',
     'transfer:edit', 'transfer:create', 'writeoff:edit', 'writeoff:create', 'queue:edit', 'cashier:sign',
+    'customer:card:recharge', // B4 会员卡充值（店长可充值/查储值流水）
     'customer:merge', 'settings:edit',
     'consult:review', // 门店主管可二次审核/改单/作废审核中方案
     'report:export', 'schedule:edit', 'schedule:approve',
     'workorder:edit', 'workorder:create', 'workorder:close', 'daily:edit', 'daily:submit',
     'requisition:create', 'requisition:edit', 'requisition:sign', 'wastage:create', 'wastage:edit', 'wastage:sign',
+    'inventory:consumable:edit', // B5 耗材建档/入库（领用/报损走 requisition/wastage 双签）
     'room:edit', 'equipment:edit', 'performance:edit', 'weekly:submit',
     'pricelist:edit', 'catalog:edit', 'checkin:create', 'inspection:create', 'inspection:edit',
     'acquisition:edit', 'reactivate:edit', 'exception:edit', 'm2settings:edit',
@@ -178,6 +182,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'queue:view', 'queue:edit',
     'appointment:view', 'appointment:create', 'appointment:edit',
     'customer:view', 'customer:create',
+    'customer:card:recharge', // B4 会员卡充值（收银台/卡 360，现金/银行卡/微信/支付宝）
     'cashier:view', 'cashier:create', 'cashier:sign',
     'handover:view', 'handover:create',
     'consult:view', 'emr:view', 'course:view', 'followup:view', 'complaint:view', 'complaint:create',
@@ -213,7 +218,9 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'finance:reconcile', 'finance:reconcile:approve',
     'finance:settlement:approve', 'finance:settlement:edit',
     'finance:invoice:edit', 'finance:invoice:approve', 'finance:commission:edit', 'finance:commission:approve',
+    'finance:cost:edit', // B5 折旧（DEPRECIATION）/人工（LABOR）成本录入；耗材/报损由双签自动落账
     'finance:budget:edit', 'finance:settings:edit', 'finance:abnormal:dispose', 'finance:export',
+    'inventory:consumable:view', // B5 财务成本核对需查耗材台账（只读）
   ],
 }
 

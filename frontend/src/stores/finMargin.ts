@@ -1,7 +1,8 @@
 /* ============================================================
  * M6-07 毛利报表 store（只读镜像）
- * 毛利 = 已双签划扣确认收入 − 营业成本（TK），按项目/门店拆分
- * 汇总与 useFinanceCoreStore 对齐
+ * 毛利 = 已双签划扣确认收入 − 营业成本（耗材+折旧+报损+人工）
+ * 汇总口径锚定 useFinanceCoreStore（/finance/ledger + /finance/cost）
+ * 项目/大类明细后端暂无拆分端点，离线演示数据降级（demo 标记）
  * ============================================================ */
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
@@ -18,10 +19,12 @@ export interface MarginRow {
   orderCount: number
 }
 
+const r2 = (v: number) => Math.round(v * 100) / 100
+
 let _id = 0
 const nextId = (p: string) => `${p}-${++_id}`
 
-function seed(): MarginRow[] {
+function mockRows(): MarginRow[] {
   const stores = ['旗舰店', '万象城店', '科技园店']
   const data: Array<[string, string, number, number, number, number]> = [
     ['光电美容', '皮秒祛斑', 48000, 4200, 8600, 32],
@@ -50,12 +53,32 @@ export const useFinMarginStore = defineStore('finMargin', () => {
   const rows = ref<MarginRow[]>([])
   const filterStore = ref<string>('ALL')
   const filterCategory = ref<string>('ALL')
-  const _seeded = ref(false)
+  const loaded = ref(false)
+  const demo = ref(false)
+
+  let seeding: Promise<void> | null = null
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (loaded.value && !force) return Promise.resolve()
+    seeding = (async () => {
+      try {
+        // 后端暂无项目级收入/成本拆分端点：明细行离线演示降级；KPI 汇总锚 financeCore 真实口径
+        rows.value = mockRows()
+        demo.value = true
+        loaded.value = true
+      } catch (e) {
+        console.error('[finMargin] 毛利明细加载失败，回落离线演示', e)
+        if (rows.value.length === 0) rows.value = mockRows()
+        demo.value = true
+        loaded.value = true
+      }
+    })()
+    return seeding
+  }
+  void seed()
 
   function init() {
-    if (_seeded.value) return
-    rows.value = seed()
-    _seeded.value = true
+    return seed()
   }
 
   const stores = computed(() => Array.from(new Set(rows.value.map((r) => r.store))))
@@ -68,17 +91,19 @@ export const useFinMarginStore = defineStore('finMargin', () => {
     ),
   )
 
-  const totalRevenue = computed(() => filtered.value.reduce((s, r) => s + r.revenue, 0))
-  const totalMaterial = computed(() => filtered.value.reduce((s, r) => s + r.materialCost, 0))
-  const totalLabor = computed(() => filtered.value.reduce((s, r) => s + r.laborCost, 0))
-  const totalCost = computed(() => totalMaterial.value + totalLabor.value)
-  const totalGross = computed(() => totalRevenue.value - totalCost.value)
-  const grossRate = computed(() => totalRevenue.value ? Math.round((totalGross.value / totalRevenue.value) * 1000) / 10 : 0)
+  // KPI 汇总：锚定 financeCore 真实口径（确认收入=已双签划扣；成本=耗材+折旧+报损+人工，来自 /finance/cost）
+  const totalRevenue = computed(() => r2(fin.writeoffConfirmed))
+  const totalMaterial = computed(() => r2(fin.materialCost))
+  const totalLabor = computed(() => r2(fin.laborCost))
+  const totalCost = computed(() => r2(fin.totalCost))
+  const totalGross = computed(() => r2(fin.grossProfit))
+  const grossRate = computed(() => fin.grossRate)
 
-  // 核心镜像口径（含折旧+报损的完整营业成本）
+  // 核心镜像口径（与上方 KPI 同源，保留供视图「镜像口径」副标题展示）
   const mirrorGross = computed(() => fin.grossProfit)
   const mirrorRate = computed(() => fin.grossRate)
 
+  // 大类图表/明细行来自离线演示数据（后端无项目级拆分端点），仅作结构演示
   const byCategory = computed(() => {
     const map = new Map<string, { category: string; revenue: number; cost: number; gross: number }>()
     for (const r of filtered.value) {
@@ -96,6 +121,7 @@ export const useFinMarginStore = defineStore('finMargin', () => {
     rows, filtered, stores, categories, byCategory,
     filterStore, filterCategory,
     totalRevenue, totalMaterial, totalLabor, totalCost, totalGross, grossRate,
-    mirrorGross, mirrorRate, init,
+    mirrorGross, mirrorRate,
+    seed, init, loaded, demo,
   }
 })

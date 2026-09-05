@@ -27,6 +27,34 @@ public class GlobalExceptionHandler {
                 .body(Map.of("code", "BAD_REQUEST", "message", ex.getMessage()));
     }
 
+    /** 储值卡台账：卡/流水不存在 → 404（与客户不存在同口径，越权统一不泄露）。 */
+    @ExceptionHandler(CardLedgerService.NotFound.class)
+    public ResponseEntity<Map<String, Object>> cardNotFound(CardLedgerService.NotFound ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("code", "NOT_FOUND", "message", ex.getMessage()));
+    }
+
+    /** 储值卡台账：参数/卡状态/金额非法 → 400 中文。 */
+    @ExceptionHandler(CardLedgerService.BadReq.class)
+    public ResponseEntity<Map<String, Object>> cardBadReq(CardLedgerService.BadReq ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("code", "BAD_REQUEST", "message", ex.getMessage()));
+    }
+
+    /** 储值卡台账：单号重放/重复退卡等冲突 → 409（幂等提交方据此识别已受理）。 */
+    @ExceptionHandler(CardLedgerService.Conflict.class)
+    public ResponseEntity<Map<String, Object>> cardConflict(CardLedgerService.Conflict ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("code", "CONFLICT", "message", ex.getMessage()));
+    }
+
+    /** 储值卡台账：余额不足等业务不可处理 → 422 中文（区别于参数格式错误 400）。 */
+    @ExceptionHandler(CardLedgerService.Unprocessable.class)
+    public ResponseEntity<Map<String, Object>> cardUnprocessable(CardLedgerService.Unprocessable ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("code", "UNPROCESSABLE", "message", ex.getMessage()));
+    }
+
     /** 业务参数校验失败（字典必填/唯一冲突等）——统一 400 + 中文原因，不裸 500 */
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<Map<String, Object>> illegalArg(IllegalArgumentException ex) {

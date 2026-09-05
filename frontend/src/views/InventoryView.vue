@@ -62,20 +62,40 @@ function openOp(type: 'IN' | 'OUT' | 'LOSS') {
 }
 
 const opTitle = computed(() => ({ IN: '入库', OUT: '出库', LOSS: '报损' }[opType.value]))
-const canEdit = computed(() => auth.can('inventory:edit'))
+// 权限与后端一致：入库/建档走 inventory:consumable:edit；领用出库走 requisition:edit；报损走 wastage:edit
+const canStockIn = computed(() => auth.can('inventory:consumable:edit'))
+const canStockOut = computed(() => auth.can('requisition:edit'))
+const canLoss = computed(() => auth.can('wastage:edit'))
+const canEdit = computed(() => canStockIn.value || canStockOut.value || canLoss.value)
 
-function doOp() {
+function errMsg(e: any) {
+  return e?.response?.data?.message || e?.message || '网络异常'
+}
+
+async function doOp() {
   if (!inv.selected) return
   const qty = Number(opQty.value)
   if (!qty || qty <= 0) return
-  if (opType.value === 'IN') {
-    inv.stockIn(inv.selected.id, qty, Number(opCost.value) || inv.selected.avgCost, opRemark.value)
-  } else if (opType.value === 'OUT') {
-    inv.stockOut(inv.selected.id, qty, opRemark.value)
-  } else {
-    inv.reportLoss(inv.selected.id, qty, opRemark.value || '损耗报损')
+  const skuId = inv.selected.id
+  const name = inv.selected.name
+  try {
+    if (opType.value === 'IN') {
+      const ok = await inv.stockIn(skuId, qty, Number(opCost.value) || inv.selected.avgCost, opRemark.value)
+      if (!ok) { toast.warning('无入库权限或数量无效'); return }
+      toast.success(`已入库「${name}」×${qty}，台账已刷新`)
+    } else if (opType.value === 'OUT') {
+      const ok = await inv.stockOut(skuId, qty, opRemark.value)
+      if (!ok) { toast.warning('无领用申请权限或数量超过现有库存'); return }
+      toast.success(`「${name}」领用申请已提交审批中心，双签通过后扣减库存`)
+    } else {
+      const ok = await inv.reportLoss(skuId, qty, opRemark.value || '损耗报损')
+      if (!ok) { toast.warning('无报损权限或数量超过现有库存'); return }
+      toast.success(`「${name}」报损单已提交审批中心，终审通过后扣减库存`)
+    }
+    opOpen.value = false
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
   }
-  opOpen.value = false
 }
 
 function txnTypePill(type: string) {
@@ -106,17 +126,20 @@ function openCreate() {
   }
   createOpen.value = true
 }
-function doCreate() {
+async function doCreate() {
   const f = createForm.value
   if (!f.name.trim() || !f.skuCode.trim()) return
-  const ok = inv.addSku({
-    name: f.name.trim(), skuCode: f.skuCode.trim(), category: f.category,
-    spec: f.spec, unit: f.unit || '个', stock: Number(f.stock) || 0, safetyStock: Number(f.safetyStock) || 0,
-    avgCost: Number(f.avgCost) || 0, supplier: f.supplier || undefined, location: f.location || undefined,
-  })
-  if (ok) {
+  try {
+    const ok = await inv.addSku({
+      name: f.name.trim(), skuCode: f.skuCode.trim(), category: f.category,
+      spec: f.spec, unit: f.unit || '个', stock: Number(f.stock) || 0, safetyStock: Number(f.safetyStock) || 0,
+      avgCost: Number(f.avgCost) || 0, supplier: f.supplier || undefined, location: f.location || undefined,
+    })
+    if (!ok) { toast.warning('无建档权限（inventory:consumable:edit）'); return }
     createOpen.value = false
-    toast.success(`已创建库存项「${f.name}」`)
+    toast.success(`已创建库存项「${f.name}」，台账已刷新`)
+  } catch (e) {
+    toast.error('创建失败：' + errMsg(e))
   }
 }
 </script>
@@ -141,7 +164,7 @@ function doCreate() {
                     @click="inv.filterCategory = c.value as any">{{ c.label }}</button>
           </div>
           <CInput v-model="inv.keyword" placeholder="搜索名称/编码/规格" :error="false" class="iv__search" />
-          <CButton variant="primary" size="sm" v-perm.disable="'inventory:edit'" @click="openCreate">
+          <CButton variant="primary" size="sm" v-perm.disable="'inventory:consumable:edit'" @click="openCreate">
             <CIcon name="plus" :size="14" />新建 SKU
           </CButton>
         </div>
@@ -212,12 +235,12 @@ function doCreate() {
         </div>
 
         <div v-if="canEdit" class="det__ops">
-          <CButton variant="primary" size="sm" @click="openOp('IN')"><CIcon name="upload" :size="14" /> 入库</CButton>
-          <CButton variant="secondary" size="sm" :disabled="inv.selected.stock === 0" @click="openOp('OUT')"><CIcon name="export" :size="14" /> 出库</CButton>
-          <CButton variant="danger" size="sm" :disabled="inv.selected.stock === 0" @click="openOp('LOSS')"><CIcon name="alert" :size="14" /> 报损</CButton>
+          <CButton v-if="canStockIn" variant="primary" size="sm" @click="openOp('IN')"><CIcon name="upload" :size="14" /> 入库</CButton>
+          <CButton v-if="canStockOut" variant="secondary" size="sm" :disabled="inv.selected.stock === 0" @click="openOp('OUT')"><CIcon name="export" :size="14" /> 出库</CButton>
+          <CButton v-if="canLoss" variant="danger" size="sm" :disabled="inv.selected.stock === 0" @click="openOp('LOSS')"><CIcon name="alert" :size="14" /> 报损</CButton>
         </div>
         <div v-else class="det__readonly">
-          <CStatusPill status="disabled">只读（无 inventory:edit 权限）</CStatusPill>
+          <CStatusPill status="disabled">只读（无库存操作权限）</CStatusPill>
         </div>
 
         <div class="det__flow-h">
@@ -257,7 +280,10 @@ function doCreate() {
         <CInput v-if="opType === 'IN'" v-model="opCost" label="单价（元）" type="number" placeholder="入库单价，留空沿用均价" />
         <CInput v-model="opRemark" label="备注" :placeholder="opType === 'LOSS' ? '请说明报损原因' : '备注（可选）'" />
         <div class="opform__hint" v-if="opType === 'LOSS'">
-          <CIcon name="alert" :size="13" /> 报损将直接扣减库存并记录；金额超过双签阈值将触发审批。
+          <CIcon name="alert" :size="13" /> 报损不直接扣库：提交审批中心终审（损失 ≥¥5000 需双签），通过后由系统扣减库存并计入损耗成本。
+        </div>
+        <div class="opform__hint" v-else-if="opType === 'OUT'">
+          <CIcon name="alert" :size="13" /> 领用不直接扣库：提交审批中心双签（店长一审 → 财务终审），通过后由系统扣减库存并计入耗材成本。
         </div>
       </div>
       <div class="drawer__ops">

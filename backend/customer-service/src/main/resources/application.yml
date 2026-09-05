@@ -29,6 +29,20 @@ spring:
     baseline-description: "JPA 自动建表基线"
     table: flyway_schema_history
     validate-on-migrate: true
+    # 全库共享 flyway_schema_history：finance-service 持有 V4（finance fund entry），customer 类路径
+    # 不持有该脚本；共享库约定忽略他服务迁移的两种缺失状态（与 finance-service 对齐）：
+    #   missing = 已应用但本地缺失且版本早于本地最新迁移（如 finance 的 V4，低于 customer 的 V5）；
+    #   future  = 已应用但本地缺失且版本新于本地最新迁移（finance 后续新增高版本迁移时命中）；
+    # 显式配置 patterns 后默认 ignoreFutureMigrations 被覆盖，故两个状态都要列。
+    # customer 自己的迁移仍严格校验（checksum/类型错误不匹配这两个通配状态）。
+    ignore-migration-patterns:
+      - "*:missing"
+      - "*:future"
+
+# 跨服务地址（容器内由 *_SERVICE_URL 注入服务名寻址；本地默认回环）
+finance:
+  service:
+    url: ${FINANCE_SERVICE_URL:http://localhost:8087}
 
 # ES 客户全文检索（JDK HttpClient 直连，零客户端依赖；不可用时自动降级 DB 过滤）
 meiyun:

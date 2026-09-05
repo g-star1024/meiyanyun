@@ -44,6 +44,29 @@ export interface ApprovalAddSignerCmd {
   who: string
 }
 
+/** 耗材明细行（领用/报损提交共用）；skuCode 必填，qty 正整数。 */
+export interface ConsumableLineCmd {
+  skuCode: string
+  name?: string
+  qty: number
+  remark?: string
+}
+
+/** 耗材领用提交（B5）：固定双签（店长一审 → 财务终审）；操作人取 JWT，actor 忽略。 */
+export interface RequisitionSubmitCmd {
+  storeCode: string
+  purpose?: string
+  lines: ConsumableLineCmd[]
+}
+
+/** 耗材报损提交（B5）：amount 为损失金额（分，>0），<¥5000 财务单签 / ≥¥5000 双签；操作人取 JWT。 */
+export interface LossReportSubmitCmd {
+  storeCode: string
+  reason?: string
+  amount: number
+  lines: ConsumableLineCmd[]
+}
+
 /** 待办列表：tab=todo/done/all；bizType 可选过滤。 */
 export const listApprovals = (params: { tab?: string; bizType?: string }) =>
   client.get<ApprovalTodoDTO[]>('/txn/approval', { params })
@@ -62,3 +85,11 @@ export const transferTodo = (todoNo: string, cmd: ApprovalTransferCmd) =>
 
 export const addSignerTodo = (todoNo: string, cmd: ApprovalAddSignerCmd) =>
   client.post<ApprovalTodoDTO>(`/txn/approval/${todoNo}/add-signer`, cmd)
+
+/** 耗材领用提交（perm requisition:edit）：固定双签，终审通过后由服务端扣库并落 TK-MATERIAL 成本。 */
+export const submitRequisition = (cmd: RequisitionSubmitCmd) =>
+  client.post<ApprovalTodoDTO>('/txn/approval/requisition', cmd)
+
+/** 耗材报损提交（perm wastage:edit）：金额分，终审通过后由服务端扣 SCRAP 并落 TK-LOSS 成本。 */
+export const submitLossReport = (cmd: LossReportSubmitCmd) =>
+  client.post<ApprovalTodoDTO>('/txn/approval/loss-report', cmd)

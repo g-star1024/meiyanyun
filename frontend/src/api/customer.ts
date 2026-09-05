@@ -88,6 +88,31 @@ export interface MemberCardDTO {
   createdAt: string
 }
 
+/** 卡储值流水（GET /customer/cards/{cardNo}/ledger 真实字段；金额单位「分」） */
+export interface CardLedgerDTO {
+  ledgerId: number
+  /** 变动类型：RECHARGE 充值 / CONSUME 消费扣款 / REFUND 退卡退款 */
+  changeType: 'RECHARGE' | 'CONSUME' | 'REFUND'
+  /** 本次变动金额（分，带符号：充值 +、消费/退款 -） */
+  amount: number
+  /** 变动后卡余额（分） */
+  balanceAfter: number
+  /** 业务单号：充值 RC 单号 / 消费订单号 / 退卡 CC 单号 */
+  bizRef: string
+  /** 操作人 */
+  operator: string
+  createdAt: string
+}
+
+/** 充值返回（POST /customer/cards/{cardNo}/recharge）；金额单位「分」 */
+export interface RechargeResultDTO {
+  ledgerId: number
+  /** 充值单号（RC 开头，重放幂等） */
+  bizRef: string
+  /** 充值后卡余额（分） */
+  balanceAfter: number
+}
+
 /** 标签（GET /customer/tags 全量字典） */
 export interface CustomerTagDTO {
   tagId: string
@@ -136,6 +161,14 @@ export const listPointsLog = (id: string) =>
 /** 客户会员卡（balance 单位「分」） */
 export const listCustomerCards = (id: string) =>
   client.get<MemberCardDTO[]>(`/customer/${id}/cards`)
+
+/** 会员卡充值（amount 分；payMethod cash/card/wxpay/alipay，禁用 balance；RC 单号重放幂等） */
+export const rechargeCard = (cardNo: string, amount: number, payMethod: string) =>
+  client.post<RechargeResultDTO>(`/customer/cards/${cardNo}/recharge`, { amount, payMethod })
+
+/** 卡储值流水（账龄正序；amount 带符号分：RECHARGE + / CONSUME - / REFUND -） */
+export const listCardLedger = (cardNo: string) =>
+  client.get<CardLedgerDTO[]>(`/customer/cards/${cardNo}/ledger`)
 
 /** 全量标签字典（tagId → tagName/category） */
 export const listAllTags = () =>
