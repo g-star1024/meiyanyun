@@ -239,6 +239,60 @@ export interface SettlementCmd {
 export const postSettlement = (cmd: SettlementCmd) =>
   client.post<SettlementPeriod>('/finance/settlement', cmd)
 
+// ============================================================
+// B8 运维报表导出（只读 CSV）：封账台账 / 三方对账 / 资金台账 / 四类成本
+// 后端 UTF-8 BOM + 中文表头 + 金额「元」，浏览器直接触发下载
+// ============================================================
+
+/** 从 Content-Disposition 解析后端文件名（filename*=UTF-8'' 优先），取不到用兜底名 */
+function downloadCsv(resp: { data?: BlobPart; headers?: unknown }, fallback: string) {
+  const h = (resp?.headers ?? {}) as { get?(k: string): unknown } & Record<string, unknown>
+  const raw = typeof h.get === 'function' ? h.get('content-disposition') : h['content-disposition']
+  const disposition = String(raw ?? '')
+  let filename = fallback
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition)
+  if (star && star[1]) {
+    try {
+      filename = decodeURIComponent(star[1])
+    } catch {
+      filename = star[1]
+    }
+  }
+  const blob = new Blob([resp.data as BlobPart], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/** 封账台账导出（权限 finance:settlement:view，过滤条件同封账页） */
+export const exportSettlementCsv = async (params?: SettlementQuery) => {
+  const resp = await client.get('/finance/export/settlement.csv', { params, responseType: 'blob' })
+  downloadCsv(resp, '封账台账.csv')
+}
+
+/** 三方对账门店明细导出（按日） */
+export const exportTripartiteCsv = async (params?: { date?: string; storeCode?: string }) => {
+  const resp = await client.get('/finance/export/tripartite.csv', { params, responseType: 'blob' })
+  downloadCsv(resp, '三方对账.csv')
+}
+
+/** 资金分录台账导出 */
+export const exportLedgerCsv = async (params?: { storeCode?: string; from?: string; to?: string }) => {
+  const resp = await client.get('/finance/export/ledger.csv', { params, responseType: 'blob' })
+  downloadCsv(resp, '资金台账.csv')
+}
+
+/** 四类成本汇总导出 */
+export const exportCostCsv = async (params?: { month?: string; storeCode?: string }) => {
+  const resp = await client.get('/finance/export/cost.csv', { params, responseType: 'blob' })
+  downloadCsv(resp, '成本汇总.csv')
+}
+
 export const getRevenue = (storeCode?: string, month?: string) =>
   client.get<RevenueMonthly[]>('/finance/revenue', { params: { storeCode, month } })
 

@@ -14,6 +14,7 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import { useFinanceCoreStore, SUBJECT_LABEL, type LedgerEntry } from '@/stores/financeCore'
 import { useAuthStore } from '@/stores/auth'
+import { exportLedgerCsv } from '@/api/finance'
 
 const fin = useFinanceCoreStore()
 const auth = useAuthStore()
@@ -92,8 +93,15 @@ function money(n: number) {
   return `¥${Math.abs(n).toLocaleString('zh-CN')}`
 }
 
-function exportCsv() {
+async function exportCsv() {
   if (!canExport.value) return
+  // 优先后端运维报表（服务端全量真实台账、门店域同源收敛）；服务不可达时诚实回落本地当前筛选集
+  try {
+    await exportLedgerCsv()
+    return
+  } catch {
+    /* 回落本地导出 */
+  }
   const head = '日期,交易号,科目,方向,金额,渠道,来源,关联单,门店,摘要,对账\n'
   const rows = filtered.value.map((e) =>
     [e.date, e.txnId, `${e.subject} ${SUBJECT_LABEL[e.subject]}`, e.direction === 'IN' ? '收入' : '支出',

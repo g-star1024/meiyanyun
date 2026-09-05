@@ -15,7 +15,7 @@ import CKpi from '@/components/CKpi.vue'
 import CInput from '@/components/CInput.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
-import { getSettlements, postSettlement, type SettlementPeriod } from '@/api/finance'
+import { getSettlements, postSettlement, exportSettlementCsv, type SettlementPeriod } from '@/api/finance'
 
 const auth = useAuthStore()
 const storeCtx = useStoreContext()
@@ -68,6 +68,22 @@ async function load() {
   }
 }
 onMounted(load)
+
+const exporting = ref(false)
+async function doExport() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const params: { periodType?: 'DAY' | 'MONTH'; storeCode?: string } = {}
+    if (filterType.value !== 'ALL') params.periodType = filterType.value
+    if (filterStore.value) params.storeCode = filterStore.value
+    await exportSettlementCsv(params)
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '封账台账导出失败'
+  } finally {
+    exporting.value = false
+  }
+}
 
 const kpis = computed(() => [
   { label: '已封账期间数', icon: 'shield', value: `${rows.value.length} 个`, tone: 'brand' as const },
@@ -173,6 +189,9 @@ function fmtTime(iso: string): string {
         <div class="filters__right">
           <CButton variant="secondary" size="sm" @click="load">
             <CIcon name="refresh" :size="14" />刷新
+          </CButton>
+          <CButton variant="secondary" size="sm" :disabled="exporting" @click="doExport">
+            <CIcon name="export" :size="14" />导出 CSV
           </CButton>
           <CButton v-if="canEdit" variant="primary" size="sm" @click="openClose">
             <CIcon name="shield" :size="14" />发起封账

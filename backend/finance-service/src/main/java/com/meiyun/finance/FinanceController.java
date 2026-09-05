@@ -5,8 +5,12 @@ import com.meiyun.security.RequirePerm;
 import com.meiyun.security.SecurityContext;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -41,6 +45,7 @@ public class FinanceController {
     private final FundEntryService fundEntryService;
     private final TripartiteReconcileService tripartiteService;
     private final SettlementService settlementService;
+    private final FinanceExportService exportService;
 
     public FinanceController(PrepayPoolRepository poolRepo, TaxRepository taxRepo,
                              AccountMirrorRepository acctRepo, RevenueMonthlyRepository revRepo,
@@ -48,7 +53,8 @@ public class FinanceController {
                              FinanceAggregationService aggregation,
                              FundEntryService fundEntryService,
                              TripartiteReconcileService tripartiteService,
-                             SettlementService settlementService) {
+                             SettlementService settlementService,
+                             FinanceExportService exportService) {
         this.poolRepo = poolRepo;
         this.taxRepo = taxRepo;
         this.acctRepo = acctRepo;
@@ -59,6 +65,7 @@ public class FinanceController {
         this.fundEntryService = fundEntryService;
         this.tripartiteService = tripartiteService;
         this.settlementService = settlementService;
+        this.exportService = exportService;
     }
 
     /**
@@ -269,6 +276,56 @@ public class FinanceController {
         String memo = body.get("memo") == null ? null : String.valueOf(body.get("memo"));
         return settlementService.close(periodType, periodKey, storeCode, memo,
                 SecurityContext.currentStaffId());
+    }
+
+    /**
+     * 封账台账导出 CSV（B8）：GET /api/finance/export/settlement.csv，过滤参数同 GET /settlement。
+     * 数据薄调 {@link SettlementService#list}，权限与数据域与页面同源（finance:settlement:view）。
+     * UTF-8 BOM + 中文表头 + 金额「元」，Excel 可直接打开。
+     */
+    @GetMapping("/export/settlement.csv")
+    @RequirePerm("finance:settlement:view")
+    public ResponseEntity<byte[]> exportSettlement(
+            @RequestParam(required = false) String periodType,
+            @RequestParam(required = false) String periodKey,
+            @RequestParam(required = false) String storeCode) {
+        return csvResponse(exportService.exportSettlement(periodType, periodKey, storeCode));
+    }
+
+    /** 三方对账门店明细导出 CSV（B8）：GET /api/finance/export/tripartite.csv，参数同 GET /reconcile/tripartite。 */
+    @GetMapping("/export/tripartite.csv")
+    public ResponseEntity<byte[]> exportTripartite(
+            @RequestParam(required = false) String date,
+            @RequestParam(required = false) String storeCode) {
+        return csvResponse(exportService.exportTripartite(date, storeCode));
+    }
+
+    /** 资金分录台账导出 CSV（B8）：GET /api/finance/export/ledger.csv，参数同 GET /ledger。 */
+    @GetMapping("/export/ledger.csv")
+    public ResponseEntity<byte[]> exportLedger(
+            @RequestParam(required = false) String storeCode,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
+        return csvResponse(exportService.exportLedger(storeCode, from, to));
+    }
+
+    /** 四类成本汇总导出 CSV（B8）：GET /api/finance/export/cost.csv，参数同 GET /cost。 */
+    @GetMapping("/export/cost.csv")
+    public ResponseEntity<byte[]> exportCost(
+            @RequestParam(required = false) String storeCode,
+            @RequestParam(required = false) String month) {
+        return csvResponse(exportService.exportCost(storeCode, month));
+    }
+
+    /** 统一 CSV 附件响应：Content-Disposition 中文文件名走 filename*=UTF-8'' 编码，兼容 BOM 防乱码。 */
+    private ResponseEntity<byte[]> csvResponse(FinanceExportService.CsvReport report) {
+        String encoded = URLEncoder.encode(report.filename(), StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, "text/csv; charset=UTF-8")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"export.csv\"; filename*=UTF-8''" + encoded)
+                .contentLength(report.content().length)
+                .body(report.content());
     }
 
     /**

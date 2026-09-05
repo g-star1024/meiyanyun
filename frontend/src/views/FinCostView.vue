@@ -10,6 +10,7 @@ import CSelect from '@/components/CSelect.vue'
 import CDonutChart from '@/components/CDonutChart.vue'
 import { useFinCostStore, type CostSubject } from '@/stores/finCost'
 import { useAuthStore } from '@/stores/auth'
+import { exportCostCsv } from '@/api/finance'
 
 const store = useFinCostStore()
 const auth = useAuthStore()
@@ -42,8 +43,15 @@ const donutData = computed(() => [
   { label: '人工', value: store.totalLabor, color: 'var(--c-series-4)' },
 ])
 
-function exportCsv() {
+async function exportCsv() {
   if (!canExport.value) return
+  // 优先后端运维报表（门店 × 月份四类成本汇总，门店域同源收敛）；服务不可达时诚实回落本地明细
+  try {
+    await exportCostCsv()
+    return
+  } catch {
+    /* 回落本地导出 */
+  }
   const head = '科目,明细项,门店,金额,来源,日期,备注\n'
   const rows = store.filtered.map((r) =>
     [store.SUBJECT_LABEL[r.subject], r.itemName, r.store, r.amount, r.source, r.occurredAt, r.memo ?? ''].join(','),

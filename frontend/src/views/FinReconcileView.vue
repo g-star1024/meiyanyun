@@ -17,7 +17,7 @@ import CSelect from '@/components/CSelect.vue'
 import { useFinanceCoreStore, type OutboxItem } from '@/stores/financeCore'
 import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
-import { getTripartite, type TripartiteResult } from '@/api/finance'
+import { getTripartite, exportTripartiteCsv, type TripartiteResult } from '@/api/finance'
 
 const fin = useFinanceCoreStore()
 const auth = useAuthStore()
@@ -242,6 +242,23 @@ async function loadTripartite() {
 }
 
 onMounted(() => { loadTripartite() })
+
+const triExporting = ref(false)
+async function doExportTri() {
+  if (triExporting.value) return
+  triExporting.value = true
+  triError.value = ''
+  try {
+    const params: { date?: string; storeCode?: string } = {}
+    if (triDate.value) params.date = triDate.value
+    if (triStore.value) params.storeCode = triStore.value
+    await exportTripartiteCsv(params)
+  } catch (e) {
+    triError.value = e instanceof Error ? e.message : '三方对账导出失败'
+  } finally {
+    triExporting.value = false
+  }
+}
 
 function exportReport() {
   if (!canExport.value) return
@@ -468,6 +485,9 @@ function exportReport() {
           </div>
           <CButton variant="primary" size="sm" :disabled="triLoading" @click="loadTripartite">
             <CIcon name="finance" :size="14" />{{ triLoading ? '对账中…' : '查询对账' }}
+          </CButton>
+          <CButton variant="secondary" size="sm" :disabled="triExporting" @click="doExportTri">
+            <CIcon name="export" :size="14" />导出门店明细 CSV
           </CButton>
         </div>
       </CCard>
