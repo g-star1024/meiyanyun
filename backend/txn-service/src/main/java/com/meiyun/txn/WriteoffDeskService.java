@@ -22,8 +22,11 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * M2 划扣核销台领域服务：任务生成（签到自动 / 老客手工建单）、双签执行（同事务卡扣次扣额）、
- * 异常标记/解除、队列查询。
+ * M2 划扣核销台领域服务：任务生成（签到自动 / 老客手工建单）、双签执行、异常标记/解除、队列查询。
+ *
+ * <p>B6 G1：双签执行的扣次/扣额不再本地直写 member_card，改为经 {@link CustomerCardClient} 调
+ * customer 权威卡台账（行锁 + WO 单号幂等 + CONSUME 流水）；customer 失败即抛异常回滚本事务，
+ * 杜绝「划扣成立卡未扣」。本服务保留卡归属/状态预检（快速中文失败）与账实金额测算。
  *
  * <p>铁律：操作人一律取 {@link DataScope#currentActor()}（请求体 operator 不可信忽略）；
  * 金额单位「分」，单次划扣额 = floor(卡余额 / 剩余次数)；写动作全程审计（bizType=WDESK，JSON payload）；
@@ -52,12 +55,13 @@ public class WriteoffDeskService {
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
     private final FinanceEventPublisher financeEvents;
+    private final CustomerCardClient customerCardClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public WriteoffDeskService(WriteoffDeskTaskRepository wdRepo, MemberCardRepository cardRepo,
                                WriteoffRepository writeoffRepo, WriteoffNoGenerator noGen,
                                AuditRecorder audit, ApptRefNameResolver names,
-                               FinanceEventPublisher financeEvents) {
+                               FinanceEventPublisher financeEvents, CustomerCardClient customerCardClient) {
         this.wdRepo = wdRepo;
         this.cardRepo = cardRepo;
         this.writeoffRepo = writeoffRepo;
@@ -65,6 +69,7 @@ public class WriteoffDeskService {
         this.audit = audit;
         this.names = names;
         this.financeEvents = financeEvents;
+        this.customerCardClient = customerCardClient;
     }
 
     // ==================== 任务生成 ====================
@@ -187,19 +192,15 @@ public class WriteoffDeskService {
             throw badRequest("账实校验失败：卡余额 " + card.getBalance() + " 分 < 单次划扣额 " + unit + " 分");
         }
 
-        // 同事务扣次/扣额
-        card.setRemainTimes(card.getRemainTimes() - 1);
-        if (unit > 0) {
-            card.setBalance(card.getBalance() - unit);
-        }
-        if (card.getRemainTimes() == 0) {
-            card.setStatus("已用完");
-        }
-        cardRepo.save(card);
+        // B6 G1：WO 单号先于联动生成并作为幂等键（customer 成功后重试不双扣；失败整体回滚不留痕）
+        String writeoffId = noGen.nextWriteoffNo();
+
+        // 权威扣卡：customer 卡台账行锁扣次/扣额 + CONSUME 流水（4xx 中文透传 / 5xx 网络异常 502，失败即中止回滚）
+        customerCardClient.writeoff(card.getCardNo(), writeoffId, 1, unit, t.getStoreCode(), false);
 
         // 落划扣记录（卡扣次：card_no 非空，status=DONE，sign1/sign2 双签留痕）
         WriteoffRecord w = new WriteoffRecord();
-        w.setWriteoffId(noGen.nextWriteoffNo());
+        w.setWriteoffId(writeoffId);
         w.setCardNo(card.getCardNo());
         w.setCustomerId(card.getCustomerId());
         w.setStoreCode(t.getStoreCode());
@@ -231,7 +232,7 @@ public class WriteoffDeskService {
         audit.record("WDESK", wdNo, actor, "EXECUTE",
                 "{\"card\":\"" + card.getCardNo() + "\",\"writeoffId\":\"" + w.getWriteoffId()
                         + "\",\"reviewer\":\"" + esc(reviewer.trim()) + "\",\"amount\":" + unit
-                        + ",\"remainTimes\":" + card.getRemainTimes() + "}");
+                        + ",\"timesUsed\":1,\"authority\":\"customer\"}");
         return saved;
     }
 

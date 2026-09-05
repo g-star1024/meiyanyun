@@ -2,11 +2,14 @@ package com.meiyun.customer;
 
 import com.meiyun.customer.audit.AuditRecorder;
 import com.meiyun.security.DataScope;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -27,6 +30,8 @@ public class CardLedgerService {
 
     /** 充值支付方式白名单（充值不能用储值余额 balance，防自我充值套现）。 */
     private static final Set<String> RECHARGE_METHODS = Set.of("cash", "card", "wxpay", "alipay");
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final MemberCardRepository cardRepo;
     private final CardLedgerRepository ledgerRepo;
@@ -80,8 +85,9 @@ public class CardLedgerService {
         String customerName = customerRepo.findById(card.getCustomerId())
                 .map(Customer::getName).orElse(card.getCustomerId());
         audit.record("CARD", rcNo, actor(operator), "RECHARGE",
-                "会员卡充值 " + rcNo + "：卡 " + cardNo + "（" + customerName + "）充值 " + yuan(amount)
-                        + " 元（" + payMethod + "），余额 " + yuan(after) + " 元");
+                json(Map.of("cardNo", cardNo, "customer", customerName, "amount", amount,
+                        "payMethod", payMethod, "balanceAfter", after,
+                        "summary", "会员卡充值 " + yuan(amount) + " 元（" + payMethod + "），余额 " + yuan(after) + " 元")));
         publisher.emitRecharge(rcNo, cardNo, amount, payMethod, l.getStoreCode(), customerName);
         return saved;
     }
@@ -132,8 +138,9 @@ public class CardLedgerService {
         CardLedger saved = ledgerRepo.save(l);
 
         audit.record("CARD", orderNo, "system", "CONSUME",
-                "储值消费扣款：卡 " + cardNo + " 订单 " + orderNo + " 扣款 " + yuan(amount)
-                        + " 元，余额 " + yuan(after) + " 元");
+                json(Map.of("cardNo", cardNo, "orderNo", orderNo, "amount", amount,
+                        "balanceAfter", after, "authority", "customer",
+                        "summary", "储值消费扣款 " + yuan(amount) + " 元，余额 " + yuan(after) + " 元")));
         return saved;
     }
 
@@ -196,8 +203,9 @@ public class CardLedgerService {
         CardLedger saved = ledgerRepo.save(l);
 
         audit.record("CARD", refundNo, "system", "REFUND",
-                "订单退款回加储值：退款单 " + refundNo + " 订单 " + orderNo + " 回加卡 " + cardNo
-                        + " " + yuan(amount) + " 元，余额 " + yuan(after) + " 元");
+                json(Map.of("cardNo", cardNo, "refundNo", refundNo, "orderNo", orderNo,
+                        "amount", amount, "balanceAfter", after, "kind", "ORDER_REFUND",
+                        "summary", "订单退款回加储值 " + yuan(amount) + " 元，余额 " + yuan(after) + " 元")));
         return saved;
     }
 
@@ -237,8 +245,105 @@ public class CardLedgerService {
         CardLedger saved = ledgerRepo.save(l);
 
         audit.record("CARD", cancelNo, "system", "REFUND",
-                "退卡终审清零：卡 " + cardNo + " 退卡单 " + cancelNo + " 退回余额 " + yuan(before)
-                        + " 元，卡状态置「已退卡」");
+                json(Map.of("cardNo", cardNo, "cancelNo", cancelNo, "refundAmount", before,
+                        "balanceAfter", 0L, "kind", "CARD_CANCEL",
+                        "summary", "退卡终审清零退回余额 " + yuan(before) + " 元，卡置「已退卡」")));
+        return saved;
+    }
+
+    /**
+     * 疗程卡扣次划扣联动（B6 G1，txn 划扣两条路径双签后内部回调）：customer 权威卡台账为唯一动账方，
+     * 行锁找卡 → 校验在用 → 剩余次数 ≥ 扣次（不足 422 中文）→ 扣额 ≤ 余额（不足 422 中文）→
+     * member_card 扣 remainTimes/balance、次数扣尽置「已用完」→ 始终写 CONSUME 流水
+     * （bizRef=划扣单号 WO…、order_no 留空——划扣非订单收款，不参与订单退款回加防超退口径）。
+     *
+     * <p>纯扣次（amount=0，疗程卡余额为 0）同样写一行 amount=0 的 CONSUME 流水：0 额行不影响
+     * Σ amount = balance 恒等式，且为 WO 单号提供幂等锚点（否则纯扣次重放无流水可查，网络重试/
+     * 回填重跑会双扣次数）。幂等：同划扣单号重放返回既有流水，网络重试不双扣。
+     * 资金分录（RF-DEPOSIT/OUT + RF-REVENUE/IN）由 txn 域 outbox 投递，本域只动卡台账。
+     *
+     * <p>回填模式（backfill=true，B6 存量修复）：B6 前历史划扣在共表部署下已由 txn 本地扣卡
+     * 更新 member_card（次数/余额当时已扣），仅缺 card_ledger 流水破坏 Σ amount = balance 恒等式。
+     * 故回填<b>只补记 CONSUME 流水、不重复扣减 remain_times/balance</b>，不校验卡状态（已用完/已退卡
+     * 同样补记），balance_after 取回填执行时卡余额（operator=system-backfill 可识别）；卡不存在 404、
+     * WO 号冲突 409 由 txn 侧收集为差异清单转人工，不自动改数。
+     */
+    @Transactional
+    public CardLedger writeoff(String cardNo, String writeoffId, int timesUsed, long amount,
+                               String storeCode, boolean backfill) {
+        if (writeoffId == null || writeoffId.isBlank()) throw new BadReq("划扣单号不能为空");
+        if (timesUsed < 1) throw new BadReq("划扣次数必须 ≥ 1");
+        if (amount < 0) throw new BadReq("划扣金额不能为负（单位：分）");
+        Optional<CardLedger> replay = ledgerRepo.findFirstByBizRef(writeoffId);
+        if (replay.isPresent()) {
+            CardLedger r = replay.get();
+            if ("CONSUME".equals(r.getChangeType()) && cardNo.equals(r.getCardNo())) {
+                return r;
+            }
+            throw new Conflict("划扣单号 " + writeoffId + " 已存在其他卡流水，拒绝重复划扣");
+        }
+        MemberCard card = cardRepo.findForUpdate(cardNo)
+                .orElseThrow(() -> new NotFound("会员卡不存在: " + cardNo));
+
+        if (backfill) {
+            long currentBalance = card.getBalance() == null ? 0L : card.getBalance();
+            CardLedger l = new CardLedger();
+            l.setCardNo(cardNo);
+            l.setCustomerId(card.getCustomerId());
+            l.setChangeType("CONSUME");
+            l.setAmount(-amount);
+            l.setBalanceAfter(currentBalance);
+            l.setBizRef(writeoffId);
+            l.setOperator("system-backfill");
+            l.setStoreCode(storeCode != null && !storeCode.isBlank() ? storeCode : card.getStoreCode());
+            CardLedger saved = ledgerRepo.save(l);
+
+            audit.record("CARD", writeoffId, "system", "WRITEOFF_BACKFILL",
+                    json(backfillPayload(cardNo, writeoffId, timesUsed, amount, currentBalance,
+                            "存量划扣回填补记流水：卡次数/余额已于历史划扣时扣减，本次不重复扣卡，回填时余额 "
+                                    + yuan(currentBalance) + " 元")));
+            return saved;
+        }
+
+        if (!"在用".equals(card.getStatus())) {
+            throw new BadReq("卡状态非「在用」（当前：" + card.getStatus() + "），不可划扣");
+        }
+        int remain = card.getRemainTimes() == null ? 0 : card.getRemainTimes();
+        if (remain < timesUsed) {
+            throw new Unprocessable("卡剩余次数不足：当前剩余 " + remain + " 次，本次需扣 " + timesUsed + " 次");
+        }
+        long before = card.getBalance() == null ? 0L : card.getBalance();
+        if (before < amount) {
+            throw new Unprocessable("卡余额不足：当前余额 " + yuan(before) + " 元，本次需扣 " + yuan(amount) + " 元");
+        }
+
+        card.setRemainTimes(remain - timesUsed);
+        long after = before - amount;
+        if (amount > 0) {
+            card.setBalance(after);
+        }
+        if (card.getRemainTimes() == 0) {
+            card.setStatus("已用完");
+        }
+        cardRepo.save(card);
+
+        CardLedger l = new CardLedger();
+        l.setCardNo(cardNo);
+        l.setCustomerId(card.getCustomerId());
+        l.setChangeType("CONSUME");
+        l.setAmount(-amount);
+        l.setBalanceAfter(after);
+        l.setBizRef(writeoffId);
+        l.setOperator("system");
+        l.setStoreCode(storeCode != null && !storeCode.isBlank() ? storeCode : card.getStoreCode());
+        CardLedger saved = ledgerRepo.save(l);
+
+        audit.record("CARD", writeoffId, "system", "WRITEOFF",
+                json(writeoffPayload(cardNo, writeoffId, timesUsed, amount,
+                        card.getRemainTimes() == null ? 0 : card.getRemainTimes(), after, false,
+                        "疗程卡扣次划扣：扣 " + timesUsed + " 次"
+                                + (amount > 0 ? "、扣额 " + yuan(amount) + " 元" : "（纯扣次）")
+                                + "，余额 " + yuan(after) + " 元")));
         return saved;
     }
 
@@ -266,6 +371,47 @@ public class CardLedgerService {
     /** 分 → 元文案（余额/金额提示用，保留两位小数）。 */
     static String yuan(long cents) {
         return String.format("%.2f", cents / 100.0);
+    }
+
+    /** 审计 payload 序列化为合法 JSON 字符串（audit_log.payload 为 jsonb 列，散文会被 PG 以 invalid input syntax for type json 拒绝）。 */
+    private static String json(Object payload) {
+        try {
+            return MAPPER.writeValueAsString(payload);
+        } catch (Exception e) {
+            return "{}";
+        }
+    }
+
+    /** 划扣审计 payload：卡号/划扣单号/扣次/扣额/剩余次数与余额快照/回填标记，动账权威来源 customer。 */
+    private static Map<String, Object> writeoffPayload(String cardNo, String writeoffId, int timesUsed,
+                                                       long amount, int remainTimesAfter, long balanceAfter,
+                                                       boolean backfill, String summary) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("cardNo", cardNo);
+        m.put("writeoffId", writeoffId);
+        m.put("timesUsed", timesUsed);
+        m.put("amount", amount);
+        m.put("remainTimesAfter", remainTimesAfter);
+        m.put("balanceAfter", balanceAfter);
+        m.put("backfill", backfill);
+        m.put("authority", "customer");
+        m.put("summary", summary);
+        return m;
+    }
+
+    /** 存量回填补记审计 payload：历史划扣已扣卡本次不重复扣减，记录回填时余额快照以与正常划扣区分。 */
+    private static Map<String, Object> backfillPayload(String cardNo, String writeoffId, int timesUsed,
+                                                       long amount, long balanceAtBackfill, String summary) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("cardNo", cardNo);
+        m.put("writeoffId", writeoffId);
+        m.put("timesUsed", timesUsed);
+        m.put("amount", amount);
+        m.put("balanceAtBackfill", balanceAtBackfill);
+        m.put("backfill", true);
+        m.put("authority", "customer");
+        m.put("summary", summary);
+        return m;
     }
 
     /** 业务异常 → HTTP 状态码映射（由 GlobalExceptionHandler 处理）。 */

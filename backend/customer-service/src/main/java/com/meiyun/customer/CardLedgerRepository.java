@@ -17,6 +17,9 @@ public interface CardLedgerRepository extends JpaRepository<CardLedger, Long> {
     /** 幂等查询：按来源单号查流水（充值 RC 单号重放 / 内部卡扣订单号重放防双扣）。 */
     Optional<CardLedger> findFirstByBizRef(String bizRef);
 
+    /** B6 双账核对：按一批来源单号（WO 划扣单号）批量拉流水，txn 回填/核对用。 */
+    List<CardLedger> findByBizRefIn(List<String> bizRefs);
+
     /** 订单退款回加幂等：按退款单号（bizRef=RF…）查已回加流水，终审重试重放不双加。 */
     Optional<CardLedger> findFirstByBizRefAndChangeType(String bizRef, String changeType);
 

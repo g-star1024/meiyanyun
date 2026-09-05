@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -14,6 +15,9 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -71,6 +75,64 @@ public class CustomerCardClient {
                 "orderNo", nz(orderNo),
                 "amount", amount);
         post("/api/customer/internal/cards/refund-order", body, "退款回加储值");
+    }
+
+    /**
+     * 疗程卡扣次划扣联动（B6 G1，划扣双签后回调）：POST /api/customer/internal/cards/writeoff。
+     * customer 权威卡台账行锁扣 remain_times（amount&gt;0 同时扣 balance）并写 CONSUME 流水
+     * （bizRef=writeoffId，纯扣次写 0 额流水作幂等锚点）；次数/余额不足 422、卡不存在 404、
+     * 非在用 400、WO 冲突 409 均中文透传（调用方据此中止回滚，杜绝「划扣成立卡未扣」）；
+     * 同 WO 单号重放幂等。backfill=true 为存量回填，终态卡 422 由调用方收集为差异清单。
+     */
+    public void writeoff(String cardNo, String writeoffId, int timesUsed, long amount,
+                         String storeCode, boolean backfill) {
+        Map<String, Object> body = new java.util.HashMap<>();
+        body.put("cardNo", nz(cardNo));
+        body.put("writeoffId", nz(writeoffId));
+        body.put("timesUsed", timesUsed);
+        body.put("amount", amount);
+        body.put("storeCode", nz(storeCode));
+        body.put("backfill", backfill);
+        post("/api/customer/internal/cards/writeoff", body, backfill ? "存量划扣回填" : "疗程划扣");
+    }
+
+    /**
+     * 划扣流水批量查询（B6 双账核对）：GET /api/customer/internal/cards/writeoff-ledgers。
+     * 返回 WO 单号 → 流水（cardNo/changeType/amount/operator）；网络/5xx 异常 → 502 中文（核对中止，
+     * 不容忍 customer 不可用时出「全部一致」的假结果）。
+     */
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> writeoffLedgers(List<String> writeoffIds) {
+        if (writeoffIds == null || writeoffIds.isEmpty()) return List.of();
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            String qs = writeoffIds.stream()
+                    .filter(s -> s != null && !s.isBlank())
+                    .map(s -> "bizRefs=" + URLEncoder.encode(s, StandardCharsets.UTF_8))
+                    .collect(java.util.stream.Collectors.joining("&"));
+            var resp = restTemplate.exchange(
+                    customerBaseUrl + "/api/customer/internal/cards/writeoff-ledgers?" + qs,
+                    HttpMethod.GET, new HttpEntity<>(headers), List.class);
+            List<Map<String, Object>> body = resp.getBody();
+            return body == null ? List.of() : body;
+        } catch (HttpStatusCodeException e) {
+            int status = e.getStatusCode().value();
+            if (status >= 400 && status < 500) {
+                log.info("划扣流水查询被 customer 拒绝 status={} body={}", status, e.getResponseBodyAsString());
+                throw new ResponseStatusException(HttpStatus.valueOf(status),
+                        extractMessage(e.getResponseBodyAsString()));
+            }
+            log.error("划扣流水查询 customer 服务端错误 status={}", status);
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "双账核对失败：客户服务暂不可用，请稍后重试（本次未执行任何写入）");
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("划扣流水查询 customer 调用异常: {}", e.getMessage());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "双账核对失败：无法连接客户服务，请稍后重试（本次未执行任何写入）");
+        }
     }
 
     private void post(String path, Map<String, Object> body, String label) {

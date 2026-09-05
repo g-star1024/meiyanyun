@@ -26,12 +26,14 @@ public class InternalCardController {
 
     private final MemberCardRepository cardRepo;
     private final CustomerRepository customerRepo;
+    private final CardLedgerRepository ledgerRepo;
     private final CardLedgerService ledgerService;
 
     public InternalCardController(MemberCardRepository cardRepo, CustomerRepository customerRepo,
-                                  CardLedgerService ledgerService) {
+                                  CardLedgerRepository ledgerRepo, CardLedgerService ledgerService) {
         this.cardRepo = cardRepo;
         this.customerRepo = customerRepo;
+        this.ledgerRepo = ledgerRepo;
         this.ledgerService = ledgerService;
     }
 
@@ -115,8 +117,54 @@ public class InternalCardController {
                 "balanceAfter", l.getBalanceAfter());
     }
 
+    /**
+     * 疗程卡扣次划扣联动（B6 G1，txn 划扣双签后回调）：POST /api/customer/internal/cards/writeoff。
+     * customer 权威卡台账唯一动账方：行锁扣 member_card.remain_times（amount&gt;0 同时扣 balance）、
+     * 次数扣尽置「已用完」，写 CONSUME 流水（bizRef=划扣单号 WO…，纯扣次写 0 额流水作幂等锚点）；
+     * 卡不存在 404 / 非在用 400 / 次数或余额不足 422，均中文透传；同 WO 单号重放幂等返回既有流水。
+     * backfill=true 为存量回填：终态卡 422 拒绝不自动改数，由 txn 侧记差异清单转人工。
+     */
+    @PostMapping("/cards/writeoff")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> writeoff(@RequestBody WriteoffCmd cmd) {
+        if (cmd == null) throw new CardLedgerService.BadReq("请求体不能为空");
+        CardLedger l = ledgerService.writeoff(cmd.cardNo(), cmd.writeoffId(),
+                cmd.timesUsed() == null ? 0 : cmd.timesUsed(),
+                cmd.amount() == null ? 0L : cmd.amount(),
+                cmd.storeCode(), Boolean.TRUE.equals(cmd.backfill()));
+        return Map.of(
+                "ledgerId", l.getLedgerId(),
+                "changeType", l.getChangeType(),
+                "balanceAfter", l.getBalanceAfter());
+    }
+
+    /**
+     * 划扣流水批量投影（B6 双账核对）：GET /api/customer/internal/cards/writeoff-ledgers?bizRefs=WO…&amp;bizRefs=…。
+     * 按 WO 划扣单号批量返回 card_ledger CONSUME 流水（含 amount/operator，system-backfill 为回填补记行）；
+     * txn 据此比对「划扣记录 ↔ 权威流水」缺失/金额差异，不直读 card_ledger 表。无匹配返回空数组。
+     */
+    @GetMapping("/cards/writeoff-ledgers")
+    @RequirePerm("internal:card-balance")
+    public List<WriteoffLedgerDTO> writeoffLedgers(@RequestParam("bizRefs") List<String> bizRefs) {
+        if (bizRefs == null || bizRefs.isEmpty()) return List.of();
+        List<String> refs = bizRefs.stream().filter(s -> s != null && !s.isBlank()).toList();
+        if (refs.isEmpty()) return List.of();
+        return ledgerRepo.findByBizRefIn(refs).stream()
+                .map(l -> new WriteoffLedgerDTO(l.getLedgerId(), l.getCardNo(), l.getBizRef(),
+                        l.getChangeType(), l.getAmount(), l.getOperator(), l.getStoreCode()))
+                .toList();
+    }
+
     /** 储值扣款入参：cardNo/customerId/amount（分，&gt;0）/orderNo（幂等键）。 */
     public record ConsumeCmd(String cardNo, String customerId, Long amount, String orderNo) {}
+
+    /** 划扣流水投影：ledgerId/cardNo/bizRef（WO 单号）/changeType/amount（负额分，0 为纯扣次）/operator（system-backfill 为回填行）/storeCode。 */
+    public record WriteoffLedgerDTO(Long ledgerId, String cardNo, String bizRef, String changeType,
+                                    Long amount, String operator, String storeCode) {}
+
+    /** 疗程划扣入参：cardNo/writeoffId（WO 单号，幂等键）/timesUsed（扣次，≥1）/amount（分，≥0，0 为纯扣次）/storeCode/backfill（存量回填标记）。 */
+    public record WriteoffCmd(String cardNo, String writeoffId, Integer timesUsed, Long amount,
+                              String storeCode, Boolean backfill) {}
 
     /** 退卡回写入参：cardNo/cancelNo（退卡 CC 单号，幂等键）。 */
     public record RefundCmd(String cardNo, String cancelNo) {}

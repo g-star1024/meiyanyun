@@ -53,13 +53,15 @@ public class M4FlowController {
     private final OrderNoGenerator orderNoGen;
     private final PaymentService paymentService;
     private final FinanceEventPublisher financeEvents;
+    private final CustomerCardClient customerCardClient;
 
     public M4FlowController(ConsultationRepository consultRepo, TxnOrderRepository orderRepo,
                             OrderItemRepository itemRepo,
                             WriteoffRepository writeoffRepo, MemberCardRepository cardRepo,
                             AuditRecorder audit, ApptRefNameResolver names,
                             ConsultPlanService planService, OrderNoGenerator orderNoGen,
-                            PaymentService paymentService, FinanceEventPublisher financeEvents) {
+                            PaymentService paymentService, FinanceEventPublisher financeEvents,
+                            CustomerCardClient customerCardClient) {
         this.consultRepo = consultRepo;
         this.orderRepo = orderRepo;
         this.itemRepo = itemRepo;
@@ -71,6 +73,7 @@ public class M4FlowController {
         this.orderNoGen = orderNoGen;
         this.paymentService = paymentService;
         this.financeEvents = financeEvents;
+        this.customerCardClient = customerCardClient;
     }
 
     // ==================== M4-06 客情咨询 ====================
@@ -375,18 +378,13 @@ public class M4FlowController {
                     "账实校验失败：卡余额 " + card.getBalance() + " 分 < 划扣金额 " + cmd.amount() + " 分");
         }
 
-        // 同事务扣减
-        card.setRemainTimes(card.getRemainTimes() - cmd.timesUsed());
-        if (cmd.amount() > 0) {
-            card.setBalance(card.getBalance() - cmd.amount());
-        }
-        if (card.getRemainTimes() == 0) {
-            card.setStatus("已用完");
-        }
-        cardRepo.save(card);
+        // B6 G1：WO 单号先于联动生成（幂等键）；权威扣卡走 customer 卡台账（4xx 中文透传/5xx 502，失败即中止回滚）
+        String writeoffId = nextWriteoffNo();
+        customerCardClient.writeoff(cmd.cardNo(), writeoffId, cmd.timesUsed(),
+                cmd.amount() == null ? 0L : cmd.amount(), cmd.storeCode(), false);
 
         WriteoffRecord w = new WriteoffRecord();
-        w.setWriteoffId(nextWriteoffNo());
+        w.setWriteoffId(writeoffId);
         w.setOrderNo(cmd.orderNo());
         w.setCardNo(cmd.cardNo());
         w.setCustomerId(card.getCustomerId());
@@ -405,7 +403,7 @@ public class M4FlowController {
 
         audit.record("WRITEOFF", w.getWriteoffId(), DataScope.currentActor(),
                 "WRITEOFF", "{\"card\":\"" + cmd.cardNo() + "\",\"times\":" + cmd.timesUsed()
-                        + ",\"amount\":" + cmd.amount() + "}");
+                        + ",\"amount\":" + cmd.amount() + ",\"authority\":\"customer\"}");
         return w;
     }
 
