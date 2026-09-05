@@ -60,12 +60,13 @@ public class FundEntryService {
     private final CostAllocationRepository costRepo;
     private final RevenueMonthlyRepository revRepo;
     private final FinanceAuditRecorder audit;
+    private final SettlementService settlementService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public FundEntryService(FundEntryRepository entryRepo, OutboxRepository outboxRepo,
                             AccountMirrorRepository acctRepo, PrepayPoolRepository poolRepo,
                             CostAllocationRepository costRepo, RevenueMonthlyRepository revRepo,
-                            FinanceAuditRecorder audit) {
+                            FinanceAuditRecorder audit, SettlementService settlementService) {
         this.entryRepo = entryRepo;
         this.outboxRepo = outboxRepo;
         this.acctRepo = acctRepo;
@@ -73,6 +74,7 @@ public class FundEntryService {
         this.costRepo = costRepo;
         this.revRepo = revRepo;
         this.audit = audit;
+        this.settlementService = settlementService;
     }
 
     /** 批量落账（逐条幂等：idem_key 已存在则跳过并回带已落账结果），返回逐条结果。 */
@@ -107,6 +109,15 @@ public class FundEntryService {
 
         OffsetDateTime occurred = parseOccurred(cmd.occurredAt());
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+
+        // B7 封账拦截（DESIGN §9.2）：occurredAt 落入该店已封账的日/月期间一律拒绝。
+        // 幂等重放在上方已早返回（重复投递不拦）；ADJUST 调平分录 occurredAt=now 落当前期间，天然不撞闭期。
+        if (settlementService.isClosed(cmd.storeCode(), occurred)) {
+            LocalDate d = occurred.atZoneSameInstant(ZoneOffset.UTC).toLocalDate();
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "该笔分录发生时间 " + d + " 所在期间已封账（门店 " + cmd.storeCode()
+                            + "），封账后不可补记/改账；如有差错请走差异调平 ADJUST（计入当前期间）");
+        }
 
         FundEntry e = new FundEntry();
         e.setIdemKey(idemKey);

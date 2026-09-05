@@ -255,6 +255,26 @@ public class FinanceAggregationService {
         }
     }
 
+    /**
+     * 拉取交易域现金日结投影（B7 三方对账「现金交接」方；降级 null，由调用方诚实标记不可用）。
+     * txn 侧按 Asia/Shanghai 自然日聚合「现金交接」类已完成双签工单，金额 Long「分」。
+     * 包级可见：三方对账服务复用同一系统身份取数边界。
+     */
+    Map<String, Object> fetchCashSettle(String date, String storeCode) {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(txnBaseUrl + "/api/txn/internal/cash-settle");
+            if (date != null && !date.isBlank()) b.queryParam("date", date);
+            if (storeCode != null && !storeCode.isBlank()) b.queryParam("storeCode", storeCode);
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.toUriString(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            return resp.getBody();
+        } catch (Exception e) {
+            log.warn("拉取交易域现金日结失败（三方对账现金方标记不可用）date={} : {}", date, e.getMessage());
+            return null;
+        }
+    }
+
     private List<Map<String, Object>> fetchCards(String storeCode) {
         try {
             UriComponentsBuilder b = UriComponentsBuilder
@@ -289,6 +309,35 @@ public class FinanceAggregationService {
             Map<String, String> fallback = new LinkedHashMap<>();
             codes.forEach(c -> fallback.put(c, c));
             return fallback;
+        }
+    }
+
+    /**
+     * 门店存在性严格校验（封账等不可逆写操作前置用）：调 store 服务 name-map，
+     * HTTP 200 且返回 Map 含该码 → 存在；200 但缺 key → 确定不存在（findAllById 只回存在门店）；
+     * 调用异常（store 服务不可用/超时）→ 抛 StoreLookupException，调用方按「资金安全反向失败即中止」保守拒绝，
+     * 不把服务故障误判为门店不存在，也不静默放行。
+     */
+    public boolean storeExists(String storeCode) {
+        if (storeCode == null || storeCode.isBlank()) return false;
+        String code = storeCode.trim();
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(storeBaseUrl + "/api/stores/name-map")
+                    .queryParam("codes", code);
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.toUriString(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            return resp.getBody() != null && resp.getBody().containsKey(code);
+        } catch (Exception e) {
+            log.warn("门店存在性校验失败（保守中止）store={} : {}", code, e.getMessage());
+            throw new StoreLookupException("门店服务暂不可用，封账已中止，请稍后重试（门店 " + code + "）");
+        }
+    }
+
+    /** 门店服务查询失败（区分于「门店不存在」）：触发保守中止而非静默放行。 */
+    public static class StoreLookupException extends RuntimeException {
+        public StoreLookupException(String message) {
+            super(message);
         }
     }
 

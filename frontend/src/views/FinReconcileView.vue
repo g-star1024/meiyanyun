@@ -5,7 +5,7 @@
  * 长款/短款/冲正差异；一键轧平；人工调平需双签复核（不反向动账）
  * 4 KPI + 三方视图 + 差异清单 + 8 大恒等式面板
  * ============================================================ */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
@@ -16,9 +16,12 @@ import CTextarea from '@/components/CTextarea.vue'
 import CSelect from '@/components/CSelect.vue'
 import { useFinanceCoreStore, type OutboxItem } from '@/stores/financeCore'
 import { useAuthStore } from '@/stores/auth'
+import { useStoreContext } from '@/stores/storeContext'
+import { getTripartite, type TripartiteResult } from '@/api/finance'
 
 const fin = useFinanceCoreStore()
 const auth = useAuthStore()
+const storeCtx = useStoreContext()
 const canReconcile = computed(() => auth.can('finance:reconcile'))
 const canApprove = computed(() => auth.can('finance:reconcile:approve'))
 const canExport = computed(() => auth.can('finance:export'))
@@ -189,6 +192,57 @@ async function submitAdjust() {
   }
 }
 
+// ============================================================
+// 三方对账标签页（B7 §9.1）：经营域（txn 四流）× 资金域（fund_entry 落账）× 现金日结（双签工单）
+// 外部渠道回单（微信/支付宝/银行）本期无自动导入，账实仅覆盖现金；现金方不可用诚实降级
+// ============================================================
+const activeTab = ref<'outbox' | 'tripartite'>('outbox')
+
+function todayShanghai(): string {
+  // 与后端一致：Asia/Shanghai 自然日，避免 toISOString 的 UTC 偏移
+  const now = new Date()
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000
+  return new Date(utc + 8 * 3600000).toISOString().slice(0, 10)
+}
+function yuan(v: number | null | undefined): string {
+  if (v == null) return '—'
+  return `¥${v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+const triDate = ref(todayShanghai())
+const triStore = ref('') // 空 = 全部可见门店
+const triLoading = ref(false)
+const triError = ref('')
+const tri = ref<TripartiteResult | null>(null)
+
+const triStoreOptions = computed(() => [
+  { label: '全部门店（有权限）', value: '' },
+  ...storeCtx.stores.map((s) => ({ label: s.storeName || s.storeCode, value: s.storeCode })),
+])
+
+async function loadTripartite() {
+  if (triLoading.value) return
+  if (!storeCtx.loaded) {
+    try { await storeCtx.loadStores() } catch { /* 门店名回落编码，不阻塞 */ }
+  }
+  triLoading.value = true
+  triError.value = ''
+  try {
+    const params: { date?: string; storeCode?: string } = {}
+    if (triDate.value) params.date = triDate.value
+    if (triStore.value) params.storeCode = triStore.value
+    const { data } = await getTripartite(params)
+    tri.value = data
+  } catch (e) {
+    tri.value = null
+    triError.value = e instanceof Error ? e.message : '三方对账查询失败'
+  } finally {
+    triLoading.value = false
+  }
+}
+
+onMounted(() => { loadTripartite() })
+
 function exportReport() {
   if (!canExport.value) return
   const head = 'Outbox号,业务类型,交易号,金额,渠道,收银,渠道回单,银行到账,状态\n'
@@ -237,7 +291,17 @@ function exportReport() {
       <div class="flash-line"><CIcon name="check" :size="16" />{{ flash }}</div>
     </CCard>
 
-    <div class="rc__body">
+    <!-- 标签切换：Outbox 逐笔台账 / 三方按日对账（B7 §9.1） -->
+    <div class="rc__tabs">
+      <button class="rc__tab" :class="{ 'is-active': activeTab === 'outbox' }" @click="activeTab = 'outbox'">
+        <CIcon name="finance" :size="15" />Outbox 对账台账
+      </button>
+      <button class="rc__tab" :class="{ 'is-active': activeTab === 'tripartite' }" @click="activeTab = 'tripartite'">
+        <CIcon name="shield" :size="15" />三方对账（按日）
+      </button>
+    </div>
+
+    <div v-if="activeTab === 'outbox'" class="rc__body">
       <!-- 左：Outbox 对账清单 -->
       <CCard class="rc__list" padding="none">
         <div class="list-head">
@@ -390,7 +454,129 @@ function exportReport() {
       </CCard>
     </div>
 
-    <!-- 人工调平双签弹层：真实台账需补调平分录四要素（方向/金额/科目/渠道）；演示态仅备注+复核人 -->
+    <!-- 三方对账（按日）：经营域 × 资金域 × 现金日结；外部渠道回单未接入，账实仅覆盖现金 -->
+    <div v-if="activeTab === 'tripartite'" class="tri">
+      <CCard class="tri__filters" padding="md">
+        <div class="tri-filters">
+          <div class="tri-field">
+            <span class="tri-field__label">对账日期</span>
+            <input v-model="triDate" type="date" class="date-input" />
+          </div>
+          <div class="tri-field">
+            <span class="tri-field__label">门店范围</span>
+            <CSelect v-model="triStore" width="220px" :options="triStoreOptions" />
+          </div>
+          <CButton variant="primary" size="sm" :disabled="triLoading" @click="loadTripartite">
+            <CIcon name="finance" :size="14" />{{ triLoading ? '对账中…' : '查询对账' }}
+          </CButton>
+        </div>
+      </CCard>
+
+      <CCard v-if="triError" class="tri__err" padding="md">
+        <div class="flash-line" style="color: var(--c-danger-fg);">
+          <CIcon name="alert" :size="16" />{{ triError }}
+        </div>
+      </CCard>
+
+      <template v-if="tri">
+        <!-- 结论横幅 -->
+        <CCard class="tri__verdict" :class="tri.matched ? 'tri__verdict--ok' : 'tri__verdict--diff'" padding="md">
+          <div class="verdict-line">
+            <CIcon :name="tri.matched ? 'check' : 'alert'" :size="18" />
+            <div>
+              <div class="verdict-line__title">
+                {{ tri.matched ? '三方核对通过' : `${tri.diffStoreCount} 家门店存在差异` }}
+                <CStatusPill v-if="!tri.cashAvailable" status="warning" dot>现金日结不可用·仅账账</CStatusPill>
+              </div>
+              <div class="verdict-line__msg">{{ tri.message }}</div>
+            </div>
+          </div>
+        </CCard>
+
+        <!-- 三方净额总览 -->
+        <div class="tri__kpis">
+          <CKpi label="经营域净额（txn 四流）" :value="yuan(tri.bizNetYuan)" tone="brand" icon="finance"
+            :sub="`订单 ${tri.flowCounts.orders ?? 0} · 退款 ${tri.flowCounts.refunds ?? 0} · 划扣对 ${tri.flowCounts.writeoffPairs ?? 0} · 退卡 ${tri.flowCounts.cardCancels ?? 0}`" />
+          <CKpi label="资金域净额（fund_entry 落账）" :value="yuan(tri.postedNetYuan)" tone="brand" icon="finance"
+            :sub="`落账分录 ${tri.flowCounts.postedEntries ?? 0} 笔 · 人工调平 ${tri.adjustCount} 笔单列`" />
+          <CKpi label="账账差异（已扣期末成本）" :value="yuan(tri.unexplainedDiffFen / 100)" :tone="tri.unexplainedDiffFen === 0 ? 'success' : 'danger'" icon="alert"
+            :sub="`账账原差 ${yuan(tri.netDiffYuan)} − 期末成本 ${yuan(tri.postedManualCostFen / 100)}（财务域独有单列）`" />
+          <CKpi label="现金日结实点（双签工单）" :value="yuan(tri.cashHandoverYuan)" :tone="!tri.cashAvailable ? 'text' : (tri.cashDiffFen === 0 ? 'success' : 'danger')" icon="pos"
+            :sub="tri.cashAvailable
+              ? `工单 ${tri.cashTicketCount ?? 0} 张 · 现金账实差异 ${tri.cashDiffFen === 0 ? '0（相符）' : yuan((tri.cashDiffFen ?? 0) / 100)}`
+              : 'txn 现金日结暂不可达，已降级仅出账账结果'" />
+        </div>
+
+        <!-- 渠道覆盖诚实提示 -->
+        <CCard class="tri__note" padding="md">
+          <div class="mirror-line">
+            <CIcon name="clock" :size="16" />
+            <span>
+              账实核对本期<strong>仅覆盖现金渠道</strong>（CASHIER 现金净额 vs 现金交接双签工单实点现金）；
+              微信 / 支付宝 / 银行回单流水本期无自动导入，<strong>不臆造金额</strong>，待渠道回单接入后补齐。
+              账账两侧按 UTC 日界聚合，现金方按 Asia/Shanghai 自然日（交接班口径）。
+              差异处置请回到「Outbox 对账台账」标记差异并双签调平（补 ADJUST 分录，不反向动业务账）。
+            </span>
+          </div>
+        </CCard>
+
+        <!-- 门店明细表 -->
+        <CCard class="tri__table" padding="none">
+          <div class="list-head">
+            <div class="list-head__left">
+              <span class="list-head__title">门店对账明细（{{ tri.date }}）</span>
+              <span class="list-head__hint">{{ tri.stores.length }} 家门店 · 金额单位元</span>
+            </div>
+          </div>
+          <div class="tri-table-wrap">
+            <table class="tri-table">
+              <thead>
+                <tr>
+                  <th>门店</th>
+                  <th class="num">经营域净额</th>
+                  <th class="num">资金域净额</th>
+                  <th class="num">账账差异<small>（扣成本后）</small></th>
+                  <th class="num">现金实点<small>（双签）</small></th>
+                  <th class="num">现金差异</th>
+                  <th class="num">笔数<small>（订/退/划/退卡/落账）</small></th>
+                  <th>结论</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="s in tri.stores" :key="s.storeCode" :class="{ 'row--diff': !s.matched }">
+                  <td>
+                    <div class="tri-store">{{ s.storeName }}</div>
+                    <div class="tri-store__code">{{ s.storeCode }}</div>
+                  </td>
+                  <td class="num">{{ yuan(s.bizNetYuan) }}</td>
+                  <td class="num">{{ yuan(s.postedNetYuan) }}</td>
+                  <td class="num" :class="{ 'cell--diff': s.unexplainedDiffFen !== 0 }">
+                    {{ s.unexplainedDiffFen === 0 ? '0.00' : yuan(s.unexplainedDiffFen / 100) }}
+                    <div v-if="s.manualCostFen !== 0" class="cell__sub">含期末成本 {{ yuan(s.manualCostFen / 100) }} 单列</div>
+                  </td>
+                  <td class="num">
+                    <template v-if="tri.cashAvailable">{{ yuan(s.cashHandoverFen != null ? s.cashHandoverFen / 100 : null) }}<div v-if="s.cashTicketCount" class="cell__sub">{{ s.cashTicketCount }} 张工单</div></template>
+                    <span v-else class="cell--na">不可用</span>
+                  </td>
+                  <td class="num" :class="{ 'cell--diff': s.cashDiffFen != null && s.cashDiffFen !== 0 }">
+                    <template v-if="tri.cashAvailable && s.cashDiffFen != null">{{ s.cashDiffFen === 0 ? '0.00' : yuan(s.cashDiffFen / 100) }}</template>
+                    <span v-else class="cell--na">—</span>
+                  </td>
+                  <td class="num cell__sub">{{ s.orderCount }}/{{ s.refundCount }}/{{ s.writeoffPairCount }}/{{ s.cardCancelCount }}/{{ s.postedEntryCount }}</td>
+                  <td>
+                    <CStatusPill v-if="s.matched" status="success" dot>相符</CStatusPill>
+                    <CStatusPill v-else status="danger" dot>差异</CStatusPill>
+                  </td>
+                </tr>
+                <tr v-if="tri.stores.length === 0">
+                  <td colspan="8" class="tri-empty">当日无可见门店的经营/资金数据</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CCard>
+      </template>
+    </div>
     <div v-if="showAdjust && selected" class="modal-mask" @click.self="showAdjust = false">
       <CCard class="modal" :class="{ 'modal--wide': selected.writable }" title="人工调平（双签复核）" padding="lg">
         <div class="sign-box">
@@ -565,4 +751,48 @@ function exportReport() {
 .modal--wide { width: 600px; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--s-md); }
 @media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } }
+
+/* B7：标签切换 + 三方对账面板（仅追加） */
+.rc__tabs { display: flex; gap: var(--s-xs); border-bottom: 1px solid var(--c-border-light); }
+.rc__tab { display: inline-flex; align-items: center; gap: 6px; padding: var(--s-sm) var(--s-md); background: none; border: none; border-bottom: 2px solid transparent; margin-bottom: -1px; cursor: pointer; font-size: var(--t-sm); font-weight: 600; color: var(--c-text-3); }
+.rc__tab:hover { color: var(--c-text); }
+.rc__tab.is-active { color: var(--c-primary, #5e72e4); border-bottom-color: var(--c-primary, #5e72e4); }
+
+.tri { display: flex; flex-direction: column; gap: var(--s-md); }
+.tri-filters { display: flex; align-items: flex-end; gap: var(--s-md); flex-wrap: wrap; }
+.tri-field { display: flex; flex-direction: column; gap: 4px; }
+.tri-field__label { font-size: var(--t-xs); color: var(--c-text-3); }
+.date-input { height: 32px; padding: 0 var(--s-sm); border: 1px solid var(--c-border, #d2d6de); border-radius: var(--r-sm, 6px); font-size: var(--t-sm); color: var(--c-text); background: var(--c-bg, #fff); }
+.tri__err { background: rgba(229,57,53,.08); border: 1px solid var(--c-danger-fg); }
+
+.tri__verdict { border-radius: var(--r-md); }
+.tri__verdict--ok { background: var(--c-success-soft, rgba(22,163,110,.1)); border: 1px solid var(--c-success-fg); }
+.tri__verdict--diff { background: rgba(229,57,53,.08); border: 1px solid var(--c-danger-fg); }
+.verdict-line { display: flex; align-items: flex-start; gap: var(--s-sm); }
+.tri__verdict--ok .verdict-line { color: var(--c-success-fg); }
+.tri__verdict--diff .verdict-line { color: var(--c-danger-fg); }
+.verdict-line__title { display: flex; align-items: center; gap: var(--s-sm); font-size: var(--t-md); font-weight: 700; }
+.verdict-line__msg { margin-top: 4px; font-size: var(--t-xs); line-height: 1.7; color: var(--c-text-2); }
+
+.tri__kpis { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--s-md); }
+@media (max-width: 1024px) { .tri__kpis { grid-auto-flow: row; grid-template-columns: repeat(2, 1fr); } }
+
+.tri__note { background: rgba(245,158,11,.06); border: 1px solid rgba(245,158,11,.35); }
+.tri__note .mirror-line { color: var(--c-text-2); }
+
+.tri-table-wrap { overflow-x: auto; }
+.tri-table { width: 100%; border-collapse: collapse; font-size: var(--t-xs); }
+.tri-table th { padding: var(--s-sm) var(--s-md); text-align: left; color: var(--c-text-3); font-weight: 600; white-space: nowrap; border-bottom: 1px solid var(--c-border-light); background: var(--c-bg-right); }
+.tri-table th small { font-weight: 400; color: var(--c-text-4); }
+.tri-table td { padding: var(--s-sm) var(--s-md); border-bottom: 1px solid var(--c-border-light); vertical-align: middle; }
+.tri-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tri-table tbody tr:hover { background: var(--c-brand-soft); }
+.tri-table tr.row--diff { background: rgba(229,57,53,.04); }
+.tri-table tr.row--diff:hover { background: rgba(229,57,53,.08); }
+.tri-store { font-weight: 600; color: var(--c-text); }
+.tri-store__code { font-size: 11px; color: var(--c-text-4); font-variant-numeric: tabular-nums; }
+.cell--diff { color: var(--c-danger-fg); font-weight: 700; }
+.cell__sub { font-size: 11px; color: var(--c-text-4); font-weight: 400; }
+.cell--na { color: var(--c-text-4); }
+.tri-empty { text-align: center; color: var(--c-text-3); padding: var(--s-lg) !important; }
 </style>

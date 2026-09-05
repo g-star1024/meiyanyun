@@ -6,6 +6,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"strings"
 )
 
 // 路由表（与后端服务端口一致）。
@@ -40,6 +41,34 @@ func resolveTarget(e routeEntry) string {
 	return e.fallback
 }
 
+// isInternalPath 判定外部请求是否在打探服务间内部端点。
+// 内部端点统一为 /api/<service>/internal/**（X-Internal-Token 系统身份，服务间直连不经网关）。
+// 命中即 404 隐身（不返回 401/403，避免泄露端点存在性）；正常业务路径原样放行。
+func isInternalPath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/api/")
+	if !ok {
+		return false
+	}
+	seg := strings.SplitN(rest, "/", 2)
+	if len(seg) != 2 {
+		return false
+	}
+	return seg[1] == "internal" || strings.HasPrefix(seg[1], "internal/")
+}
+
+// withInternalGuard 包裹路由：外部流量访问 /api/*/internal/** 一律 404。
+// 服务间调用在 compose 内直连服务名（*_SERVICE_URL 指向 service:port），不经网关，故零误伤。
+func withInternalGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isInternalPath(r.URL.Path) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("404 page not found\n"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // NewHandler 构建反向代理处理器。
 func NewHandler() http.Handler {
 	mux := http.NewServeMux()
@@ -58,5 +87,5 @@ func NewHandler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-	return mux
+	return withInternalGuard(mux)
 }

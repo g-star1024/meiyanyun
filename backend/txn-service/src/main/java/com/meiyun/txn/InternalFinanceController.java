@@ -58,18 +58,20 @@ public class InternalFinanceController {
     private final TxnCardCancelRepository cardCancelRepo;
     private final PaymentService paymentService;
     private final CustomerCardClient customerCardClient;
+    private final DualSignTicketRepository ticketRepo;
     private final AuditRecorder audit;
 
     public InternalFinanceController(TxnOrderRepository orderRepo, TxnRefundRepository refundRepo,
                                      WriteoffRepository writeoffRepo, TxnCardCancelRepository cardCancelRepo,
                                      PaymentService paymentService, CustomerCardClient customerCardClient,
-                                     AuditRecorder audit) {
+                                     DualSignTicketRepository ticketRepo, AuditRecorder audit) {
         this.orderRepo = orderRepo;
         this.refundRepo = refundRepo;
         this.writeoffRepo = writeoffRepo;
         this.cardCancelRepo = cardCancelRepo;
         this.paymentService = paymentService;
         this.customerCardClient = customerCardClient;
+        this.ticketRepo = ticketRepo;
         this.audit = audit;
     }
 
@@ -120,6 +122,53 @@ public class InternalFinanceController {
                 .toList();
 
         return new FinanceFlowDTO.Bundle(orders, refunds, writeoffs, cardCancels);
+    }
+
+    /**
+     * 现金日结内部投影（B7 三方对账）：GET /api/txn/internal/cash-settle?date=2026-09-05&storeCode=SST01。
+     *
+     * <p>与面向页面的 {@link M4RepurchaseController#cashSettle}（daily:view + 登录人门店域收敛）不同，
+     * 本端点供 finance-service 以系统身份跨域取数：不做 DataScope 门店域收敛（收敛由 finance 侧
+     * 按登录人域二次过滤，与 finance-flows 同边界），按「现金交接」类已完成双签工单聚合，
+     * 日界取 Asia/Shanghai 自然日（双签完成时刻 signed_at2）。金额单位 Long「分」。
+     *
+     * @return 按门店明细行 + 合计（totalAmount 分 / totalAmountYuan 元 / ticketCount 张数）
+     */
+    @GetMapping("/cash-settle")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> cashSettleInternal(
+            @RequestParam(value = "date", required = false) String date,
+            @RequestParam(value = "storeCode", required = false) String storeCode) {
+        String day = (date == null || date.isBlank())
+                ? java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).toString() : date.trim();
+        try {
+            java.time.LocalDate.parse(day);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "日期参数 date 格式非法，需 yyyy-MM-dd（如 2026-09-05）：" + day);
+        }
+        List<DualSignTicketRepository.CashSettleRow> rows = ticketRepo.cashSettleByDate(day,
+                (storeCode == null || storeCode.isBlank()) ? null : storeCode.trim());
+        List<Map<String, Object>> details = rows.stream().<Map<String, Object>>map(r -> {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", r.getStoreCode());
+            row.put("totalAmount", r.getTotalAmount() == null ? 0L : r.getTotalAmount());
+            row.put("ticketCount", r.getTicketCount() == null ? 0L : r.getTicketCount());
+            return row;
+        }).toList();
+        long totalAmount = details.stream().mapToLong(d -> (Long) d.get("totalAmount")).sum();
+        long ticketCount = details.stream().mapToLong(d -> (Long) d.get("ticketCount")).sum();
+
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("date", day);
+        r.put("store", (storeCode == null || storeCode.isBlank()) ? "ALL" : storeCode.trim());
+        r.put("currency", "CNY");
+        r.put("unit", "分");
+        r.put("details", details);
+        r.put("totalAmount", totalAmount);
+        r.put("totalAmountYuan", totalAmount / 100.0);
+        r.put("ticketCount", ticketCount);
+        return r;
     }
 
     /**

@@ -143,14 +143,18 @@ CREATE TABLE IF NOT EXISTS coupon_writeoff_record (
 SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
-  account_mirror, appointment, appointment_month, audit_log, campaign, consultation,
-  contraindication, coupon_grant, coupon_template, coupon_writeoff_chain, coupon_writeoff_record, cross_domain_coeff,
-  customer, customer_tag, customer_tag_rel, dual_sign_ticket,
-  inventory_item, inventory_log, mall_exchange, mall_product, marketing_cfg,
-  member_card, member_level, org_unit, outbox_record, point_rule,
+  account_mirror, appointment, appointment_month, approval_todo, audit_log, campaign,
+  card_finance_event, card_ledger, consult_plan, consult_plan_item, consult_plan_revision,
+  consultation, consumable, consumable_movement, consumable_stock, contraindication,
+  cost_allocation, coupon_grant, coupon_template, coupon_writeoff_chain, coupon_writeoff_record,
+  cross_domain_coeff, customer, customer_tag, customer_tag_rel, dual_sign_ticket,
+  fin_budget, fin_change_log, fin_invoice, fin_setting, fin_subject_enable, finance_event,
+  fund_entry, inventory_item, inventory_log, mall_exchange, mall_product, marketing_cfg,
+  member_card, member_level, order_payment, org_unit, outbox_record, point_rule,
   points_ledger, points_pool, prepay_pool, push_record, region_dist, repurchase,
-  revenue_monthly, role_def, sign_role_pair, sign_tier, staff, store, tax, tenant,
-  txn_card_cancel, txn_order, txn_refund, txn_writeoff, verification, writeoff_record,
+  revenue_monthly, role_def, settlement_period, sign_role_pair, sign_tier, staff, store,
+  tax, tenant, txn_card_cancel, txn_order, txn_refund, txn_writeoff, verification,
+  writeoff_desk_task, writeoff_record,
   order_item, marketing_asset, poster_template, poster_record, live_session, short_video
 RESTART IDENTITY CASCADE;
 SQL

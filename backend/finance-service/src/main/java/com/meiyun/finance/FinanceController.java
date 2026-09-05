@@ -39,12 +39,16 @@ public class FinanceController {
     private final CostAllocationRepository costRepo;
     private final FinanceAggregationService aggregation;
     private final FundEntryService fundEntryService;
+    private final TripartiteReconcileService tripartiteService;
+    private final SettlementService settlementService;
 
     public FinanceController(PrepayPoolRepository poolRepo, TaxRepository taxRepo,
                              AccountMirrorRepository acctRepo, RevenueMonthlyRepository revRepo,
                              OutboxRepository outboxRepo, CostAllocationRepository costRepo,
                              FinanceAggregationService aggregation,
-                             FundEntryService fundEntryService) {
+                             FundEntryService fundEntryService,
+                             TripartiteReconcileService tripartiteService,
+                             SettlementService settlementService) {
         this.poolRepo = poolRepo;
         this.taxRepo = taxRepo;
         this.acctRepo = acctRepo;
@@ -53,6 +57,8 @@ public class FinanceController {
         this.costRepo = costRepo;
         this.aggregation = aggregation;
         this.fundEntryService = fundEntryService;
+        this.tripartiteService = tripartiteService;
+        this.settlementService = settlementService;
     }
 
     /**
@@ -216,6 +222,53 @@ public class FinanceController {
         m.put("netAmount", net);
         m.put("diffRecords", diffRecords);
         return m;
+    }
+
+    /**
+     * 三方对账（B7，DESIGN §9.1）：GET /api/finance/reconcile/tripartite?date=2026-09-06&storeCode=SST01。
+     * 按日聚合 经营域（txn 订单收款/退款/划扣/退卡）× 资金域（fund_entry 落账净额）× 现金日结
+     * （「现金交接」双签工单实点现金），输出各方净额（分/元双金额）、门店明细与差异笔数。
+     * 账账差异扣除财务域独有的期末成本录入（MANUAL）后计；ADJUST 人工调平单列；
+     * 微信/支付宝/银行回单本期未接入，账实核对仅覆盖现金渠道；现金方拉取失败时诚实降级仅出账账结果。
+     * 本端点只读（类级 finance:view），聚合层按登录人门店域逐行收敛，差异处理走 outbox DIFF/ADJUST。
+     */
+    @GetMapping("/reconcile/tripartite")
+    public Map<String, Object> tripartite(
+            @RequestParam(required = false) String date,
+            @RequestParam(required = false) String storeCode) {
+        return tripartiteService.tripartite(date, storeCode);
+    }
+
+    /**
+     * 封账台账（B7，DESIGN §9.2）：GET /api/finance/settlement?periodType=DAY&periodKey=2026-09-05&storeCode=SST01。
+     * 返回已封账期间列表（日结 DAY / 月结 MONTH × 门店，含封账时点分录笔数与净额快照）。
+     * 财务/超管（finance:settlement:view）；数据域逐行收敛，无权门店不返回。
+     */
+    @GetMapping("/settlement")
+    @RequirePerm("finance:settlement:view")
+    public List<Map<String, Object>> settlement(
+            @RequestParam(required = false) String periodType,
+            @RequestParam(required = false) String periodKey,
+            @RequestParam(required = false) String storeCode) {
+        return settlementService.list(periodType, periodKey, storeCode);
+    }
+
+    /**
+     * 日结/月结封账（B7，DESIGN §9.2）：POST /api/finance/settlement。
+     * 锁定该「期间 × 门店」：封账后任何 occurredAt 落入该期间的新分录在落账环节 422 拒绝，
+     * 差错只能走 ADJUST 调平（落当前期间）。封账永久、无解封；重复封账幂等重放。
+     * 财务主管/超管（finance:settlement:edit）；全审计（FIN_SETTLE）。
+     * body：{"periodType":"DAY|MONTH","periodKey":"2026-09-05|2026-09","storeCode":"SST01","memo":"..."}。
+     */
+    @PostMapping("/settlement")
+    @RequirePerm("finance:settlement:edit")
+    public Map<String, Object> settle(@RequestBody Map<String, Object> body) {
+        String periodType = body.get("periodType") == null ? null : String.valueOf(body.get("periodType"));
+        String periodKey = body.get("periodKey") == null ? null : String.valueOf(body.get("periodKey"));
+        String storeCode = body.get("storeCode") == null ? null : String.valueOf(body.get("storeCode"));
+        String memo = body.get("memo") == null ? null : String.valueOf(body.get("memo"));
+        return settlementService.close(periodType, periodKey, storeCode, memo,
+                SecurityContext.currentStaffId());
     }
 
     /**

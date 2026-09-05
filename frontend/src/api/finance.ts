@@ -128,6 +128,117 @@ export const markDiff = (id: number, remark?: string) =>
 /** 差异调平（DIFF → ADJUSTED，补 ADJUST 分录，需复核权限） */
 export const adjustOutbox = (id: number, cmd: AdjustOutboxCmd) =>
   client.post<Record<string, unknown>>(`/finance/outbox/${id}/adjust`, cmd)
+
+// ============================================================
+// 三方对账（B7 §9.1）：经营域（txn 四流）× 资金域（fund_entry 落账）× 现金日结（双签工单）
+// 按日聚合，金额 Long「分」（*Yuan 字段为元）；现金方不可用时 cashAvailable=false 诚实降级
+// ============================================================
+
+/** 三方对账门店明细行（金额均为「分」） */
+export interface TripartiteStoreRow {
+  storeCode: string
+  storeName: string
+  bizNetFen: number
+  bizNetYuan: number
+  postedNetFen: number
+  postedNetYuan: number
+  netDiffFen: number
+  netDiffYuan: number
+  /** 财务域独有：期末成本录入（MANUAL），不参与账账差异判定 */
+  manualCostFen: number
+  /** 扣除期末成本后的账账差异（≠0 即账账不符） */
+  unexplainedDiffFen: number
+  bizCashNetFen: number
+  postedCashNetFen: number
+  /** 双签工单实点现金合计；现金方不可用时 null */
+  cashHandoverFen: number | null
+  cashTicketCount: number
+  /** 现金账实差异（落账现金净额 − 实点现金）；现金方不可用时 null */
+  cashDiffFen: number | null
+  orderCount: number
+  refundCount: number
+  writeoffPairCount: number
+  cardCancelCount: number
+  postedEntryCount: number
+  matched: boolean
+}
+
+/** 三方对账日结果（GET /finance/reconcile/tripartite） */
+export interface TripartiteResult {
+  date: string
+  store: string
+  currency: string
+  unit: string
+  matched: boolean
+  diffStoreCount: number
+  bizNetFen: number
+  bizNetYuan: number
+  postedNetFen: number
+  postedNetYuan: number
+  netDiffFen: number
+  netDiffYuan: number
+  postedManualCostFen: number
+  unexplainedDiffFen: number
+  bizCashNetFen: number
+  postedCashNetFen: number
+  /** 现金日方可用（txn 现金日结拉取成功）；false 时下列现金字段为 null，仅出账账结果 */
+  cashAvailable: boolean
+  cashHandoverFen: number | null
+  cashHandoverYuan: number | null
+  cashTicketCount: number | null
+  cashDiffFen: number | null
+  cashDiffYuan: number | null
+  adjustCount: number
+  adjustNetFen: number
+  flowCounts: Record<string, number>
+  stores: TripartiteStoreRow[]
+  message: string
+}
+
+export const getTripartite = (params?: { date?: string; storeCode?: string }) =>
+  client.get<TripartiteResult>('/finance/reconcile/tripartite', { params })
+
+// ============================================================
+// 封账（B7 §9.2）：日结 DAY / 月结 MONTH 期间锁
+// 封账后该「期间 × 门店」新分录一律 422 拒绝，差错走 ADJUST（落当前期间）；封账永久无解封
+// ============================================================
+
+/** 封账台账行（GET /finance/settlement；netAmountFen 为封账时点净额快照，分，IN 正 OUT 负） */
+export interface SettlementPeriod {
+  settlementId: number
+  periodType: 'DAY' | 'MONTH'
+  periodKey: string // DAY: yyyy-MM-dd；MONTH: yyyy-MM（UTC 口径）
+  storeCode: string
+  storeName: string
+  status: 'CLOSED'
+  entryCount: number
+  netAmountFen: number
+  memo?: string | null
+  closedBy: string
+  closedAt: string
+  duplicated?: boolean
+  message?: string
+}
+
+export interface SettlementQuery {
+  periodType?: 'DAY' | 'MONTH'
+  periodKey?: string
+  storeCode?: string
+}
+
+export const getSettlements = (params?: SettlementQuery) =>
+  client.get<SettlementPeriod[]>('/finance/settlement', { params })
+
+export interface SettlementCmd {
+  periodType: 'DAY' | 'MONTH'
+  periodKey: string // 日结 yyyy-MM-dd / 月结 yyyy-MM
+  storeCode: string
+  memo?: string
+}
+
+export const postSettlement = (cmd: SettlementCmd) =>
+  client.post<SettlementPeriod>('/finance/settlement', cmd)
+
 export const getRevenue = (storeCode?: string, month?: string) =>
   client.get<RevenueMonthly[]>('/finance/revenue', { params: { storeCode, month } })
 
