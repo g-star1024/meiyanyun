@@ -69,11 +69,20 @@ probe_path_of() {
 }
 container_of() {
   local kind="$1" svc="${2:-}"
+  local name
   if [ "$STACK" = "prod" ]; then
-    [ "$kind" = "fe" ] && echo "meiyun-frontend" || echo "meiyun-${svc}-service"
+    name="meiyun-frontend"; [ "$kind" != "fe" ] && name="meiyun-${svc}-service"
   else
-    [ "$kind" = "fe" ] && echo "meiyun-seed-frontend" || echo "meiyun-seed-${svc}-service"
+    name="meiyun-seed-frontend"; [ "$kind" != "fe" ] && name="meiyun-seed-${svc}-service"
   fi
+  # docker compose 可能给容器名加项目哈希前缀（如 b4aaeb2bf0fd_meiyun-seed-store-service）；
+  # 精确名不在运行时，按「服务名结尾」解析实际容器名（精确名或 _<服务名> 结尾均可）。
+  if ! docker inspect -f '{{.State.Running}}' "$name" >/dev/null 2>&1; then
+    local resolved
+    resolved="$(docker ps --format '{{.Names}}' | grep -E "(^|_)${name}\$" | head -1)"
+    [ -n "$resolved" ] && name="$resolved"
+  fi
+  echo "$name"
 }
 gw_port() { [ "$STACK" = "prod" ] && echo 8443 || echo 18443; }
 fe_port() { [ "$STACK" = "prod" ] && echo 8080 || echo 18080; }
