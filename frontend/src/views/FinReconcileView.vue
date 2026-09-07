@@ -17,7 +17,8 @@ import CSelect from '@/components/CSelect.vue'
 import { useFinanceCoreStore, type OutboxItem } from '@/stores/financeCore'
 import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
-import { getTripartite, exportTripartiteCsv, type TripartiteResult } from '@/api/finance'
+import { getTripartite, exportTripartiteCsv, type TripartiteResult,
+  importChannelBills, getChannelReconcile, type ChannelReconcileResult, type ChannelBillImportResult } from '@/api/finance'
 
 const fin = useFinanceCoreStore()
 const auth = useAuthStore()
@@ -25,6 +26,7 @@ const storeCtx = useStoreContext()
 const canReconcile = computed(() => auth.can('finance:reconcile'))
 const canApprove = computed(() => auth.can('finance:reconcile:approve'))
 const canExport = computed(() => auth.can('finance:export'))
+const canReconcileEdit = computed(() => auth.can('finance:reconcile:edit'))
 
 const selectedId = ref<string | null>(null)
 const selected = computed<OutboxItem | null>(() => {
@@ -196,7 +198,7 @@ async function submitAdjust() {
 // 三方对账标签页（B7 §9.1）：经营域（txn 四流）× 资金域（fund_entry 落账）× 现金日结（双签工单）
 // 外部渠道回单（微信/支付宝/银行）本期无自动导入，账实仅覆盖现金；现金方不可用诚实降级
 // ============================================================
-const activeTab = ref<'outbox' | 'tripartite'>('outbox')
+const activeTab = ref<'outbox' | 'tripartite' | 'channel'>('outbox')
 
 function todayShanghai(): string {
   // 与后端一致：Asia/Shanghai 自然日，避免 toISOString 的 UTC 偏移
@@ -260,6 +262,105 @@ async function doExportTri() {
   }
 }
 
+// ============================================================
+// 非现金渠道核对标签页（B12 域一）：系统账（fund_entry 收银落账）× 渠道结算账单（CSV 导入）
+// 按月 + 渠道勾兑：逐单按渠道商户单号比对，出漏单/多单/金额不符；账单未导入诚实降级
+// 资金红线：账单只写勾兑台账，绝不据账单补造实付渠道分录
+// ============================================================
+const CHAN_OPTIONS = [
+  { label: '微信支付', value: 'wxpay' },
+  { label: '支付宝', value: 'alipay' },
+  { label: '银行转账', value: 'transfer' },
+]
+
+function monthShanghai(): string {
+  // Asia/Shanghai 自然月 yyyy-MM（type=month 控件值）
+  return todayShanghai().slice(0, 7)
+}
+
+const chanMonth = ref(monthShanghai())
+const chanChannel = ref('wxpay')
+const chanStore = ref('') // 空 = 全部可见门店
+const chanLoading = ref(false)
+const chanError = ref('')
+const chan = ref<ChannelReconcileResult | null>(null)
+let chanLoaded = false
+
+// 导入区
+const importChannel = ref('wxpay')
+const importStore = ref('') // 空 = CSV 门店列必带；选择后作为门店回落值
+const importBatch = ref('') // 空 = 服务端生成 IMP+北京日-序号
+const importCsv = ref('')
+const importing = ref(false)
+
+function switchTab(tab: 'outbox' | 'tripartite' | 'channel') {
+  activeTab.value = tab
+  if (tab === 'channel' && !chanLoaded) {
+    chanLoaded = true
+    loadChannel()
+  }
+}
+
+function errOf(e: unknown, fallback: string): string {
+  const x = e as { response?: { data?: { message?: string } }; message?: string }
+  return x?.response?.data?.message || x?.message || fallback
+}
+
+async function loadChannel() {
+  if (chanLoading.value) return
+  if (!chanMonth.value) {
+    chanError.value = '请选择对账月份'
+    return
+  }
+  if (!storeCtx.loaded) {
+    try { await storeCtx.loadStores() } catch { /* 门店名回落编码，不阻塞 */ }
+  }
+  chanLoading.value = true
+  chanError.value = ''
+  try {
+    const params: { month: string; channel: string; storeCode?: string } = {
+      month: `${chanMonth.value}-01`,
+      channel: chanChannel.value,
+    }
+    if (chanStore.value) params.storeCode = chanStore.value
+    const { data } = await getChannelReconcile(params)
+    chan.value = data
+  } catch (e) {
+    chan.value = null
+    chanError.value = errOf(e, '渠道勾兑查询失败')
+  } finally {
+    chanLoading.value = false
+  }
+}
+
+async function doImportChannel() {
+  if (importing.value) return
+  if (!importCsv.value.trim()) {
+    flashMsg('请粘贴渠道结算单 CSV 内容')
+    return
+  }
+  importing.value = true
+  chanError.value = ''
+  try {
+    const cmd: { channel: string; storeCode?: string; importBatch?: string; csv: string } = {
+      channel: importChannel.value,
+      csv: importCsv.value,
+    }
+    if (importStore.value) cmd.storeCode = importStore.value
+    if (importBatch.value.trim()) cmd.importBatch = importBatch.value.trim()
+    const { data }: { data: ChannelBillImportResult } = await importChannelBills(cmd)
+    flashMsg(data.message || `导入完成：批次 ${data.importBatch}，成功 ${data.importedRows} 行${data.skippedRows ? `，跳过 ${data.skippedRows} 行` : ''}`)
+    importCsv.value = ''
+    if (chanMonth.value && chanChannel.value === importChannel.value) {
+      await loadChannel()
+    }
+  } catch (e) {
+    chanError.value = errOf(e, '渠道账单导入失败')
+  } finally {
+    importing.value = false
+  }
+}
+
 function exportReport() {
   if (!canExport.value) return
   const head = 'Outbox号,业务类型,交易号,金额,渠道,收银,渠道回单,银行到账,状态\n'
@@ -308,13 +409,16 @@ function exportReport() {
       <div class="flash-line"><CIcon name="check" :size="16" />{{ flash }}</div>
     </CCard>
 
-    <!-- 标签切换：Outbox 逐笔台账 / 三方按日对账（B7 §9.1） -->
+    <!-- 标签切换：Outbox 逐笔台账 / 三方按日对账（B7 §9.1） / 非现金渠道月勾兑（B12） -->
     <div class="rc__tabs">
-      <button class="rc__tab" :class="{ 'is-active': activeTab === 'outbox' }" @click="activeTab = 'outbox'">
+      <button class="rc__tab" :class="{ 'is-active': activeTab === 'outbox' }" @click="switchTab('outbox')">
         <CIcon name="finance" :size="15" />Outbox 对账台账
       </button>
-      <button class="rc__tab" :class="{ 'is-active': activeTab === 'tripartite' }" @click="activeTab = 'tripartite'">
+      <button class="rc__tab" :class="{ 'is-active': activeTab === 'tripartite' }" @click="switchTab('tripartite')">
         <CIcon name="shield" :size="15" />三方对账（按日）
+      </button>
+      <button class="rc__tab" :class="{ 'is-active': activeTab === 'channel' }" @click="switchTab('channel')">
+        <CIcon name="marketing" :size="15" />非现金渠道核对（按月）
       </button>
     </div>
 
@@ -597,6 +701,215 @@ function exportReport() {
         </CCard>
       </template>
     </div>
+
+    <!-- 非现金渠道核对（按月）：系统账 fund_entry × 渠道结算账单 CSV 导入勾兑（B12 域一） -->
+    <div v-if="activeTab === 'channel'" class="tri">
+      <!-- 查询勾兑 -->
+      <CCard class="tri__filters" padding="md">
+        <div class="tri-filters">
+          <div class="tri-field">
+            <span class="tri-field__label">对账月份</span>
+            <input v-model="chanMonth" type="month" class="date-input" />
+          </div>
+          <div class="tri-field">
+            <span class="tri-field__label">支付渠道</span>
+            <CSelect v-model="chanChannel" width="160px" :options="CHAN_OPTIONS" />
+          </div>
+          <div class="tri-field">
+            <span class="tri-field__label">门店范围</span>
+            <CSelect v-model="chanStore" width="220px" :options="triStoreOptions" />
+          </div>
+          <CButton variant="primary" size="sm" :disabled="chanLoading" @click="loadChannel">
+            <CIcon name="finance" :size="14" />{{ chanLoading ? '勾兑中…' : '查询勾兑' }}
+          </CButton>
+        </div>
+      </CCard>
+
+      <!-- 渠道结算单 CSV 导入（只写勾兑台账，不产生资金分录；finance:reconcile:edit） -->
+      <CCard class="tri__note" padding="md">
+        <div class="mirror-line">
+          <CIcon name="export" :size="16" />
+          <span>
+            <strong>渠道结算单导入（CSV 粘贴）：</strong>从微信商户平台 / 支付宝商家中心 / 银行回单下载结算账单，
+            按 8 列「<strong>渠道,门店,订单号,交易金额,手续费,状态,交易时间,结算批次</strong>」整理后粘贴；
+            首行表头自动跳过，状态取 SUCCESS / REFUND（退款金额填正数）/ FAILED，时间格式 yyyy-MM-dd HH:mm:ss。
+            同批次号重复导入整批幂等跳过；批次号留空由系统自动生成。
+            <strong>资金红线：账单只用于勾兑核对，不会据账单补造任何实付渠道分录。</strong>
+            （收银台真实代扣 / API 自动拉单为后续迭代。）
+          </span>
+        </div>
+        <div class="tri-filters" style="margin-top: var(--s-md);">
+          <div class="tri-field">
+            <span class="tri-field__label">账单渠道</span>
+            <CSelect v-model="importChannel" width="160px" :options="CHAN_OPTIONS" />
+          </div>
+          <div class="tri-field">
+            <span class="tri-field__label">门店回落（CSV 门店列为空时）</span>
+            <CSelect v-model="importStore" width="220px" :options="[{ label: '不回落（门店列必填）', value: '' }, ...triStoreOptions.filter((o) => o.value !== '')]" />
+          </div>
+          <div class="tri-field" style="width: 210px;">
+            <span class="tri-field__label">导入批次号（选填）</span>
+            <CInput v-model="importBatch" placeholder="留空自动生成 IMP+日期" :disabled="!canReconcileEdit || importing" />
+          </div>
+        </div>
+        <div style="margin-top: var(--s-md);">
+          <CTextarea v-model="importCsv" :rows="6" :disabled="!canReconcileEdit || importing"
+            placeholder="渠道,门店,订单号,交易金额,手续费,状态,交易时间,结算批次&#10;wxpay,SST01,SO20260901001,1980.00,11.88,SUCCESS,2026-09-01 10:23:45,WX20260902&#10;wxpay,SST01,SO20260901002,2680.00,16.08,REFUND,2026-09-02 15:40:12,WX20260903" />
+        </div>
+        <div class="tri-filters" style="margin-top: var(--s-md); align-items: center;">
+          <CButton variant="primary" size="sm" :disabled="!canReconcileEdit || importing" @click="doImportChannel">
+            <CIcon name="check-square" :size="14" />{{ importing ? '导入中…' : '导入账单 CSV' }}
+          </CButton>
+          <span v-if="!canReconcileEdit" class="cell__sub">无 finance:reconcile:edit 权限，仅可查询勾兑结果</span>
+        </div>
+      </CCard>
+
+      <CCard v-if="chanError" class="tri__err" padding="md">
+        <div class="flash-line" style="color: var(--c-danger-fg);">
+          <CIcon name="alert" :size="16" />{{ chanError }}
+        </div>
+      </CCard>
+
+      <template v-if="chan">
+        <!-- 结论横幅：无账单诚实降级不下结论；有账单按勾兑结果出通过/差异 -->
+        <CCard class="tri__verdict" :class="chan.billsAvailable ? (chan.matched ? 'tri__verdict--ok' : 'tri__verdict--diff') : 'tri__note'" padding="md">
+          <div class="verdict-line">
+            <CIcon :name="chan.billsAvailable ? (chan.matched ? 'check' : 'alert') : 'clock'" :size="18" />
+            <div>
+              <div class="verdict-line__title">
+                <template v-if="!chan.billsAvailable">暂无{{ chan.channelLabel }}账单，未做账实结论</template>
+                <template v-else-if="chan.matched">{{ chan.channelLabel }}账实勾兑通过</template>
+                <template v-else>{{ chan.channelLabel }}存在差异：漏单 {{ chan.missingCount }} · 多单 {{ chan.extraCount }} · 金额不符 {{ chan.amountMismatchCount }}</template>
+              </div>
+              <div class="verdict-line__msg">{{ chan.message }}（{{ chan.month.slice(0, 7) }}）</div>
+            </div>
+          </div>
+        </CCard>
+
+        <!-- 勾兑总览 -->
+        <div class="tri__kpis">
+          <CKpi label="系统账收款（收银落账）" :value="yuan(chan.sysYuan)" tone="brand" icon="finance"
+            :sub="`${chan.sysCount} 笔非现金收款（fund_entry）`" />
+          <CKpi label="账单成功交易额" :value="yuan(chan.billSuccessYuan)" tone="brand" icon="marketing"
+            :sub="`${chan.billSuccessCount} 笔成功 · 账单共 ${chan.billRowCount} 行`" />
+          <CKpi label="账单退款 / 失败" :value="yuan(chan.billRefundYuan)" :tone="chan.billRefundCount || chan.billFailedCount ? 'warning' : 'text'" icon="refund"
+            :sub="`退款 ${chan.billRefundCount} 笔 · 失败 ${chan.billFailedCount} 笔（单列，不参与收款勾兑）`" />
+          <CKpi label="渠道手续费 / 已勾兑" :value="yuan(chan.feeYuan)" tone="text" icon="finance"
+            :sub="`纯手续费行 ${chan.feeOnlyRowCount} 笔 ${yuan(chan.feeOnlyYuan)} · 已勾兑 ${chan.matchedCount} 笔 ${yuan(chan.matchedYuan)}`" />
+        </div>
+
+        <!-- 口径诚实提示 -->
+        <CCard class="tri__note" padding="md">
+          <div class="mirror-line">
+            <CIcon name="clock" :size="16" />
+            <span>
+              勾兑口径：系统侧取当月收银落账的{{ chan.channelLabel }}收款分录（fund_entry），账单侧取已导入结算单的成功交易，
+              按<strong>渠道商户订单号</strong>逐单比对；退款 / 失败行单列提示，不与收款勾兑。
+              漏单（系统有账、账单无）请排查渠道结算是否跨期 / 未到账；多单（账单有、系统无）请排查是否漏记收银或错挂渠道。
+              <strong>差异仅作核对提示，不自动调账、不反向动业务账</strong>；如需处置请回 Outbox 台账按双签流程人工处理。
+            </span>
+          </div>
+        </CCard>
+
+        <!-- 门店勾兑汇总 -->
+        <CCard class="tri__table" padding="none">
+          <div class="list-head">
+            <div class="list-head__left">
+              <span class="list-head__title">门店勾兑汇总（{{ chan.channelLabel }} · {{ chan.month.slice(0, 7) }}）</span>
+              <span class="list-head__hint">{{ chan.stores.length }} 家门店 · 金额单位元</span>
+            </div>
+          </div>
+          <div class="tri-table-wrap">
+            <table class="tri-table">
+              <thead>
+                <tr>
+                  <th>门店</th>
+                  <th class="num">系统收款<small>（笔）</small></th>
+                  <th class="num">账单成功<small>（笔）</small></th>
+                  <th class="num">账单退款<small>（退/失）</small></th>
+                  <th class="num">手续费</th>
+                  <th>结论</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="s in chan.stores" :key="s.storeCode" :class="{ 'row--diff': s.sysFen !== s.billSuccessFen }">
+                  <td>
+                    <div class="tri-store">{{ s.storeName }}</div>
+                    <div class="tri-store__code">{{ s.storeCode }}</div>
+                  </td>
+                  <td class="num">{{ yuan(s.sysYuan) }}<div class="cell__sub">{{ s.sysCount }} 笔</div></td>
+                  <td class="num">{{ yuan(s.billSuccessYuan) }}<div class="cell__sub">{{ s.billSuccessCount }} 笔</div></td>
+                  <td class="num">{{ yuan(s.billRefundYuan) }}<div class="cell__sub">退 {{ s.billRefundCount }} · 失 {{ s.billFailedCount }}</div></td>
+                  <td class="num">{{ yuan(s.feeYuan) }}</td>
+                  <td>
+                    <CStatusPill v-if="s.sysFen === s.billSuccessFen" status="success" dot>相符</CStatusPill>
+                    <CStatusPill v-else status="danger" dot>差异 {{ yuan((s.sysFen - s.billSuccessFen) / 100) }}</CStatusPill>
+                  </td>
+                </tr>
+                <tr v-if="chan.stores.length === 0">
+                  <td colspan="6" class="tri-empty">当月该渠道无可见门店的系统收款或账单数据</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CCard>
+
+        <!-- 差异逐单清单 -->
+        <CCard v-if="chan.missingCount + chan.extraCount + chan.amountMismatchCount > 0" class="tri__table" padding="none">
+          <div class="list-head">
+            <div class="list-head__left">
+              <span class="list-head__title">差异逐单清单</span>
+              <span class="list-head__hint">漏单 {{ chan.missingOrders.length }} · 多单 {{ chan.extraOrders.length }} · 金额不符 {{ chan.amountMismatchOrders.length }}</span>
+            </div>
+          </div>
+          <div class="tri-table-wrap">
+            <table class="tri-table">
+              <thead>
+                <tr>
+                  <th>类型</th>
+                  <th>门店</th>
+                  <th>渠道订单号</th>
+                  <th class="num">系统收款</th>
+                  <th class="num">账单成功额</th>
+                  <th class="num">差额</th>
+                  <th>排查方向</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in chan.missingOrders" :key="'m' + r.storeCode + r.orderNo" class="row--diff">
+                  <td><CStatusPill status="info" dot>漏单</CStatusPill></td>
+                  <td><div class="tri-store__code">{{ r.storeCode }}</div></td>
+                  <td class="tri-store__code">{{ r.orderNo }}</td>
+                  <td class="num">{{ yuan(r.sysYuan) }}</td>
+                  <td class="num"><span class="cell--na">账单无</span></td>
+                  <td class="num cell--diff">{{ yuan(r.sysYuan) }}</td>
+                  <td class="cell__sub">{{ r.reason }}</td>
+                </tr>
+                <tr v-for="r in chan.extraOrders" :key="'e' + r.storeCode + r.orderNo" class="row--diff">
+                  <td><CStatusPill status="warning" dot>多单</CStatusPill></td>
+                  <td><div class="tri-store__code">{{ r.storeCode }}</div></td>
+                  <td class="tri-store__code">{{ r.orderNo }}</td>
+                  <td class="num"><span class="cell--na">系统无</span></td>
+                  <td class="num">{{ yuan(r.billSuccessYuan) }}</td>
+                  <td class="num cell--diff">{{ yuan(r.billSuccessYuan) }}</td>
+                  <td class="cell__sub">{{ r.reason }}</td>
+                </tr>
+                <tr v-for="r in chan.amountMismatchOrders" :key="'a' + r.storeCode + r.orderNo" class="row--diff">
+                  <td><CStatusPill status="danger" dot>金额不符</CStatusPill></td>
+                  <td><div class="tri-store__code">{{ r.storeCode }}</div></td>
+                  <td class="tri-store__code">{{ r.orderNo }}</td>
+                  <td class="num">{{ yuan(r.sysYuan) }}</td>
+                  <td class="num">{{ yuan(r.billSuccessYuan) }}</td>
+                  <td class="num cell--diff">{{ yuan(r.diffYuan) }}</td>
+                  <td class="cell__sub">{{ r.reason }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </CCard>
+      </template>
+    </div>
+
     <div v-if="showAdjust && selected" class="modal-mask" @click.self="showAdjust = false">
       <CCard class="modal" :class="{ 'modal--wide': selected.writable }" title="人工调平（双签复核）" padding="lg">
         <div class="sign-box">

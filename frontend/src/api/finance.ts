@@ -487,3 +487,135 @@ export interface FinSettingsSaveCmd {
 
 export const saveFinSettings = (cmd: FinSettingsSaveCmd) =>
   client.put<{ changed: number; subjectChanged: number }>('/finance/settings', cmd)
+
+// ============================================================
+// B12 非现金渠道账实接入：渠道结算单 CSV 导入 + 月勾兑（挂 /api/finance）
+// 资金红线：账单只写勾兑台账 pay_channel_bill，绝不据账单补造实付渠道分录；
+//           账单未导入时后端诚实降级，不做账实相符结论。
+// 权限：查询 finance:view；导入 finance:reconcile:edit。
+// ============================================================
+
+/** 渠道账单行（GET /finance/channel-bills；金额 Long「分」+「元」双字段） */
+export interface ChannelBillDTO {
+  billId: string
+  channelCode: string
+  storeCode: string
+  /** 渠道商户单号（勾兑键）；空 = 手续费/结算扣费行 */
+  orderNo: string | null
+  txnAmountFen: number
+  txnAmountYuan: number
+  feeAmountFen: number
+  feeAmountYuan: number
+  netAmountFen: number
+  netAmountYuan: number
+  /** SUCCESS 成功 / REFUND 退款（正数金额）/ FAILED 失败（仅笔数） */
+  billStatus: 'SUCCESS' | 'REFUND' | 'FAILED' | string
+  /** ISO-8601（存 +8:00 绝对时刻） */
+  billTime: string
+  settleBatch: string
+  importBatch: string
+}
+
+/** CSV 整批导入结果（POST /finance/channel-bills/import；重放整批幂等跳过） */
+export interface ChannelBillImportResult {
+  importBatch: string
+  totalRows: number
+  importedRows: number
+  skippedRows: number
+  idempotentReplay: boolean
+  message: string
+}
+
+/** 勾兑逐单清单行（matched/missing/extra/amountMismatch 共用，字段按类别取用） */
+export interface ChannelReconcileOrderRow {
+  storeCode: string
+  orderNo: string
+  /** 系统收款额（分/元） */
+  sysFen?: number
+  sysYuan?: number
+  /** 账单成功交易额（分/元） */
+  billSuccessFen?: number
+  billSuccessYuan?: number
+  /** 账单退款额（分）与失败笔数（不参与收款勾兑，单列提示） */
+  billRefundFen?: number
+  billFailedCount?: number
+  /** 金额不符：系统 − 账单（分/元） */
+  diffFen?: number
+  diffYuan?: number
+  /** 漏单/多单中文原因（后端诚实给出排查方向） */
+  reason?: string
+}
+
+/** 勾兑门店汇总行（GET /finance/channel-reconcile） */
+export interface ChannelReconcileStoreRow {
+  storeCode: string
+  storeName: string
+  sysFen: number
+  sysYuan: number
+  sysCount: number
+  billSuccessFen: number
+  billSuccessYuan: number
+  billSuccessCount: number
+  billRefundFen: number
+  billRefundYuan: number
+  billRefundCount: number
+  billFailedCount: number
+  feeFen: number
+  feeYuan: number
+}
+
+/** 月勾兑结果（系统账 fund_entry × 渠道账单 pay_channel_bill，按订单号逐单比对） */
+export interface ChannelReconcileResult {
+  month: string // yyyy-MM-01
+  channel: string
+  channelLabel: string
+  store: string // ALL = 数据域内全部门店
+  currency: string
+  unit: string
+  /** 账单侧是否有数据（false = 未导入账单，仅提示不做账实结论） */
+  billsAvailable: boolean
+  /** 账实勾兑通过（有账单且无漏单/多单/金额不符） */
+  matched: boolean
+  sysFen: number
+  sysYuan: number
+  sysCount: number
+  billSuccessFen: number
+  billSuccessYuan: number
+  billSuccessCount: number
+  billRefundFen: number
+  billRefundYuan: number
+  billRefundCount: number
+  billFailedCount: number
+  billRowCount: number
+  feeFen: number
+  feeYuan: number
+  feeOnlyRowCount: number
+  feeOnlyFen: number
+  feeOnlyYuan: number
+  matchedCount: number
+  matchedFen: number
+  matchedYuan: number
+  /** 漏单（系统有账单无） */
+  missingCount: number
+  /** 多单/未入账（账单有系统无） */
+  extraCount: number
+  amountMismatchCount: number
+  stores: ChannelReconcileStoreRow[]
+  matchedOrders: ChannelReconcileOrderRow[]
+  missingOrders: ChannelReconcileOrderRow[]
+  extraOrders: ChannelReconcileOrderRow[]
+  amountMismatchOrders: ChannelReconcileOrderRow[]
+  message: string
+}
+
+/** 账单行查询（渠道/门店/日区间可选，按交易时间升序，DataScope 逐行收敛） */
+export const listChannelBills = (params?: { channel?: string; storeCode?: string; from?: string; to?: string }) =>
+  client.get<ChannelBillDTO[]>('/finance/channel-bills', { params })
+
+/** 导入渠道结算单 CSV（整批校验、错误行带物理行号中文原因、import_batch 幂等） */
+export const importChannelBills = (cmd: { channel: string; storeCode?: string; importBatch?: string; csv: string }) =>
+  client.post<ChannelBillImportResult>('/finance/channel-bills/import', cmd)
+
+/** 月勾兑：month=yyyy-MM-01、channel 必传（wxpay/alipay/transfer）、storeCode 可选 */
+export const getChannelReconcile = (params: { month: string; channel: string; storeCode?: string }) =>
+  client.get<ChannelReconcileResult>('/finance/channel-reconcile', { params })

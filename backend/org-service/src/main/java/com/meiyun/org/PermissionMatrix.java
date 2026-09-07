@@ -237,6 +237,8 @@ public final class PermissionMatrix {
             "finance:settings:edit",
             "finance:abnormal:dispose",
             "finance:export",
+            "finance:channel:edit",
+            "finance:reconcile:edit",
             "coupon:create",
             "coupon:edit",
             "push:create",
@@ -538,6 +540,8 @@ public final class PermissionMatrix {
                 "finance:settings:edit",
                 "finance:abnormal:dispose",
                 "finance:export",
+                "finance:channel:edit",
+                "finance:reconcile:edit",
                 "coupon:create",
                 "coupon:edit",
                 "push:create",
@@ -806,6 +810,8 @@ public final class PermissionMatrix {
                 "finance:reconcile",
                 "finance:abnormal:dispose",
                 "finance:export",
+                "finance:channel:edit",
+                "finance:reconcile:edit",
                 "coupon:create",
                 "coupon:edit",
                 "push:create",
@@ -1003,6 +1009,8 @@ public final class PermissionMatrix {
                 "finance:settings:edit",
                 "finance:abnormal:dispose",
                 "finance:export",
+                "finance:channel:edit",
+                "finance:reconcile:edit",
                 "inventory:consumable:view"
         ));
         return m;

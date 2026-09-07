@@ -140,6 +140,44 @@ CREATE TABLE IF NOT EXISTS coupon_writeoff_record (
   operator         varchar(32)  NOT NULL,
   verified_at      timestamptz  NOT NULL
 );
+-- B12 非现金渠道账实接入：渠道配置（txn-service；store_code 空串=集团模板；api_v3_key 写后不可读回）
+CREATE TABLE IF NOT EXISTS pay_channel_config (
+  config_id      varchar(24)  PRIMARY KEY,
+  channel_code   varchar(16)  NOT NULL,
+  channel_name   varchar(32)  NOT NULL,
+  store_code     varchar(16)  NOT NULL DEFAULT '',
+  enabled        boolean      NOT NULL DEFAULT true,
+  app_id         varchar(64),
+  mch_id         varchar(64),
+  api_v3_key     varchar(128),
+  cert_serial    varchar(128),
+  notify_url     varchar(256),
+  reconcile_mode varchar(16)  NOT NULL DEFAULT 'IMPORT',
+  fee_rate       integer      NOT NULL DEFAULT 0,
+  remark         varchar(256),
+  created_by     varchar(32),
+  created_at     timestamptz  NOT NULL,
+  updated_by     varchar(32),
+  updated_at     timestamptz,
+  CONSTRAINT uk_pay_channel_config UNIQUE (channel_code, store_code)
+);
+-- B12 渠道账单（finance-service；金额 bigint 存「分」；order_no 空=手续费行；仅勾兑台账，不产生实付分录）
+CREATE TABLE IF NOT EXISTS pay_channel_bill (
+  bill_id      varchar(24)  PRIMARY KEY,
+  channel_code varchar(16)  NOT NULL,
+  store_code   varchar(16)  NOT NULL,
+  order_no     varchar(24),
+  txn_amount   bigint       NOT NULL,
+  fee_amount   bigint       NOT NULL DEFAULT 0,
+  net_amount   bigint       NOT NULL,
+  bill_status  varchar(16)  NOT NULL,
+  bill_time    timestamptz  NOT NULL,
+  settle_batch varchar(32)  NOT NULL,
+  import_batch varchar(24)  NOT NULL,
+  created_at   timestamptz  NOT NULL,
+  CONSTRAINT uk_pay_channel_bill UNIQUE (channel_code, order_no, settle_batch)
+);
+CREATE INDEX IF NOT EXISTS idx_pay_channel_bill_time ON pay_channel_bill(bill_time);
 -- B13 房间床位主数据（store-service JPA ddl-auto 业务表）
 -- treatment_room 房间档案：room_type 用途（TREATMENT/CONSULT/OBSERVE/RECOVERY），status 房间停用态（一期恒 ACTIVE）；
 -- 床位实时占用态（FREE/IN_USE/SANITIZING）一期不持久化，仅 treatment_bed.maint_status 维护态落库（OK/MAINTENANCE）。
@@ -241,6 +279,7 @@ TRUNCATE TABLE
   tax, tenant, txn_card_cancel, txn_order, txn_refund, txn_writeoff, verification,
   writeoff_desk_task, writeoff_record,
   order_item, marketing_asset, poster_template, poster_record, live_session, short_video,
+  pay_channel_config, pay_channel_bill,
   treatment_room, treatment_bed, room_operation_log, equipment, equipment_maintenance
 RESTART IDENTITY CASCADE;
 SQL
@@ -272,6 +311,24 @@ else
 fi
 
 echo ""
+echo ""
+echo "==> [可选] 若 seed 联调栈 txn-service 在运行，重启它以触发 B12 支付渠道配置启动播种"
+# reset 会 TRUNCATE pay_channel_config；wxpay/alipay enabled（测试参数、密钥占位非真实凭证）、
+# transfer disabled 三行集团模板由 txn-service 的 PayChannelDataInitializer（@Order 60）启动时幂等补齐。
+# 渠道配置经收银/对账链路读取，必须在 finance 勾兑与 E2E 导入账单前就绪。容器未起或旧镜像则跳过。
+SEED_TXN_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '(^|_)meiyun-seed-txn-service$' | head -1)"
+if [ -n "$SEED_TXN_CONTAINER" ]; then
+  echo "    重启 $SEED_TXN_CONTAINER 触发支付渠道配置种子 ..."
+  docker restart "$SEED_TXN_CONTAINER" >/dev/null
+  echo "    等待 healthy ..."
+  for _ in $(seq 1 40); do
+    [ "$(docker inspect "$SEED_TXN_CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && break
+    sleep 3
+  done
+  echo "    $SEED_TXN_CONTAINER 已就绪，支付渠道配置（wxpay/alipay/transfer）可查。"
+else
+  echo "    meiyun-seed-txn-service 未运行，跳过（起栈后 txn-service 启动即自动播种）。"
+fi
 echo "==> [可选] 若 seed 联调栈 marketing-service 在运行，重启它以触发 M5 营销数据启动播种"
 # reset 会 TRUNCATE marketing_asset / poster_template / poster_record / live_session / short_video；
 # 素材库(10)/海报(6 模板+6 记录)/直播团购(7 场次+5 短视频) 的演示种子由 marketing-service 的
@@ -313,6 +370,21 @@ else
 fi
 
 echo ""
+
+echo ""
+echo "==> 灌入 B12 渠道账单演示种子（pay_channel_bill，1 条故意「账单有系统无」差异）"
+# 设计 §3.5：按 seed 已收款订单造匹配账单 + 故意 1 条漏单差异。但 seed 静态 txn_order 无配套
+# order_payment/fund_entry（收款分录由真实收银动作产生），匹配账单请在 E2E 中走「导入账单 CSV」
+# 生成（不伪造 fund_entry，守资金红线）。这里仅种 1 条 2026-09 wxpay 成功账单，订单号在系统侧
+# 不存在 → 勾兑稳定演示「多单/未入账」差异；重跑 reset 前 TRUNCATE 已清空，幂等可重复执行。
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
+INSERT INTO pay_channel_bill
+  (bill_id, channel_code, store_code, order_no, txn_amount, fee_amount, net_amount,
+   bill_status, bill_time, settle_batch, import_batch, created_at)
+VALUES
+  ('PCB-SEED-000001', 'wxpay', 'SST01', 'WX-SEED-DIFF-20260901', 128000, 768, 127232,
+   'SUCCESS', '2026-09-01 10:30:00+08:00', 'WX20260902', 'IMP-SEED-000001', now());
+SQL
 echo "✅ 完成。测试库 $SEED_DB 已就绪（可随时重跑本脚本 reset）。"
 echo "   行数核对："
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
@@ -329,6 +401,8 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
    UNION ALL SELECT 'poster_record='||count(*) FROM poster_record
    UNION ALL SELECT 'live_session='||count(*) FROM live_session
    UNION ALL SELECT 'short_video='||count(*) FROM short_video
+   UNION ALL SELECT 'pay_channel_config(启动播种)='||count(*) FROM pay_channel_config
+   UNION ALL SELECT 'pay_channel_bill(演示种子)='||count(*) FROM pay_channel_bill
    UNION ALL SELECT 'treatment_room(启动播种)='||count(*) FROM treatment_room
    UNION ALL SELECT 'treatment_bed(启动播种)='||count(*) FROM treatment_bed
    UNION ALL SELECT 'room_operation_log(写操作产生)='||count(*) FROM room_operation_log

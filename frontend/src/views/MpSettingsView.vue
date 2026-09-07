@@ -1,27 +1,36 @@
 <script setup lang="ts">
 /* ============================================================
  * 小程序与支付配置 /admin/mp-settings（管理后台）
- * 录入：小程序 AppID/AppSecret、微信支付商户号/APIv3 密钥/证书；
- *      以及对小程序运行时下发的公开配置（品牌/客服/功能开关）。
+ * 录入：小程序 AppID/AppSecret；非现金支付渠道（微信支付/支付宝/
+ *      银行转账）对接参数——真实接入 GET/POST /api/txn/pay-channels；
+ *      以及对小程序运行时下发的公开配置（品牌/客服/功能开关，本地）。
  * 安全红线：密钥仅加密存服务端、前端只显掩码，永不下发到小程序。
  * ============================================================ */
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
 import CKpi from '@/components/CKpi.vue'
 import CIcon from '@/components/CIcon.vue'
 import { useMpSettingsStore } from '@/stores/mpSettings'
+import { useAuthStore } from '@/stores/auth'
+import { listPayChannels, upsertPayChannel, togglePayChannel, type PayChannelDTO } from '@/api/payChannel'
 
 const store = useMpSettingsStore()
+const auth = useAuthStore()
+const canEditChannel = computed(() => auth.can('finance:channel:edit'))
 
 const flash = ref<{ type: 'ok' | 'warn'; text: string } | null>(null)
 function setFlash(text: string, type: 'ok' | 'warn' = 'ok') {
   flash.value = { type, text }
   window.setTimeout(() => (flash.value = null), 3500)
 }
+function errMsg(e: unknown, fallback: string): string {
+  const anyE = e as { response?: { data?: { message?: string } }; message?: string }
+  return anyE?.response?.data?.message || anyE?.message || fallback
+}
 
-// ---------- 小程序身份 ----------
+// ---------- 小程序身份（本地配置） ----------
 const cred = reactive({
   appId: '',
   appSecret: '',
@@ -38,30 +47,176 @@ function saveCred() {
   setFlash('小程序配置已保存（AppSecret 已加密存储，仅显示掩码）')
 }
 
-// ---------- 微信支付 ----------
-const payForm = reactive({
-  mchId: '',
-  apiV3Key: '',
-  certSerial: '',
-  notifyUrl: store.pay.notifyUrl,
-})
-const certUploaded = ref(false)
-function onCert() {
-  // 真实实现调文件上传接口；此处仅标记
-  certUploaded.value = true
-  setFlash('商户证书已选择，保存后将上传至服务端密钥库')
+// ---------- 非现金支付渠道（真实接入 /api/txn/pay-channels） ----------
+interface ChannelForm {
+  appId: string
+  mchId: string
+  apiV3Key: string
+  certSerial: string
+  notifyUrl: string
+  feeRatePct: string
+  remark: string
 }
-function savePay() {
-  if (!payForm.mchId.trim()) {
+interface ChannelDef {
+  code: string
+  name: string
+  appId: boolean
+  secret: boolean
+  cert: boolean
+  notify: boolean
+  appIdLabel?: string
+  appIdPh?: string
+  mchLabel?: string
+  mchPh?: string
+  secretLabel?: string
+  secretPh?: string
+  secretMasked?: string
+  notifyPh?: string
+  remarkLabel?: string
+  remarkPh?: string
+}
+const CHANNEL_DEFS: ChannelDef[] = [
+  {
+    code: 'wxpay', name: '微信支付', appId: true, secret: true, cert: true, notify: true,
+    appIdLabel: '微信 AppID（小程序/公众号，选填）', appIdPh: 'wx 开头，如 wx1234567890abcdef',
+    mchLabel: '微信支付商户号 mchid', mchPh: '如 1600000001',
+    secretLabel: 'APIv3 密钥（录入后加密存储）', secretPh: '32 位密钥，仅填写时传输；留空保存不修改',
+    secretMasked: '已保存 APIv3 密钥：****（留空保存不修改）',
+    notifyPh: 'https://api.xxx.com/api/c/pay/notify',
+  },
+  {
+    code: 'alipay', name: '支付宝', appId: true, secret: true, cert: false, notify: true,
+    appIdLabel: '支付宝应用 APPID', appIdPh: '如 2021000000000000',
+    mchLabel: '支付宝商户号 PID', mchPh: '2088 开头的合作身份者 ID',
+    secretLabel: '应用私钥（录入后加密存储）', secretPh: '仅填写时传输；留空保存不修改',
+    secretMasked: '已保存应用私钥：****（留空保存不修改）',
+    notifyPh: 'https://api.xxx.com/api/c/alipay/notify',
+  },
+  {
+    code: 'transfer', name: '银行转账', appId: false, secret: false, cert: false, notify: false,
+    mchLabel: '银行收款账号（选填）', mchPh: '对公账户账号',
+    remarkLabel: '开户行 / 户名备注（选填）', remarkPh: '如：招商银行杭州分行 / 杭州美研医疗美容门诊部',
+  },
+]
+function emptyForm(): ChannelForm {
+  return { appId: '', mchId: '', apiV3Key: '', certSerial: '', notifyUrl: '', feeRatePct: '', remark: '' }
+}
+const forms = reactive<Record<string, ChannelForm>>({
+  wxpay: emptyForm(),
+  alipay: emptyForm(),
+  transfer: emptyForm(),
+})
+const enabledState = reactive<Record<string, boolean>>({ wxpay: true, alipay: true, transfer: false })
+const certUploaded = reactive<Record<string, boolean>>({ wxpay: false, alipay: false, transfer: false })
+const chanMap = ref<Record<string, PayChannelDTO>>({})
+const chanLoading = ref(false)
+const chanLoadErr = ref('')
+const savingCode = ref('')
+
+async function loadChannels() {
+  chanLoading.value = true
+  chanLoadErr.value = ''
+  try {
+    const { data } = await listPayChannels()
+    const map: Record<string, PayChannelDTO> = {}
+    for (const d of data) {
+      if (d.builtin || d.storeCode) continue
+      map[d.channelCode] = d
+    }
+    chanMap.value = map
+    for (const def of CHANNEL_DEFS) {
+      const d = map[def.code]
+      enabledState[def.code] = d ? d.enabled : def.code !== 'transfer'
+      certUploaded[def.code] = false
+      forms[def.code] = {
+        appId: d?.appId ?? '',
+        mchId: d?.mchId ?? '',
+        apiV3Key: '',
+        certSerial: d?.certSerial ?? '',
+        notifyUrl: d?.notifyUrl ?? '',
+        feeRatePct: d && d.feeRate ? String(Math.round((d.feeRate / 100) * 100) / 100) : '',
+        remark: d?.remark ?? '',
+      }
+    }
+  } catch (e) {
+    chanLoadErr.value = errMsg(e, '渠道配置加载失败')
+  } finally {
+    chanLoading.value = false
+  }
+}
+onMounted(loadChannels)
+
+function onCert(code: string) {
+  certUploaded[code] = true
+  setFlash('商户证书已选择，证书序列号请同步登记到上方输入框后保存')
+}
+
+async function saveChannel(code: string) {
+  const def = CHANNEL_DEFS.find((d) => d.code === code)!
+  const f = forms[code]
+  if (code === 'wxpay' && !f.mchId.trim()) {
     setFlash('请填写微信支付商户号', 'warn')
     return
   }
-  store.savePay({ ...payForm, certUploaded: certUploaded.value || store.pay.certHasUploaded })
-  payForm.apiV3Key = ''
-  setFlash('微信支付配置已保存（密钥/证书仅存服务端，不下发到小程序）')
+  if (code === 'alipay' && !f.mchId.trim()) {
+    setFlash('请填写支付宝商户号 PID', 'warn')
+    return
+  }
+  let feeRate = 0
+  const pct = f.feeRatePct.trim()
+  if (pct) {
+    const v = Number(pct)
+    if (!Number.isFinite(v) || v < 0 || v > 1000) {
+      setFlash('手续费率无效：请填 0~1000 之间的百分数（如 0.60 表示 0.6%）', 'warn')
+      return
+    }
+    feeRate = Math.round(v * 100)
+  }
+  savingCode.value = code
+  try {
+    await upsertPayChannel({
+      channelCode: code,
+      storeCode: '',
+      enabled: enabledState[code],
+      appId: f.appId.trim() || null,
+      mchId: f.mchId.trim() || null,
+      apiV3Key: f.apiV3Key,
+      certSerial: f.certSerial.trim() || null,
+      notifyUrl: f.notifyUrl.trim() || null,
+      feeRate,
+      remark: f.remark.trim() || null,
+    })
+    setFlash(`${def.name}配置已保存（密钥仅存服务端，不下发到小程序）`)
+    await loadChannels()
+  } catch (e) {
+    setFlash(errMsg(e, `${def.name}配置保存失败`), 'warn')
+  } finally {
+    savingCode.value = ''
+  }
 }
 
-// ---------- 运行时公开配置（下发到小程序） ----------
+async function toggleChannel(code: string) {
+  const d = chanMap.value[code]
+  if (!d?.configId) return
+  try {
+    await togglePayChannel(d.configId)
+    await loadChannels()
+  } catch (e) {
+    setFlash(errMsg(e, '渠道启停失败'), 'warn')
+  }
+}
+
+function onSwitch(code: string) {
+  if (!canEditChannel.value) return
+  const d = chanMap.value[code]
+  if (!d?.configId) {
+    enabledState[code] = !enabledState[code]
+    return
+  }
+  toggleChannel(code)
+}
+
+// ---------- 运行时公开配置（下发到小程序，本地） ----------
 const pub = reactive({ ...store.publicConfig })
 function savePub() {
   store.savePublicConfig({ ...pub })
@@ -71,7 +226,7 @@ function savePub() {
 const kpis = computed(() => [
   { label: '配置完成度', icon: 'dashboard', value: `${store.completion}%`, tone: (store.ready ? 'success' : 'warning') as 'success' | 'warning', sub: store.ready ? '可提审发布' : '待完善' },
   { label: '小程序 AppID', icon: 'tool', value: store.credential.appId || '未配置', tone: 'text' as const, sub: '构建期写死' },
-  { label: '支付商户号', icon: 'order', value: store.pay.mchId || '未配置', tone: 'text' as const, sub: '服务端机密' },
+  { label: '微信支付商户号', icon: 'order', value: chanMap.value.wxpay?.mchId || '未配置', tone: 'text' as const, sub: '服务端机密' },
   { label: '支付开关', icon: 'bell', value: pub.wechatPayEnabled ? '已开启' : '已关闭', tone: (pub.wechatPayEnabled ? 'brand' : 'text') as 'brand' | 'text', sub: '运行时下发' },
 ])
 
@@ -116,6 +271,11 @@ function toggle(key: 'wechatPayEnabled' | 'pointsMallEnabled' | 'inviteEnabled')
       </div>
     </CCard>
 
+    <div v-if="chanLoadErr" class="flash flash--warn">
+      <CIcon name="alert" :size="15" />
+      <span>支付渠道配置加载失败：{{ chanLoadErr }}（无 integration:view 权限或支付服务不可达；本地配置不受影响）</span>
+    </div>
+
     <div class="grid">
       <!-- 小程序身份 -->
       <CCard title="小程序基础配置">
@@ -134,25 +294,88 @@ function toggle(key: 'wechatPayEnabled' | 'pointsMallEnabled' | 'inviteEnabled')
         </div>
       </CCard>
 
-      <!-- 微信支付 -->
-      <CCard>
+      <!-- 非现金支付渠道（真实接入 /api/txn/pay-channels） -->
+      <CCard v-for="def in CHANNEL_DEFS" :key="def.code">
         <template #header>
-          <h3 class="card-h"><CIcon name="order" :size="16" /> 微信支付配置（服务端使用）</h3>
+          <h3 class="card-h"><CIcon name="order" :size="16" /> {{ def.name }}配置（服务端使用）</h3>
         </template>
         <div class="form">
-          <CInput v-model="payForm.mchId" label="微信支付商户号 mchid" placeholder="如 1600000001" />
-          <CInput v-model="payForm.apiV3Key" label="APIv3 密钥（录入后加密存储）" placeholder="32 位密钥，仅填写时传输" type="password" />
-          <div v-if="store.pay.apiV3KeyMasked" class="masked">已保存 APIv3 密钥：<b>{{ store.pay.apiV3KeyMasked }}</b></div>
-          <CInput v-model="payForm.certSerial" label="商户证书序列号（选填）" placeholder="证书序列号" />
-          <CInput v-model="payForm.notifyUrl" label="支付回调地址（服务端）" placeholder="https://api.xxx.com/api/c/pay/notify" />
-          <div class="cert">
-            <CButton variant="secondary" size="sm" @click="onCert">上传商户私钥证书（apiclient_key.pem）</CButton>
-            <span class="cert__state" :class="{ ok: certUploaded || store.pay.certHasUploaded }">
-              {{ certUploaded || store.pay.certHasUploaded ? '✓ 已上传' : '未上传' }}
+          <CInput
+            v-if="def.appId"
+            v-model="forms[def.code].appId"
+            :label="def.appIdLabel"
+            :placeholder="def.appIdPh"
+            :disabled="!canEditChannel || chanLoading"
+          />
+          <CInput
+            v-model="forms[def.code].mchId"
+            :label="def.mchLabel"
+            :placeholder="def.mchPh"
+            :disabled="!canEditChannel || chanLoading"
+          />
+          <template v-if="def.secret">
+            <CInput
+              v-model="forms[def.code].apiV3Key"
+              :label="def.secretLabel"
+              :placeholder="def.secretPh"
+              type="password"
+              :disabled="!canEditChannel || chanLoading"
+            />
+            <div v-if="chanMap[def.code]?.hasApiKey" class="masked">{{ def.secretMasked }}</div>
+          </template>
+          <CInput
+            v-if="def.cert"
+            v-model="forms[def.code].certSerial"
+            label="商户证书序列号（选填）"
+            placeholder="证书序列号"
+            :disabled="!canEditChannel || chanLoading"
+          />
+          <CInput
+            v-if="def.notify"
+            v-model="forms[def.code].notifyUrl"
+            label="支付回调地址（服务端）"
+            :placeholder="def.notifyPh"
+            :disabled="!canEditChannel || chanLoading"
+          />
+          <CInput
+            v-model="forms[def.code].feeRatePct"
+            label="手续费率（%，选填，用于账单核对口径）"
+            placeholder="如 0.60 表示 0.6%，留空为 0"
+            type="number"
+            :disabled="!canEditChannel || chanLoading"
+          />
+          <CInput
+            v-if="def.remarkLabel"
+            v-model="forms[def.code].remark"
+            :label="def.remarkLabel"
+            :placeholder="def.remarkPh"
+            :disabled="!canEditChannel || chanLoading"
+          />
+          <div v-if="def.cert" class="cert">
+            <CButton variant="secondary" size="sm" :disabled="!canEditChannel" @click="onCert(def.code)">
+              上传商户私钥证书（apiclient_key.pem）
+            </CButton>
+            <span class="cert__state" :class="{ ok: certUploaded[def.code] || !!chanMap[def.code]?.certSerial }">
+              {{ certUploaded[def.code] || chanMap[def.code]?.certSerial ? '✓ 已登记' : '未上传' }}
             </span>
           </div>
+          <div class="masked">
+            当前状态：<b>{{ enabledState[def.code] ? '已启用' : '已停用' }}</b>；
+            对账方式：账单 CSV 导入勾兑（收银台真实代扣/API 拉单为后续迭代）
+          </div>
           <div class="actions">
-            <CButton variant="primary" @click="savePay">保存支付配置</CButton>
+            <CButton
+              variant="primary"
+              :disabled="!canEditChannel || chanLoading || savingCode === def.code"
+              @click="saveChannel(def.code)"
+            >保存{{ def.name }}配置</CButton>
+            <CButton
+              v-if="chanMap[def.code]?.configId"
+              variant="secondary"
+              :disabled="!canEditChannel"
+              @click="onSwitch(def.code)"
+            >{{ enabledState[def.code] ? '停用' : '启用' }}</CButton>
+            <span v-if="!canEditChannel" class="pub-hint">无 finance:channel:edit 权限，仅可查看</span>
           </div>
         </div>
       </CCard>
