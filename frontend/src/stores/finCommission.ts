@@ -1,13 +1,21 @@
 // ============================================================
-// finCommission —— M6-08 咨询师提成
-// 业财一体红线：提成仅基于"已双签划扣确认收入"镜像试算与审批，
-// 提成发放走外部薪酬系统，本 store 只登记提成单、勾稽 financeCore.writeoffConfirmed，
+// finCommission —— M6-08 薪酬提成（B9 后端化）
+// 业财一体红线：提成仅基于「已双签划扣确认收入」镜像试算与审批，
+// 提成发放走外部薪酬系统，本 store 只登记提成单、勾稽 finance 侧业绩基数，
 // 绝不直接动账。
+// 数据全部来自 finance-service（/finance/commission*、/finance/comp-configs、
+// /finance/commission-rules）；适配层负责 分↔元、万分位↔小数、yyyy-MM-01↔yyyy-MM 换算。
+// 写操作的权限/校验/审计由后端四件套兜底，失败抛错由调用方 toast。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
-import { useAuthStore } from './auth'
+import {
+  listCommission, listCompConfigs, listCommissionRules,
+  generateCommission as apiGenerate, submitCommission as apiSubmit,
+  approveCommission as apiApprove, rejectCommission as apiReject,
+  markCommissionPaid as apiMarkPaid,
+  type CommissionRuleDTO, type CommissionRecordDTO, type StaffCompConfigDTO, type RuleTierDTO,
+} from '@/api/commission'
 
 export type CommissionStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'PAID' | 'REJECTED'
 export type CommissionBase = 'ORDER' | 'WRITEOFF' | 'RECHARGE'
@@ -17,7 +25,7 @@ export interface CommissionRule {
   id: string
   name: string
   base: CommissionBase
-  /** 阶梯：业绩下限 ~ 比例 */
+  /** 阶梯：业绩下限（元）~ 比例（0~1 小数） */
   tiers: { min: number; rate: number; label: string }[]
   /** 适用岗位 */
   role: CommRole | 'ALL'
@@ -30,66 +38,154 @@ export interface CommissionItem {
   consultantId: string
   consultantName: string
   title: string
+  ruleId: string | null
   ruleName: string
-  /** 业绩基数（来自镜像：已双签划扣确认金额） */
+  /** 业绩口径（取自规则 base；无规则回退 WRITEOFF） */
+  base: CommissionBase
+  /** 业绩基数（元，来自镜像口径） */
   baseAmount: number
-  /** 阶梯明细 */
+  /** 阶梯明细（金额元、rate 小数） */
   tiers: { label: string; amount: number; rate: number; commission: number }[]
-  commission: number        // 提成合计
+  commission: number        // 提成合计（元）
   status: CommissionStatus
   orderCount: number
   approver?: string
-  approvedAt?: string
-  paidAt?: string
-  remark?: string
+  approvedAt?: string | null
+  paidAt?: string | null
+  remark?: string | null
 }
 
-const STATUS_LABEL: Record<CommissionStatus, string> = {
+/** 员工薪酬配置（底薪+适用规则），金额「元」、月份 yyyy-MM */
+export interface StaffCompConfig {
+  compId: string
+  staffId: string
+  staffName: string
+  storeCode: string | null
+  baseSalary: number
+  commissionRuleId: string | null
+  effectiveMonth: string
+  status: 'ACTIVE' | 'INACTIVE'
+}
+
+export const STATUS_LABEL: Record<CommissionStatus, string> = {
   DRAFT: '待提交',
   SUBMITTED: '待审批',
   APPROVED: '已审批待发放',
   PAID: '已发放',
   REJECTED: '已驳回',
 }
-const STATUS_PILL: Record<CommissionStatus, 'warning' | 'primary' | 'info' | 'success' | 'danger'> = {
+export const STATUS_PILL: Record<CommissionStatus, 'warning' | 'primary' | 'info' | 'success' | 'danger'> = {
   DRAFT: 'warning',
   SUBMITTED: 'primary',
   APPROVED: 'info',
   PAID: 'success',
   REJECTED: 'danger',
 }
-const BASE_LABEL: Record<CommissionBase, string> = {
+export const BASE_LABEL: Record<CommissionBase, string> = {
   ORDER: '成交额',
   WRITEOFF: '划扣确认收入',
   RECHARGE: '充值额',
 }
 
+const ROLE_TITLE: Record<string, string> = {
+  CONSULTANT: '咨询师',
+  DOCTOR: '主诊医生',
+  BEAUTICIAN: '美疗师',
+  ALL: '通用岗位',
+}
+
+/** 分 → 元（两位小数） */
+function fenToYuan(fen: number | null | undefined): number {
+  return Math.round((fen ?? 0) / 100 * 100) / 100
+}
+/** 元 → 分（四舍五入） */
+export function yuanToFen(yuan: number): number {
+  return Math.round(yuan * 100)
+}
+/** 万分位 → 小数（600 → 0.06） */
+function bpToRate(bp: number | null | undefined): number {
+  return (bp ?? 0) / 10000
+}
+/** 小数 → 万分位（0.06 → 600） */
+export function rateToBp(rate: number): number {
+  return Math.round(rate * 10000)
+}
+
+/** 解析规则 tiersJson（分/万分位 → 元/小数） */
+function parseRuleTiers(dto: CommissionRuleDTO): CommissionRule['tiers'] {
+  try {
+    const raw = JSON.parse(dto.tiersJson || '[]') as Partial<RuleTierDTO>[]
+    return raw.map((t) => ({
+      min: fenToYuan(t.min ?? 0),
+      rate: bpToRate(t.rate ?? 0),
+      label: t.label || `${fenToYuan(t.min ?? 0)} 元以上 ${(bpToRate(t.rate ?? 0) * 100).toFixed(1)}%`,
+    }))
+  } catch {
+    return []
+  }
+}
+
+/** 近 N 个月的 yyyy-MM-01 列表（当月在前） */
+function recentMonths(count: number): string[] {
+  const out: string[] = []
+  const now = new Date()
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`)
+  }
+  return out
+}
+
 export const useFinCommissionStore = defineStore('finCommission', () => {
-  const auth = useAuthStore()
-  const activity = useActivityStore()
-
-  const rules = ref<CommissionRule[]>([
-    {
-      id: 'r1', name: '咨询师标准阶梯', base: 'WRITEOFF', role: 'CONSULTANT', active: true,
-      tiers: [
-        { min: 0, rate: 0.06, label: '基础 6%' },
-        { min: 80000, rate: 0.08, label: '达标 8%' },
-        { min: 150000, rate: 0.10, label: '卓越 10%' },
-        { min: 250000, rate: 0.12, label: '冠军 12%' },
-      ],
-    },
-    {
-      id: 'r2', name: '医生操作提成', base: 'WRITEOFF', role: 'DOCTOR', active: true,
-      tiers: [
-        { min: 0, rate: 0.10, label: '固定 10%' },
-        { min: 100000, rate: 0.12, label: '超额 12%' },
-      ],
-    },
-  ])
-
+  const rules = ref<CommissionRule[]>([])
+  const compConfigs = ref<StaffCompConfig[]>([])
   const items = ref<CommissionItem[]>([])
   const filterStatus = ref<CommissionStatus | 'ALL'>('ALL')
   const filterPeriod = ref<string>('ALL')
+  const loading = ref(false)
+
+  function ruleOf(id: string | null | undefined): CommissionRule | undefined {
+    if (!id) return undefined
+    return rules.value.find((r) => r.id === id)
+  }
+
+  /** DTO → 页面模型（规则须先装载以解析 title/base；未匹配规则时诚实回退） */
+  function toItem(dto: CommissionRecordDTO): CommissionItem {
+    const rule = ruleOf(dto.ruleId)
+    let tiers: CommissionItem['tiers'] = []
+    try {
+      const raw = JSON.parse(dto.tiersJson || '[]') as Array<{
+        label?: string; min?: number; amount?: number; rate?: number; commission?: number
+      }>
+      tiers = raw.map((t) => ({
+        label: t.label || '提成档位',
+        amount: fenToYuan(t.amount ?? 0),
+        rate: bpToRate(t.rate ?? 0),
+        commission: fenToYuan(t.commission ?? 0),
+      }))
+    } catch {
+      tiers = []
+    }
+    return {
+      id: dto.recordId,
+      period: dto.period ? dto.period.slice(0, 7) : '',
+      consultantId: dto.staffId,
+      consultantName: dto.staffName,
+      title: rule ? ROLE_TITLE[rule.role] ?? '提成人员' : '提成人员',
+      ruleId: dto.ruleId,
+      ruleName: dto.ruleName || rule?.name || '未绑定规则',
+      base: rule?.base ?? 'WRITEOFF',
+      baseAmount: fenToYuan(dto.baseAmount),
+      tiers,
+      commission: fenToYuan(dto.commission),
+      status: dto.status,
+      orderCount: dto.orderCount ?? 0,
+      approver: dto.approver ?? undefined,
+      approvedAt: dto.approvedAt,
+      paidAt: dto.paidAt,
+      remark: dto.remark,
+    }
+  }
 
   const totalCommission = computed(() => items.value.reduce((s, i) => s + i.commission, 0))
   const approvedCommission = computed(() => items.value.filter((i) => i.status === 'APPROVED' || i.status === 'PAID').reduce((s, i) => s + i.commission, 0))
@@ -97,7 +193,7 @@ export const useFinCommissionStore = defineStore('finCommission', () => {
   const paidCommission = computed(() => items.value.filter((i) => i.status === 'PAID').reduce((s, i) => s + i.commission, 0))
 
   const periods = computed(() => {
-    const set = new Set(items.value.map((i) => i.period))
+    const set = new Set(items.value.map((i) => i.period).filter(Boolean))
     return [...set].sort().reverse()
   })
 
@@ -116,7 +212,7 @@ export const useFinCommissionStore = defineStore('finCommission', () => {
     return rules.value.find((r) => r.active && (r.role === role || r.role === 'ALL'))
   }
 
-  /** 按阶梯计算 */
+  /** 按阶梯试算（金额元、rate 小数；与后端超额累进语义一致：amount > 档下限 才入档） */
   function calcTiers(rule: CommissionRule, amount: number) {
     const tiers: { label: string; amount: number; rate: number; commission: number }[] = []
     for (let i = 0; i < rule.tiers.length; i++) {
@@ -131,155 +227,87 @@ export const useFinCommissionStore = defineStore('finCommission', () => {
     return tiers
   }
 
-  /** 生成/重算某期间某咨询师的提成单（草稿） */
-  function generate(period: string, consultantId: string, consultantName: string, title: string, role: CommRole, baseAmount: number, orderCount: number): CommissionItem | null {
-    if (!auth.can('finance:commission:edit')) {
-      console.warn('[finCommission] 无 commission:edit 权限')
-      return null
+  /** 装载：规则 + 薪酬配置 + 近三个月提成单（演示单归属当月）；失败抛错由调用方 toast */
+  async function seed() {
+    loading.value = true
+    try {
+      const months = recentMonths(3)
+      const [rulesRes, compsRes, ...recordsRes] = await Promise.all([
+        listCommissionRules(),
+        listCompConfigs(),
+        ...months.map((m) => listCommission(m)),
+      ])
+      rules.value = rulesRes.data.map((dto: CommissionRuleDTO): CommissionRule => ({
+        id: dto.ruleId,
+        name: dto.ruleName,
+        base: (dto.base as CommissionBase) || 'WRITEOFF',
+        role: (dto.role as CommissionRule['role']) || 'ALL',
+        tiers: parseRuleTiers(dto),
+        active: dto.active,
+      }))
+      compConfigs.value = compsRes.data.map((dto: StaffCompConfigDTO): StaffCompConfig => ({
+        compId: dto.compId,
+        staffId: dto.staffId,
+        staffName: dto.staffName,
+        storeCode: dto.storeCode,
+        baseSalary: fenToYuan(dto.baseSalary),
+        commissionRuleId: dto.commissionRuleId,
+        effectiveMonth: dto.effectiveMonth ? dto.effectiveMonth.slice(0, 7) : '',
+        status: dto.status,
+      }))
+      const merged = new Map<string, CommissionRecordDTO>()
+      recordsRes.forEach((res) => {
+        res.data.forEach((r) => merged.set(r.recordId, r))
+      })
+      items.value = [...merged.values()].map(toItem)
+      if (filterPeriod.value !== 'ALL' && !periods.value.includes(filterPeriod.value)) {
+        filterPeriod.value = 'ALL'
+      }
+    } finally {
+      loading.value = false
     }
-    const rule = activeRule(role)
-    if (!rule) return null
-    const tiers = calcTiers(rule, baseAmount)
-    const commission = Math.round(tiers.reduce((s, t) => s + t.commission, 0) * 100) / 100
-    const existing = items.value.find((i) => i.period === period && i.consultantId === consultantId)
-    if (existing) {
-      existing.ruleName = rule.name
-      existing.baseAmount = baseAmount
-      existing.orderCount = orderCount
-      existing.tiers = tiers
-      existing.commission = commission
-      if (existing.status !== 'PAID') existing.status = 'DRAFT'
-      activity.log(auth.user.name, `重算 ${period} ${consultantName} 提成：¥${commission}`)
-      return existing
-    }
-    const item: CommissionItem = {
-      id: nextId('cm'), period, consultantId, consultantName, title,
-      ruleName: rule.name, baseAmount, tiers, commission, status: 'DRAFT', orderCount,
-    }
-    items.value.unshift(item)
-    activity.log(auth.user.name, `生成 ${period} ${consultantName} 提成单：¥${commission}`)
-    return item
   }
 
-  function submit(id: string): boolean {
-    const it = items.value.find((i) => i.id === id)
-    if (!it || (it.status !== 'DRAFT' && it.status !== 'REJECTED') || !auth.can('finance:commission:edit')) return false
-    it.status = 'SUBMITTED'
-    activity.log(auth.user.name, `提交提成单 ${it.consultantName} ${it.period}：¥${it.commission}`)
-    return true
+  /** 按月生成/重算试算单（period=yyyy-MM-01；PAID 锁定不重算，后端幂等） */
+  async function generate(period: string) {
+    await apiGenerate(period)
+    await seed()
   }
 
-  function approve(id: string, remark?: string): boolean {
-    const it = items.value.find((i) => i.id === id)
-    if (!it || it.status !== 'SUBMITTED' || !auth.can('finance:commission:approve')) return false
-    it.status = 'APPROVED'
-    it.approver = auth.user.name
-    it.approvedAt = new Date().toISOString()
-    if (remark) it.remark = remark
-    activity.log(auth.user.name, `审批通过提成单 ${it.consultantName}：¥${it.commission}`)
-    return true
+  async function submit(id: string) {
+    await apiSubmit(id)
+    await seed()
   }
 
-  function reject(id: string, reason: string): boolean {
-    const it = items.value.find((i) => i.id === id)
-    if (!it || it.status !== 'SUBMITTED' || !auth.can('finance:commission:approve')) return false
-    it.status = 'REJECTED'
-    it.remark = reason
-    activity.log(auth.user.name, `驳回提成单 ${it.consultantName}：${reason}`)
-    return true
+  async function approve(id: string) {
+    await apiApprove(id)
+    await seed()
   }
 
-  /** 标记已发放（外部薪酬系统回传，仅镜像） */
-  function markPaid(id: string): boolean {
-    const it = items.value.find((i) => i.id === id)
-    if (!it || it.status === 'PAID' || !auth.can('finance:commission:approve')) return false
-    it.status = 'PAID'
-    it.paidAt = new Date().toISOString()
-    activity.log(auth.user.name, `提成单 ${it.consultantName} 已发放（薪酬系统回传）：¥${it.commission}`)
-    return true
+  async function reject(id: string, reason: string) {
+    await apiReject(id, reason)
+    await seed()
   }
 
-  // ===== 种子 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const data: Array<Omit<CommissionItem, 'id'>> = [
-      {
-        period: '2026-08', consultantId: 'u01', consultantName: '苏晴', title: '资深咨询师',
-        ruleName: '咨询师标准阶梯', baseAmount: 186000, orderCount: 24,
-        tiers: [
-          { label: '基础 6%', amount: 80000, rate: 0.06, commission: 4800 },
-          { label: '达标 8%', amount: 70000, rate: 0.08, commission: 5600 },
-          { label: '卓越 10%', amount: 36000, rate: 0.1, commission: 3600 },
-        ],
-        commission: 14000, status: 'SUBMITTED',
-      },
-      {
-        period: '2026-08', consultantId: 'u02', consultantName: '李娜', title: '咨询师',
-        ruleName: '咨询师标准阶梯', baseAmount: 92000, orderCount: 18,
-        tiers: [
-          { label: '基础 6%', amount: 80000, rate: 0.06, commission: 4800 },
-          { label: '达标 8%', amount: 12000, rate: 0.08, commission: 960 },
-        ],
-        commission: 5760, status: 'APPROVED', approver: '陈雅琳（店长）', approvedAt: '2026-08-20T10:00',
-      },
-      {
-        period: '2026-08', consultantId: 'u03', consultantName: '王诗涵', title: '高级咨询师',
-        ruleName: '咨询师标准阶梯', baseAmount: 268000, orderCount: 31,
-        tiers: [
-          { label: '基础 6%', amount: 80000, rate: 0.06, commission: 4800 },
-          { label: '达标 8%', amount: 70000, rate: 0.08, commission: 5600 },
-          { label: '卓越 10%', amount: 100000, rate: 0.1, commission: 10000 },
-          { label: '冠军 12%', amount: 18000, rate: 0.12, commission: 2160 },
-        ],
-        commission: 22560, status: 'PAID', approver: '陈雅琳（店长）', approvedAt: '2026-08-18T10:00', paidAt: '2026-08-25T09:00',
-      },
-      {
-        period: '2026-08', consultantId: 'u04', consultantName: '周慧敏', title: '咨询师',
-        ruleName: '咨询师标准阶梯', baseAmount: 45000, orderCount: 9,
-        tiers: [
-          { label: '基础 6%', amount: 45000, rate: 0.06, commission: 2700 },
-        ],
-        commission: 2700, status: 'DRAFT',
-      },
-      {
-        period: '2026-08', consultantId: 'u05', consultantName: '王医生', title: '主诊医生',
-        ruleName: '医生操作提成', baseAmount: 156000, orderCount: 22,
-        tiers: [
-          { label: '固定 10%', amount: 100000, rate: 0.1, commission: 10000 },
-          { label: '超额 12%', amount: 56000, rate: 0.12, commission: 6720 },
-        ],
-        commission: 16720, status: 'DRAFT',
-      },
-      {
-        period: '2026-07', consultantId: 'u01', consultantName: '苏晴', title: '资深咨询师',
-        ruleName: '咨询师标准阶梯', baseAmount: 168000, orderCount: 22,
-        tiers: [
-          { label: '基础 6%', amount: 80000, rate: 0.06, commission: 4800 },
-          { label: '达标 8%', amount: 70000, rate: 0.08, commission: 5600 },
-          { label: '卓越 10%', amount: 18000, rate: 0.1, commission: 1800 },
-        ],
-        commission: 12200, status: 'PAID', approver: '陈雅琳（店长）', approvedAt: '2026-07-28T10:00', paidAt: '2026-08-05T09:00',
-      },
-      {
-        period: '2026-07', consultantId: 'u03', consultantName: '王诗涵', title: '高级咨询师',
-        ruleName: '咨询师标准阶梯', baseAmount: 245000, orderCount: 28,
-        tiers: [
-          { label: '基础 6%', amount: 80000, rate: 0.06, commission: 4800 },
-          { label: '达标 8%', amount: 70000, rate: 0.08, commission: 5600 },
-          { label: '卓越 10%', amount: 95000, rate: 0.1, commission: 9500 },
-        ],
-        commission: 19900, status: 'PAID', approver: '陈雅琳（店长）', approvedAt: '2026-07-28T10:00', paidAt: '2026-08-05T09:00',
-      },
-    ]
-    data.forEach((d) => items.value.push({ id: nextId('cm'), ...d }))
+  /** 发放登记（外部薪酬系统回传镜像，本系统不划款） */
+  async function markPaid(id: string) {
+    await apiMarkPaid(id)
+    await seed()
+  }
+
+  /** 操作后局部刷新单条返回值（备用；当前统一 seed 全量重载保证口径一致） */
+  function upsert(dto: CommissionRecordDTO) {
+    const idx = items.value.findIndex((i) => i.id === dto.recordId)
+    const item = toItem(dto)
+    if (idx >= 0) items.value[idx] = item
+    else items.value.unshift(item)
   }
 
   return {
-    rules, items, filterStatus, filterPeriod,
+    rules, compConfigs, items, filterStatus, filterPeriod, loading,
     totalCommission, approvedCommission, pendingCommission, paidCommission,
-    periods, filtered, get, generate, submit, approve, reject, markPaid, calcTiers, activeRule, seed,
+    periods, filtered, get, activeRule, calcTiers,
+    seed, generate, submit, approve, reject, markPaid, upsert,
     STATUS_LABEL, STATUS_PILL, BASE_LABEL,
   }
 })

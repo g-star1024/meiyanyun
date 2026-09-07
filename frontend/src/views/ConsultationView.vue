@@ -11,14 +11,14 @@
  *   已驳回单可查看医生驳回原因，改单后重新提交。
  * 提交后方案流转「医师工作台」(/doctor) 完成 审核→写病历→缴费→治疗。
  * ============================================================ */
-import { computed, onMounted, ref, onUnmounted } from 'vue'
+import { computed, onMounted, ref, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useConsultationStore } from '@/stores/consultation'
 import { usePricelistStore } from '@/stores/pricelist'
 import { useCustomerStore } from '@/stores/customer'
 import { useAppointmentStore } from '@/stores/appointment'
 import { useAuthStore } from '@/stores/auth'
-import { useFinCommissionStore } from '@/stores/finCommission'
+import { estimateCommission } from '@/api/commission'
 import { useStoreContext } from '@/stores/storeContext'
 import { useCompliance, RISK_TAG_LABEL } from '@/composables/useCompliance'
 import { useToast } from '@/composables/useToast'
@@ -45,7 +45,6 @@ const pricelist = usePricelistStore()
 const customer = useCustomerStore()
 const appointment = useAppointmentStore()
 const auth = useAuthStore()
-const finCommission = useFinCommissionStore()
 const compliance = useCompliance()
 const toast = useToast()
 const storeCtx = useStoreContext()
@@ -55,7 +54,6 @@ onMounted(async () => {
   pricelist.seed()
   customer.seedProfile()
   consultation.seed()
-  finCommission.seed()
   await loadRealPlans()
 })
 
@@ -228,22 +226,39 @@ const searchResults = computed(() => {
 const planTotal = computed(() => planItems.value.reduce((s, it) => s + it.qty * it.price, 0))
 const scan = computed(() => compliance.checkPlan(planItems.value, contra.value, planConclusion.value))
 
-// —— 本单提成预估（复用 finCommission 咨询师阶梯规则，仅预估不落账）——
-const commissionEstimate = computed(() => {
-  const rule = finCommission.activeRule('CONSULTANT')
-  if (!rule) return null
-  const period = new Date().toISOString().slice(0, 7)
-  // 当月已生成提成单的业绩基数合计（演示口径）
-  const monthBase = finCommission.items
-    .filter((i) => i.period === period && i.consultantId === (planConsult.value?.consultantId || 'staff-lin'))
-    .reduce((s, i) => s + i.baseAmount, 0)
-  const before = finCommission.calcTiers(rule, monthBase).reduce((s, t) => s + t.commission, 0)
-  const after = finCommission.calcTiers(rule, monthBase + planTotal.value).reduce((s, t) => s + t.commission, 0)
-  const est = Math.round((after - before) * 100) / 100
-  // 本单落在哪一档
-  const hit = [...rule.tiers].reverse().find((t) => monthBase + planTotal.value > t.min)
-  return { est, rate: hit ? hit.rate : rule.tiers[0].rate, label: hit?.label ?? rule.tiers[0].label }
-})
+// —— 本单提成预估（finance estimate API：按接诊咨询师当前生效薪酬规则，
+//    对本单金额做超额累进试算，仅预估不落账）——
+// 未配置薪酬/规则（configured=false 或无生效规则）时诚实不展示；接口异常静默降级，不打扰开单流程。
+const commissionEstimate = ref<{ est: number; rate: number; label: string } | null>(null)
+let estimateSeq = 0
+watch(
+  [planTotal, () => planConsult.value?.consultantId ?? ''],
+  async ([total, sid]) => {
+    const seq = ++estimateSeq
+    const amountYuan = Number(total)
+    if (!sid || !(amountYuan > 0)) {
+      commissionEstimate.value = null
+      return
+    }
+    try {
+      const { data } = await estimateCommission(String(sid), Math.round(amountYuan * 100))
+      if (seq !== estimateSeq) return
+      if (!data.configured || !data.ruleName || !data.segments.length) {
+        commissionEstimate.value = null
+        return
+      }
+      const last = data.segments[data.segments.length - 1]
+      commissionEstimate.value = {
+        est: Math.round(data.commission) / 100,
+        rate: last.rate / 10000,
+        label: data.ruleName,
+      }
+    } catch {
+      if (seq === estimateSeq) commissionEstimate.value = null
+    }
+  },
+  { immediate: true },
+)
 
 function blockedOf(item: PlanItem) {
   return compliance.checkItem(item, contra.value)
@@ -912,7 +927,7 @@ onUnmounted(() => {
               <!-- 本单提成预估 -->
               <div v-if="commissionEstimate && planTotal > 0" class="comm-est">
                 <CIcon name="pos" :size="13" />
-                <span>本单咨询师提成预估 <strong>¥{{ commissionEstimate.est }}</strong>（{{ commissionEstimate.label }} · 费率 {{ (commissionEstimate.rate * 100).toFixed(0) }}%，随当月业绩跨档累进，最终以财务划扣口径结算）</span>
+                <span>本单咨询师提成预估 <strong>¥{{ commissionEstimate.est }}</strong>（{{ commissionEstimate.label }} · 本单金额落入费率档 {{ (commissionEstimate.rate * 100).toFixed(0) }}%，按超额累进试算，最终以财务月度结算口径为准）</span>
               </div>
             </section>
 

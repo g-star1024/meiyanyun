@@ -172,6 +172,139 @@ public class InternalFinanceController {
     }
 
     /**
+     * 提成业绩基数聚合（B9，设计 §5.3）：GET /api/txn/internal/commission-base?month=2026-09&storeCode=SST01。
+     *
+     * <p>供 finance-service 提成试算跨域取数（X-Internal-Token，internal:finance-flow）：按自然月（UTC 月界，
+     * 与 finance-flows 日界口径一致）、按订单顾问工号（txn_order.consultant）聚合三类分量，finance 侧按
+     * 提成规则 base 口径自取对应分量：
+     * <ul>
+     *   <li>writeoff*：writeoff_record(status=DONE) 经 order_no JOIN txn_order 取顾问，汇总划扣额/笔数
+     *       （WriteoffRecord 无 consultant 字段）——WRITEOFF 划扣确认收入口径；</li>
+     *   <li>order*：txn_order(status=已收款) 直接按顾问汇总收款额/笔数——ORDER 收款口径；</li>
+     *   <li>refund*：txn_refund(status=REFUNDED) 经 order_no JOIN 订单取顾问，汇总退款额/笔数，
+     *       finance 侧按顾问负向冲减（退款扣回提成，竞品通行做法）。</li>
+     * </ul>
+     * JOIN 不到订单或订单无顾问的划扣/退款/收款无法归属，计入 unmatched* 计数随响应返回（诚实降级，
+     * 不臆造归属）；不做 DataScope 收敛（由 finance 侧按登录人门店域二次过滤，与 finance-flows 同边界）。
+     * 金额单位 Long「分」。
+     */
+    @GetMapping("/commission-base")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> commissionBase(
+            @RequestParam(value = "month", required = false) String month,
+            @RequestParam(value = "storeCode", required = false) String storeCode) {
+        String ym;
+        if (month == null || month.isBlank()) {
+            ym = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).toString().substring(0, 7);
+        } else {
+            ym = month.trim().substring(0, Math.min(7, month.trim().length()));
+            if (!ym.matches("\\d{4}-\\d{2}")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "月份参数 month 格式非法，需 yyyy-MM 或 yyyy-MM-01（如 2026-09）：" + month);
+            }
+        }
+        OffsetDateTime from = LocalDate.parse(ym + "-01").atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime to = from.plusMonths(1);
+        String store = (storeCode == null || storeCode.isBlank()) ? null : storeCode.trim();
+
+        List<WriteoffRecord> writeoffs = writeoffRepo.findAll(writeoffSpec(store, from, to));
+        List<TxnOrder> paidOrders = orderRepo.findAll(orderSpec(store, from, to));
+        List<TxnRefund> refunds = refundRepo.findAll(refundSpec(store, from, to));
+
+        // orderNo → 订单映射：已收款订单直接入图；划扣/退款关联订单批量补齐（防 N+1）
+        Map<String, TxnOrder> orderByNo = new LinkedHashMap<>();
+        for (TxnOrder o : paidOrders) {
+            if (o.getOrderNo() != null) orderByNo.putIfAbsent(o.getOrderNo(), o);
+        }
+        java.util.Set<String> missingNos = new java.util.HashSet<>();
+        for (WriteoffRecord w : writeoffs) {
+            if (w.getOrderNo() != null && !orderByNo.containsKey(w.getOrderNo())) missingNos.add(w.getOrderNo());
+        }
+        for (TxnRefund r : refunds) {
+            if (r.getOrderNo() != null && !orderByNo.containsKey(r.getOrderNo())) missingNos.add(r.getOrderNo());
+        }
+        if (!missingNos.isEmpty()) {
+            for (TxnOrder o : orderRepo.findByOrderNoIn(missingNos)) {
+                if (o.getOrderNo() != null) orderByNo.putIfAbsent(o.getOrderNo(), o);
+            }
+        }
+
+        Map<String, Map<String, Object>> rows = new LinkedHashMap<>();
+        int unmatchedWriteoff = 0;
+        int unmatchedRefund = 0;
+        int unmatchedOrder = 0;
+
+        for (TxnOrder o : paidOrders) {
+            String consultant = o.getConsultant();
+            if (consultant == null || consultant.isBlank()) {
+                unmatchedOrder++;
+                continue;
+            }
+            Map<String, Object> row = commissionRow(rows, consultant, o.getStoreCode());
+            row.put("orderAmount", (Long) row.get("orderAmount") + (o.getAmount() == null ? 0L : o.getAmount()));
+            row.put("orderCount", (Integer) row.get("orderCount") + 1);
+        }
+        for (WriteoffRecord w : writeoffs) {
+            TxnOrder o = w.getOrderNo() == null ? null : orderByNo.get(w.getOrderNo());
+            String consultant = o == null ? null : o.getConsultant();
+            if (consultant == null || consultant.isBlank()) {
+                unmatchedWriteoff++;
+                continue;
+            }
+            String sc = (w.getStoreCode() != null && !w.getStoreCode().isBlank()) ? w.getStoreCode() : o.getStoreCode();
+            Map<String, Object> row = commissionRow(rows, consultant, sc);
+            row.put("writeoffAmount", (Long) row.get("writeoffAmount") + (w.getAmount() == null ? 0L : w.getAmount()));
+            row.put("writeoffCount", (Integer) row.get("writeoffCount") + 1);
+        }
+        for (TxnRefund r : refunds) {
+            TxnOrder o = r.getOrderNo() == null ? null : orderByNo.get(r.getOrderNo());
+            String consultant = o == null ? null : o.getConsultant();
+            if (consultant == null || consultant.isBlank()) {
+                unmatchedRefund++;
+                continue;
+            }
+            String sc = (r.getStoreCode() != null && !r.getStoreCode().isBlank()) ? r.getStoreCode() : o.getStoreCode();
+            Map<String, Object> row = commissionRow(rows, consultant, sc);
+            row.put("refundAmount", (Long) row.get("refundAmount") + (r.getRefundAmt() == null ? 0L : r.getRefundAmt()));
+            row.put("refundCount", (Integer) row.get("refundCount") + 1);
+        }
+
+        List<Map<String, Object>> rowList = rows.values().stream()
+                .sorted((a, b) -> String.valueOf(a.get("staffId")).compareTo(String.valueOf(b.get("staffId"))))
+                .toList();
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("month", ym + "-01");
+        resp.put("store", store == null ? "ALL" : store);
+        resp.put("currency", "CNY");
+        resp.put("unit", "分");
+        resp.put("rows", rowList);
+        resp.put("unmatchedWriteoffCount", unmatchedWriteoff);
+        resp.put("unmatchedRefundCount", unmatchedRefund);
+        resp.put("unmatchedOrderCount", unmatchedOrder);
+        return resp;
+    }
+
+    /** 提成聚合行：按顾问工号取行（惰性初始化，分量单位分/笔）。 */
+    private Map<String, Object> commissionRow(Map<String, Map<String, Object>> rows, String staffId, String storeCode) {
+        Map<String, Object> row = rows.get(staffId);
+        if (row == null) {
+            row = new LinkedHashMap<>();
+            row.put("staffId", staffId);
+            row.put("storeCode", storeCode);
+            row.put("writeoffAmount", 0L);
+            row.put("writeoffCount", 0);
+            row.put("orderAmount", 0L);
+            row.put("orderCount", 0);
+            row.put("refundAmount", 0L);
+            row.put("refundCount", 0);
+            rows.put(staffId, row);
+        } else if ((row.get("storeCode") == null || row.get("storeCode").toString().isBlank()) && storeCode != null) {
+            row.put("storeCode", storeCode);
+        }
+        return row;
+    }
+
+    /**
      * 划扣双账核对（B6 G1，干跑）：GET /api/txn/internal/writeoff-reconcile?storeCode=&from=&to=。
      * 扫 txn 侧 status=DONE 且 card_no 非空的划扣，批量拉 customer card_ledger 中以 WO 单号为 bizRef
      * 的 CONSUME 流水逐笔比对（customer 为权威卡台账），返回一致总数与三类差异——

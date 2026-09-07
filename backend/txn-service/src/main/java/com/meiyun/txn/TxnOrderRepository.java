@@ -7,12 +7,16 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 
 public interface TxnOrderRepository extends JpaRepository<TxnOrder, String>, JpaSpecificationExecutor<TxnOrder> {
 
     /** 客户 360：按客户列订单（时间倒序）。 */
     List<TxnOrder> findByCustomerIdOrderByCreatedAtDesc(String customerId);
+
+    /** 提成业绩聚合：按订单号批量取订单（划扣/退款记录本身无顾问字段，需 JOIN 订单取 consultant）。 */
+    List<TxnOrder> findByOrderNoIn(Collection<String> orderNos);
 
     /** 收银台/订单页：按状态分页（创建时间倒序）。 */
     Page<TxnOrder> findByStatusOrderByCreatedAtDesc(String status, Pageable pageable);

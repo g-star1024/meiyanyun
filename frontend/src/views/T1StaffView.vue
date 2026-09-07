@@ -20,10 +20,16 @@ import {
   setPrimaryRole, addStaffRole, removeStaffRole,
   type Staff, type RoleDef, type Store as OrgStore,
 } from '@/api/org'
+import {
+  listCompConfigs, saveCompConfig, listCommissionRules,
+  type StaffCompConfigDTO, type CommissionRuleDTO,
+} from '@/api/commission'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
+import { useStoreContext } from '@/stores/storeContext'
 
 const auth = useAuthStore()
+const storeCtx = useStoreContext()
 const toast = useToast()
 
 // ---------------- 数据 ----------------
@@ -40,9 +46,10 @@ const keyword = ref('')
 // ---------------- 权限（与 @RequirePerm 对齐） ----------------
 const canManage = computed(() => auth.can('rbac:edit'))
 const canAssign = computed(() => auth.can('role:assign'))
+const canComp = computed(() => auth.can('finance:commission:edit'))
 
 // ---------------- 抽屉 ----------------
-type DrawerKind = '' | 'create' | 'transfer' | 'roles'
+type DrawerKind = '' | 'create' | 'transfer' | 'roles' | 'comp'
 const drawerKind = ref<DrawerKind>('')
 const drawerOpen = computed({
   get: () => drawerKind.value !== '',
@@ -52,6 +59,7 @@ const drawerTitle = computed(() => {
   if (drawerKind.value === 'create') return '新建员工'
   if (drawerKind.value === 'transfer') return `调店 / 调区 · ${activeStaff.value?.staffName ?? ''}`
   if (drawerKind.value === 'roles') return `角色管理 · ${activeStaff.value?.staffName ?? ''}`
+  if (drawerKind.value === 'comp') return `薪酬配置 · ${activeStaff.value?.staffName ?? ''}`
   return ''
 })
 const activeStaff = ref<Staff | null>(null)
@@ -301,6 +309,84 @@ async function onSetPrimary(roleCode: string) {
   }
 }
 
+// ---------------- 薪酬配置（底薪 + 提成规则；finance 域） ----------------
+const compLoading = ref(false)
+const compConfig = ref<StaffCompConfigDTO | null>(null)
+const compRules = ref<CommissionRuleDTO[]>([])
+const compForm = reactive({ baseSalary: '', ruleId: '', effMonth: '' })
+
+function currentMonthInput(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+const compRuleOptions = computed(() => [
+  { value: '', label: '无提成（仅底薪）' },
+  ...compRules.value.filter((r) => r.active).map((r) => ({ value: r.ruleId, label: r.ruleName })),
+])
+function fenToYuan(fen: number): string {
+  const v = fen / 100
+  return Number.isInteger(v) ? String(v) : v.toFixed(2)
+}
+function compRuleName(ruleId: string | null | undefined): string {
+  if (!ruleId) return '无提成（仅底薪）'
+  return compRules.value.find((r) => r.ruleId === ruleId)?.ruleName ?? '规则已停用 / 缺失'
+}
+
+async function openComp(s: Staff) {
+  activeStaff.value = s
+  compForm.baseSalary = ''
+  compForm.ruleId = ''
+  compForm.effMonth = currentMonthInput()
+  compConfig.value = null
+  drawerKind.value = 'comp'
+  compLoading.value = true
+  try {
+    const [cfgRes, ruleRes] = await Promise.all([listCompConfigs(), listCommissionRules()])
+    compRules.value = ruleRes.data
+    compConfig.value = cfgRes.data.find((c) => c.staffId === s.staffId && c.status === 'ACTIVE') ?? null
+    if (compConfig.value) {
+      compForm.baseSalary = fenToYuan(compConfig.value.baseSalary)
+      compForm.ruleId = compConfig.value.commissionRuleId ?? ''
+      compForm.effMonth = compConfig.value.effectiveMonth.slice(0, 7)
+    }
+  } catch (e) {
+    toast.error(errMsg(e, '薪酬配置载入失败，请稍后重试'))
+  } finally {
+    compLoading.value = false
+  }
+}
+
+async function submitComp() {
+  const s = activeStaff.value
+  if (!s) return
+  if (!(Number(compForm.baseSalary) >= 0)) {
+    toast.warning('请填写有效的月底薪（元）')
+    return
+  }
+  if (!compForm.effMonth) {
+    toast.warning('请选择生效月份')
+    return
+  }
+  submitting.value = true
+  try {
+    await saveCompConfig({
+      staffId: s.staffId,
+      staffName: s.staffName,
+      storeCode: s.storeCode || storeCtx.currentStoreCode,
+      baseSalary: Math.round(Number(compForm.baseSalary) * 100),
+      commissionRuleId: compForm.ruleId || null,
+      effectiveMonth: `${compForm.effMonth}-01`,
+    })
+    toast.success(`已保存 ${s.staffName} 的薪酬配置，自 ${compForm.effMonth} 起生效（不追溯历史期间）`)
+    drawerKind.value = ''
+    await seed()
+  } catch (e) {
+    toast.error(errMsg(e, '薪酬配置保存失败，请稍后重试'))
+  } finally {
+    submitting.value = false
+  }
+}
+
 onMounted(() => { seed() })
 </script>
 
@@ -369,6 +455,7 @@ onMounted(() => { seed() })
             </span>
             <span class="col-ops">
               <CButton variant="text" size="sm" @click="openRoles(s)">角色</CButton>
+              <CButton v-if="canComp && s.status === '在职'" variant="text" size="sm" @click="openComp(s)">薪酬</CButton>
               <CButton v-if="canManage && s.status === '在职'" variant="text" size="sm" @click="openTransfer(s)">调店</CButton>
               <CButton v-if="canManage && s.status === '在职'" variant="text" size="sm" @click="onResetPwd(s)">重置密码</CButton>
               <CButton v-if="canManage && s.status === '在职'" variant="text" size="sm" @click="onDisable(s)">离职</CButton>
@@ -485,6 +572,47 @@ onMounted(() => { seed() })
         </div>
       </div>
     </CDrawer>
+
+    <!-- 抽屉：薪酬配置（底薪 + 提成规则） -->
+    <CDrawer v-else-if="drawerKind === 'comp'" v-model:show="drawerOpen" :title="drawerTitle" size="md">
+      <div v-if="compLoading" class="state-row">
+        <CIcon name="loading" :size="16" />薪酬配置加载中…
+      </div>
+      <div v-else class="form">
+        <div v-if="compConfig" class="field">
+          <span class="field__label">当前生效配置</span>
+          <div class="role-list">
+            <div class="role-item">
+              <div class="role-item__info">
+                <span class="role-item__name">
+                  底薪 ¥{{ Math.round(compConfig.baseSalary / 100).toLocaleString('zh-CN') }} / 月 · {{ compRuleName(compConfig.commissionRuleId) }}
+                </span>
+                <span class="role-item__code">生效 {{ compConfig.effectiveMonth.slice(0, 7) }} · {{ compConfig.compId }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <label class="field">
+          <span class="field__label">月底薪（元） <i>*</i></span>
+          <CInput v-model="compForm.baseSalary" type="number" placeholder="如 5000" />
+        </label>
+        <label class="field">
+          <span class="field__label">适用提成规则</span>
+          <CSelect v-model="compForm.ruleId" width="100%" :options="compRuleOptions" />
+        </label>
+        <label class="field">
+          <span class="field__label">生效月份 <i>*</i></span>
+          <input v-model="compForm.effMonth" type="month" class="month-input" />
+        </label>
+        <div class="form-tip">
+          <CIcon name="info" :size="13" />同一员工仅保留一条生效配置：保存后旧配置自动置为失效（调薪留痕，<b>不追溯历史期间</b>）；选择「无提成」则只计底薪。提成规则（阶梯比例）在「财务 · 咨询师提成」页的「提成规则」中维护。
+        </div>
+      </div>
+      <template #footer>
+        <CButton variant="secondary" @click="drawerKind = ''">取消</CButton>
+        <CButton variant="primary" :disabled="submitting || compLoading" @click="submitComp">保存配置</CButton>
+      </template>
+    </CDrawer>
   </div>
 </template>
 
@@ -539,6 +667,15 @@ onMounted(() => { seed() })
 .role-item__name { font-size: var(--t-sm); font-weight: 600; }
 .role-item__code { font-size: var(--t-xs); color: var(--c-text-3); font-family: monospace; }
 .role-add { display: flex; gap: var(--s-sm); align-items: center; }
+
+.month-input {
+  width: 100%; padding: 10px;
+  border: 1px solid #D1D1D9; border-radius: var(--r-sm);
+  background: var(--c-surface);
+  font-size: 13px; color: var(--c-text); line-height: 20px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.month-input:focus { outline: none; border-color: #4D5AD9; box-shadow: 0 0 0 2px rgba(77, 90, 217, 0.12); }
 
 @media (max-width: 1200px) {
   .grid__head, .grid__row { grid-template-columns: 80px 90px 1fr 1fr; }
