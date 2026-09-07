@@ -5,7 +5,8 @@
  * 差错只能走差异调平 ADJUST（落当前期间）。封账永久、无解封（资金安全红线）。
  * 期间口径与 fund_entry 一致：occurredAt 按 UTC 归一（日结 UTC 半开区间）。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CSelect from '@/components/CSelect.vue'
@@ -15,10 +16,13 @@ import CKpi from '@/components/CKpi.vue'
 import CInput from '@/components/CInput.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
+import { useFinCarryStore } from '@/stores/finCarry'
 import { getSettlements, postSettlement, exportSettlementCsv, type SettlementPeriod } from '@/api/finance'
 
 const auth = useAuthStore()
 const storeCtx = useStoreContext()
+const carry = useFinCarryStore()
+const router = useRouter()
 const canEdit = computed(() => auth.can('finance:settlement:edit'))
 
 const loading = ref(false)
@@ -68,6 +72,20 @@ async function load() {
   }
 }
 onMounted(load)
+
+// ==================== B11 本月待结转提示（DESIGN §4.4） ====================
+// 封账前应先执行月结成本结转；此提示只读查询 carry/pending，失败诚实降级不阻断封账页。
+const carryPending = ref<{ count: number; fen: number } | null>(null)
+async function loadCarryPending() {
+  try {
+    const r = await carry.pending(`${monthShanghai()}-01`, filterStore.value || undefined)
+    carryPending.value = { count: r.pendingCount, fen: r.pendingFen }
+  } catch {
+    carryPending.value = null
+  }
+}
+watch(filterStore, () => { void loadCarryPending() })
+onMounted(loadCarryPending)
 
 const exporting = ref(false)
 async function doExport() {
@@ -187,6 +205,14 @@ function fmtTime(iso: string): string {
         />
         <CSelect v-model="filterStore" :options="storeOptions" />
         <div class="filters__right">
+          <button
+            v-if="carryPending && carryPending.count > 0"
+            type="button" class="cp-warn" @click="router.push('/m6-cost')"
+            title="点击前往成本分析页执行期末结转"
+          >
+            <CIcon name="alert" :size="14" />
+            <span>本月 {{ carryPending.count }} 项成本结转未执行（约 {{ yuan(carryPending.fen) }}），封账前请先结转 →</span>
+          </button>
           <CButton variant="secondary" size="sm" @click="load">
             <CIcon name="refresh" :size="14" />刷新
           </CButton>
@@ -363,4 +389,13 @@ function fmtTime(iso: string): string {
 .warn-box__text b { color: var(--c-warning-fg); }
 .ack { display: flex; align-items: center; gap: var(--s-xs); font-size: var(--t-xs); color: var(--c-text-2); margin-top: 4px; cursor: pointer; }
 .ack input { width: 15px; height: 15px; accent-color: var(--c-warning); }
+
+.cp-warn {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--c-border-light); border-radius: var(--r-md);
+  background: var(--c-warning-bg); color: var(--c-warning-fg);
+  font-size: var(--t-xs); line-height: 1.5;
+  padding: 6px var(--s-sm); cursor: pointer; white-space: nowrap;
+}
+.cp-warn:hover { border-color: var(--c-warning); }
 </style>

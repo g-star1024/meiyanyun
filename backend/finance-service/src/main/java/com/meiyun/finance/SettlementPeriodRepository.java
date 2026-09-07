@@ -17,6 +17,9 @@ public interface SettlementPeriodRepository extends JpaRepository<SettlementPeri
     boolean existsByPeriodTypeAndPeriodKeyAndStoreCode(
             String periodType, String periodKey, String storeCode);
 
+    /** 月结封账判定（不限门店）：该月任一门店已封账即命中——结转重算删除是全门店范围，据此提前拦截。 */
+    boolean existsByPeriodTypeAndPeriodKey(String periodType, String periodKey);
+
     List<SettlementPeriod> findByPeriodTypeAndPeriodKeyOrderByClosedAtDesc(
             String periodType, String periodKey);
 

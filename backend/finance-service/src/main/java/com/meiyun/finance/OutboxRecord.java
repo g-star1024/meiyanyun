@@ -22,7 +22,9 @@ public class OutboxRecord {
     @Column(name = "biz_type", length = 16)
     private String bizType;
 
-    @Column(name = "txn_no", length = 24)
+    // V8：24 → 64。B11 成本结转 bizRef 为复合格式 ruleId:yyyy-MM:storeCode（种子 26 字符、
+    // 用户自建规则最长约 40 字符），落 outbox 时 txnNo=bizRef，原 24 位装不下会整笔回滚。
+    @Column(name = "txn_no", length = 64)
     private String txnNo;
 
     @Column(nullable = false)

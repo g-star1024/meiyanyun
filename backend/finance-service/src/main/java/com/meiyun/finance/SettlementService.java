@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.security.DataScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
@@ -44,16 +45,20 @@ public class SettlementService {
     private final FundEntryRepository entryRepo;
     private final FinanceAggregationService aggregation;
     private final FinanceAuditRecorder audit;
+    // 月结封账前置自动结转（B11）：CostCarryService 反向依赖本服务（闭期判定），双向循环依赖用 @Lazy 打破
+    private final CostCarryService costCarryService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public SettlementService(SettlementPeriodRepository settlementRepo,
                              FundEntryRepository entryRepo,
                              FinanceAggregationService aggregation,
-                             FinanceAuditRecorder audit) {
+                             FinanceAuditRecorder audit,
+                             @Lazy CostCarryService costCarryService) {
         this.settlementRepo = settlementRepo;
         this.entryRepo = entryRepo;
         this.aggregation = aggregation;
         this.audit = audit;
+        this.costCarryService = costCarryService;
     }
 
     /**
@@ -106,6 +111,14 @@ public class SettlementService {
             r.put("duplicated", true);
             r.put("message", "该期间已封账，幂等返回；封账后不可改账，差错请走差异调平 ADJUST");
             return r;
+        }
+
+        // 月结封账前置：自动结转该店 run_on_close 启用且未结转的成本（折旧/人工镜像），
+        // 同事务落账后再做快照，保证封账快照包含期末结转。结转失败则封账整体回滚（不封半账）。
+        if ("MONTH".equals(periodType)) {
+            Map<String, Object> carried = costCarryService.autoCarryBeforeClose(
+                    periodStart.withDayOfMonth(1), storeCode, actor != null ? actor : "system");
+            log.info("月结封账前置自动结转 {} store={} 结果：{}", normKey, storeCode, carried);
         }
 
         // 封账时点快照：期间内该店全部分录（UTC 半开区间），净额 IN 正 OUT 负
@@ -195,6 +208,18 @@ public class SettlementService {
         String monthKey = d.withDayOfMonth(1).toString().substring(0, 7);
         return settlementRepo.existsByPeriodTypeAndPeriodKeyAndStoreCode("DAY", dayKey, storeCode)
                 || settlementRepo.existsByPeriodTypeAndPeriodKeyAndStoreCode("MONTH", monthKey, storeCode);
+    }
+
+    /**
+     * 月结封账判定（不限门店）：该月任一门店已封账即 true。
+     * 供成本结转「重算本月」前置拦截——重算删除是全门店范围，只要有一家门店已封该月
+     * （删除后其分录无法重落、封账快照也会失真），即整体拒绝重算。
+     */
+    @Transactional(readOnly = true)
+    public boolean isMonthClosedAnyStore(LocalDate periodMonth) {
+        if (periodMonth == null) return false;
+        String monthKey = periodMonth.withDayOfMonth(1).toString().substring(0, 7);
+        return settlementRepo.existsByPeriodTypeAndPeriodKey("MONTH", monthKey);
     }
 
     // ==================== 内部工具 ====================

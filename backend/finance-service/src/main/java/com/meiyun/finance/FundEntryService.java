@@ -397,7 +397,23 @@ public class FundEntryService {
      * 成本 = 当月 cost_allocation 四类合计；毛利 = 收入 − 成本；两率 = cost/revenue、gross/revenue
      * （BigDecimal 6,3；收入 ≤ 0 时两率记 0）。该店该月无任何分录与成本时不建行（避免空行噪声）。
      */
+    /**
+     * B11 重算后月报校正入口：按门店对该月做全量重算。
+     * 重算删除旧结转行后，成本归零的门店不会再触发落账钩子，月报会停在旧值；
+     * 故结转重算删除后须对曾有结转行的门店逐个补刷（全量重算自然把归零门店纠正）。
+     * 与 {@link #refreshRevenueMonthly} 的区别：月报行已存在但 revenue/cost 双零时
+     * 删除残留行（而非直接 return 保留旧值）。
+     */
+    @Transactional
+    public void recomputeRevenueMonthly(String storeCode, LocalDate periodMonth) {
+        recomputeRevenueMonthlyInternal(storeCode, periodMonth, true);
+    }
+
     private void refreshRevenueMonthly(String storeCode, LocalDate periodMonth) {
+        recomputeRevenueMonthlyInternal(storeCode, periodMonth, false);
+    }
+
+    private void recomputeRevenueMonthlyInternal(String storeCode, LocalDate periodMonth, boolean purgeZero) {
         OffsetDateTime from = periodMonth.withDayOfMonth(1).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
         OffsetDateTime to = periodMonth.plusMonths(1).withDayOfMonth(1).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
         long revenue = 0;
@@ -413,7 +429,14 @@ public class FundEntryService {
         for (CostAllocation c : costRepo.findByPeriodMonthOrderByStoreCodeAscCostIdAsc(periodMonth)) {
             if (storeCode.equals(c.getStoreCode())) cost += c.getAmount();
         }
-        if (revenue == 0 && cost == 0) return;
+        RevenueMonthly existing = revRepo.findById(new RevenueMonthly.RevenueMonthlyId(storeCode, periodMonth)).orElse(null);
+        if (revenue == 0 && cost == 0) {
+            if (purgeZero && existing != null) {
+                revRepo.delete(existing);
+                log.info("月报归零删除 store={} month={}（该店该月已无任何收入与成本）", storeCode, periodMonth);
+            }
+            return;
+        }
         long gross = revenue - cost;
         BigDecimal zero3 = BigDecimal.ZERO.setScale(3, RoundingMode.HALF_UP);
         BigDecimal costRate = revenue > 0
@@ -421,13 +444,11 @@ public class FundEntryService {
         BigDecimal grossRate = revenue > 0
                 ? BigDecimal.valueOf(gross).divide(BigDecimal.valueOf(revenue), 3, RoundingMode.HALF_UP) : zero3;
 
-        RevenueMonthly m = revRepo.findById(new RevenueMonthly.RevenueMonthlyId(storeCode, periodMonth))
-                .orElseGet(() -> {
-                    RevenueMonthly x = new RevenueMonthly();
-                    x.setStoreCode(storeCode);
-                    x.setPeriodMonth(periodMonth);
-                    return x;
-                });
+        RevenueMonthly m = existing != null ? existing : new RevenueMonthly();
+        if (existing == null) {
+            m.setStoreCode(storeCode);
+            m.setPeriodMonth(periodMonth);
+        }
         m.setRevenue(revenue);
         m.setCost(cost);
         m.setGrossProfit(gross);

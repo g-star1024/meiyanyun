@@ -2,6 +2,7 @@ package com.meiyun.finance;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -11,6 +12,14 @@ import java.util.List;
 public interface CostAllocationRepository
         extends JpaRepository<CostAllocation, Long>,
         JpaSpecificationExecutor<CostAllocation> {
+
+    /** B11 重算本月：删除该月系统结转成本行（source_ref 形如 CCR 规则号:yyyy-MM:门店），可按门店收敛。 */
+    @Modifying
+    @Query(value = "delete from cost_allocation where period_month = :month " +
+            "and source_ref like 'CCR%' " +
+            "and (:storeCode = '' or store_code = :storeCode)", nativeQuery = true)
+    int deleteSystemCarry(@Param("month") LocalDate month,
+                          @Param("storeCode") String storeCode);
 
     /**
      * 人工成本单号用：查当日最大序号。
