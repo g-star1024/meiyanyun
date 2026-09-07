@@ -25,6 +25,10 @@ const store = useRoomStore()
 const toast = useToast()
 onMounted(() => store.seed())
 
+function errMsg(e: any) {
+  return e?.response?.data?.message || e?.message || '网络异常'
+}
+
 const selectedRoomId = ref<string | null>(null)
 const selectedRoom = computed<Room | null>(() => {
   if (selectedRoomId.value) return store.getRoom(selectedRoomId.value) ?? null
@@ -98,10 +102,17 @@ const maintForm = ref({ show: false, roomId: '', bedId: '', reason: '' })
 function openMaintenance(roomId: string, bedId: string) {
   maintForm.value = { show: true, roomId, bedId, reason: '' }
 }
-function submitMaintenance() {
+async function submitMaintenance() {
   if (!maintForm.value.reason.trim()) return
-  const ok = store.setMaintenance(maintForm.value.roomId, maintForm.value.bedId, maintForm.value.reason.trim())
-  if (ok) maintForm.value.show = false
+  try {
+    const ok = await store.setMaintenance(maintForm.value.roomId, maintForm.value.bedId, maintForm.value.reason.trim())
+    if (ok) {
+      maintForm.value.show = false
+      toast.success('床位已设为维护中')
+    }
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
 }
 
 // 通用确认
@@ -122,9 +133,14 @@ function doClean() {
   if (!selectedRoom.value || !selectedBed.value) return
   store.clean(selectedRoom.value.id, selectedBed.value.id)
 }
-function doRestore() {
+async function doRestore() {
   if (!selectedRoom.value || !selectedBed.value) return
-  store.restore(selectedRoom.value.id, selectedBed.value.id)
+  try {
+    const ok = await store.restore(selectedRoom.value.id, selectedBed.value.id)
+    if (ok) toast.success('维护已恢复，床位回到空闲')
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
 }
 
 function selectRoom(r: Room) {
@@ -145,13 +161,17 @@ function openCreateRoom() {
   createForm.value = { code: '', name: '', type: 'TREATMENT', bedCount: '' }
   showCreate.value = true
 }
-function doCreateRoom() {
+async function doCreateRoom() {
   const f = createForm.value
   if (!f.code.trim() || !f.name.trim()) return
-  const ok = store.addRoom({ code: f.code.trim(), name: f.name.trim(), type: f.type, bedCount: f.bedCount ? Number(f.bedCount) : undefined })
-  if (ok) {
-    showCreate.value = false
-    toast.success(`已创建房间「${f.name}」`)
+  try {
+    const ok = await store.addRoom({ code: f.code.trim(), name: f.name.trim(), type: f.type, bedCount: f.bedCount ? Number(f.bedCount) : undefined })
+    if (ok) {
+      showCreate.value = false
+      toast.success(`已创建房间「${f.name}」`)
+    }
+  } catch (e) {
+    toast.error('创建失败：' + errMsg(e))
   }
 }
 </script>

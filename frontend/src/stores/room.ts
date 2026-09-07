@@ -1,13 +1,21 @@
 // ============================================================
-// Room 床位/房间管理 store（M2-04）
+// Room 床位/房间管理 store（M2-04，B13 接真实 API）
 // 覆盖治疗室/咨询室/观察室的房间+床位状态：
 // FREE 空闲 / IN_USE 使用中 / SANITIZING 消毒中 / MAINTENANCE 维护中。
-// 操作：入住、退房、清洁确认、设维护/恢复。
+// 权威源：store-service /stores/rooms（房间床位档案）与 /stores/rooms/logs（操作日志）。
+// 一期床位实时交易态（入住/退房/消毒）不持久化（DESIGN-P4 D1），
+//   仅前端演示态（刷新复位）；设维护/维护恢复/新建房间为真实持久化动作。
+// API 不可用或空库时回落本地演示数据（demo 标记）。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useStoreContext } from './storeContext'
+import {
+  listRooms, listRoomLogs, createRoom, setBedMaintenance, restoreBed,
+  type RoomDTO, type RoomLogDTO,
+} from '@/api/room'
 
 export type BedStatus = 'FREE' | 'IN_USE' | 'SANITIZING' | 'MAINTENANCE'
 export type RoomType = 'TREATMENT' | 'CONSULT' | 'OBSERVE' | 'RECOVERY'
@@ -67,12 +75,15 @@ const BED_STATUS_PILL: Record<BedStatus, 'success' | 'primary' | 'warning' | 'da
 export const useRoomStore = defineStore('room', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const ctx = useStoreContext()
 
   const rooms = ref<Room[]>([])
   const filterType = ref<RoomType | 'ALL'>('ALL')
   const filterStatus = ref<BedStatus | 'ALL'>('ALL')
   /** 操作记录（房间视角） */
   const logs = ref<RoomLog[]>([])
+  const loaded = ref(false)
+  const demo = ref(false)
 
   const allBeds = computed(() => rooms.value.flatMap((r) => r.beds.map((b) => ({ room: r, bed: b }))))
   const total = computed(() => allBeds.value.length)
@@ -108,7 +119,72 @@ export const useRoomStore = defineStore('room', () => {
     })
   }
 
-  /** 入住：空闲 → 使用中 */
+  // ---- DTO 映射（后端仅持久化维护态：OK→FREE，MAINTENANCE→MAINTENANCE） ----
+  function mapBed(b: RoomDTO['beds'][number]): Bed {
+    return {
+      id: String(b.id),
+      code: b.bedCode,
+      status: b.maintStatus === 'MAINTENANCE' ? 'MAINTENANCE' : 'FREE',
+      note: b.maintReason || undefined,
+    }
+  }
+
+  function mapRoom(r: RoomDTO): Room {
+    return {
+      id: String(r.id),
+      code: r.roomCode,
+      name: r.name,
+      type: (r.roomType as RoomType) || 'TREATMENT',
+      beds: (r.beds ?? []).map(mapBed),
+    }
+  }
+
+  function mapLog(l: RoomLogDTO): RoomLog {
+    return {
+      id: String(l.id),
+      at: l.createdAt,
+      by: l.actor || '系统',
+      roomCode: l.roomCode || '',
+      bedCode: l.bedCode || undefined,
+      text: l.text,
+    }
+  }
+
+  // ---- 拉取 ----
+  let seeding: Promise<void> | null = null
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (loaded.value && !force) return Promise.resolve()
+    seeding = (async () => {
+      try {
+        await ctx.loadStores()
+        const storeCode = ctx.currentStoreCode
+        const [roomResp, logResp] = await Promise.all([
+          listRooms({ storeCode }),
+          listRoomLogs({ storeCode, limit: 50 }),
+        ])
+        const roomList = roomResp.data ?? []
+        if (roomList.length > 0) {
+          rooms.value = roomList.map(mapRoom)
+          logs.value = (logResp.data ?? []).map(mapLog)
+          demo.value = false
+        } else {
+          loadDemo()
+          demo.value = true
+        }
+        loaded.value = true
+      } catch (e) {
+        console.error('[room] 加载房间床位档案失败，回落本地演示数据', e)
+        loadDemo()
+        demo.value = true
+        loaded.value = true
+      }
+    })()
+    return seeding
+  }
+  void seed()
+
+  /** 入住：空闲 → 使用中（一期演示态，不持久化，刷新复位） */
   function occupy(roomId: string, bedId: string, customerName: string, project?: string): boolean {
     const room = getRoom(roomId)
     const bed = room?.beds.find((b) => b.id === bedId)
@@ -122,7 +198,7 @@ export const useRoomStore = defineStore('room', () => {
     return true
   }
 
-  /** 退房：使用中 → 消毒中 */
+  /** 退房：使用中 → 消毒中（一期演示态，不持久化） */
   function release(roomId: string, bedId: string): boolean {
     const room = getRoom(roomId)
     const bed = room?.beds.find((b) => b.id === bedId)
@@ -137,7 +213,7 @@ export const useRoomStore = defineStore('room', () => {
     return true
   }
 
-  /** 清洁确认：消毒中 → 空闲 */
+  /** 清洁确认：消毒中 → 空闲（一期演示态，不持久化） */
   function clean(roomId: string, bedId: string): boolean {
     const room = getRoom(roomId)
     const bed = room?.beds.find((b) => b.id === bedId)
@@ -149,38 +225,57 @@ export const useRoomStore = defineStore('room', () => {
     return true
   }
 
-  /** 设维护：任意 → 维护中 */
-  function setMaintenance(roomId: string, bedId: string, reason: string): boolean {
+  /** 设维护：任意 → 维护中（真实持久化 POST /beds/{id}/maintenance） */
+  async function setMaintenance(roomId: string, bedId: string, reason: string): Promise<boolean> {
     const room = getRoom(roomId)
     const bed = room?.beds.find((b) => b.id === bedId)
-    if (!room || !bed || bed.status === 'MAINTENANCE' || !auth.can('room:edit')) return false
-    bed.status = 'MAINTENANCE'
-    bed.note = reason
-    bed.customerName = undefined
-    bed.project = undefined
-    bed.occupiedAt = undefined
-    addLog(room.code, `${bed.code} 设为维护：${reason}`, bed.code)
+    if (!room || !bed || bed.status === 'MAINTENANCE') return false
+    if (!auth.can('room:edit')) {
+      console.warn('[room] 无 room:edit 权限')
+      return false
+    }
+    await setBedMaintenance(Number(bedId), { storeCode: ctx.currentStoreCode, reason })
     activity.log(auth.user.name, `${room.code} ${bed.code} 设为维护：${reason}`, bed.id)
+    await seed(true)
     return true
   }
 
-  /** 维护恢复：维护中 → 消毒中（必须先消毒再恢复空闲） */
-  function restore(roomId: string, bedId: string): boolean {
+  /** 维护恢复：维护中 → 空闲（真实持久化 POST /beds/{id}/restore；交易态复位不保留） */
+  async function restore(roomId: string, bedId: string): Promise<boolean> {
     const room = getRoom(roomId)
     const bed = room?.beds.find((b) => b.id === bedId)
-    if (!room || !bed || bed.status !== 'MAINTENANCE' || !auth.can('room:edit')) return false
-    bed.status = 'SANITIZING'
-    bed.note = undefined
-    addLog(room.code, `${bed.code} 维护完成，进入消毒`, bed.code)
-    activity.log(auth.user.name, `${room.code} ${bed.code} 维护恢复，进入消毒`, bed.id)
+    if (!room || !bed || bed.status !== 'MAINTENANCE') return false
+    if (!auth.can('room:edit')) {
+      console.warn('[room] 无 room:edit 权限')
+      return false
+    }
+    await restoreBed(Number(bedId), { storeCode: ctx.currentStoreCode })
+    activity.log(auth.user.name, `${room.code} ${bed.code} 维护恢复`, bed.id)
+    await seed(true)
     return true
   }
 
-  // ===== 种子 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
+  /** 新建房间（真实持久化 POST /rooms，批量生成床位 {roomCode}-B{n}） */
+  async function addRoom(data: { code: string; name: string; type: RoomType; bedCount?: number }): Promise<boolean> {
+    if (!auth.can('room:edit')) {
+      console.warn('[room] 无 room:edit 权限')
+      return false
+    }
+    const bedCount = data.bedCount ?? 2
+    await createRoom({
+      storeCode: ctx.currentStoreCode,
+      roomCode: data.code,
+      name: data.name,
+      roomType: data.type,
+      bedCount,
+    })
+    activity.log(auth.user.name, `新建房间 ${data.name}（${data.code}）`, data.code)
+    await seed(true)
+    return true
+  }
+
+  // ---- 离线演示数据（API 不可用/空库回落） ----
+  function loadDemo() {
     const now = new Date()
     const minsAgo = (m: number) => new Date(now.getTime() - m * 60_000).toISOString()
     const roomSeed: Array<{ code: string; name: string; type: RoomType; beds: Array<Partial<Bed> & { code: string; status: BedStatus }> }> = [
@@ -242,50 +337,22 @@ export const useRoomStore = defineStore('room', () => {
         ],
       },
     ]
-    roomSeed.forEach((r) => {
-      const room: Room = {
-        id: nextId('room'),
-        code: r.code,
-        name: r.name,
-        type: r.type,
-        beds: r.beds.map((b) => ({
-          id: nextId('bed'),
-          code: b.code,
-          status: b.status,
-          customerName: b.customerName,
-          project: b.project,
-          occupiedAt: b.occupiedAt,
-          note: b.note,
-        })),
-      }
-      rooms.value.push(room)
-    })
-  }
-
-  /** 新建房间 */
-  function addRoom(data: { code: string; name: string; type: RoomType; bedCount?: number }): boolean {
-    if (!auth.can('room:edit')) return false
-    const bedCount = data.bedCount ?? 2
-    const beds: Bed[] = Array.from({ length: bedCount }, (_, i) => ({
-      id: nextId('bed'),
-      code: `${data.code}-B${i + 1}`,
-      status: 'FREE' as BedStatus,
-      customerName: '',
-      project: '',
-      occupiedAt: '',
-      note: '',
-    }))
-    const room: Room = {
+    rooms.value = roomSeed.map((r) => ({
       id: nextId('room'),
-      code: data.code,
-      name: data.name,
-      type: data.type,
-      beds,
-    }
-    rooms.value.push(room)
-    addLog(room.code, `新建房间（${bedCount} 张床位）`)
-    activity.log(auth.user.name, `新建房间 ${room.name}（${room.code}）`, room.id)
-    return true
+      code: r.code,
+      name: r.name,
+      type: r.type,
+      beds: r.beds.map((b) => ({
+        id: nextId('bed'),
+        code: b.code,
+        status: b.status,
+        customerName: b.customerName,
+        project: b.project,
+        occupiedAt: b.occupiedAt,
+        note: b.note,
+      })),
+    }))
+    logs.value = []
   }
 
   return {
@@ -294,7 +361,7 @@ export const useRoomStore = defineStore('room', () => {
     filteredRooms, allBeds,
     getRoom, findBed,
     occupy, release, clean, setMaintenance, restore, addRoom,
-    seed,
+    seed, loaded, demo,
     ROOM_TYPE_LABEL, BED_STATUS_LABEL, BED_STATUS_PILL,
   }
 })

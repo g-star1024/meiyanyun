@@ -1,13 +1,22 @@
 // ============================================================
-// Equipment 设备资产 store（M2-05）
+// Equipment 设备资产 store（M2-05，B13 接真实 API）
 // 覆盖医美门店设备台账：激光/射频/超声/注射等仪器，
 // 状态 NORMAL 正常 / CALIBRATING 校准中 / REPAIRING 维修中 / DISABLED 停用。
-// 记录校准/维保历史，并按下次校准/维保日期计算临期提醒。
+// 权威源：store-service /stores/equipments（台账 + 校准/维保记录嵌套）。
+// 读金额单位「元」（purchaseAmount/depreciated/cost，后端已由分换算）；
+// 写金额单位「分」（purchaseAmountFen/costFen），前端由「元」换算。
+// 登记记录的回写规则（下次日期/状态恢复/折旧累加）由服务端统一执行，前端刷新即可。
+// API 不可用或空库时回落本地演示数据（demo 标记）。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useStoreContext } from './storeContext'
+import {
+  listEquipments, createEquipment, setEquipmentStatus, addEquipmentRecord,
+  type EquipmentDTO, type MaintenanceRecordDTO,
+} from '@/api/equipment'
 
 export type EquipmentStatus = 'NORMAL' | 'CALIBRATING' | 'REPAIRING' | 'DISABLED'
 export type EquipmentCategory = 'LASER' | 'RF' | 'ULTRASOUND' | 'INJECTION' | 'MONITOR' | 'OTHER'
@@ -81,6 +90,8 @@ const MAINT_TYPE_LABEL: Record<MaintenanceType, string> = {
 /** 临期提醒阈值（天） */
 const DUE_SOON_DAYS = 14
 
+const yuan2fen = (yuan: number) => Math.round((Number(yuan) || 0) * 100)
+
 function daysUntil(iso?: string): number | null {
   if (!iso) return null
   const ms = new Date(iso).getTime() - Date.now()
@@ -90,11 +101,14 @@ function daysUntil(iso?: string): number | null {
 export const useEquipmentStore = defineStore('equipment', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const ctx = useStoreContext()
 
   const list = ref<Equipment[]>([])
   const filterStatus = ref<EquipmentStatus | 'ALL'>('ALL')
   const filterCategory = ref<EquipmentCategory | 'ALL'>('ALL')
   const keyword = ref('')
+  const loaded = ref(false)
+  const demo = ref(false)
 
   const normal = computed(() => list.value.filter((x) => x.status === 'NORMAL'))
   const calibrating = computed(() => list.value.filter((x) => x.status === 'CALIBRATING'))
@@ -143,44 +157,142 @@ export const useEquipmentStore = defineStore('equipment', () => {
     }
   }
 
-  function setStatus(id: string, status: EquipmentStatus, note?: string): boolean {
+  // ---- DTO 映射（读金额「元」直接取用，日期为 yyyy-MM-dd 字符串） ----
+  function mapRecord(r: MaintenanceRecordDTO): MaintenanceRecord {
+    return {
+      id: String(r.id),
+      type: r.type,
+      at: r.at || '',
+      by: r.by || '系统',
+      vendor: r.vendor || undefined,
+      summary: r.summary,
+      nextAt: r.nextAt || undefined,
+      cost: Number(r.cost) || 0,
+    }
+  }
+
+  function mapEquipment(e: EquipmentDTO): Equipment {
+    return {
+      id: String(e.id),
+      assetNo: e.assetNo,
+      name: e.name,
+      brand: e.brand || undefined,
+      model: e.model || undefined,
+      category: e.category,
+      location: e.location || '未设置',
+      status: e.status,
+      purchasedAt: e.purchasedAt || '',
+      purchaseAmount: Number(e.purchaseAmount) || 0,
+      lifespanYears: e.lifespanYears || 8,
+      depreciated: Number(e.depreciated) || 0,
+      nextCalibrationAt: e.nextCalibrationAt || undefined,
+      nextMaintenanceAt: e.nextMaintenanceAt || undefined,
+      records: (e.records ?? []).map(mapRecord),
+      note: e.note || undefined,
+    }
+  }
+
+  // ---- 拉取 ----
+  let seeding: Promise<void> | null = null
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (loaded.value && !force) return Promise.resolve()
+    seeding = (async () => {
+      try {
+        await ctx.loadStores()
+        const storeCode = ctx.currentStoreCode
+        const resp = await listEquipments({ storeCode })
+        const eqList = resp.data ?? []
+        if (eqList.length > 0) {
+          list.value = eqList.map(mapEquipment)
+          demo.value = false
+        } else {
+          loadDemo()
+          demo.value = true
+        }
+        loaded.value = true
+      } catch (e) {
+        console.error('[equipment] 加载设备台账失败，回落本地演示数据', e)
+        loadDemo()
+        demo.value = true
+        loaded.value = true
+      }
+    })()
+    return seeding
+  }
+  void seed()
+
+  /** 状态变更（真实持久化 POST /equipments/{id}/status） */
+  async function setStatus(id: string, status: EquipmentStatus, note?: string): Promise<boolean> {
     const e = list.value.find((x) => x.id === id)
-    if (!e || !auth.can('equipment:edit')) return false
-    e.status = status
-    if (note) e.note = note
+    if (!e) return false
+    if (!auth.can('equipment:edit')) {
+      console.warn('[equipment] 无 equipment:edit 权限')
+      return false
+    }
+    await setEquipmentStatus(Number(id), { storeCode: ctx.currentStoreCode, status, note })
     activity.log(auth.user.name, `设备 ${e.assetNo} 状态变更为 ${STATUS_LABEL[status]}`, e.id)
+    await seed(true)
     return true
   }
 
-  function addRecord(
+  /**
+   * 登记校准/维保/维修记录（真实持久化 POST /equipments/{id}/records）。
+   * 回写规则（下次日期/状态恢复/折旧累加）由服务端统一执行，强制刷新后呈现。
+   */
+  async function addRecord(
     id: string,
     rec: Omit<MaintenanceRecord, 'id' | 'at' | 'by'> & { at?: string },
-  ): MaintenanceRecord | null {
+  ): Promise<boolean> {
     const e = list.value.find((x) => x.id === id)
-    if (!e || !auth.can('equipment:edit')) return null
-    const r: MaintenanceRecord = {
-      id: nextId('mrec'),
-      at: rec.at ? new Date(rec.at).toISOString() : new Date().toISOString(),
-      by: auth.user.name,
-      ...rec,
+    if (!e) return false
+    if (!auth.can('equipment:edit')) {
+      console.warn('[equipment] 无 equipment:edit 权限')
+      return false
     }
-    e.records.unshift(r)
-    // 同步下次日期
-    if (rec.type === 'CALIBRATION' && rec.nextAt) e.nextCalibrationAt = rec.nextAt
-    if ((rec.type === 'MAINTENANCE' || rec.type === 'REPAIR') && rec.nextAt) e.nextMaintenanceAt = rec.nextAt
-    // 校准/维修完成后恢复正常
-    if (rec.type === 'CALIBRATION' && e.status === 'CALIBRATING') e.status = 'NORMAL'
-    if (rec.type === 'REPAIR' && e.status === 'REPAIRING') e.status = 'NORMAL'
-    if (rec.cost) e.depreciated = Math.min(e.purchaseAmount, e.depreciated + rec.cost)
+    await addEquipmentRecord(Number(id), {
+      storeCode: ctx.currentStoreCode,
+      type: rec.type,
+      summary: rec.summary,
+      vendor: rec.vendor || undefined,
+      at: rec.at ? new Date(rec.at).toISOString() : undefined,
+      nextAt: rec.nextAt ? new Date(rec.nextAt).toISOString() : undefined,
+      costFen: rec.cost ? yuan2fen(rec.cost) : undefined,
+    })
     activity.log(auth.user.name, `设备 ${e.assetNo} 新增${MAINT_TYPE_LABEL[rec.type]}记录`, e.id)
-    return r
+    await seed(true)
+    return true
   }
 
-  // ===== 种子 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
+  /** 新建设备建档（真实持久化 POST /equipments；金额元→分，折旧恒 0） */
+  async function addEquipment(data: Omit<Equipment, 'id' | 'records'>): Promise<boolean> {
+    if (!auth.can('equipment:edit')) {
+      console.warn('[equipment] 无 equipment:edit 权限')
+      return false
+    }
+    await createEquipment({
+      storeCode: ctx.currentStoreCode,
+      assetNo: data.assetNo,
+      name: data.name,
+      brand: data.brand || undefined,
+      model: data.model || undefined,
+      category: data.category,
+      location: data.location || undefined,
+      status: data.status || undefined,
+      purchasedAt: data.purchasedAt ? new Date(data.purchasedAt).toISOString() : new Date().toISOString(),
+      purchaseAmountFen: yuan2fen(data.purchaseAmount),
+      lifespanYears: data.lifespanYears || 8,
+      nextCalibrationAt: data.nextCalibrationAt ? new Date(data.nextCalibrationAt).toISOString() : undefined,
+      nextMaintenanceAt: data.nextMaintenanceAt ? new Date(data.nextMaintenanceAt).toISOString() : undefined,
+      note: data.note || undefined,
+    })
+    activity.log(auth.user.name, `新建设备 ${data.name}（${data.assetNo}）`, data.assetNo)
+    await seed(true)
+    return true
+  }
+
+  // ---- 离线演示数据（API 不可用/空库回落） ----
+  function loadDemo() {
     const now = new Date()
     const daysAgo = (d: number) => new Date(now.getTime() - d * 86_400_000).toISOString()
     const daysLater = (d: number) => new Date(now.getTime() + d * 86_400_000).toISOString()
@@ -265,24 +377,13 @@ export const useEquipmentStore = defineStore('equipment', () => {
         ],
       },
     ]
-    data.forEach((e) => {
-      list.value.push({ ...e, id: nextId('eq') })
-    })
-  }
-
-  /** 新建设备 */
-  function addEquipment(data: Omit<Equipment, 'id' | 'records'>): boolean {
-    if (!auth.can('equipment:edit')) return false
-    const eq: Equipment = { id: nextId('eq'), records: [], ...data }
-    list.value.push(eq)
-    activity.log(auth.user.name, `新建设备 ${eq.name}（${eq.assetNo}）`, eq.id)
-    return true
+    list.value = data.map((e) => ({ ...e, id: nextId('eq') }))
   }
 
   return {
     list, filterStatus, filterCategory, keyword,
     normal, calibrating, repairing, disabled, dueCalibration, filtered,
-    get, netValue, dueStatus, setStatus, addRecord, addEquipment, seed,
+    get, netValue, dueStatus, setStatus, addRecord, addEquipment, seed, loaded, demo,
     STATUS_LABEL, STATUS_PILL, CATEGORY_LABEL, MAINT_TYPE_LABEL, DUE_SOON_DAYS,
   }
 })

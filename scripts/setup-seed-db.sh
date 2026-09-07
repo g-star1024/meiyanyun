@@ -140,6 +140,91 @@ CREATE TABLE IF NOT EXISTS coupon_writeoff_record (
   operator         varchar(32)  NOT NULL,
   verified_at      timestamptz  NOT NULL
 );
+-- B13 房间床位主数据（store-service JPA ddl-auto 业务表）
+-- treatment_room 房间档案：room_type 用途（TREATMENT/CONSULT/OBSERVE/RECOVERY），status 房间停用态（一期恒 ACTIVE）；
+-- 床位实时占用态（FREE/IN_USE/SANITIZING）一期不持久化，仅 treatment_bed.maint_status 维护态落库（OK/MAINTENANCE）。
+-- room_id 为逻辑外键（不建物理 FK）；金额列不在本域。
+CREATE TABLE IF NOT EXISTS treatment_room (
+  id          bigserial    PRIMARY KEY,
+  store_code  varchar(16)  NOT NULL,
+  room_code   varchar(32)  NOT NULL,
+  name        varchar(64)  NOT NULL,
+  room_type   varchar(16)  NOT NULL,
+  status      varchar(16)  NOT NULL,
+  remark      varchar(255),
+  created_by  varchar(32),
+  created_at  timestamptz  NOT NULL,
+  updated_by  varchar(32),
+  updated_at  timestamptz,
+  CONSTRAINT uk_room_store_code UNIQUE (store_code, room_code)
+);
+CREATE TABLE IF NOT EXISTS treatment_bed (
+  id            bigserial    PRIMARY KEY,
+  store_code    varchar(16)  NOT NULL,
+  room_id       bigint       NOT NULL,
+  bed_code      varchar(32)  NOT NULL,
+  maint_status  varchar(16)  NOT NULL,
+  maint_reason  varchar(255),
+  created_by    varchar(32),
+  created_at    timestamptz  NOT NULL,
+  updated_by    varchar(32),
+  updated_at    timestamptz,
+  CONSTRAINT uk_bed_store_code UNIQUE (store_code, bed_code)
+);
+CREATE INDEX IF NOT EXISTS idx_treatment_bed_room ON treatment_bed(room_id);
+-- B13 房间/床位操作日志：仅记真实落库动作 ADD_ROOM/SET_MAINTENANCE/RESTORE（入住/退房/消毒为前端演示态，不写本表）
+CREATE TABLE IF NOT EXISTS room_operation_log (
+  id          bigserial    PRIMARY KEY,
+  store_code  varchar(16)  NOT NULL,
+  room_code   varchar(32),
+  bed_code    varchar(32),
+  action      varchar(32)  NOT NULL,
+  text        varchar(255),
+  actor       varchar(32),
+  created_at  timestamptz  NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_room_op_log_store ON room_operation_log(store_code, created_at);
+-- B13 设备仪器台账（store-service；金额 bigint 存「分」：purchase_amount_fen/depreciated_fen；
+-- 日期 date 仅精确到天：购置日/下次校准日/下次维保日；状态 NORMAL/CALIBRATING/REPAIRING/DISABLED 全量持久化。
+-- 与 finance fin_asset 一期分口不打通，独立运营台账）
+CREATE TABLE IF NOT EXISTS equipment (
+  id                   bigserial    PRIMARY KEY,
+  store_code           varchar(16)  NOT NULL,
+  asset_no             varchar(32)  NOT NULL,
+  name                 varchar(64)  NOT NULL,
+  brand                varchar(64),
+  model                varchar(64),
+  category             varchar(16)  NOT NULL,
+  location             varchar(64)  NOT NULL,
+  status               varchar(16)  NOT NULL,
+  purchased_at         date         NOT NULL,
+  purchase_amount_fen  bigint       NOT NULL,
+  lifespan_years       integer      NOT NULL,
+  depreciated_fen      bigint       NOT NULL DEFAULT 0,
+  next_calibration_at  date,
+  next_maintenance_at  date,
+  note                 varchar(255),
+  created_by           varchar(32),
+  created_at           timestamptz  NOT NULL,
+  updated_by           varchar(32),
+  updated_at           timestamptz,
+  CONSTRAINT uk_eq_store_asset UNIQUE (store_code, asset_no)
+);
+-- B13 设备校准/维保/维修明细（equipment 子表；type CALIBRATION/MAINTENANCE/REPAIR；cost_fen 费用分，无费用记 0）
+CREATE TABLE IF NOT EXISTS equipment_maintenance (
+  id            bigserial    PRIMARY KEY,
+  store_code    varchar(16)  NOT NULL,
+  equipment_id  bigint       NOT NULL,
+  type          varchar(16)  NOT NULL,
+  occurred_at   date         NOT NULL,
+  actor         varchar(32)  NOT NULL,
+  vendor        varchar(64),
+  summary       varchar(255) NOT NULL,
+  next_at       date,
+  cost_fen      bigint       NOT NULL DEFAULT 0,
+  created_at    timestamptz  NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_equipment_maint_eq ON equipment_maintenance(equipment_id, occurred_at);
 SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
@@ -155,7 +240,8 @@ TRUNCATE TABLE
   revenue_monthly, role_def, settlement_period, sign_role_pair, sign_tier, staff, store,
   tax, tenant, txn_card_cancel, txn_order, txn_refund, txn_writeoff, verification,
   writeoff_desk_task, writeoff_record,
-  order_item, marketing_asset, poster_template, poster_record, live_session, short_video
+  order_item, marketing_asset, poster_template, poster_record, live_session, short_video,
+  treatment_room, treatment_bed, room_operation_log, equipment, equipment_maintenance
 RESTART IDENTITY CASCADE;
 SQL
 
@@ -205,6 +291,28 @@ else
 fi
 
 echo ""
+echo "==> [可选] 若 seed 联调栈 store-service 在运行，重启它以触发 B13 房间床位/设备仪器启动播种"
+# reset 会 TRUNCATE treatment_room / treatment_bed / room_operation_log / equipment / equipment_maintenance；
+# 9 间房 16 张床位（A03-2 维护中）与 8 台设备仪器（含 11 条校准维保记录）由 store-service 的
+# StoreMasterDataInitializer（@Order 60）在启动时幂等补齐（门控：床位/设备已存在则跳过）。
+# 房间操作日志无静态种子，仅由真实建房/设维护/恢复动作产生。
+# docker compose 可能给容器名加项目哈希前缀（如 b4aaeb2bf0fd_meiyun-seed-store-service），
+# 精确名匹配会漏重启；按「服务名结尾」解析实际容器名（精确名或 _<服务名> 结尾均可）。容器未起或旧镜像则跳过。
+SEED_STORE_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '(^|_)meiyun-seed-store-service$' | head -1)"
+if [ -n "$SEED_STORE_CONTAINER" ]; then
+  echo "    重启 $SEED_STORE_CONTAINER 触发房间床位/设备仪器种子 ..."
+  docker restart "$SEED_STORE_CONTAINER" >/dev/null
+  echo "    等待 healthy ..."
+  for _ in $(seq 1 40); do
+    [ "$(docker inspect "$SEED_STORE_CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && break
+    sleep 3
+  done
+  echo "    $SEED_STORE_CONTAINER 已就绪，B13 房间床位（9 房 16 床）/设备仪器（8 台 11 记录）种子可查。"
+else
+  echo "    meiyun-seed-store-service 未运行，跳过（起栈后 store-service 启动即自动播种）。"
+fi
+
+echo ""
 echo "✅ 完成。测试库 $SEED_DB 已就绪（可随时重跑本脚本 reset）。"
 echo "   行数核对："
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
@@ -221,4 +329,9 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
    UNION ALL SELECT 'poster_record='||count(*) FROM poster_record
    UNION ALL SELECT 'live_session='||count(*) FROM live_session
    UNION ALL SELECT 'short_video='||count(*) FROM short_video
+   UNION ALL SELECT 'treatment_room(启动播种)='||count(*) FROM treatment_room
+   UNION ALL SELECT 'treatment_bed(启动播种)='||count(*) FROM treatment_bed
+   UNION ALL SELECT 'room_operation_log(写操作产生)='||count(*) FROM room_operation_log
+   UNION ALL SELECT 'equipment(启动播种)='||count(*) FROM equipment
+   UNION ALL SELECT 'equipment_maintenance(启动播种)='||count(*) FROM equipment_maintenance
    UNION ALL SELECT 'sys_dictionary(保留)='||count(*) FROM sys_dictionary;"

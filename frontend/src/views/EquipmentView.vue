@@ -27,6 +27,10 @@ const store = useEquipmentStore()
 const toast = useToast()
 onMounted(() => store.seed())
 
+function errMsg(e: any) {
+  return e?.response?.data?.message || e?.message || '网络异常'
+}
+
 const selectedId = ref<string | null>(null)
 const selected = computed<Equipment | null>(() => {
   if (selectedId.value) return store.get(selectedId.value) ?? null
@@ -101,24 +105,28 @@ function openCreateEq() {
   }
   showCreateEq.value = true
 }
-function doCreateEq() {
+async function doCreateEq() {
   const f = eqForm.value
   if (!f.assetNo.trim() || !f.name.trim()) return
-  const ok = store.addEquipment({
-    assetNo: f.assetNo.trim(), name: f.name.trim(), category: f.category,
-    brand: f.brand.trim() || undefined, model: f.model.trim() || undefined,
-    location: f.location.trim() || '未设置',
-    status: 'NORMAL',
-    purchasedAt: new Date().toISOString(),
-    purchaseAmount: Number(f.purchaseAmount) || 0,
-    lifespanYears: Number(f.lifespanYears) || 8,
-    depreciated: 0,
-    nextCalibrationAt: f.nextCalibrationAt ? new Date(f.nextCalibrationAt).toISOString() : undefined,
-    nextMaintenanceAt: f.nextMaintenanceAt ? new Date(f.nextMaintenanceAt).toISOString() : undefined,
-  })
-  if (ok) {
-    showCreateEq.value = false
-    toast.success(`已创建设备「${f.name}」`)
+  try {
+    const ok = await store.addEquipment({
+      assetNo: f.assetNo.trim(), name: f.name.trim(), category: f.category,
+      brand: f.brand.trim() || undefined, model: f.model.trim() || undefined,
+      location: f.location.trim() || '未设置',
+      status: 'NORMAL',
+      purchasedAt: new Date().toISOString(),
+      purchaseAmount: Number(f.purchaseAmount) || 0,
+      lifespanYears: Number(f.lifespanYears) || 8,
+      depreciated: 0,
+      nextCalibrationAt: f.nextCalibrationAt ? new Date(f.nextCalibrationAt).toISOString() : undefined,
+      nextMaintenanceAt: f.nextMaintenanceAt ? new Date(f.nextMaintenanceAt).toISOString() : undefined,
+    })
+    if (ok) {
+      showCreateEq.value = false
+      toast.success(`已创建设备「${f.name}」`)
+    }
+  } catch (e) {
+    toast.error('创建失败：' + errMsg(e))
   }
 }
 
@@ -131,7 +139,15 @@ function askStatus(status: EquipmentStatus) {
     REPAIRING: '确认将设备设为「维修中」？',
     DISABLED: '确认停用该设备？停用后将不再参与排班。',
   }
-  if (window.confirm(map[status])) store.setStatus(selected.value.id, status)
+  if (!window.confirm(map[status])) return
+  ;(async () => {
+    try {
+      const ok = await store.setStatus(selected.value!.id, status)
+      if (ok) toast.success('设备状态已更新')
+    } catch (e) {
+      toast.error('操作失败：' + errMsg(e))
+    }
+  })()
 }
 
 // 新增校准/维保记录弹层
@@ -151,7 +167,7 @@ const recTypeOptions = [
 function openRec(type?: MaintenanceType) {
   recForm.value = { show: true, type: type || 'CALIBRATION', summary: '', vendor: '', cost: 0, nextAt: '' }
 }
-function submitRec() {
+async function submitRec() {
   if (!selected.value || !recForm.value.summary.trim()) return
   const r: Omit<MaintenanceRecord, 'id' | 'at' | 'by'> = {
     type: recForm.value.type,
@@ -160,8 +176,15 @@ function submitRec() {
     cost: recForm.value.cost || undefined,
     nextAt: recForm.value.nextAt ? new Date(recForm.value.nextAt).toISOString() : undefined,
   }
-  store.addRecord(selected.value.id, r)
-  recForm.value.show = false
+  try {
+    const ok = await store.addRecord(selected.value.id, r)
+    if (ok) {
+      recForm.value.show = false
+      toast.success('记录已登记')
+    }
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
 }
 </script>
 
