@@ -140,6 +140,113 @@ CREATE TABLE IF NOT EXISTS coupon_writeoff_record (
   operator         varchar(32)  NOT NULL,
   verified_at      timestamptz  NOT NULL
 );
+-- B9 薪酬提成域（finance-service JPA ddl-auto 业务表；金额 bigint 存「分」，月份 date 存 yyyy-MM-01）
+CREATE TABLE IF NOT EXISTS commission_rule (
+  rule_id     varchar(24)  PRIMARY KEY,
+  rule_name   varchar(64)  NOT NULL,
+  base        varchar(16)  NOT NULL,
+  role        varchar(16)  NOT NULL,
+  tiers_json  text         NOT NULL,
+  active      boolean      NOT NULL,
+  created_by  varchar(32),
+  created_at  timestamptz  NOT NULL,
+  updated_by  varchar(32),
+  updated_at  timestamptz
+);
+CREATE TABLE IF NOT EXISTS staff_comp_config (
+  comp_id             varchar(24)  PRIMARY KEY,
+  staff_id            varchar(16)  NOT NULL,
+  staff_name          varchar(32)  NOT NULL,
+  store_code          varchar(16)  NOT NULL,
+  base_salary         bigint       NOT NULL,
+  commission_rule_id  varchar(24),
+  effective_month     date         NOT NULL,
+  status              varchar(16)  NOT NULL,
+  created_by          varchar(32),
+  created_at          timestamptz  NOT NULL,
+  updated_by          varchar(32),
+  updated_at          timestamptz
+);
+CREATE TABLE IF NOT EXISTS commission_record (
+  record_id    varchar(24)  PRIMARY KEY,
+  period       date         NOT NULL,
+  staff_id     varchar(16)  NOT NULL,
+  staff_name   varchar(32)  NOT NULL,
+  store_code   varchar(16)  NOT NULL,
+  rule_id      varchar(24),
+  rule_name    varchar(64),
+  base_amount  bigint       NOT NULL,
+  order_count  integer      NOT NULL,
+  tiers_json   text,
+  commission   bigint       NOT NULL,
+  status       varchar(16)  NOT NULL,
+  remark       varchar(256),
+  approver     varchar(32),
+  approved_at  timestamptz,
+  paid_at      timestamptz,
+  created_at   timestamptz  NOT NULL,
+  CONSTRAINT uk_commission_period_staff UNIQUE (period, staff_id)
+);
+-- B10 BOM 自动扣耗材域（store-service project_bom 配方表；store_code 空串=集团模板）
+CREATE TABLE IF NOT EXISTS project_bom (
+  bom_id        varchar(24)  PRIMARY KEY,
+  project_name  varchar(64)  NOT NULL,
+  store_code    varchar(16)  NOT NULL DEFAULT '',
+  sku_code      varchar(32)  NOT NULL,
+  qty           integer      NOT NULL,
+  enabled       boolean      NOT NULL DEFAULT true,
+  created_by    varchar(32),
+  created_at    timestamptz  NOT NULL,
+  updated_by    varchar(32),
+  updated_at    timestamptz,
+  CONSTRAINT uk_project_bom UNIQUE (project_name, store_code, sku_code)
+);
+-- B10 BOM 扣料异常登记（txn-service bom_deduct_exception；一个划扣单最多一条）
+CREATE TABLE IF NOT EXISTS bom_deduct_exception (
+  exc_id        varchar(24)  PRIMARY KEY,
+  writeoff_id   varchar(24)  NOT NULL,
+  store_code    varchar(16)  NOT NULL,
+  project_name  varchar(64),
+  reason        varchar(256) NOT NULL,
+  detail_json   varchar(2048),
+  status        varchar(16)  NOT NULL,
+  fail_count    integer      NOT NULL DEFAULT 0,
+  created_at    timestamptz  NOT NULL,
+  resolved_at   timestamptz,
+  resolved_by   varchar(32),
+  CONSTRAINT uk_bom_exc_writeoff UNIQUE (writeoff_id)
+);
+-- B11 月结成本结转域（finance-service JPA ddl-auto 业务表；金额 bigint 存「分」，月份 date 存 yyyy-MM-01）
+CREATE TABLE IF NOT EXISTS cost_carry_rule (
+  rule_id       varchar(24)  PRIMARY KEY,
+  rule_name     varchar(64)  NOT NULL,
+  cost_type     varchar(16)  NOT NULL,
+  calc_mode     varchar(16)  NOT NULL,
+  fixed_amount  bigint,
+  store_code    varchar(16),
+  enabled       boolean      NOT NULL DEFAULT true,
+  run_on_close  boolean      NOT NULL DEFAULT true,
+  remark        varchar(256),
+  created_by    varchar(32),
+  created_at    timestamptz  NOT NULL,
+  updated_by    varchar(32),
+  updated_at    timestamptz
+);
+-- B11 设备资产台账（直线法月折旧；salvage_rate 百分比整数，start_month 起折月，DISPOSED 后停折）
+CREATE TABLE IF NOT EXISTS fin_asset (
+  asset_id       varchar(24)  PRIMARY KEY,
+  asset_name     varchar(64)  NOT NULL,
+  store_code     varchar(16)  NOT NULL,
+  original_value bigint       NOT NULL,
+  salvage_rate   integer      NOT NULL DEFAULT 5,
+  useful_months  integer      NOT NULL,
+  start_month    date         NOT NULL,
+  status         varchar(16)  NOT NULL DEFAULT 'IN_USE',
+  created_by     varchar(32),
+  created_at     timestamptz  NOT NULL,
+  updated_by     varchar(32),
+  updated_at     timestamptz
+);
 -- B12 非现金渠道账实接入：渠道配置（txn-service；store_code 空串=集团模板；api_v3_key 写后不可读回）
 CREATE TABLE IF NOT EXISTS pay_channel_config (
   config_id      varchar(24)  PRIMARY KEY,
@@ -267,7 +374,7 @@ SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
   account_mirror, appointment, appointment_month, approval_todo, audit_log, campaign,
-  card_finance_event, card_ledger, consult_plan, consult_plan_item, consult_plan_revision,
+  card_finance_event, card_ledger, commission_record, commission_rule, consult_plan, consult_plan_item, consult_plan_revision,
   consultation, consumable, consumable_movement, consumable_stock, contraindication,
   cost_allocation, coupon_grant, coupon_template, coupon_writeoff_chain, coupon_writeoff_record,
   cross_domain_coeff, customer, customer_tag, customer_tag_rel, dual_sign_ticket,
@@ -279,6 +386,7 @@ TRUNCATE TABLE
   tax, tenant, txn_card_cancel, txn_order, txn_refund, txn_writeoff, verification,
   writeoff_desk_task, writeoff_record,
   order_item, marketing_asset, poster_template, poster_record, live_session, short_video,
+  project_bom, bom_deduct_exception, cost_carry_rule, fin_asset,
   pay_channel_config, pay_channel_bill,
   treatment_room, treatment_bed, room_operation_log, equipment, equipment_maintenance
 RESTART IDENTITY CASCADE;
@@ -348,6 +456,26 @@ else
 fi
 
 echo ""
+echo ""
+echo "==> [可选] 若 seed 联调栈 finance-service 在运行，重启它以触发 B9 薪酬提成 + B11 成本结转启动播种"
+# reset 会 TRUNCATE commission_rule / staff_comp_config / commission_record / cost_carry_rule / fin_asset；
+# 提成规则（咨询师 6/8/10/12% 阶梯 / 医生 10/12% 阶梯）与 12 条员工薪酬配置（底薪+适用规则）
+# 由 finance-service 的 CommissionDataInitializer（@Order 40）在启动时幂等补齐；
+# B11 三条结转规则（设备折旧/底薪/提成）与徐汇店三台设备资产由 CostCarryDataInitializer（@Order 50）幂等补齐。
+# 容器未起或为旧镜像（无播种器）则跳过。
+SEED_FIN_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '(^|_)meiyun-seed-finance-service$' | head -1)"
+if [ -n "$SEED_FIN_CONTAINER" ]; then
+  echo "    重启 $SEED_FIN_CONTAINER 触发提成规则/薪酬配置/结转规则/资产台账种子 ..."
+  docker restart "$SEED_FIN_CONTAINER" >/dev/null
+  echo "    等待 healthy ..."
+  for _ in $(seq 1 40); do
+    [ "$(docker inspect "$SEED_FIN_CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && break
+    sleep 3
+  done
+  echo "    $SEED_FIN_CONTAINER 已就绪，B9 提成规则/薪酬配置 + B11 结转规则/资产台账种子可查。"
+else
+  echo "    meiyun-seed-finance-service 未运行，跳过（起栈后 finance-service 启动即自动播种）。"
+fi
 echo "==> [可选] 若 seed 联调栈 store-service 在运行，重启它以触发 B13 房间床位/设备仪器启动播种"
 # reset 会 TRUNCATE treatment_room / treatment_bed / room_operation_log / equipment / equipment_maintenance；
 # 9 间房 16 张床位（A03-2 维护中）与 8 台设备仪器（含 11 条校准维保记录）由 store-service 的
@@ -401,6 +529,10 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
    UNION ALL SELECT 'poster_record='||count(*) FROM poster_record
    UNION ALL SELECT 'live_session='||count(*) FROM live_session
    UNION ALL SELECT 'short_video='||count(*) FROM short_video
+   UNION ALL SELECT 'commission_rule(启动播种)='||count(*) FROM commission_rule
+   UNION ALL SELECT 'staff_comp_config(启动播种)='||count(*) FROM staff_comp_config
+   UNION ALL SELECT 'cost_carry_rule(启动播种)='||count(*) FROM cost_carry_rule
+   UNION ALL SELECT 'fin_asset(启动播种)='||count(*) FROM fin_asset
    UNION ALL SELECT 'pay_channel_config(启动播种)='||count(*) FROM pay_channel_config
    UNION ALL SELECT 'pay_channel_bill(演示种子)='||count(*) FROM pay_channel_bill
    UNION ALL SELECT 'treatment_room(启动播种)='||count(*) FROM treatment_room
