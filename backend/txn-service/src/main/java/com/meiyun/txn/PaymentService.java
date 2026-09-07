@@ -85,6 +85,12 @@ public class PaymentService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "支付方式无效: " + method + "（支持 cash/card/wxpay/alipay/balance）");
         }
+        if ("CARD_SALE".equals(o.getBizKind()) && "balance".equals(method)) {
+            // 售卡禁储值余额支付：售卡本身是预收负债（RF-DEPOSIT/IN），用余额买卡会「预收转增、无实款进商户户」，
+            // 绕开资金闭环（卡买卡套现）；售卡须以法币现金/刷卡/微信/支付宝实付。
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "购卡 / 开卡订单不能使用储值余额支付（售卡须实付现金/刷卡/微信/支付宝），请更换支付方式");
+        }
         long t = tendered == null ? 0L : tendered;
         if (t <= 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "收款金额必须为正（单位：分）");
@@ -98,8 +104,14 @@ public class PaymentService {
             o.setStatus("已收款");
             orderRepo.save(o);
             planService.markPaidByOrder(orderNo, operator);
-            // B3 合规写：收齐同事务入资金事件 outbox（幂等：finance 侧 idem_key 去重）
-            financeEvents.emitOrderPaid(o);
+            if ("CARD_SALE".equals(o.getBizKind())) {
+                // 售卡单兜底收齐：同事务开卡（sale_no 幂等）+ 预收分录（idem_key 幂等）
+                issueCardForSale(o, operator);
+                financeEvents.emitCardSalePaid(o);
+            } else {
+                // B3 合规写：收齐同事务入资金事件 outbox（幂等：finance 侧 idem_key 去重）
+                financeEvents.emitOrderPaid(o);
+            }
             return new PayResult(null, o.getAmount(), paidBefore, 0L, true, o.getStatus());
         }
 
@@ -166,11 +178,37 @@ public class PaymentService {
         if (completed) {
             // 诊疗方案单联动：READY_PAY → PAID（零售单无方案单，内部空操作）
             planService.markPaidByOrder(orderNo, operator);
-            // B3 合规写：收齐同事务入资金事件 outbox（订单收款收入分录，渠道=最大笔收款渠道）
-            financeEvents.emitOrderPaid(o);
+            if ("CARD_SALE".equals(o.getBizKind())) {
+                // B16 售卡收齐：同事务回调 customer 开卡（member_card 实例 + 首笔 RECHARGE 流水，
+                // sale_no=orderNo 幂等）；开卡失败（客户 404 / customer 不可用）抛异常整笔回滚，
+                // 绝不出现「收款办结但卡未开」。资金走 RF-DEPOSIT/IN 预收（不发 RF-REVENUE）。
+                issueCardForSale(o, operator);
+                financeEvents.emitCardSalePaid(o);
+            } else {
+                // B3 合规写：收齐同事务入资金事件 outbox（订单收款收入分录，渠道=最大笔收款渠道）
+                financeEvents.emitOrderPaid(o);
+            }
         }
 
         return new PayResult(toView(p), o.getAmount(), paidAfter, change, completed, o.getStatus());
+    }
+
+    /**
+     * 售卡收齐同事务开卡：以订单上的模板快照（productCode/cardType/totalTimes/validityDays）
+     * 调 customer 开卡。customer 以 sale_no=orderNo 幂等，收款/重试重放不重复开卡；
+     * giftBalance 本批固定 0（catalog 暂无赠金字段），售价=订单金额。开卡后不回写订单。
+     */
+    private void issueCardForSale(TxnOrder o, String operator) {
+        int totalTimes = o.getCardTotalTimes() == null || o.getCardTotalTimes() < 1
+                ? 1 : o.getCardTotalTimes();
+        int validityDays = o.getCardValidityDays() == null || o.getCardValidityDays() < 0
+                ? 0 : o.getCardValidityDays();
+        String cardType = o.getCardType() == null ? "" : o.getCardType();
+        cardClient.issueCard(o.getOrderNo(), o.getCustomerId(), o.getStoreCode(),
+                o.getProductCode() == null ? "" : o.getProductCode(), cardType,
+                o.getProject(), totalTimes, validityDays,
+                o.getAmount() == null ? 0L : o.getAmount(), 0L,
+                operator == null ? "system" : operator);
     }
 
     /** 某订单的全部支付流水。 */

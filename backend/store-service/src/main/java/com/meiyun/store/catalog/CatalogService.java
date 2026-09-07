@@ -196,6 +196,43 @@ public class CatalogService {
         return repo.save(p);
     }
 
+    // ---- 内部端点（B16 售卡开卡，服务间 X-Internal-Token 专用） ----
+
+    /**
+     * txn 售卡下单取在售模板：按编码定位，校验门店可见（集团空串模板全店可售 / 本店模板）且在售。
+     * 不存在或不可见 → 404；已下架 → 409。金额返分（供 txn 直接落订单金额，不走 row() 的元出参）。
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Object> getForSale(String productCode, String storeCode) {
+        if (isBlank(productCode)) throw badReq("商品编码不能为空");
+        CatalogProduct p = repo.findFirstByProductCode(productCode.trim())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "卡项模板不存在：" + productCode.trim()));
+        String sc = isBlank(storeCode) ? "" : storeCode.trim();
+        String rowSc = p.getStoreCode() == null ? "" : p.getStoreCode();
+        boolean visible = rowSc.isEmpty() || rowSc.equals(sc);
+        if (!visible) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "卡项模板不存在或本店不可售：" + productCode.trim());
+        }
+        if (!"ON_SHELF".equals(p.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "卡项模板「" + p.getName() + "」已下架，无法售卡");
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("productCode", p.getProductCode());
+        m.put("name", p.getName());
+        m.put("productType", p.getProductType());
+        m.put("category", p.getCategory());
+        m.put("sessions", p.getSessions());
+        m.put("validityDays", p.getValidityDays());
+        m.put("priceFen", p.getPriceFen() == null ? 0L : p.getPriceFen());
+        m.put("transferable", p.getTransferable());
+        m.put("storeCode", rowSc);
+        m.put("status", p.getStatus());
+        return m;
+    }
+
     // ---- 出参装配 ----
 
     private Map<String, Object> row(CatalogProduct p) {

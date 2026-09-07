@@ -76,6 +76,26 @@ public class FinanceEventPublisher {
     }
 
     /**
+     * 售卡订单收齐（B16）：售卡是预收负债而非即时收入，落单条 RF-DEPOSIT/IN/CASHIER 预收分录
+     * （不发 RF-REVENUE），finance 侧 applyPrepayPool 自动同增预收池 total/pendingConsume、
+     * applyAccountMirror 按渠道联动商户户镜像；后续疗程/储值核销走现成 emitWriteoffDone
+     * （RF-DEPOSIT/OUT + RF-REVENUE/IN 成对结转）。渠道取最大笔法币收款（售卡禁 balance，
+     * PaymentService 已拦截，故全部为法币渠道）。idemKey=CARD-SALE:订单号，重试不重复落账。
+     */
+    @Transactional(propagation = Propagation.REQUIRED)
+    public void emitCardSalePaid(TxnOrder o) {
+        List<OrderPayment> pays = payRepo.findByOrderNoOrderByPaymentIdAsc(o.getOrderNo());
+        PayChannel pc = resolvePayChannel(pays);
+        String memo = "售卡预收 · " + nz(o.getProject(), o.getOrderNo());
+        if (pc.mixed()) memo = memo + "（混合支付）";
+        List<Map<String, Object>> cmds = List.of(
+                entry("CARD-SALE:" + o.getOrderNo(), o.getOrderNo(), "ORDER",
+                        "RF-DEPOSIT", "IN", o.getAmount(), pc.method(), "CASHIER", "ORDER",
+                        o.getStoreCode(), memo));
+        enqueue("CARD_SALE_PAID", o.getOrderNo(), cmds);
+    }
+
+    /**
      * 退款终审（B4.1 按支付构成拆分）：余额部分回加储值 RF-DEPOSIT/IN/ERP/balance（冲回预收），
      * 法币部分 RF-REFUND/OUT/CASHIER（渠道只反查非 balance 收款流水）。任一分录额为 0 跳过。
      * 卡台账回加由 TxnService 另调 customer 端点（{@link #balanceRefundForOrder} 给额），本处只落资金分录。

@@ -103,6 +103,17 @@ export interface RetailOrderCmd {
   operator?: string
 }
 
+/** 售卡/开卡命令（/txn/card-order，不走医生审核直接待收款；售价/次数/有效期以后端在售模板为准，不接收前端价格）。 */
+export interface CardSaleCmd {
+  customerId: string
+  storeCode: string
+  /** 咨询师/开单员工 ID（可选）。 */
+  consultant?: string
+  /** 在售卡项模板编码（CD-/CS-）。 */
+  productCode: string
+  operator?: string
+}
+
 /** 订单分页列表（status/storeCode 可选过滤）。 */
 export const listOrders = (params: { page?: number; size?: number; status?: string; storeCode?: string }) =>
   client.get<OrderPage>('/txn/order', { params })
@@ -113,6 +124,10 @@ export const createOrder = (cmd: CreateOrderCmd) =>
 /** 零售/现场直开缴费单（/prescription）：不走医生审核，直接待收款；散客也须建档客户。 */
 export const createRetailOrder = (cmd: RetailOrderCmd) =>
   client.post<OrderViewDTO>('/txn/retail-order', cmd)
+
+/** 售卡/开卡单（/card-order）：取在售模板定价，直接待收款；收齐后由后端开卡并落首笔 RECHARGE 流水。 */
+export const createCardOrder = (cmd: CardSaleCmd) =>
+  client.post<OrderViewDTO>('/txn/card-order', cmd)
 
 export const confirmOrder = (no: string, sign1: string, sign2: string) =>
   client.post<OrderViewDTO>(`/txn/order/${no}/confirm`, { sign1, sign2 })

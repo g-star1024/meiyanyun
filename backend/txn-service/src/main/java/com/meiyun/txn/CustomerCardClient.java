@@ -56,6 +56,43 @@ public class CustomerCardClient {
         post("/api/customer/internal/cards/consume", body, "储值扣款");
     }
 
+    /**
+     * 售卡开卡（B16，售卡订单收款收齐后同事务回调）：POST /api/customer/internal/cards/issue。
+     * customer 域实例化 member_card（product_code/card_type/expires_at/sale_no/gift_balance 溯源）
+     * 并写首笔 RECHARGE 正额流水（bizRef=orderNo）；以售卡订单号 sale_no 幂等，收款回调重试不重复开卡。
+     * 客户不存在 404 / 参数非法 400 中文透传（收款事务整笔回滚，杜绝「收款办结但卡未开」）。
+     *
+     * @param orderNo      售卡订单 OD 单号（开卡幂等键 sale_no）
+     * @param customerId   客户编号
+     * @param storeCode    售出门店
+     * @param productCode  模板编码 CD-/CS-
+     * @param cardType     CARD 储值卡 / COURSE 疗程卡（快照）
+     * @param cardItem     卡名（模板名快照）
+     * @param totalTimes   总次数（储值卡=1）
+     * @param validityDays 有效期天数（0=长期）
+     * @param priceFen     售价分（首笔充值额 = 订单金额）
+     * @param giftBalance  赠送金分（≥0，本批售卡固定 0）
+     * @param operator     收银操作人（仅审计留痕，台账动账人记 system）
+     */
+    public void issueCard(String orderNo, String customerId, String storeCode,
+                          String productCode, String cardType, String cardItem,
+                          int totalTimes, int validityDays, long priceFen,
+                          long giftBalance, String operator) {
+        Map<String, Object> body = new java.util.HashMap<>();
+        body.put("orderNo", nz(orderNo));
+        body.put("customerId", nz(customerId));
+        body.put("storeCode", nz(storeCode));
+        body.put("productCode", nz(productCode));
+        body.put("cardType", nz(cardType));
+        body.put("cardItem", nz(cardItem));
+        body.put("totalTimes", totalTimes);
+        body.put("validityDays", validityDays);
+        body.put("priceFen", priceFen);
+        body.put("giftBalance", giftBalance);
+        body.put("operator", nz(operator));
+        post("/api/customer/internal/cards/issue", body, "售卡开卡");
+    }
+
     /** 退卡终审回写：POST /api/customer/internal/cards/refund（卡置「已退卡」、余额清零、REFUND 流水）。 */
     public void refundCard(String cardNo, String cancelNo) {
         Map<String, Object> body = Map.of(

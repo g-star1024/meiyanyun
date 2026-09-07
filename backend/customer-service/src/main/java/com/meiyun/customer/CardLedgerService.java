@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,6 +91,80 @@ public class CardLedgerService {
                         "summary", "会员卡充值 " + yuan(amount) + " 元（" + payMethod + "），余额 " + yuan(after) + " 元")));
         publisher.emitRecharge(rcNo, cardNo, amount, payMethod, l.getStoreCode(), customerName);
         return saved;
+    }
+
+    /**
+     * 售卡开卡（B16，txn 售卡订单收款收齐后内部回调，X-Internal-Token 系统身份）：客户域为开卡权威，
+     * 实例化 member_card（total_times=remain_times=模板次数、balance=售价分、status=在用、
+     * product_code/card_type/expires_at/sale_no/gift_balance 溯源字段落库），并写首笔 RECHARGE <b>正额</b>
+     * 流水（biz_ref=order_no 售卡订单号、balance_after=售价，保持 Σ card_ledger.amount = balance 恒等式）。
+     *
+     * <p>写接口四件套：①校验（订单号/客户/卡名/次数/售价中文拒绝，客户不存在 404）；
+     * ②幂等（以售卡订单号 sale_no 反查，已开出卡直接返回既有卡号，收款回调网络重试不重复开卡）；
+     * ③全审计（CARD/ISSUE，payload 合法 JSON）；④并发安全（synchronized 生成 MC+yyyyMMdd-6 位卡号，
+     * 库内当日最大号递增，与 RC 单号同口径）。资金分录（RF-DEPOSIT/IN 预收）由 txn 域 outbox 投递，
+     * 本域只动卡台账与卡实例。首笔流水复用 RECHARGE 类型，不动 card_ledger 系统表 CHECK 约束。
+     */
+    @Transactional
+    public synchronized MemberCard issue(String orderNo, String customerId, String storeCode,
+                                         String productCode, String cardType, String cardItem,
+                                         int totalTimes, int validityDays, long priceFen,
+                                         long giftBalance, String operator) {
+        if (orderNo == null || orderNo.isBlank()) throw new BadReq("售卡订单号不能为空");
+        if (customerId == null || customerId.isBlank()) throw new BadReq("客户编号不能为空");
+        if (cardItem == null || cardItem.isBlank()) throw new BadReq("卡项名称不能为空");
+        if (totalTimes <= 0) throw new BadReq("卡总次数必须为正（储值卡按模板 1 次）");
+        if (validityDays < 0) throw new BadReq("有效期天数不能为负");
+        if (priceFen <= 0) throw new BadReq("售卡售价必须为正（单位：分）");
+        if (giftBalance < 0) throw new BadReq("赠送金额不能为负（单位：分）");
+
+        Optional<MemberCard> replay = cardRepo.findFirstBySaleNo(orderNo);
+        if (replay.isPresent()) {
+            return replay.get();
+        }
+        Customer customer = customerRepo.findById(customerId)
+                .orElseThrow(() -> new NotFound("客户不存在: " + customerId));
+
+        String cardNo = nextCardNo();
+        OffsetDateTime now = OffsetDateTime.now();
+
+        MemberCard card = new MemberCard();
+        card.setCardNo(cardNo);
+        card.setCustomerId(customerId);
+        card.setCardItem(cardItem.trim());
+        card.setStoreCode(storeCode == null ? "" : storeCode.trim());
+        card.setTotalTimes(totalTimes);
+        card.setRemainTimes(totalTimes);
+        card.setBalance(priceFen);
+        card.setGiftBalance(giftBalance);
+        card.setStatus("在用");
+        card.setProductCode(productCode == null || productCode.isBlank() ? null : productCode.trim());
+        card.setCardType(cardType == null || cardType.isBlank() ? null : cardType.trim());
+        card.setSaleNo(orderNo);
+        card.setExpiresAt(validityDays > 0 ? now.plusDays(validityDays) : null);
+        card.setCreatedAt(now);
+        cardRepo.save(card);
+
+        CardLedger l = new CardLedger();
+        l.setCardNo(cardNo);
+        l.setCustomerId(customerId);
+        l.setChangeType("RECHARGE");
+        l.setAmount(priceFen);
+        l.setBalanceAfter(priceFen);
+        l.setBizRef(orderNo);
+        l.setOrderNo(orderNo);
+        l.setOperator("system");
+        l.setStoreCode(card.getStoreCode());
+        ledgerRepo.save(l);
+
+        String customerName = customer.getName() == null ? customerId : customer.getName();
+        audit.record("CARD", orderNo, "system", "ISSUE",
+                json(issuePayload(cardNo, orderNo, customerId, customerName, productCode, cardType,
+                        cardItem, totalTimes, validityDays, priceFen, giftBalance,
+                        "售卡开卡：售出「" + cardItem.trim() + "」" + yuan(priceFen) + " 元，开卡 " + cardNo
+                                + "（" + totalTimes + " 次" + (giftBalance > 0 ? "、赠金 " + yuan(giftBalance) + " 元" : "")
+                                + "），首笔充值 " + yuan(priceFen) + " 元")));
+        return card;
     }
 
     /**
@@ -362,6 +437,13 @@ public class CardLedgerService {
         return "RC" + day + "-" + String.format("%06d", seq);
     }
 
+    /** 生成下一个开卡卡号：MC+yyyyMMdd-6 位序号，基于 member_card 库内当日最大卡号递增（synchronized 防并发重号）。 */
+    private synchronized String nextCardNo() {
+        String day = LocalDate.now().toString().replace("-", "");
+        long seq = cardRepo.maxCardSeqOfDay("MC" + day + "-%") + 1;
+        return "MC" + day + "-" + String.format("%06d", seq);
+    }
+
     private static String actor(String operator) {
         String a = DataScope.currentActor();
         if (a != null && !a.isBlank()) return a;
@@ -394,6 +476,31 @@ public class CardLedgerService {
         m.put("remainTimesAfter", remainTimesAfter);
         m.put("balanceAfter", balanceAfter);
         m.put("backfill", backfill);
+        m.put("authority", "customer");
+        m.put("summary", summary);
+        return m;
+    }
+
+    /** 售卡开卡审计 payload：卡号/售卡订单/客户/模板溯源/次数/有效期/售价与赠金快照，开卡权威来源 customer。 */
+    private static Map<String, Object> issuePayload(String cardNo, String orderNo, String customerId,
+                                                    String customerName, String productCode, String cardType,
+                                                    String cardItem, int totalTimes, int validityDays,
+                                                    long priceFen, long giftBalance, String summary) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("cardNo", cardNo);
+        m.put("saleNo", orderNo);
+        m.put("orderNo", orderNo);
+        m.put("customerId", customerId);
+        m.put("customer", customerName);
+        m.put("productCode", productCode);
+        m.put("cardType", cardType);
+        m.put("cardItem", cardItem);
+        m.put("totalTimes", totalTimes);
+        m.put("remainTimes", totalTimes);
+        m.put("validityDays", validityDays);
+        m.put("priceFen", priceFen);
+        m.put("giftBalance", giftBalance);
+        m.put("balanceAfter", priceFen);
         m.put("authority", "customer");
         m.put("summary", summary);
         return m;

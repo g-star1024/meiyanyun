@@ -61,7 +61,9 @@ public class InternalCardController {
                 .map(c -> new CardBalanceDTO(c.getCardNo(), c.getCustomerId(),
                         nameMap.getOrDefault(c.getCustomerId(), c.getCustomerId()),
                         c.getCardItem(), c.getStoreCode(), c.getTotalTimes(), c.getRemainTimes(),
-                        c.getBalance(), c.getStatus(), c.getCreatedAt()))
+                        c.getBalance(), c.getGiftBalance() == null ? 0L : c.getGiftBalance(),
+                        c.getStatus(), c.getProductCode(), c.getCardType(),
+                        c.getExpiresAt(), c.getCreatedAt()))
                 .toList();
     }
 
@@ -155,6 +157,35 @@ public class InternalCardController {
                 .toList();
     }
 
+    /**
+     * 售卡开卡联动（B16，txn 售卡订单收款收齐后回调）：POST /api/customer/internal/cards/issue。
+     * 客户域实例化 member_card（product_code/card_type/expires_at/sale_no/gift_balance 溯源落库）并写
+     * 首笔 RECHARGE 正额流水（bizRef=orderNo）；以售卡订单号 sale_no 幂等，收款回调重试不重复开卡；
+     * 客户不存在 404 / 参数非法 400 均中文透传，txn 收款事务整笔回滚（杜绝「收款办结但卡未开」）。
+     * 资金分录（RF-DEPOSIT/IN 预收）由 txn 域 outbox 投递，本端点只开卡与动卡台账。
+     */
+    @PostMapping("/cards/issue")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> issue(@RequestBody IssueCmd cmd) {
+        if (cmd == null) throw new CardLedgerService.BadReq("请求体不能为空");
+        MemberCard card = ledgerService.issue(
+                cmd.orderNo(), cmd.customerId(), cmd.storeCode(),
+                cmd.productCode(), cmd.cardType(), cmd.cardItem(),
+                cmd.totalTimes() == null ? 0 : cmd.totalTimes(),
+                cmd.validityDays() == null ? 0 : cmd.validityDays(),
+                cmd.priceFen() == null ? 0L : cmd.priceFen(),
+                cmd.giftBalance() == null ? 0L : cmd.giftBalance(),
+                cmd.operator());
+        return Map.of(
+                "cardNo", card.getCardNo(),
+                "customerId", card.getCustomerId(),
+                "balanceAfter", card.getBalance(),
+                "giftBalance", card.getGiftBalance() == null ? 0L : card.getGiftBalance(),
+                "totalTimes", card.getTotalTimes(),
+                "remainTimes", card.getRemainTimes(),
+                "status", card.getStatus() == null ? "在用" : card.getStatus());
+    }
+
     /** 储值扣款入参：cardNo/customerId/amount（分，&gt;0）/orderNo（幂等键）。 */
     public record ConsumeCmd(String cardNo, String customerId, Long amount, String orderNo) {}
 
@@ -171,4 +202,14 @@ public class InternalCardController {
 
     /** 订单退款回加入参：refundNo（退款 RF 单号，幂等键）/orderNo（原订单号，反查扣款卡）/amount（分，&gt;0）。 */
     public record RefundOrderCmd(String refundNo, String orderNo, Long amount) {}
+
+    /**
+     * 售卡开卡入参：orderNo（售卡订单 OD 单号，开卡幂等键）/customerId/storeCode/
+     * productCode（CD-/CS- 模板编码）/cardType（CARD/COURSE 快照）/cardItem（卡名快照）/
+     * totalTimes（模板次数，储值卡=1）/validityDays（有效期天数）/priceFen（售价分，首笔充值额）/
+     * giftBalance（赠送金分，≥0）/operator（收银操作人，仅审计留痕，台账动账人记 system）。
+     */
+    public record IssueCmd(String orderNo, String customerId, String storeCode, String productCode,
+                           String cardType, String cardItem, Integer totalTimes, Integer validityDays,
+                           Long priceFen, Long giftBalance, String operator) {}
 }

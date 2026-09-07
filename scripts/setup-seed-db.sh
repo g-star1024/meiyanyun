@@ -481,6 +481,44 @@ CREATE TABLE IF NOT EXISTS catalog_product (
   CONSTRAINT uk_catalog_store_code UNIQUE (store_code, product_code)
 );
 CREATE INDEX IF NOT EXISTS idx_catalog_product_store ON catalog_product(store_code);
+
+-- B16 售卡开卡：member_card / txn_order 新列幂等兜底。
+-- 正常路径：meiyun_core 由 customer/txn 服务 JPA ddl-auto=update 自动加列后 pg_dump 克隆，下列语句全部跳过；
+-- 仅当克隆源库结构落后于本批实体（新服务尚未在 core 库启动过）时补列，保证种子 INSERT/启动不缺列。
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_card' AND column_name='gift_balance') THEN
+    ALTER TABLE member_card ADD COLUMN gift_balance bigint NOT NULL DEFAULT 0;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_card' AND column_name='product_code') THEN
+    ALTER TABLE member_card ADD COLUMN product_code varchar(32);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_card' AND column_name='card_type') THEN
+    ALTER TABLE member_card ADD COLUMN card_type varchar(16);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_card' AND column_name='expires_at') THEN
+    ALTER TABLE member_card ADD COLUMN expires_at timestamptz;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_card' AND column_name='sale_no') THEN
+    ALTER TABLE member_card ADD COLUMN sale_no varchar(24);
+  END IF;
+
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='txn_order' AND column_name='biz_kind') THEN
+    ALTER TABLE txn_order ADD COLUMN biz_kind varchar(16);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='txn_order' AND column_name='product_code') THEN
+    ALTER TABLE txn_order ADD COLUMN product_code varchar(32);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='txn_order' AND column_name='card_type') THEN
+    ALTER TABLE txn_order ADD COLUMN card_type varchar(16);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='txn_order' AND column_name='card_total_times') THEN
+    ALTER TABLE txn_order ADD COLUMN card_total_times integer;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='txn_order' AND column_name='card_validity_days') THEN
+    ALTER TABLE txn_order ADD COLUMN card_validity_days integer;
+  END IF;
+END $$;
 SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
@@ -509,6 +547,14 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP
 
 echo "==> [4/4] 灌入客户富画像 02_customer_full.sql"
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 < "$SEED_DIR/02_customer_full.sql"
+
+echo "==> B16：历史种子卡补 card_type 快照（幂等，仅回填 card_type 为空的行）"
+# 新售卡由开卡链路直接落 card_type；种子 110 张历史卡全部为次卡/年卡/季卡（total_times 3-10）。
+# 口径与 CardLedgerService.issue 一致：total_times>1 为疗程/次卡(COURSE)，储值卡(CARD) total_times=1。
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
+UPDATE member_card SET card_type = 'COURSE' WHERE card_type IS NULL AND total_times > 1;
+UPDATE member_card SET card_type = 'CARD'   WHERE card_type IS NULL;
+SQL
 
 echo ""
 echo "==> [可选] 若 seed 联调栈 org-service 在运行，重启它以触发 RBAC 启动播种"

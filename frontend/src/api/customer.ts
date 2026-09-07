@@ -83,6 +83,16 @@ export interface MemberCardDTO {
   remainTimes: number | null
   /** 卡余额：bigint，单位「分」（展示需 /100 转元） */
   balance: number
+  /** 赠金余额（分）；售卡本批固定 0，充值赠金后续批次启用。 */
+  giftBalance?: number
+  /** 卡项模板编码快照（CD-/CS-），开卡后模板改价/下架不影响本卡。 */
+  productCode?: string | null
+  /** 卡类型快照：CARD 储值卡 / COURSE 疗程卡。 */
+  cardType?: string | null
+  /** 有效期截止（ISO-8601）；null=长期有效。 */
+  expiresAt?: string | null
+  /** 售卡订单号（OD 单号），开卡幂等键；充值卡无此字段。 */
+  saleNo?: string | null
   /** 卡状态：中文 在用/已退/... */
   status: string
   createdAt: string
@@ -91,8 +101,8 @@ export interface MemberCardDTO {
 /** 卡储值流水（GET /customer/cards/{cardNo}/ledger 真实字段；金额单位「分」） */
 export interface CardLedgerDTO {
   ledgerId: number
-  /** 变动类型：RECHARGE 充值 / CONSUME 消费扣款 / REFUND 退卡退款 */
-  changeType: 'RECHARGE' | 'CONSUME' | 'REFUND'
+  /** 变动类型：RECHARGE 充值/开卡首笔 / CONSUME 消费扣款 / REFUND 退卡退款 / ADJUST 人工调整 */
+  changeType: 'RECHARGE' | 'CONSUME' | 'REFUND' | 'ADJUST'
   /** 本次变动金额（分，带符号：充值 +、消费/退款 -） */
   amount: number
   /** 变动后卡余额（分） */

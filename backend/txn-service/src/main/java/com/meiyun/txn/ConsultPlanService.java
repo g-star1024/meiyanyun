@@ -45,12 +45,14 @@ public class ConsultPlanService {
     private final OrderNoGenerator orderNoGen;
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
+    private final StoreCatalogClient catalogClient;
     private final ObjectMapper json = new ObjectMapper();
 
     public ConsultPlanService(PlanRepository planRepo, PlanItemRepository itemRepo,
                               PlanRevisionRepository revRepo, TxnOrderRepository orderRepo,
                               OrderItemRepository orderItemRepo, OrderNoGenerator orderNoGen,
-                              AuditRecorder audit, ApptRefNameResolver names) {
+                              AuditRecorder audit, ApptRefNameResolver names,
+                              StoreCatalogClient catalogClient) {
         this.planRepo = planRepo;
         this.itemRepo = itemRepo;
         this.revRepo = revRepo;
@@ -59,6 +61,7 @@ public class ConsultPlanService {
         this.orderNoGen = orderNoGen;
         this.audit = audit;
         this.names = names;
+        this.catalogClient = catalogClient;
     }
 
     // ==================== DTO ====================
@@ -85,6 +88,13 @@ public class ConsultPlanService {
 
     public record RetailCmd(String customerId, String storeCode, String consultant,
                             String project, List<M4FlowController.OrderItemCmd> items, String operator) {}
+
+    /**
+     * 售卡下单入参（B16）：customerId/storeCode/consultant/productCode（CD-/CS- 模板编码）。
+     * 售价/卡名/次数/有效期一律以后端 store 域在售模板为准，不接收前端价格（防改价）。
+     */
+    public record CardSaleCmd(String customerId, String storeCode, String consultant,
+                              String productCode, String operator) {}
 
     public record PlanItemView(String itemCode, String itemName, String spec, Integer qty,
                                Long unitPrice, Long amount, String riskTags) {}
@@ -396,6 +406,75 @@ public class ConsultPlanService {
         return orderView(order.getOrderNo());
     }
 
+    // ==================== 售卡支线：现场售卡直开「待收款」订单（B16） ====================
+
+    /**
+     * 售卡下单：选建档客户 + 选 store 域在售卡项模板（CD-/CS-），后端取模板定价/次数/有效期，
+     * 直接生成「待收款」售卡订单（bizKind=CARD_SALE，免医生审核）。散客也须是建档客户（开卡须挂客户）。
+     *
+     * <p>价格/卡名/次数/有效期一律以 store 域在售模板响应为准（不信前端，防改价）；模板不存在/本店不可售
+     * 404、已下架 409、store 不可用 502 均中文透传中止开单。模板快照（productCode/cardType/totalTimes/
+     * validityDays）冗余落订单，收款收齐同事务开卡只依赖 customer，不再回查 store——售卡那一刻的
+     * 模板条款即合约，后续模板改价/下架不影响已售卡。售卡单禁止储值余额支付（PaymentService 拦截）。
+     */
+    @Transactional
+    public M4FlowController.OrderView createCardOrder(CardSaleCmd cmd) {
+        if (blank(cmd.customerId()) || !names.customerNames(List.of(cmd.customerId())).containsKey(cmd.customerId())) {
+            throw bad("客户不存在或未选择: " + cmd.customerId()
+                    + "（售卡开卡须挂建档客户；未建档请先建档再售卡）");
+        }
+        if (blank(cmd.storeCode()) || !names.storeNames(List.of(cmd.storeCode())).containsKey(cmd.storeCode())) {
+            throw bad("门店不存在或未指定: " + cmd.storeCode());
+        }
+        if (blank(cmd.productCode())) {
+            throw bad("未选择卡项模板，请先选择在售卡项");
+        }
+        Map<String, Object> tpl = catalogClient.getForSale(cmd.productCode(), cmd.storeCode());
+
+        String cardItem = str(tpl.get("name"));
+        String productCode = str(tpl.get("productCode"));
+        String productType = str(tpl.get("productType"));
+        long priceFen = tpl.get("priceFen") instanceof Number n ? n.longValue() : 0L;
+        int sessions = tpl.get("sessions") instanceof Number s ? s.intValue() : 0;
+        int validityDays = tpl.get("validityDays") instanceof Number v ? v.intValue() : 0;
+        if (priceFen <= 0) {
+            throw bad("卡项模板「" + cardItem + "」售价非法（须为正），无法售卡");
+        }
+        int totalTimes = sessions > 0 ? sessions : 1;
+
+        TxnOrder order = new TxnOrder();
+        order.setOrderNo(orderNoGen.nextOrderNo());
+        order.setCustomerId(cmd.customerId());
+        order.setStoreCode(cmd.storeCode());
+        order.setProject(blank(cardItem) ? "售卡" : cardItem);
+        order.setAmount(priceFen);
+        order.setConsultant(cmd.consultant());
+        order.setContraCheck("GREEN");
+        order.setStatus("待收款");
+        order.setBizKind("CARD_SALE");
+        order.setProductCode(productCode);
+        order.setCardType(blank(productType) ? null : productType);
+        order.setCardTotalTimes(totalTimes);
+        order.setCardValidityDays(Math.max(validityDays, 0));
+        orderRepo.save(order);
+
+        OrderItem oi = new OrderItem();
+        oi.setOrderNo(order.getOrderNo());
+        oi.setLineNo(1);
+        oi.setItemName(blank(cardItem) ? "售卡" : cardItem);
+        oi.setQty(1);
+        oi.setUnitPrice(priceFen);
+        oi.setAmount(priceFen);
+        orderItemRepo.save(oi);
+
+        audit.record("ORDER", order.getOrderNo(), actor(cmd.operator()), "CREATE",
+                "{\"source\":\"CARD_SALE\",\"productCode\":\"" + esc(productCode)
+                        + "\",\"cardType\":\"" + esc(productType) + "\",\"project\":\"" + esc(cardItem)
+                        + "\",\"amount\":" + priceFen + ",\"totalTimes\":" + totalTimes
+                        + ",\"validityDays\":" + Math.max(validityDays, 0) + "}");
+        return orderView(order.getOrderNo());
+    }
+
     // ==================== 收款联动：READY_PAY → PAID ====================
 
     @Transactional
@@ -616,6 +695,8 @@ public class ConsultPlanService {
 
     private static boolean blank(String s) { return s == null || s.isBlank(); }
     private static String esc(String s) { return s == null ? "" : s.replace("\"", "'").replace("\\", "/"); }
+    /** 跨服务模板 Map 取值转字符串（null/非字符串安全回落空串）。 */
+    private static String str(Object o) { return o == null ? "" : String.valueOf(o); }
     /** 审计/修订留痕操作人：一律取 JWT 登录人工号（请求体 operator 字段不可信，忽略）；无上下文回落 system。 */
     private static String actor(String a) { return DataScope.currentActor(); }
     private static ResponseStatusException bad(String msg) {

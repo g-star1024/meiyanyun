@@ -2,6 +2,7 @@ package com.meiyun.txn;
 
 import com.meiyun.security.RequirePerm;
 import com.meiyun.txn.ConsultPlanService.DoctorEditCmd;
+import com.meiyun.txn.ConsultPlanService.CardSaleCmd;
 import com.meiyun.txn.ConsultPlanService.PlanView;
 import com.meiyun.txn.ConsultPlanService.RetailCmd;
 import com.meiyun.txn.ConsultPlanService.ReviewCmd;
@@ -104,5 +105,20 @@ public class ConsultPlanController {
     @RequirePerm("prescription:create")
     public M4FlowController.OrderView retail(@RequestBody RetailCmd cmd) {
         return planService.createRetailOrder(cmd);
+    }
+
+    // ==================== 售卡支线：现场售卡直开「待收款」订单（B16） ====================
+
+    /**
+     * 售卡 / 开卡现场下单：选建档客户 + 选在售卡项模板（CD-/CS-），后端按 store 域模板定价，
+     * 直接生成「待收款」售卡订单（biz_kind=CARD_SALE，不走医生审核）。售价/次数/有效期不信前端；
+     * 收款收齐后由收银台同事务回调 customer 开卡（首笔 RECHARGE 流水），资金走 RF-DEPOSIT/IN 预收。
+     * 权限（OR 任一命中，对齐 permission-matrix §4）：咨询师/医生 prescription:create 开单、
+     * 店长 prescription:edit 或 cashier:create、前台收银 cashier:create。
+     */
+    @PostMapping("/card-order")
+    @RequirePerm({ "prescription:create", "prescription:edit", "cashier:create" })
+    public M4FlowController.OrderView cardOrder(@RequestBody CardSaleCmd cmd) {
+        return planService.createCardOrder(cmd);
     }
 }

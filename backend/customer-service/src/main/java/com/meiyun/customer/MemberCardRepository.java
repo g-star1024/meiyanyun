@@ -23,4 +23,12 @@ public interface MemberCardRepository extends JpaRepository<MemberCard, String> 
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select c from MemberCard c where c.cardNo = :cardNo")
     Optional<MemberCard> findForUpdate(@Param("cardNo") String cardNo);
+
+    /** 当日售卡开卡卡号最大序号（card_no 形如 MC20260907-000001，序号从第 12 位起 6 位；与 RC/OD/PM 各单号同口径）。 */
+    @Query(value = "select coalesce(max(cast(substring(card_no from 12) as bigint)), 0) "
+            + "from member_card where card_no like :prefix", nativeQuery = true)
+    long maxCardSeqOfDay(@Param("prefix") String prefix);
+
+    /** 售卡开卡幂等反查：按售卡订单号（sale_no）查已开出的卡，收款回调重试重放不重复开卡。 */
+    Optional<MemberCard> findFirstBySaleNo(String saleNo);
 }
