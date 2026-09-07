@@ -455,6 +455,32 @@ CREATE TABLE IF NOT EXISTS store_price (
   CONSTRAINT uk_price_store_sku UNIQUE (store_code, sku)
 );
 CREATE INDEX IF NOT EXISTS idx_store_price_store ON store_price(store_code);
+
+-- B15 卡项疗程目录（商品定义侧）。store_code 空串 = 集团通用模板（全门店可见可售）；
+-- product_type: CARD 卡项（CD-xxx）/ COURSE 疗程（CS-xxx）；金额 bigint 存「分」；
+-- includes text 存 JSON 数组（包含项目清单）；status: ON_SHELF/OFF_SHELF 两态上下架。
+CREATE TABLE IF NOT EXISTS catalog_product (
+  id                     bigserial    PRIMARY KEY,
+  store_code             varchar(16)  NOT NULL,
+  product_code           varchar(32)  NOT NULL,
+  name                   varchar(64)  NOT NULL,
+  product_type           varchar(16)  NOT NULL,
+  category               varchar(32),
+  sessions               integer,
+  validity_days          integer,
+  price_fen              bigint       NOT NULL,
+  original_price_fen     bigint       NOT NULL,
+  transferable           boolean      NOT NULL,
+  status                 varchar(16)  NOT NULL,
+  includes               text,
+  description            varchar(1000),
+  created_by             varchar(32),
+  created_at             timestamptz  NOT NULL,
+  updated_by             varchar(32),
+  updated_at             timestamptz,
+  CONSTRAINT uk_catalog_store_code UNIQUE (store_code, product_code)
+);
+CREATE INDEX IF NOT EXISTS idx_catalog_product_store ON catalog_product(store_code);
 SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
@@ -474,7 +500,7 @@ TRUNCATE TABLE
   project_bom, bom_deduct_exception, cost_carry_rule, fin_asset,
   pay_channel_config, pay_channel_bill,
   treatment_room, treatment_bed, room_operation_log, equipment, equipment_maintenance,
-  product_brand, product_category, product_sku, store_price
+  product_brand, product_category, product_sku, store_price, catalog_product
 RESTART IDENTITY CASCADE;
 SQL
 
@@ -635,4 +661,5 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
    UNION ALL SELECT 'product_category(启动播种)='||count(*) FROM product_category
    UNION ALL SELECT 'product_sku(启动播种)='||count(*) FROM product_sku
    UNION ALL SELECT 'store_price(启动播种)='||count(*) FROM store_price
+   UNION ALL SELECT 'catalog_product(启动播种)='||count(*) FROM catalog_product
    UNION ALL SELECT 'sys_dictionary(保留)='||count(*) FROM sys_dictionary;"

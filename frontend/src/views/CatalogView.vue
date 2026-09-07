@@ -15,7 +15,7 @@ import CKpi from '@/components/CKpi.vue'
 import { useCatalogStore, type CatalogProduct, type CatalogType, type CatalogStatus } from '@/stores/catalog'
 
 const store = useCatalogStore()
-onMounted(() => store.seed())
+onMounted(() => store.load())
 
 const selectedId = ref<string | null>(null)
 const selected = computed<CatalogProduct | null>(() => {
@@ -89,7 +89,7 @@ function openEdit() {
   }
   showForm.value = true
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
   const payload = {
     name: form.value.name.trim(),
@@ -105,9 +105,9 @@ function submitForm() {
     description: form.value.description.trim(),
   }
   if (editing.value) {
-    store.update(editing.value.id, payload)
+    await store.update(editing.value.id, payload)
   } else {
-    const p = store.create(payload)
+    const p = await store.create(payload)
     if (p) selectedId.value = p.id
   }
   showForm.value = false
