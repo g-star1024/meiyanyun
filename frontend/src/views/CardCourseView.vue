@@ -8,9 +8,12 @@
  *  - 售卡开卡：createCardOrder（/txn/card-order）→ payOrder 收款（禁 balance）
  *    收齐后 txn 同事务调 customer 开卡并落首笔 RECHARGE 流水
  *  - 充值：rechargeCard（/customer/cards/{cardNo}/recharge）
+ *  - 去划扣（B17）：跳划扣执行台 /m2-writeoff-desk，query 带出客户/卡预填「直接到店建单」，
+ *    复用划扣台双签流程，不绕开合规双签；核销项目由现场操作员填写。
  * 权限：course:view 查看；写操作 course:edit。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
@@ -30,6 +33,7 @@ import { createCardOrder, payOrder, type OrderViewDTO, type PayResultDTO } from 
 const auth = useAuthStore()
 const storeCtx = useStoreContext()
 const toast = useToast()
+const router = useRouter()
 
 // ---------------- 数据加载 ----------------
 const loading = ref(false)
@@ -384,6 +388,31 @@ async function submitRecharge() {
   }
 }
 
+// ---------------- 去划扣（跳划扣台，复用双签） ----------------
+// 售卡/疗程卡履约＝逐次划扣确认收入；此处只做动线入口：跳划扣台并预填客户/卡，
+// 建单与双签划扣仍走 /m2-writeoff-desk 原流程（不绕开 writeoff:create 权限与复核双签）。
+function goWriteoff(card: MemberCardDTO) {
+  if (!auth.can('writeoff:create') || !auth.can('writeoffdesk:view')) {
+    toast.error('无划扣执行台权限（需划扣建单/执行权限）')
+    return
+  }
+  if (card.status !== '在用') {
+    toast.error('该卡非「在用」状态，无法划扣')
+    return
+  }
+  void router.push({
+    path: '/m2-writeoff-desk',
+    query: {
+      walkin: '1',
+      customerId: card.customerId,
+      ...(selected.value?.name ? { customerName: selected.value.name } : {}),
+      ...(selected.value?.phone ? { phone: selected.value.phone } : {}),
+      cardNo: card.cardNo,
+      cardName: card.cardItem,
+    },
+  })
+}
+
 // ---------------- 展示辅助 ----------------
 // 售卡开卡走 txn /card-order（@RequirePerm prescription:create/edit/cashier:create 任一，对齐 permission-matrix §4）；
   // 充值走 customer /cards/{no}/recharge（@RequirePerm customer:card:recharge）。权限码前后端必须一致。
@@ -523,6 +552,11 @@ function tplSessionsText(t: CatalogProductDTO) {
               </div>
               <div class="asset__ops">
                 <CButton
+                  v-if="a.status === '在用'"
+                  size="sm" variant="ghost"
+                  @click="goWriteoff(a)"
+                >去划扣</CButton>
+                <CButton
                   v-if="a.status === '在用' && canRecharge"
                   size="sm" variant="ghost"
                   @click="openRecharge(a)"
@@ -556,6 +590,11 @@ function tplSessionsText(t: CatalogProductDTO) {
                 {{ a.cardNo }} · {{ fmtDate(a.expiresAt) }}<span v-if="a.saleNo"> · 售卡单 {{ a.saleNo }}</span>
               </div>
               <div class="asset__ops">
+                <CButton
+                  v-if="a.status === '在用'"
+                  size="sm" variant="ghost"
+                  @click="goWriteoff(a)"
+                >去划扣</CButton>
                 <CButton size="sm" variant="ghost" @click="openLedger(a)">流水</CButton>
               </div>
             </div>

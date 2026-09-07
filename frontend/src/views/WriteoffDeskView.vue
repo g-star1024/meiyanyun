@@ -4,6 +4,7 @@
  * 门店端今日待划扣队列 + 双签执行区。独立新页，不改 WriteoffView。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CWorkbenchShell from '@/components/CWorkbenchShell.vue'
 import CButton from '@/components/CButton.vue'
@@ -20,7 +21,45 @@ import { useToast } from '@/composables/useToast'
 
 const store = useWriteoffDeskStore()
 const toast = useToast()
-onMounted(() => store.seed())
+const route = useRoute()
+onMounted(async () => {
+  await store.seed()
+  // B17：卡疗程页「去划扣」入口带 query 跳转，自动打开建单弹层并预填客户/卡（项目仍由现场操作员填写）。
+  if (route.query.walkin === '1' && route.query.customerId) {
+    await prefillFromRoute()
+  }
+})
+
+// 从路由 query 预填「直接到店建单」：优先按 customerId 搜客户回填，失败用 query 内姓名/电话兜底展示。
+async function prefillFromRoute() {
+  const customerId = String(route.query.customerId)
+  const cardNo = route.query.cardNo ? String(route.query.cardNo) : ''
+  openWalkin()
+  walkinForm.value.customerId = customerId
+  walkinKeyword.value = route.query.customerName
+    ? `${route.query.customerName}${route.query.phone ? `（${route.query.phone}）` : ''}`
+    : ''
+  walkinCards.value = await store.customerCards(customerId)
+  const matched = walkinCards.value.find((c) => c.cardNo === cardNo)
+  if (matched) {
+    // 指定卡存在且非首张：多卡时选中该卡；单卡时 walkinCardOptions 无「不指定」项，直接指定卡号
+    walkinForm.value.cardNo = matched.cardNo
+    walkinCustomer.value = {
+      customerId,
+      name: String(route.query.customerName || '客户'),
+      phone: String(route.query.phone || ''),
+    } as CustomerDTO
+  } else if (walkinCards.value.length > 0) {
+    walkinForm.value.cardNo = walkinCards.value[0].cardNo
+    walkinCustomer.value = {
+      customerId,
+      name: String(route.query.customerName || '客户'),
+      phone: String(route.query.phone || ''),
+    } as CustomerDTO
+  } else {
+    toast.error('该客户在本门店无在用会员卡，无法建单')
+  }
+}
 
 const selectedId = ref<string | null>(null)
 const selected = computed<WriteoffDeskItem | null>(() => {

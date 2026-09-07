@@ -26,6 +26,8 @@ export interface OrderViewDTO {
   /** 订单总额（分） */
   amount: number
   status: string // 待签核/待收款/已收款/已取消
+  /** 业务种类（B16）：CARD_SALE=售卡/开卡单（整单核销页据此排除，售卡履约走卡逐次划扣），服务单为 null。 */
+  bizKind?: string | null
   consultantName: string | null
   contraCheck: string // GREEN/YELLOW/RED
   createdAt: string | null

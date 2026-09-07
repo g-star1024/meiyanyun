@@ -101,7 +101,9 @@ async function load() {
     ])
     const written = new Set([...doneRes.data, ...abnRes.data].map((w) => w.orderNo))
     orders.value = paidPage.data.content
-      .filter((d) => !written.has(d.orderNo))
+      // B17：售卡单（bizKind=CARD_SALE）不走整单核销——售卡履约是会员卡逐次划扣，
+      // 预收收入随划扣逐笔结转；整单核销会把订单误置「已核销」而卡仍在用、预收挂账（后端 order-writeoff 亦拒绝）。
+      .filter((d) => !written.has(d.orderNo) && d.bizKind !== 'CARD_SALE')
       .map(adaptOrder)
     records.value = [...doneRes.data.map(adaptRecord), ...abnRes.data.map(adaptRecord)]
   } catch (e: any) {

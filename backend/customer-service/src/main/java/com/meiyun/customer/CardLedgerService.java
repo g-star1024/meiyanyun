@@ -198,6 +198,13 @@ public class CardLedgerService {
         }
         long after = before - amount;
         card.setBalance(after);
+        // 扣尽状态流转：余额清零且卡已无剩余可用（储值卡无次数概念 total_times 占位 1；疗程卡须剩余次数也为 0）→ 已用完。
+        // 疗程卡余额为 0 但仍有剩余次数时，后续可走纯扣次（0 额）划扣，不得提前置「已用完」。
+        boolean depleted = after == 0
+                && ("CARD".equals(card.getCardType()) || (card.getRemainTimes() == null || card.getRemainTimes() == 0));
+        if (depleted) {
+            card.setStatus("已用完");
+        }
         cardRepo.save(card);
 
         CardLedger l = new CardLedger();
@@ -215,7 +222,9 @@ public class CardLedgerService {
         audit.record("CARD", orderNo, "system", "CONSUME",
                 json(Map.of("cardNo", cardNo, "orderNo", orderNo, "amount", amount,
                         "balanceAfter", after, "authority", "customer",
-                        "summary", "储值消费扣款 " + yuan(amount) + " 元，余额 " + yuan(after) + " 元")));
+                        "depleted", depleted,
+                        "summary", "储值消费扣款 " + yuan(amount) + " 元，余额 " + yuan(after) + " 元"
+                                + (depleted ? "，卡余额扣尽已置「已用完」" : ""))));
         return saved;
     }
 

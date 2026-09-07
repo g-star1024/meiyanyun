@@ -613,7 +613,7 @@ public class ConsultPlanService {
                 .toList();
         return new M4FlowController.OrderView(o.getOrderNo(), o.getCustomerId(), cust.get(o.getCustomerId()), phones.get(o.getCustomerId()),
                 o.getStoreCode(), blank(o.getStoreCode()) ? null : stores.get(o.getStoreCode()),
-                o.getProject(), o.getAmount(), o.getStatus(),
+                o.getProject(), o.getAmount(), o.getStatus(), o.getBizKind(),
                 blank(o.getConsultant()) ? null : consultants.get(o.getConsultant()),
                 o.getContraCheck(), o.getCreatedAt(), iv,
                 0L, List.of());

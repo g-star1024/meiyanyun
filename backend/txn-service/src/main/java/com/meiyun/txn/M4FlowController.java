@@ -256,10 +256,11 @@ public class M4FlowController {
                 o.getOrderNo(), o.getCustomerId(), custNames.get(o.getCustomerId()), phones.get(o.getCustomerId()),
                 o.getStoreCode(), o.getStoreCode() == null ? null : storeNames.get(o.getStoreCode()),
                 o.getProject(), o.getAmount(), o.getStatus(),
+                o.getBizKind(),
                 consultantNames.get(o.getConsultant()), o.getContraCheck(),
                 o.getCreatedAt(),
                 toItemViews(itemsByOrder.getOrDefault(o.getOrderNo(), List.of())),
-                sumPosted(paysByOrder.get(o.getOrderNo())),
+                sumPosted(paysByOrder.getOrDefault(o.getOrderNo(), List.of())),
                 toPaymentViews(paysByOrder.getOrDefault(o.getOrderNo(), List.of()))));
     }
 
@@ -471,6 +472,13 @@ public class M4FlowController {
     @Transactional
     public synchronized WriteoffView orderWriteoff(@RequestBody @Valid OrderWriteoffCmd cmd) {
         TxnOrder o = requireOrder(cmd.orderNo());
+        // 售卡单（B16，bizKind=CARD_SALE）不走整单核销：售卡履约是会员卡随客户到店逐次划扣（/writeoff 卡扣次
+        // 或划扣台双签），预收收入随划扣逐笔结转；整单核销会把订单误置「已核销」而卡仍在用、预收仍挂账。
+        if ("CARD_SALE".equals(o.getBizKind())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "售卡订单不可整单核销（售卡履约＝会员卡逐次划扣确认收入，请在划扣台/卡扣次核销，单号："
+                            + cmd.orderNo() + "）");
+        }
         WriteoffRecord exist = writeoffRepo.findByCardNoIsNullOrderByCreatedAtDesc().stream()
                 .filter(w -> cmd.orderNo().equals(w.getOrderNo()))
                 .findFirst().orElse(null);
@@ -621,6 +629,7 @@ public class M4FlowController {
                 o.getOrderNo(), o.getCustomerId(), cust.get(o.getCustomerId()), phones.get(o.getCustomerId()),
                 o.getStoreCode(), o.getStoreCode() == null ? null : stores.get(o.getStoreCode()),
                 o.getProject(), o.getAmount(), o.getStatus(),
+                o.getBizKind(),
                 o.getConsultant() == null ? null : consultants.get(o.getConsultant()),
                 o.getContraCheck(),
                 o.getCreatedAt(), toItemViews(items),
@@ -674,6 +683,8 @@ public class M4FlowController {
             String orderNo, String customerId, String customerName, String phoneMask,
             String storeCode, String storeName,
             String project, Long amount, String status,
+            /** 业务种类（B16）：CARD_SALE=售卡/开卡单（整单核销页据此排除，售卡走卡逐次划扣），服务单为 null。 */
+            String bizKind,
             String consultantName, String contraCheck,
             OffsetDateTime createdAt,
             List<CustomerViewController.OrderItemView> items,
