@@ -117,6 +117,72 @@ public class StoreConsumableClient {
         }
     }
 
+    /**
+     * BOM 自动扣料（B10）：POST /api/stores/internal/consumables/bom-deduct。
+     * 由 store 域按 projectName 解析配方（门店行 &gt; 集团模板）并出库，txn 不传明细。
+     *
+     * <p>与终审扣库 {@link #deduct} 的错误口径不同：本方法调用发生在划扣事务<b>提交后</b>，
+     * 4xx（库存不足 422 / SKU 未建档 404）/ 5xx / 网络异常一律抛 ResponseStatusException（中文），
+     * 由 {@link BomDeductService} 捕获登记 bom_deduct_exception，<b>绝不向上抛出阻断划扣</b>。
+     * store 返回 skipped=true 表示该项目未配 BOM（静默跳过，非异常）。
+     * 幂等：bizRef=BOM:{writeoffId}，重试安全（store 侧不双扣、回返原行定格金额）。
+     */
+    public BomDeductResult deductByProject(String bizRef, String storeCode,
+                                           String projectName, String operator) {
+        Map<String, Object> body = Map.of(
+                "bizRef", nz(bizRef),
+                "storeCode", nz(storeCode),
+                "projectName", nz(projectName),
+                "operator", nz(operator));
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            Map<String, Object> resp = restTemplate.postForEntity(
+                    storeBaseUrl + "/api/stores/internal/consumables/bom-deduct",
+                    new HttpEntity<>(body, headers), Map.class).getBody();
+            long total = 0L;
+            boolean skipped = false;
+            List<DeductLineResult> resultLines = new ArrayList<>();
+            if (resp != null) {
+                Object t = resp.get("totalAmountFen");
+                if (t instanceof Number n) total = n.longValue();
+                Object sk = resp.get("skipped");
+                if (sk instanceof Boolean b) skipped = b;
+                Object rawLines = resp.get("lines");
+                if (rawLines instanceof List<?> ls) {
+                    for (Object o : ls) {
+                        if (o instanceof Map<?, ?> lm) {
+                            resultLines.add(new DeductLineResult(
+                                    str(lm.get("skuCode")), str(lm.get("name")),
+                                    lm.get("qty") instanceof Number q ? q.intValue() : 0,
+                                    lm.get("unitCostFen") instanceof Number u ? u.longValue() : 0L,
+                                    lm.get("amountFen") instanceof Number a ? a.longValue() : 0L));
+                        }
+                    }
+                }
+            }
+            return new BomDeductResult(skipped, total, resultLines);
+        } catch (HttpStatusCodeException e) {
+            int status = e.getStatusCode().value();
+            String msg = extractMessage(e.getResponseBodyAsString());
+            if (status >= 400 && status < 500) {
+                // 业务拒绝（库存不足 / SKU 未建档）：中文透传，调用方登记异常单
+                log.info("BOM 自动扣料被 store 拒绝 status={} bizRef={} msg={}", status, bizRef, msg);
+                throw new ResponseStatusException(HttpStatus.valueOf(status), msg);
+            }
+            log.error("BOM 自动扣料 store 服务端错误 status={} bizRef={} body={}", status, bizRef, e.getResponseBodyAsString());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "BOM 自动扣料失败：库存服务暂不可用，划扣已完成，请在扣料异常清单重试");
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("BOM 自动扣料 store 调用异常 bizRef={}: {}", bizRef, e.getMessage());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "BOM 自动扣料失败：无法连接库存服务，划扣已完成，请在扣料异常清单重试");
+        }
+    }
+
     /** 从 store 错误体 {"message":"中文"} 提取中文原因；解析失败回落通用文案。 */
     private static String extractMessage(String body) {
         if (body != null && body.contains("\"message\"")) {
@@ -148,5 +214,9 @@ public class StoreConsumableClient {
 
     /** 扣库结果：成本合计（分）+ 逐行明细。 */
     public record DeductResult(long totalAmountFen, List<DeductLineResult> lines) {
+    }
+
+    /** BOM 按项目扣料结果：skipped=true 表示未配 BOM 静默跳过；totalAmountFen 为成本合计（分）。 */
+    public record BomDeductResult(boolean skipped, long totalAmountFen, List<DeductLineResult> lines) {
     }
 }

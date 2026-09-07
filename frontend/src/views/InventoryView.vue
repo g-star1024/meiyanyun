@@ -1,7 +1,10 @@
 <script setup lang="ts">
 // M2-02 库存耗材：SKU 库存列表 + 安全库存预警 + 出入库流水 + 入库/出库/报损操作。
+// B10：项目配方 BOM（划扣自动扣料配方维护）+ 扣料异常处理（库存不足等失败重试/手工销项）。
 import { computed, onMounted, ref } from 'vue'
 import { useInventoryStore, type InvCategory } from '@/stores/inventory'
+import { useBomStore } from '@/stores/bom'
+import type { ProjectBomDTO } from '@/api/bom'
 import { useAuthStore } from '@/stores/auth'
 import CKpi from '@/components/CKpi.vue'
 import CCard from '@/components/CCard.vue'
@@ -142,6 +145,103 @@ async function doCreate() {
     toast.error('创建失败：' + errMsg(e))
   }
 }
+
+// ============ B10 项目配方 BOM ============
+const bom = useBomStore()
+onMounted(() => {
+  bom.loadBoms().catch((e) => console.error('[bom] 配方加载失败', e))
+  bom.loadExceptions().catch((e) => console.error('[bom] 扣料异常加载失败', e))
+})
+
+const bomScopeOptions = [
+  { value: 'STORE', label: '本店配方' },
+  { value: 'GROUP', label: '集团模板' },
+]
+
+const bomDrawerOpen = ref(false)
+const bomForm = ref({ projectName: '', skuCode: '', qty: '1' })
+const bomSkuOptions = computed(() => bom.skuOptions())
+
+function openBomDrawer() {
+  bomForm.value = { projectName: '', skuCode: '', qty: '1' }
+  bomDrawerOpen.value = true
+}
+
+function pickQuickProject(name: string) {
+  bomForm.value.projectName = name
+}
+
+async function doSaveBom() {
+  const f = bomForm.value
+  if (!f.projectName.trim() || !f.skuCode || !Number(f.qty) || Number(f.qty) <= 0) {
+    toast.warning('请填写项目名、选择 SKU 并填写正整数用量')
+    return
+  }
+  try {
+    await bom.saveBom({
+      projectName: f.projectName.trim(),
+      skuCode: f.skuCode,
+      qty: Math.floor(Number(f.qty)),
+      enabled: true,
+    })
+    bomDrawerOpen.value = false
+    toast.success(`已保存「${f.projectName.trim()}」配方，划扣该项目时将按配方自动扣料`)
+  } catch (e) {
+    toast.error('配方保存失败：' + errMsg(e))
+  }
+}
+
+async function doToggleBom(b: ProjectBomDTO) {
+  try {
+    await bom.toggleEnabled(b)
+  } catch (e) {
+    toast.error('启停失败：' + errMsg(e))
+  }
+}
+
+function bomScopeLabel(code: string) {
+  return code === 'GROUP' ? '集团' : code
+}
+
+// ============ B10 扣料异常 ============
+const excTabs = [
+  { value: 'PENDING', label: '待处理' },
+  { value: 'RESOLVED', label: '已处理' },
+  { value: '', label: '全部' },
+]
+
+function fmtDateTime(iso?: string | null) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}/${d.getDate()} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+const excBusy = ref<string | null>(null)
+
+async function doRetry(excId: string) {
+  excBusy.value = excId
+  try {
+    await bom.retry(excId)
+    toast.success('已重新自动扣料，异常单已核销')
+  } catch (e) {
+    toast.error('重试失败：' + errMsg(e))
+  } finally {
+    excBusy.value = null
+  }
+}
+
+async function doResolve(excId: string) {
+  excBusy.value = excId
+  try {
+    await bom.markResolved(excId)
+    toast.success('已标记为手工处理')
+  } catch (e) {
+    toast.error('标记失败：' + errMsg(e))
+  } finally {
+    excBusy.value = null
+  }
+}
 </script>
 
 <template>
@@ -273,6 +373,125 @@ async function doCreate() {
       </CCard>
     </div>
 
+    <!-- B10 项目配方 BOM：划扣核销后按项目自动扣料的配方维护（本店行覆盖集团模板，按 SKU 去重） -->
+    <CCard padding="none">
+      <div class="iv__toolbar">
+        <div class="iv__cats">
+          <button v-for="t in bomScopeOptions" :key="t.value"
+                  v-show="t.value === 'STORE' || bom.canViewGroup"
+                  :class="{ 'is-active': bom.scope === t.value }"
+                  @click="bom.switchScope(t.value as any)">{{ t.label }}</button>
+        </div>
+        <CInput v-model="bom.bomProject" placeholder="按项目名筛选" :error="false" class="iv__search" />
+        <CButton variant="primary" size="sm" v-perm.disable="'inventory:consumable:edit'" @click="openBomDrawer">
+          <CIcon name="plus" :size="14" />添加配方
+        </CButton>
+      </div>
+      <div class="bom__hint">
+        <CIcon name="alert" :size="13" />
+        划扣核销事务提交后，系统按「项目名」匹配配方自动扣减耗材并结转耗材成本：本店配方优先，未配置时回落集团模板；项目未配 BOM 则静默跳过，扣料失败（如库存不足）不影响划扣，登记到下方「扣料异常」可补货后重试。
+      </div>
+      <div class="iv__table-wrap">
+        <table class="itbl">
+          <thead>
+            <tr>
+              <th>治疗项目</th>
+              <th>SKU / 耗材</th>
+              <th class="num">单次用量</th>
+              <th>适用范围</th>
+              <th>状态</th>
+              <th>最近维护</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="b in bom.filteredBoms" :key="b.bomId">
+              <td><div class="sku__name">{{ b.projectName }}</div></td>
+              <td>
+                <div class="sku__name">{{ bom.skuDisplayName(b) }}</div>
+                <div class="sku__code">{{ b.skuCode }}</div>
+              </td>
+              <td class="num"><b>{{ b.qty }}</b></td>
+              <td><span class="cat-tag">{{ bomScopeLabel(b.storeCode) }}</span></td>
+              <td>
+                <CStatusPill :status="b.enabled ? 'success' : 'disabled'" dot>{{ b.enabled ? '启用' : '停用' }}</CStatusPill>
+                <CButton variant="ghost" size="sm" class="bom__toggle"
+                         v-perm.disable="'inventory:consumable:edit'"
+                         @click="doToggleBom(b)">{{ b.enabled ? '停用' : '启用' }}</CButton>
+              </td>
+              <td class="c-text3">{{ b.updatedBy || '—' }} · {{ fmtDateTime(b.updatedAt) }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="bom.filteredBoms.length === 0" class="empty">
+          {{ bom.scope === 'GROUP' ? '集团模板暂无配方' : '本店暂无专属配方（未配置时自动回落集团模板）' }}
+        </div>
+      </div>
+    </CCard>
+
+    <!-- B10 扣料异常：划扣成功但自动扣料失败（库存不足/服务不可用）的登记，可重试或手工销项 -->
+    <CCard padding="none">
+      <div class="iv__toolbar">
+        <div class="iv__cats">
+          <button v-for="t in excTabs" :key="t.value || 'ALL'"
+                  :class="{ 'is-active': bom.excStatus === t.value }"
+                  @click="bom.switchExcStatus(t.value as any)">{{ t.label }}</button>
+        </div>
+        <span class="bom__exc-count" v-if="bom.pendingExceptions.length > 0">
+          <CStatusPill status="danger" dot>{{ bom.pendingExceptions.length }} 笔待处理</CStatusPill>
+        </span>
+      </div>
+      <div class="iv__table-wrap">
+        <table class="itbl">
+          <thead>
+            <tr>
+              <th>异常单号 / 划扣单</th>
+              <th>门店 / 项目</th>
+              <th>失败原因</th>
+              <th class="num">失败次数</th>
+              <th>状态</th>
+              <th>时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="e in bom.exceptions" :key="e.excId" :class="{ 'row--low': e.status === 'PENDING' }">
+              <td>
+                <div class="sku__name">{{ e.excId }}</div>
+                <div class="sku__code">划扣 {{ e.writeoffId }}</div>
+              </td>
+              <td>
+                <div class="sku__name">{{ e.storeName || e.storeCode }}</div>
+                <div class="sku__code">{{ e.projectName || '—' }}</div>
+              </td>
+              <td><span class="bom__reason">{{ e.reason }}</span></td>
+              <td class="num">{{ e.failCount }}</td>
+              <td>
+                <CStatusPill :status="e.status === 'PENDING' ? 'danger' : 'success'" dot>
+                  {{ e.status === 'PENDING' ? '待处理' : '已处理' }}
+                </CStatusPill>
+              </td>
+              <td class="c-text3">
+                <div>{{ fmtDateTime(e.createdAt) }}</div>
+                <div class="sku__code" v-if="e.resolvedAt">{{ e.resolvedBy || '—' }} 销项 {{ fmtDateTime(e.resolvedAt) }}</div>
+              </td>
+              <td>
+                <div v-if="e.status === 'PENDING'" class="bom__ops">
+                  <CButton variant="primary" size="sm" :disabled="excBusy === e.excId"
+                          v-perm.disable="'inventory:consumable:edit'"
+                          @click="doRetry(e.excId)">补货后重试</CButton>
+                  <CButton variant="ghost" size="sm" :disabled="excBusy === e.excId"
+                          v-perm.disable="'inventory:consumable:edit'"
+                          @click="doResolve(e.excId)">标记已处理</CButton>
+                </div>
+                <span v-else class="c-text3">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-if="bom.exceptions.length === 0" class="empty">暂无扣料异常记录</div>
+      </div>
+    </CCard>
+
     <!-- 出入库/报损抽屉 -->
     <CDrawer v-model:show="opOpen" :title="opTitle + ' · ' + (inv.selected?.name || '')" size="sm">
       <div class="opform">
@@ -312,6 +531,34 @@ async function doCreate() {
         <CButton variant="primary" size="sm" :disabled="!createForm.name.trim() || !createForm.skuCode.trim()" @click="doCreate">
           创建
         </CButton>
+      </div>
+    </CDrawer>
+    <!-- B10 添加配方抽屉 -->
+    <CDrawer v-model:show="bomDrawerOpen" :title="bom.scope === 'GROUP' ? '添加集团模板配方' : '添加本店配方'" size="sm">
+      <div class="opform">
+        <div class="bomform__row">
+          <label class="bomform__label">治疗项目 *</label>
+          <CInput v-model="bomForm.projectName" placeholder="与订单/划扣单项目名一致，如：水光针单次" :error="false" />
+          <div class="bomform__chips">
+            <button v-for="p in bom.QUICK_PROJECTS" :key="p" type="button"
+                    :class="{ 'is-active': bomForm.projectName === p }"
+                    @click="pickQuickProject(p)">{{ p }}</button>
+          </div>
+        </div>
+        <CSelect v-model="bomForm.skuCode" :options="bomSkuOptions" label="耗材 SKU *" width="100%" />
+        <CInput v-model="bomForm.qty" label="单次用量 *" type="number" placeholder="每做 1 次该项目消耗的数量（正整数）" />
+        <div class="opform__hint">
+          <CIcon name="alert" :size="13" />
+          {{ bom.scope === 'GROUP'
+            ? '集团模板对全部门店生效；门店可另配本店行覆盖同名 SKU 用量。'
+            : '本店配方优先于集团模板（按 SKU 去重覆盖）；同名项目+SKU 重复提交即更新用量。' }}
+        </div>
+      </div>
+      <div class="drawer__ops">
+        <CButton variant="ghost" size="sm" @click="bomDrawerOpen = false">取消</CButton>
+        <CButton variant="primary" size="sm"
+                 :disabled="!bomForm.projectName.trim() || !bomForm.skuCode || !(Number(bomForm.qty) > 0)"
+                 @click="doSaveBom">保存配方</CButton>
       </div>
     </CDrawer>
   </div>
@@ -387,6 +634,18 @@ async function doCreate() {
 .opform { display: flex; flex-direction: column; gap: var(--s-md); }
 .opform__hint { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--c-warning-fg); background: var(--c-warning-bg); padding: var(--s-sm); border-radius: var(--r-md); }
 .drawer__ops { display: flex; justify-content: flex-end; gap: var(--s-xs); margin-top: var(--s-lg); }
+
+/* B10 BOM 配方 & 扣料异常 */
+.bom__hint { display: flex; align-items: flex-start; gap: 6px; font-size: var(--t-xs); color: var(--c-text-2); background: var(--c-surface-muted, #f7f8fa); padding: var(--s-sm) var(--s-lg); border-bottom: 1px solid var(--c-border); line-height: 1.6; }
+.bom__toggle { margin-left: var(--s-xs); }
+.bom__reason { font-size: var(--t-xs); color: var(--c-danger-fg); line-height: 1.5; }
+.bom__ops { display: flex; gap: var(--s-xxs); flex-wrap: wrap; }
+.bom__exc-count { margin-left: auto; display: inline-flex; align-items: center; }
+.bomform__row { display: flex; flex-direction: column; gap: var(--s-xs); }
+.bomform__label { font-size: var(--t-xs); color: var(--c-text-2); font-weight: 600; }
+.bomform__chips { display: flex; gap: var(--s-xxs); flex-wrap: wrap; }
+.bomform__chips button { border: 1px solid var(--c-border); background: none; padding: 3px 10px; border-radius: var(--r-sm); font-size: var(--t-xs); color: var(--c-text-2); cursor: pointer; }
+.bomform__chips button.is-active { background: var(--c-brand-soft); border-color: var(--c-brand); color: var(--c-brand); font-weight: 600; }
 
 @media (max-width: 900px) {
   .iv__body { grid-template-columns: 1fr; }

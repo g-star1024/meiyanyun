@@ -56,12 +56,14 @@ public class WriteoffDeskService {
     private final ApptRefNameResolver names;
     private final FinanceEventPublisher financeEvents;
     private final CustomerCardClient customerCardClient;
+    private final BomDeductService bomDeductService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public WriteoffDeskService(WriteoffDeskTaskRepository wdRepo, MemberCardRepository cardRepo,
                                WriteoffRepository writeoffRepo, WriteoffNoGenerator noGen,
                                AuditRecorder audit, ApptRefNameResolver names,
-                               FinanceEventPublisher financeEvents, CustomerCardClient customerCardClient) {
+                               FinanceEventPublisher financeEvents, CustomerCardClient customerCardClient,
+                               BomDeductService bomDeductService) {
         this.wdRepo = wdRepo;
         this.cardRepo = cardRepo;
         this.writeoffRepo = writeoffRepo;
@@ -70,6 +72,7 @@ public class WriteoffDeskService {
         this.names = names;
         this.financeEvents = financeEvents;
         this.customerCardClient = customerCardClient;
+        this.bomDeductService = bomDeductService;
     }
 
     // ==================== 任务生成 ====================
@@ -233,6 +236,10 @@ public class WriteoffDeskService {
                 "{\"card\":\"" + card.getCardNo() + "\",\"writeoffId\":\"" + w.getWriteoffId()
                         + "\",\"reviewer\":\"" + esc(reviewer.trim()) + "\",\"amount\":" + unit
                         + ",\"timesUsed\":1,\"authority\":\"customer\"}");
+
+        // B10：BOM 自动扣料注册在划扣事务提交后执行（扣库/成本事件/异常登记均不在本事务内，
+        // 失败只登记 bom_deduct_exception，绝不阻断或回滚划扣——医疗红线）
+        bomDeductService.triggerAfterCommit(w.getWriteoffId(), w.getStoreCode(), w.getProject(), actor);
         return saved;
     }
 
