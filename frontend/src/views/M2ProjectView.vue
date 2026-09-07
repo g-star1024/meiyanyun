@@ -20,7 +20,11 @@ const auth = useAuthStore()
 const mb = useM1BrandStore()
 const toast = useToast()
 
-onMounted(() => mb.seed())
+onMounted(() => { void mb.load() })
+
+function errMsg(e: any) {
+  return e?.response?.data?.message || e?.message || '网络异常'
+}
 
 const keyword = ref('')
 const filterBrandId = ref('')
@@ -168,7 +172,7 @@ function toggleType(v: string) {
   else set.add(v)
   form.value.storeTypes = [...set]
 }
-function saveForm() {
+async function saveForm() {
   if (!canSave.value) return
   const payload = {
     brandId: form.value.brandId,
@@ -183,19 +187,27 @@ function saveForm() {
     status: form.value.status,
     remark: form.value.remark.trim(),
   }
-  if (editingId.value === null) {
-    mb.createProduct(payload)
-    toast.success('项目已创建，同步至品牌品类库')
-  } else {
-    mb.updateProduct(editingId.value, payload)
-    toast.success('项目已更新，/m1-brand 同步生效')
+  try {
+    if (editingId.value === null) {
+      await mb.createProduct(payload)
+      toast.success('项目已创建，同步至品牌品类库')
+    } else {
+      await mb.updateProduct(editingId.value, payload)
+      toast.success('项目已更新，/m1-brand 同步生效')
+    }
+    showForm.value = false
+  } catch (e) {
+    toast.error('保存失败：' + errMsg(e))
   }
-  showForm.value = false
 }
-function toggleStatus(row: Product) {
+async function toggleStatus(row: Product) {
   const next: CommonStatus = row.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
-  mb.setProductStatus(row.id, next)
-  toast.success(`项目已${next === 'ACTIVE' ? '启用' : '停用'}`)
+  try {
+    await mb.setProductStatus(row.id, next)
+    toast.success(`项目已${next === 'ACTIVE' ? '启用' : '停用'}`)
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
 }
 
 import { onMounted } from 'vue'

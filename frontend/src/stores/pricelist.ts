@@ -1,12 +1,26 @@
 // ============================================================
-// 价目表管理 store（M2-14）
+// 价目表管理 store（M2-14，B14 接真实 API）
 // 门店项目价目：名称、分类、原价/会员价/活动价、状态（启用/停用/待审批）。
 // 调价走审批：状态从启用 → 待审批，审批通过后生效。
+// 权威源：store-service /stores/prices（富化 SKU 的项目名/服务大类/单位/时长/风险标签）。
+// 读金额单位「元」（originalPriceYuan/memberPriceYuan/promoPriceYuan，后端已由分换算）；
+// 写金额单位「分」（*Fen），前端由「元」换算。
+// 查询/调价申请/停用启用走 pricelist:edit；审批通过/驳回走 brand:approve（E1）。
+// API 不可用或空库时回落本地演示数据（demo 标记）。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useStoreContext } from './storeContext'
+import {
+  listPrices,
+  requestPriceChange as apiRequestChange,
+  approvePriceChange as apiApprove,
+  rejectPriceChange as apiReject,
+  togglePrice as apiToggle,
+  type PriceDTO,
+} from '@/api/price'
 
 export type PriceCategory = 'INJECTION' | 'LASER' | 'SKINCARE' | 'BODY' | 'EXAM'
 export type PriceStatus = 'ACTIVE' | 'DISABLED' | 'PENDING'
@@ -53,14 +67,19 @@ const STATUS_PILL: Record<PriceStatus, 'success' | 'disabled' | 'warning'> = {
   PENDING: 'warning',
 }
 
+const yuan2fen = (yuan: number) => Math.round((Number(yuan) || 0) * 100)
+
 export const usePricelistStore = defineStore('pricelist', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const ctx = useStoreContext()
 
   const items = ref<PriceItem[]>([])
   const filterCategory = ref<PriceCategory | 'ALL'>('ALL')
   const filterStatus = ref<PriceStatus | 'ALL'>('ALL')
   const keyword = ref('')
+  const loaded = ref(false)
+  const demo = ref(false)
 
   const active = computed(() => items.value.filter((x) => x.status === 'ACTIVE'))
   const pending = computed(() => items.value.filter((x) => x.status === 'PENDING'))
@@ -79,64 +98,138 @@ export const usePricelistStore = defineStore('pricelist', () => {
     return items.value.find((x) => x.id === id)
   }
 
-  function requestPriceChange(
+  // ---- DTO 映射（读金额「元」直接取用） ----
+  function mapPrice(d: PriceDTO): PriceItem {
+    return {
+      id: String(d.id),
+      code: d.code || d.sku,
+      name: d.name,
+      category: (d.category as PriceCategory) || 'EXAM',
+      originalPrice: Number(d.originalPriceYuan) || 0,
+      memberPrice: Number(d.memberPriceYuan) || 0,
+      promoPrice: d.promoPriceYuan == null ? null : Number(d.promoPriceYuan) || 0,
+      unit: d.unit || '次',
+      duration: d.durationMin ?? 0,
+      status: d.status,
+      riskTags: (d.riskTags ?? []) as RiskTag[],
+      updatedAt: d.updatedAt || '',
+      updatedBy: d.updatedBy || '系统',
+      pendingPrice: d.pendingPrice
+        ? {
+            memberPrice: Number(d.pendingPrice.memberPriceYuan) || 0,
+            promoPrice:
+              d.pendingPrice.promoPriceYuan == null ? null : Number(d.pendingPrice.promoPriceYuan) || 0,
+            reason: d.pendingPrice.reason,
+            requestedAt: d.pendingPrice.requestedAt || '',
+            requestedBy: d.pendingPrice.requestedBy || '系统',
+          }
+        : undefined,
+    }
+  }
+
+  // ---- 拉取（门店级，按 ctx.currentStoreCode；失败回落演示数据） ----
+  let loading: Promise<void> | null = null
+  function load(force = false): Promise<void> {
+    if (loading && !force) return loading
+    if (loaded.value && !force) return Promise.resolve()
+    loading = (async () => {
+      try {
+        await ctx.loadStores()
+        const resp = await listPrices({ storeCode: ctx.currentStoreCode })
+        const list = resp.data ?? []
+        if (list.length > 0) {
+          items.value = list.map(mapPrice)
+          demo.value = false
+        } else {
+          loadDemo()
+          demo.value = true
+        }
+        loaded.value = true
+      } catch (e) {
+        console.error('[pricelist] 加载门店价目失败，回落本地演示数据', e)
+        loadDemo()
+        demo.value = true
+        loaded.value = true
+      }
+    })()
+    return loading
+  }
+  /** 兼容旧调用：seed 即 load */
+  function seed(force = false) {
+    return load(force)
+  }
+  void load()
+
+  /** 提交调价申请（店长 pricelist:edit；落 PENDING，等待审批）。 */
+  async function requestPriceChange(
     id: string,
     patch: { memberPrice: number; promoPrice: number | null; reason: string },
-  ): boolean {
+  ): Promise<boolean> {
     const it = items.value.find((x) => x.id === id)
-    if (!it || it.status === 'PENDING' || !auth.can('pricelist:edit')) return false
-    it.pendingPrice = {
-      memberPrice: Math.max(0, Math.round(patch.memberPrice)),
-      promoPrice: patch.promoPrice == null ? null : Math.max(0, Math.round(patch.promoPrice)),
-      reason: patch.reason,
-      requestedAt: new Date().toISOString(),
-      requestedBy: auth.user.name,
+    if (!it) return false
+    if (!auth.can('pricelist:edit')) {
+      console.warn('[pricelist] 无 pricelist:edit 权限')
+      return false
     }
-    it.status = 'PENDING'
-    it.updatedAt = new Date().toISOString()
-    it.updatedBy = auth.user.name
-    activity.log(auth.user.name, `提交 ${it.name} 调价审批：会员价 ¥${it.pendingPrice!.memberPrice}`, it.id)
+    await apiRequestChange(Number(id), {
+      storeCode: ctx.currentStoreCode,
+      memberPriceFen: yuan2fen(patch.memberPrice),
+      promoPriceFen: patch.promoPrice == null ? null : yuan2fen(patch.promoPrice),
+      reason: patch.reason,
+    })
+    activity.log(auth.user.name, `提交 ${it.name} 调价审批：会员价 ¥${patch.memberPrice}`, it.id)
+    await load(true)
     return true
   }
 
-  function approvePriceChange(id: string): boolean {
+  /** 审批通过（区域/超管 brand:approve；pending 覆盖正式价）。 */
+  async function approvePriceChange(id: string): Promise<boolean> {
     const it = items.value.find((x) => x.id === id)
-    if (!it || !it.pendingPrice || !auth.can('pricelist:edit')) return false
-    it.memberPrice = it.pendingPrice.memberPrice
-    it.promoPrice = it.pendingPrice.promoPrice
-    it.pendingPrice = undefined
-    it.status = 'ACTIVE'
-    it.updatedAt = new Date().toISOString()
-    it.updatedBy = auth.user.name
+    if (!it) return false
+    if (!auth.can('brand:approve')) {
+      console.warn('[pricelist] 无 brand:approve 权限')
+      return false
+    }
+    await apiApprove(Number(id))
     activity.log(auth.user.name, `审批通过 ${it.name} 调价，新会员价已生效`, it.id)
+    await load(true)
     return true
   }
 
-  function rejectPriceChange(id: string): boolean {
+  /** 审批驳回（区域/超管 brand:approve；清 pending 回原价）。 */
+  async function rejectPriceChange(id: string): Promise<boolean> {
     const it = items.value.find((x) => x.id === id)
-    if (!it || !it.pendingPrice || !auth.can('pricelist:edit')) return false
-    it.pendingPrice = undefined
-    it.status = 'ACTIVE'
-    it.updatedAt = new Date().toISOString()
-    it.updatedBy = auth.user.name
+    if (!it) return false
+    if (!auth.can('brand:approve')) {
+      console.warn('[pricelist] 无 brand:approve 权限')
+      return false
+    }
+    await apiReject(Number(id))
     activity.log(auth.user.name, `驳回 ${it.name} 调价申请`, it.id)
+    await load(true)
     return true
   }
 
-  function toggleStatus(id: string): boolean {
+  /** 停用/启用切换（店长 pricelist:edit；PENDING 态后端 409）。 */
+  async function toggleStatus(id: string): Promise<boolean> {
     const it = items.value.find((x) => x.id === id)
-    if (!it || it.status === 'PENDING' || !auth.can('pricelist:edit')) return false
-    it.status = it.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE'
-    it.updatedAt = new Date().toISOString()
-    it.updatedBy = auth.user.name
-    activity.log(auth.user.name, `${it.status === 'ACTIVE' ? '启用' : '停用'}项目 ${it.name}`, it.id)
+    if (!it) return false
+    if (!auth.can('pricelist:edit')) {
+      console.warn('[pricelist] 无 pricelist:edit 权限')
+      return false
+    }
+    await apiToggle(Number(id), { storeCode: ctx.currentStoreCode })
+    const now = items.value.find((x) => x.id === id)
+    activity.log(
+      auth.user.name,
+      `${now?.status === 'ACTIVE' ? '启用' : '停用'}项目 ${it.name}`,
+      it.id,
+    )
+    await load(true)
     return true
   }
 
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
+  function loadDemo() {
     const now = new Date().toISOString()
     const data: Array<Omit<PriceItem, 'id'>> = [
       { code: 'IJ-001', name: '玻尿酸填充（瑞蓝2号）', category: 'INJECTION', originalPrice: 6800, memberPrice: 5800, promoPrice: 5280, unit: '支', duration: 30, status: 'ACTIVE', riskTags: ['INJECTION'], updatedAt: now, updatedBy: '苏晴' },
@@ -153,13 +246,14 @@ export const usePricelistStore = defineStore('pricelist', () => {
         pendingPrice: { memberPrice: 880, promoPrice: null, reason: '新客拓客，下调体验价', requestedAt: now, requestedBy: '苏晴' } },
       { code: 'EX-001', name: 'VISIA 皮肤检测', category: 'EXAM', originalPrice: 200, memberPrice: 0, promoPrice: null, unit: '次', duration: 15, status: 'ACTIVE', updatedAt: now, updatedBy: '苏晴' },
     ]
-    data.forEach((d) => items.value.push({ id: nextId('pl'), ...d }))
+    items.value = data.map((d) => ({ id: nextId('pl'), ...d }))
   }
 
   return {
-    items, filterCategory, filterStatus, keyword,
+    items, filterCategory, filterStatus, keyword, loaded, demo,
     active, pending, disabled, filtered,
-    get, requestPriceChange, approvePriceChange, rejectPriceChange, toggleStatus, seed,
+    get, load, seed,
+    requestPriceChange, approvePriceChange, rejectPriceChange, toggleStatus,
     CATEGORY_LABEL, STATUS_LABEL, STATUS_PILL,
   }
 })

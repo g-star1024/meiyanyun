@@ -13,9 +13,15 @@ import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import { usePricelistStore, type PriceItem, type PriceStatus } from '@/stores/pricelist'
+import { useToast } from '@/composables/useToast'
 
 const store = usePricelistStore()
-onMounted(() => store.seed())
+const toast = useToast()
+onMounted(() => { void store.load() })
+
+function errMsg(e: any) {
+  return e?.response?.data?.message || e?.message || '网络异常'
+}
 
 const selectedId = ref<string | null>(null)
 const selected = computed<PriceItem | null>(() => {
@@ -61,42 +67,73 @@ function openPriceForm() {
   }
   showPrice.value = true
 }
-function submitPrice() {
+async function submitPrice() {
   if (!selected.value) return
-  const ok = store.requestPriceChange(selected.value.id, {
-    memberPrice: Number(priceForm.value.memberPrice) || 0,
-    promoPrice: priceForm.value.hasPromo ? Number(priceForm.value.promoPrice) || 0 : null,
-    reason: priceForm.value.reason.trim(),
-  })
-  if (ok) showPrice.value = false
+  try {
+    const ok = await store.requestPriceChange(selected.value.id, {
+      memberPrice: Number(priceForm.value.memberPrice) || 0,
+      promoPrice: priceForm.value.hasPromo ? Number(priceForm.value.promoPrice) || 0 : null,
+      reason: priceForm.value.reason.trim(),
+    })
+    if (ok) {
+      showPrice.value = false
+      toast.success('调价申请已提交，等待审批')
+    } else {
+      toast.error('提交失败：无调价权限或项目状态不允许')
+    }
+  } catch (e) {
+    toast.error('提交失败：' + errMsg(e))
+  }
 }
 
 // 审批确认
-const confirmBox = ref<{ show: boolean; title: string; text: string; action: () => void } | null>(null)
-function ask(title: string, text: string, action: () => void) {
+const confirmBox = ref<{ show: boolean; title: string; text: string; action: () => Promise<void> | void } | null>(null)
+function ask(title: string, text: string, action: () => Promise<void> | void) {
   confirmBox.value = { show: true, title, text, action }
 }
-function runConfirm() {
-  confirmBox.value?.action()
+async function runConfirm() {
+  const action = confirmBox.value?.action
   confirmBox.value = null
+  if (action) await action()
 }
 function doApprove() {
   if (!selected.value) return
-  ask('确认通过调价', `审批通过后，新价格将立即生效并对客展示。`, () => {
-    if (selected.value) store.approvePriceChange(selected.value.id)
+  ask('确认通过调价', `审批通过后，新价格将立即生效并对客展示。`, async () => {
+    if (!selected.value) return
+    try {
+      const ok = await store.approvePriceChange(selected.value.id)
+      if (ok) toast.success('已审批通过，新价格已生效')
+      else toast.error('审批失败：无审批权限或无待审调价')
+    } catch (e) {
+      toast.error('审批失败：' + errMsg(e))
+    }
   })
 }
 function doReject() {
   if (!selected.value) return
-  ask('确认驳回调价', '驳回后项目将恢复原价，调价申请作废。', () => {
-    if (selected.value) store.rejectPriceChange(selected.value.id)
+  ask('确认驳回调价', '驳回后项目将恢复原价，调价申请作废。', async () => {
+    if (!selected.value) return
+    try {
+      const ok = await store.rejectPriceChange(selected.value.id)
+      if (ok) toast.success('已驳回调价申请，价格恢复原价')
+      else toast.error('驳回失败：无审批权限或无待审调价')
+    } catch (e) {
+      toast.error('驳回失败：' + errMsg(e))
+    }
   })
 }
 function doToggle() {
   if (!selected.value) return
   const will = selected.value.status === 'ACTIVE' ? '停用' : '启用'
-  ask(`确认${will}项目`, `${will}后该项目${will === '停用' ? '将不在前台展示和下单' : '将恢复对客展示'}。`, () => {
-    if (selected.value) store.toggleStatus(selected.value.id)
+  ask(`确认${will}项目`, `${will}后该项目${will === '停用' ? '将不在前台展示和下单' : '将恢复对客展示'}。`, async () => {
+    if (!selected.value) return
+    try {
+      const ok = await store.toggleStatus(selected.value.id)
+      if (ok) toast.success(`已${will}项目`)
+      else toast.error('操作失败：无权限或项目状态不允许')
+    } catch (e) {
+      toast.error('操作失败：' + errMsg(e))
+    }
   })
 }
 
@@ -204,8 +241,8 @@ function statusPill(s: PriceStatus) { return store.STATUS_PILL[s] }
               <span class="pending__label">调价原因：</span>{{ selected.pendingPrice.reason }}
             </div>
             <div class="pending__ops">
-              <CButton variant="ghost" v-perm.disable="'pricelist:edit'" @click="doReject">驳回</CButton>
-              <CButton variant="primary" v-perm.disable="'pricelist:edit'" @click="doApprove">
+              <CButton variant="ghost" v-perm.disable="'brand:approve'" @click="doReject">驳回</CButton>
+              <CButton variant="primary" v-perm.disable="'brand:approve'" @click="doApprove">
                 <CIcon name="check" :size="16" />审批通过
               </CButton>
             </div>

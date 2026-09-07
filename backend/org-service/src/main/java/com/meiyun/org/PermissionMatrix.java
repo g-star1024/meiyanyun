@@ -735,7 +735,6 @@ public final class PermissionMatrix {
                 "handover:create",
                 "sop:edit",
                 "dispatch:edit",
-                "brand:edit",
                 "inventory:edit",
                 "refund:approve",
                 "cardcancel:approve",

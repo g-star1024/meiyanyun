@@ -11,9 +11,13 @@ import { useAuthStore } from '@/stores/auth'
 
 const mb = useM1BrandStore()
 const auth = useAuthStore()
-onMounted(() => mb.seed())
+onMounted(() => { void mb.load() })
 
 const canEdit = computed(() => auth.can('brand:edit'))
+
+function errMsg(e: any) {
+  return e?.response?.data?.message || e?.message || '网络异常'
+}
 
 // 选中品牌
 const selectedId = ref('')
@@ -59,7 +63,7 @@ function openBrandEdit(b: Brand) {
   Object.assign(brandForm, { code: b.code, name: b.name, shortName: b.shortName ?? '', origin: b.origin ?? '', supplier: b.supplier, remark: b.remark ?? '' })
   brandErr.value = ''; showBrandModal.value = true
 }
-function submitBrand() {
+async function submitBrand() {
   if (!brandForm.name.trim()) { brandErr.value = '请填写品牌名称'; return }
   if (!brandForm.code.trim()) { brandErr.value = '请填写品牌编码'; return }
   if (mb.brands.some((b) => b.code === brandForm.code.trim() && b.id !== editingBrand.value?.id)) { brandErr.value = '品牌编码已存在'; return }
@@ -67,9 +71,17 @@ function submitBrand() {
     code: brandForm.code.trim(), name: brandForm.name.trim(), shortName: brandForm.shortName.trim() || undefined,
     origin: brandForm.origin.trim() || undefined, supplier: brandForm.supplier.trim(), remark: brandForm.remark.trim() || undefined,
   }
-  if (editingBrand.value) mb.updateBrand(editingBrand.value.id, payload)
-  else { const b = mb.createBrand(payload); selectedId.value = b.id }
-  showBrandModal.value = false
+  try {
+    if (editingBrand.value) {
+      await mb.updateBrand(editingBrand.value.id, payload)
+    } else {
+      const b = await mb.createBrand(payload)
+      selectedId.value = b.id
+    }
+    showBrandModal.value = false
+  } catch (e) {
+    brandErr.value = errMsg(e)
+  }
 }
 
 // ---- 品类弹层 ----
@@ -80,22 +92,30 @@ function openCatCreate() {
   Object.assign(catForm, { name: '', code: '', parentId: '', remark: '' })
   catErr.value = ''; showCatModal.value = true
 }
-function submitCat() {
+async function submitCat() {
   if (!selected.value) return
   if (!catForm.name.trim()) { catErr.value = '请填写品类名称'; return }
-  mb.createCategory({
-    code: catForm.code.trim() || `CT-${Date.now().toString(36).toUpperCase()}`,
-    name: catForm.name.trim(), brandId: selected.value.id,
-    parentId: catForm.parentId || undefined, remark: catForm.remark.trim() || undefined,
-  })
-  showCatModal.value = false
+  try {
+    await mb.createCategory({
+      code: catForm.code.trim() || `CT-${Date.now().toString(36).toUpperCase()}`,
+      name: catForm.name.trim(), brandId: selected.value.id,
+      parentId: catForm.parentId || undefined, remark: catForm.remark.trim() || undefined,
+    })
+    showCatModal.value = false
+  } catch (e) {
+    catErr.value = errMsg(e)
+  }
 }
-function toggleCat(id: string, s: CommonStatus) {
+async function toggleCat(id: string, s: CommonStatus) {
   if (!canEdit.value) return
-  mb.setCategoryStatus(id, s === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')
+  try {
+    await mb.setCategoryStatus(id, s === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')
+  } catch (e) {
+    catErr.value = errMsg(e)
+  }
 }
-function removeCat(id: string) {
-  try { mb.deleteCategory(id) } catch (e) { catErr.value = (e as Error).message }
+async function removeCat(id: string) {
+  try { await mb.deleteCategory(id) } catch (e) { catErr.value = errMsg(e) }
 }
 
 // ---- 项目弹层 ----
@@ -125,7 +145,7 @@ function toggleStoreType(t: string) {
   if (i >= 0) prodForm.storeTypes.splice(i, 1)
   else prodForm.storeTypes.push(t)
 }
-function submitProd() {
+async function submitProd() {
   if (!selected.value) return
   if (!prodForm.name.trim()) { prodErr.value = '请填写项目名称'; return }
   if (!prodForm.sku.trim()) { prodErr.value = '请填写 SKU 编码'; return }
@@ -138,13 +158,21 @@ function submitProd() {
     durationMin: Number(prodForm.durationMin) || 0, storeTypes: [...prodForm.storeTypes],
     remark: prodForm.remark.trim() || undefined,
   }
-  if (editingProd.value) mb.updateProduct(editingProd.value.id, payload)
-  else mb.createProduct(payload)
-  showProdModal.value = false
+  try {
+    if (editingProd.value) await mb.updateProduct(editingProd.value.id, payload)
+    else await mb.createProduct(payload)
+    showProdModal.value = false
+  } catch (e) {
+    prodErr.value = errMsg(e)
+  }
 }
-function toggleProd(id: string, s: CommonStatus) {
+async function toggleProd(id: string, s: CommonStatus) {
   if (!canEdit.value) return
-  mb.setProductStatus(id, s === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')
+  try {
+    await mb.setProductStatus(id, s === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE')
+  } catch (e) {
+    prodErr.value = errMsg(e)
+  }
 }
 
 const rootCategories = computed(() => selected.value ? mb.categoriesOf(selected.value.id).filter((c) => !c.parentId) : [])

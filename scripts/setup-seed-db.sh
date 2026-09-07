@@ -370,6 +370,91 @@ CREATE TABLE IF NOT EXISTS equipment_maintenance (
   created_at    timestamptz  NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_equipment_maint_eq ON equipment_maintenance(equipment_id, occurred_at);
+-- B14 项目目录集团主数据（store-service JPA ddl-auto 业务表；品牌→品类→SKU 三级，无 store_code 集团统一定义）
+-- product_brand 品牌档案：brand_code 全局唯一；status ACTIVE/INACTIVE 受控停用不物理删；logo_color 前端卡片轮色。
+CREATE TABLE IF NOT EXISTS product_brand (
+  id          bigserial    PRIMARY KEY,
+  brand_code  varchar(32)  NOT NULL,
+  name        varchar(64)  NOT NULL,
+  short_name  varchar(32),
+  origin      varchar(64),
+  supplier    varchar(128),
+  status      varchar(16)  NOT NULL,
+  logo_color  varchar(16),
+  remark      varchar(255),
+  created_by  varchar(32),
+  created_at  timestamptz  NOT NULL,
+  updated_by  varchar(32),
+  updated_at  timestamptz,
+  CONSTRAINT uk_brand_code UNIQUE (brand_code)
+);
+-- product_category 品类档案（二级树）：category_code 全局唯一；brand_id 归属品牌；parent_id 空=一级品类。
+-- 删除规则：本品类或子品类名下有 SKU 时后端 422 拒绝，通过后连带删子品类。
+CREATE TABLE IF NOT EXISTS product_category (
+  id             bigserial    PRIMARY KEY,
+  category_code  varchar(32)  NOT NULL,
+  name           varchar(64)  NOT NULL,
+  brand_id       bigint       NOT NULL,
+  parent_id      bigint,
+  status         varchar(16)  NOT NULL,
+  sort           integer      NOT NULL,
+  remark         varchar(255),
+  created_by     varchar(32),
+  created_at     timestamptz  NOT NULL,
+  updated_by     varchar(32),
+  updated_at     timestamptz,
+  CONSTRAINT uk_category_code UNIQUE (category_code)
+);
+CREATE INDEX IF NOT EXISTS idx_product_category_brand ON product_category(brand_id);
+-- product_sku 项目/产品 SKU（集团级）：sku 全局唯一；brand_id/category_id 逻辑外键；金额 bigint 存「分」；
+-- service_category 门店经营服务大类（INJECTION/LASER/SKINCARE/BODY/EXAM，E2 新增，可空），与品牌品类树并存；
+-- store_types 适用门店类型逗号串（FLAGSHIP/COMMUNITY/CLINIC）；risk_tags 风险标签逗号串可空。
+CREATE TABLE IF NOT EXISTS product_sku (
+  id                 bigserial    PRIMARY KEY,
+  sku                varchar(40)  NOT NULL,
+  name               varchar(64)  NOT NULL,
+  brand_id           bigint       NOT NULL,
+  category_id        bigint       NOT NULL,
+  unit               varchar(8)   NOT NULL,
+  list_price_fen     bigint       NOT NULL,
+  cost_price_fen     bigint       NOT NULL,
+  status             varchar(16)  NOT NULL,
+  store_types        varchar(32)  NOT NULL,
+  duration_min       integer      NOT NULL,
+  service_category   varchar(16),
+  risk_tags          varchar(64),
+  remark             varchar(255),
+  created_by         varchar(32),
+  created_at         timestamptz  NOT NULL,
+  updated_by         varchar(32),
+  updated_at         timestamptz,
+  CONSTRAINT uk_sku UNIQUE (sku)
+);
+CREATE INDEX IF NOT EXISTS idx_product_sku_brand ON product_sku(brand_id);
+CREATE INDEX IF NOT EXISTS idx_product_sku_category ON product_sku(category_id);
+-- B14 门店价目（门店级；金额 bigint 存「分」；同店同 SKU 唯一）。门店对集团 SKU 定价：原价/会员价/活动价。
+-- 调价三态：ACTIVE ─change-request→ PENDING ─approve→ ACTIVE（pending 覆盖正式价）/ ─reject→ ACTIVE（清 pending）；
+-- DISABLED 经 toggle 与 ACTIVE 互切；pending_* 为待审批价（分），requested_by/requested_at 记申请人与时间。
+CREATE TABLE IF NOT EXISTS store_price (
+  id                        bigserial    PRIMARY KEY,
+  store_code                varchar(16)  NOT NULL,
+  sku                       varchar(40)  NOT NULL,
+  original_price_fen        bigint       NOT NULL,
+  member_price_fen          bigint       NOT NULL,
+  promo_price_fen           bigint,
+  status                    varchar(16)  NOT NULL,
+  pending_member_price_fen  bigint,
+  pending_promo_price_fen   bigint,
+  pending_reason            varchar(255),
+  requested_by              varchar(32),
+  requested_at              timestamptz,
+  created_by                varchar(32),
+  created_at                timestamptz  NOT NULL,
+  updated_by                varchar(32),
+  updated_at                timestamptz,
+  CONSTRAINT uk_price_store_sku UNIQUE (store_code, sku)
+);
+CREATE INDEX IF NOT EXISTS idx_store_price_store ON store_price(store_code);
 SQL
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
 TRUNCATE TABLE
@@ -382,13 +467,14 @@ TRUNCATE TABLE
   fund_entry, inventory_item, inventory_log, mall_exchange, mall_product, marketing_cfg,
   member_card, member_level, order_payment, org_unit, outbox_record, point_rule,
   points_ledger, points_pool, prepay_pool, push_record, region_dist, repurchase,
-  revenue_monthly, role_def, settlement_period, sign_role_pair, sign_tier, staff, store,
+  revenue_monthly, role_def, settlement_period, sign_role_pair, sign_tier, staff, staff_comp_config, store,
   tax, tenant, txn_card_cancel, txn_order, txn_refund, txn_writeoff, verification,
   writeoff_desk_task, writeoff_record,
   order_item, marketing_asset, poster_template, poster_record, live_session, short_video,
   project_bom, bom_deduct_exception, cost_carry_rule, fin_asset,
   pay_channel_config, pay_channel_bill,
-  treatment_room, treatment_bed, room_operation_log, equipment, equipment_maintenance
+  treatment_room, treatment_bed, room_operation_log, equipment, equipment_maintenance,
+  product_brand, product_category, product_sku, store_price
 RESTART IDENTITY CASCADE;
 SQL
 
@@ -404,8 +490,10 @@ echo "==> [可选] 若 seed 联调栈 org-service 在运行，重启它以触发
 # 登录凭证（login_name/password_hash=meiyun123）、SE101-SE105/E001-E014 演示员工、
 # 新角色码迁移都由 org-service 的 RbacDataInitializer 在启动时幂等补齐。
 # 不重启则测试账号登录会报「工号或密码错误」。容器未起则跳过（纯建库场景）。
-SEED_ORG_CONTAINER="${SEED_ORG_CONTAINER:-meiyun-seed-org-service}"
-if docker ps --format '{{.Names}}' | grep -qx "$SEED_ORG_CONTAINER"; then
+# docker compose 可能给容器名加项目哈希前缀（如 c2bf5413b2b6_meiyun-seed-org-service），
+# 精确名匹配会漏重启；按「服务名结尾」解析实际容器名（精确名或 _<服务名> 结尾均可）。
+SEED_ORG_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '(^|_)meiyun-seed-org-service$' | head -1)"
+if [ -n "$SEED_ORG_CONTAINER" ]; then
   echo "    重启 $SEED_ORG_CONTAINER 触发凭证/角色播种 ..."
   docker restart "$SEED_ORG_CONTAINER" >/dev/null
   echo "    等待 healthy ..."
@@ -415,10 +503,9 @@ if docker ps --format '{{.Names}}' | grep -qx "$SEED_ORG_CONTAINER"; then
   done
   echo "    $SEED_ORG_CONTAINER 已就绪，测试账号（SE101 等 / 密码 meiyun123）可登录。"
 else
-  echo "    $SEED_ORG_CONTAINER 未运行，跳过（起栈后 org-service 启动即自动播种）。"
+  echo "    meiyun-seed-org-service 未运行，跳过（起栈后 org-service 启动即自动播种）。"
 fi
 
-echo ""
 echo ""
 echo "==> [可选] 若 seed 联调栈 txn-service 在运行，重启它以触发 B12 支付渠道配置启动播种"
 # reset 会 TRUNCATE pay_channel_config；wxpay/alipay enabled（测试参数、密钥占位非真实凭证）、
@@ -437,6 +524,8 @@ if [ -n "$SEED_TXN_CONTAINER" ]; then
 else
   echo "    meiyun-seed-txn-service 未运行，跳过（起栈后 txn-service 启动即自动播种）。"
 fi
+
+echo ""
 echo "==> [可选] 若 seed 联调栈 marketing-service 在运行，重启它以触发 M5 营销数据启动播种"
 # reset 会 TRUNCATE marketing_asset / poster_template / poster_record / live_session / short_video；
 # 素材库(10)/海报(6 模板+6 记录)/直播团购(7 场次+5 短视频) 的演示种子由 marketing-service 的
@@ -455,7 +544,6 @@ else
   echo "    $SEED_MKT_CONTAINER 未运行，跳过（起栈后 marketing-service 启动即自动播种）。"
 fi
 
-echo ""
 echo ""
 echo "==> [可选] 若 seed 联调栈 finance-service 在运行，重启它以触发 B9 薪酬提成 + B11 成本结转启动播种"
 # reset 会 TRUNCATE commission_rule / staff_comp_config / commission_record / cost_carry_rule / fin_asset；
@@ -476,28 +564,29 @@ if [ -n "$SEED_FIN_CONTAINER" ]; then
 else
   echo "    meiyun-seed-finance-service 未运行，跳过（起栈后 finance-service 启动即自动播种）。"
 fi
-echo "==> [可选] 若 seed 联调栈 store-service 在运行，重启它以触发 B13 房间床位/设备仪器启动播种"
-# reset 会 TRUNCATE treatment_room / treatment_bed / room_operation_log / equipment / equipment_maintenance；
+
+echo ""
+echo "==> [可选] 若 seed 联调栈 store-service 在运行，重启它以触发 B13 房间床位/设备仪器 + B14 项目目录/门店价目启动播种"
+# reset 会 TRUNCATE treatment_room / treatment_bed / room_operation_log / equipment / equipment_maintenance /
+# product_brand / product_category / product_sku / store_price；
 # 9 间房 16 张床位（A03-2 维护中）与 8 台设备仪器（含 11 条校准维保记录）由 store-service 的
-# StoreMasterDataInitializer（@Order 60）在启动时幂等补齐（门控：床位/设备已存在则跳过）。
-# 房间操作日志无静态种子，仅由真实建房/设维护/恢复动作产生。
-# docker compose 可能给容器名加项目哈希前缀（如 b4aaeb2bf0fd_meiyun-seed-store-service），
-# 精确名匹配会漏重启；按「服务名结尾」解析实际容器名（精确名或 _<服务名> 结尾均可）。容器未起或旧镜像则跳过。
+# StoreMasterDataInitializer（@Order 60）在启动时幂等补齐（门控：床位/设备已存在则跳过）；
+# 9 品牌 / 16 品类（二级树）/ 15 项目 SKU / SST01 门店价目 11 条（8 ACTIVE/2 PENDING/1 DISABLED）
+# 由 StorePriceCatalogDataInitializer（@Order 70）幂等补齐（门控：品牌/价目已存在则跳过）。
+# 房间操作日志无静态种子，仅由真实建房/设维护/恢复动作产生。容器未起或为旧镜像（无播种器）则跳过。
 SEED_STORE_CONTAINER="$(docker ps --format '{{.Names}}' | grep -E '(^|_)meiyun-seed-store-service$' | head -1)"
 if [ -n "$SEED_STORE_CONTAINER" ]; then
-  echo "    重启 $SEED_STORE_CONTAINER 触发房间床位/设备仪器种子 ..."
+  echo "    重启 $SEED_STORE_CONTAINER 触发房间床位/设备仪器/项目目录/门店价目种子 ..."
   docker restart "$SEED_STORE_CONTAINER" >/dev/null
   echo "    等待 healthy ..."
   for _ in $(seq 1 40); do
     [ "$(docker inspect "$SEED_STORE_CONTAINER" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && break
     sleep 3
   done
-  echo "    $SEED_STORE_CONTAINER 已就绪，B13 房间床位（9 房 16 床）/设备仪器（8 台 11 记录）种子可查。"
+  echo "    $SEED_STORE_CONTAINER 已就绪，B13 房间床位（9 房 16 床）/设备仪器（8 台）+ B14 项目目录（9 品牌/16 品类/15 SKU）/价目（11 条）种子可查。"
 else
   echo "    meiyun-seed-store-service 未运行，跳过（起栈后 store-service 启动即自动播种）。"
 fi
-
-echo ""
 
 echo ""
 echo "==> 灌入 B12 渠道账单演示种子（pay_channel_bill，1 条故意「账单有系统无」差异）"
@@ -513,6 +602,8 @@ VALUES
   ('PCB-SEED-000001', 'wxpay', 'SST01', 'WX-SEED-DIFF-20260901', 128000, 768, 127232,
    'SUCCESS', '2026-09-01 10:30:00+08:00', 'WX20260902', 'IMP-SEED-000001', now());
 SQL
+
+echo ""
 echo "✅ 完成。测试库 $SEED_DB 已就绪（可随时重跑本脚本 reset）。"
 echo "   行数核对："
 docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
@@ -540,4 +631,8 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
    UNION ALL SELECT 'room_operation_log(写操作产生)='||count(*) FROM room_operation_log
    UNION ALL SELECT 'equipment(启动播种)='||count(*) FROM equipment
    UNION ALL SELECT 'equipment_maintenance(启动播种)='||count(*) FROM equipment_maintenance
+   UNION ALL SELECT 'product_brand(启动播种)='||count(*) FROM product_brand
+   UNION ALL SELECT 'product_category(启动播种)='||count(*) FROM product_category
+   UNION ALL SELECT 'product_sku(启动播种)='||count(*) FROM product_sku
+   UNION ALL SELECT 'store_price(启动播种)='||count(*) FROM store_price
    UNION ALL SELECT 'sys_dictionary(保留)='||count(*) FROM sys_dictionary;"
