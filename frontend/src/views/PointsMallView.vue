@@ -16,11 +16,31 @@ import CStatusPill from '@/components/CStatusPill.vue'
 import {
   usePointsStore,
   type ProductCategory,
+  type PointsProduct,
 } from '@/stores/points'
+import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
 import { PRODUCT_STATUS, REDEMPTION_STATUS, dictPill } from '@/config/dictionary'
 
 const store = usePointsStore()
-onMounted(() => store.seed())
+const auth = useAuthStore()
+const toast = useToast()
+
+// B 端走真实接口（customer-service /customer/mall/*）；加载失败提示并保留空态
+const loading = ref(false)
+async function refresh() {
+  loading.value = true
+  try {
+    await store.load()
+    // ruleDraft 是 setup 期对 store.rule 的快照；接口数据返回后需回填（表单无未保存修改时）。
+    if (!ruleDirty.value) Object.assign(ruleDraft, store.rule)
+  } catch (e) {
+    toast.error((e as Error)?.message || '积分商城数据加载失败，请稍后重试')
+  } finally {
+    loading.value = false
+  }
+}
+onMounted(refresh)
 
 type Tab = 'PRODUCTS' | 'AUDIT' | 'RULES'
 const tab = ref<Tab>('PRODUCTS')
@@ -54,8 +74,11 @@ function fmtDate(iso: string) {
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// 新建商品弹层
+// 新建 / 编辑商品弹层
 const showForm = ref(false)
+const editingId = ref<string | null>(null)
+const formSaving = ref(false)
+const formTitle = computed(() => (editingId.value ? '编辑积分商品' : '新建积分商品'))
 // 商品卡图标占位字：按分类自动派生（项目/实物/券/服务）
 const CATEGORY_IMG: Record<ProductCategory, string> = {
   PROJECT: '项目', PHYSICAL: '实物', COUPON: '券', SERVICE: '服务',
@@ -67,30 +90,136 @@ const form = reactive({
   stock: '100',
   description: '',
 })
-function openForm() {
+function resetForm() {
   form.name = ''
   form.category = 'PHYSICAL'
   form.pointsCost = '1000'
   form.stock = '100'
   form.description = ''
+}
+function openForm() {
+  editingId.value = null
+  resetForm()
   showForm.value = true
 }
-function submitForm() {
-  if (!form.name.trim()) return
-  const p = store.createProduct({
-    name: form.name.trim(),
-    category: form.category,
-    pointsCost: Number(form.pointsCost) || 0,
-    stock: form.category === 'COUPON' ? -1 : (Number(form.stock) || 0),
-    imageText: CATEGORY_IMG[form.category],
-    description: form.description.trim() || undefined,
-  })
-  if (p) showForm.value = false
+function openEdit(p: PointsProduct) {
+  editingId.value = p.id
+  form.name = p.name
+  form.category = p.category
+  form.pointsCost = String(p.pointsCost)
+  form.stock = p.stock < 0 ? '-1' : String(p.stock)
+  form.description = p.description || ''
+  showForm.value = true
+}
+async function submitForm() {
+  if (!form.name.trim() || formSaving.value) return
+  const pointsCost = Number(form.pointsCost) || 0
+  if (pointsCost <= 0) {
+    toast.error('积分价格须大于 0')
+    return
+  }
+  const stock = form.category === 'COUPON' ? -1 : (Number(form.stock) || 0)
+  formSaving.value = true
+  try {
+    if (editingId.value) {
+      await store.updateProduct(editingId.value, {
+        name: form.name.trim(),
+        category: form.category,
+        pointsCost,
+        stock,
+        imageText: CATEGORY_IMG[form.category],
+        description: form.description.trim() || undefined,
+      })
+      toast.success('商品已更新')
+    } else {
+      await store.createProduct({
+        name: form.name.trim(),
+        category: form.category,
+        pointsCost,
+        stock,
+        imageText: CATEGORY_IMG[form.category],
+        description: form.description.trim() || undefined,
+      })
+      toast.success('商品已创建')
+    }
+    showForm.value = false
+  } catch (e) {
+    toast.error((e as Error)?.message || '保存失败，请稍后重试')
+  } finally {
+    formSaving.value = false
+  }
 }
 
-// 审核操作
-function approve(id: string) { store.approveRedemption(id) }
-function reject(id: string) { store.rejectRedemption(id, '信息不全') }
+async function onToggleShelf(id: string) {
+  try {
+    await store.toggleShelf(id)
+    toast.success('操作成功')
+  } catch (e) {
+    toast.error((e as Error)?.message || '操作失败，请稍后重试')
+  }
+}
+
+// 双签审核弹层（店长初审 sign1 + 运营复核 sign2，两签不得同一人）
+const showSign = ref(false)
+const signSaving = ref(false)
+const signTarget = ref<{ id: string; orderNo: string } | null>(null)
+const signReject = ref(false)
+const signForm = reactive({ sign1: '', sign1Role: '', sign2: '', sign2Role: '', reason: '' })
+function openSign(id: string, orderNo: string, reject: boolean) {
+  signTarget.value = { id, orderNo }
+  signReject.value = reject
+  signForm.sign1 = auth.user.name
+  signForm.sign1Role = auth.user.jobTitle || '店长'
+  signForm.sign2 = ''
+  signForm.sign2Role = '运营'
+  signForm.reason = reject ? '信息不全' : ''
+  showSign.value = true
+}
+async function submitSign() {
+  if (!signTarget.value || signSaving.value) return
+  if (!signForm.sign1.trim() || !signForm.sign2.trim()) {
+    toast.error('请填写双签人（初审 + 复核）')
+    return
+  }
+  if (signForm.sign1.trim() === signForm.sign2.trim()) {
+    toast.error('双签不得为同一人，请更换复核人')
+    return
+  }
+  if (signReject.value && !signForm.reason.trim()) {
+    toast.error('驳回时请填写驳回原因')
+    return
+  }
+  signSaving.value = true
+  try {
+    const sign = {
+      sign1: signForm.sign1.trim(),
+      sign1Role: signForm.sign1Role.trim() || undefined,
+      sign2: signForm.sign2.trim(),
+      sign2Role: signForm.sign2Role.trim() || undefined,
+    }
+    if (signReject.value) {
+      await store.rejectRedemption(signTarget.value.id, signForm.reason.trim(), sign)
+      toast.success('已驳回')
+    } else {
+      await store.approveRedemption(signTarget.value.id, sign)
+      toast.success('审核通过')
+    }
+    showSign.value = false
+  } catch (e) {
+    toast.error((e as Error)?.message || '审核操作失败，请稍后重试')
+  } finally {
+    signSaving.value = false
+  }
+}
+
+async function fulfill(id: string) {
+  try {
+    await store.fulfillRedemption(id)
+    toast.success('已履约发放')
+  } catch (e) {
+    toast.error((e as Error)?.message || '履约失败，请稍后重试')
+  }
+}
 
 // 规则表单
 const ruleDraft = reactive({ ...store.rule })
@@ -99,15 +228,15 @@ function syncRule<K extends keyof typeof ruleDraft>(key: K, v: (typeof ruleDraft
   ruleDraft[key] = v
   ruleDirty.value = true
 }
-function saveRule() {
-  if (store.saveRule({ ...ruleDraft })) {
+async function saveRule() {
+  try {
+    await store.saveRule({ ...ruleDraft })
     ruleDirty.value = false
-    toast.value = '积分规则已保存'
-    setTimeout(() => (toast.value = ''), 2000)
+    toast.success('积分规则已保存')
+  } catch (e) {
+    toast.error((e as Error)?.message || '保存规则失败，请稍后重试')
   }
 }
-
-const toast = ref('')
 </script>
 
 <template>
@@ -171,8 +300,8 @@ const toast = ref('')
                 <td><CStatusPill :status="dictPill(PRODUCT_STATUS[p.status]).status">{{ dictPill(PRODUCT_STATUS[p.status]).text }}</CStatusPill></td>
                 <td>
                   <div class="ops">
-                    <button class="ops__btn" v-perm.disable="'points:edit'">编辑</button>
-                    <button class="ops__btn" v-perm.disable="'points:edit'" @click="store.toggleShelf(p.id)">
+                    <button class="ops__btn" v-perm.disable="'points:edit'" @click="openEdit(p)">编辑</button>
+                    <button class="ops__btn" v-perm.disable="'points:edit'" @click="onToggleShelf(p.id)">
                       {{ p.status === 'OFF_SHELF' ? '上架' : '下架' }}
                     </button>
                   </div>
@@ -229,8 +358,11 @@ const toast = ref('')
               <div v-if="r.note" class="audit-row__note">驳回原因：{{ r.note }}</div>
             </div>
             <div v-if="r.status === 'PENDING'" class="audit-row__ops">
-              <CButton variant="ghost" size="sm" v-perm.disable="'points:approve'" @click="reject(r.id)">驳回</CButton>
-              <CButton variant="primary" size="sm" v-perm.disable="'points:approve'" @click="approve(r.id)">通过</CButton>
+              <CButton variant="ghost" size="sm" v-perm.disable="'points:approve'" @click="openSign(r.id, r.orderNo, true)">驳回</CButton>
+              <CButton variant="primary" size="sm" v-perm.disable="'points:approve'" @click="openSign(r.id, r.orderNo, false)">通过</CButton>
+            </div>
+            <div v-else-if="r.status === 'APPROVED'" class="audit-row__ops">
+              <CButton variant="primary" size="sm" v-perm.disable="'points:approve'" @click="fulfill(r.id)">履约发放</CButton>
             </div>
           </div>
         </div>
@@ -262,9 +394,9 @@ const toast = ref('')
       </CCard>
     </template>
 
-    <!-- 新建商品弹层 -->
+    <!-- 新建 / 编辑商品弹层 -->
     <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
-      <CCard class="modal" title="新建积分商品" padding="lg">
+      <CCard class="modal" :title="formTitle" padding="lg">
         <div class="form">
           <CInput label="商品名称" v-model="form.name" placeholder="如：医用面膜 1 片装" />
           <div class="form__row form__row--2">
@@ -279,20 +411,44 @@ const toast = ref('')
             </div>
             <CInput label="积分价格" type="number" v-model="form.pointsCost" />
           </div>
-          <CInput v-if="form.category !== 'COUPON'" label="库存数量（优惠券不限库存）" type="number" v-model="form.stock" />
+          <CInput v-if="form.category !== 'COUPON'" label="库存数量（-1 为不限库存；优惠券不限库存）" type="number" v-model="form.stock" />
           <CTextarea label="商品说明（可选）" v-model="form.description" placeholder="用于商品详情展示，如规格、使用规则、有效期等" />
-          <p class="form__tip">SKU 编号由系统自动生成；实物商品兑换时会员需填写收货信息，进入审核队列。</p>
+          <p class="form__tip">商品编号由系统自动生成；实物商品兑换时会员需填写收货信息，进入审核队列。库存调为 0 的在售商品将自动下架。</p>
         </div>
         <template #footer>
           <CButton variant="ghost" @click="showForm = false">取消</CButton>
-          <CButton variant="primary" :disabled="!form.name.trim()" @click="submitForm">创建</CButton>
+          <CButton variant="primary" :disabled="!form.name.trim() || formSaving" @click="submitForm">
+            {{ editingId ? '保存' : '创建' }}
+          </CButton>
         </template>
       </CCard>
     </div>
 
-    <transition name="toast">
-      <div v-if="toast" class="toast"><CIcon name="check" :size="16" />{{ toast }}</div>
-    </transition>
+    <!-- 双签审核弹层：店长初审 + 运营复核，两签不得同一人 -->
+    <div v-if="showSign" class="modal-mask" @click.self="showSign = false">
+      <CCard class="modal" :title="signReject ? '双签驳回兑换单' : '双签通过兑换单'" padding="lg">
+        <div class="form">
+          <p class="form__tip">
+            兑换单 {{ signTarget?.orderNo }}；审核须双签——{{ signReject ? '驳回后兑换单关闭' : '通过后扣减客户积分与商品库存' }}，操作全程写入审计。
+          </p>
+          <div class="form__row form__row--2">
+            <CInput label="初审人（店长）" v-model="signForm.sign1" placeholder="初审人姓名" />
+            <CInput label="初审角色" v-model="signForm.sign1Role" placeholder="如：店长" />
+          </div>
+          <div class="form__row form__row--2">
+            <CInput label="复核人（运营）" v-model="signForm.sign2" placeholder="复核人姓名，不得与初审同人" />
+            <CInput label="复核角色" v-model="signForm.sign2Role" placeholder="如：运营" />
+          </div>
+          <CTextarea v-if="signReject" label="驳回原因" v-model="signForm.reason" placeholder="如：收货地址无法送达 / 信息不全" />
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showSign = false">取消</CButton>
+          <CButton :variant="signReject ? 'ghost' : 'primary'" :disabled="signSaving" @click="submitSign">
+            {{ signReject ? '确认驳回' : '确认通过' }}
+          </CButton>
+        </template>
+      </CCard>
+    </div>
   </div>
 </template>
 

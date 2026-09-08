@@ -47,7 +47,7 @@ function redeem(product: (typeof points.products)[0]) {
         </div>
         <div class="product-card__name">{{ p.name }}</div>
         <div class="product-card__meta">
-          <span class="product-card__stock">库存 {{ p.stock }}</span>
+          <span class="product-card__stock">{{ p.stock === -1 ? '不限量' : `库存 ${p.stock}` }}</span>
           <span v-if="p.category === 'SERVICE'" class="product-card__tag">服务</span>
           <span v-else-if="p.category === 'COUPON'" class="product-card__tag">券</span>
           <span v-else class="product-card__tag">实物</span>

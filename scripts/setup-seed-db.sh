@@ -482,6 +482,110 @@ CREATE TABLE IF NOT EXISTS catalog_product (
 );
 CREATE INDEX IF NOT EXISTS idx_catalog_product_store ON catalog_product(store_code);
 
+-- B23 积分商城域（customer-service JPA ddl-auto 业务表）。
+-- mall_product 商品：product_id MP+yyyyMMdd-6 位；product_type 中文（项目/实物/优惠券/服务）；
+-- stock=-1 不限库存（优惠券）；status 已上架/已下架（低库存为前端派生，不入库）。
+CREATE TABLE IF NOT EXISTS mall_product (
+  product_id      varchar(24)  PRIMARY KEY,
+  product_name    varchar(64)  NOT NULL,
+  product_type    varchar(16)  NOT NULL,
+  points_price    integer      NOT NULL,
+  stock           integer      NOT NULL,
+  status          varchar(8)   NOT NULL,
+  cover           varchar(128),
+  description     varchar(256),
+  redeemed_count  integer      NOT NULL DEFAULT 0,
+  created_at      timestamptz  NOT NULL
+);
+-- mall_exchange 兑换单：exchange_id EX+yyyyMMdd-6 位；status 待审核/已通过/已拒绝/已发放；
+-- 双签 sign1/sign2 + 角色 + 签署时间；实物类填 ship_* 收货三字段（电话脱敏）；
+-- client_token 下单幂等键；fulfilled_at 履约发放时间；customer_name/product_name 为读模型不落库。
+CREATE TABLE IF NOT EXISTS mall_exchange (
+  exchange_id    varchar(24)  PRIMARY KEY,
+  product_id     varchar(24)  NOT NULL,
+  customer_id    varchar(16)  NOT NULL,
+  points_spent   integer      NOT NULL,
+  qty            integer      NOT NULL,
+  status         varchar(8)   NOT NULL,
+  sign1          varchar(32),
+  sign1_role     varchar(32),
+  signed_at1     timestamptz,
+  sign2          varchar(32),
+  sign2_role     varchar(32),
+  signed_at2     timestamptz,
+  reject_reason  varchar(128),
+  ship_name      varchar(32),
+  ship_phone     varchar(32),
+  ship_address   varchar(128),
+  client_token   varchar(64),
+  fulfilled_at   timestamptz,
+  created_at     timestamptz  NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_mall_exchange_status ON mall_exchange(status);
+-- point_rule 积分规则单行（rule_id=1）：B23 补签到/生日倍乘/转介绍/手动调分四列。
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='point_rule' AND column_name='sign_in_reward') THEN
+    ALTER TABLE point_rule ADD COLUMN sign_in_reward integer;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='point_rule' AND column_name='birthday_multiplier') THEN
+    ALTER TABLE point_rule ADD COLUMN birthday_multiplier numeric(4,2);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='point_rule' AND column_name='referral_reward') THEN
+    ALTER TABLE point_rule ADD COLUMN referral_reward integer;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='point_rule' AND column_name='manual_grant_enabled') THEN
+    ALTER TABLE point_rule ADD COLUMN manual_grant_enabled boolean;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='point_rule' AND column_name='updated_at') THEN
+    ALTER TABLE point_rule ADD COLUMN updated_at timestamptz;
+  END IF;
+END $$;
+-- points_pool 积分池聚合（单行 pool_id=1，对齐 prepay_pool；long 映射 bigint）。
+CREATE TABLE IF NOT EXISTS points_pool (
+  pool_id         integer  PRIMARY KEY,
+  total_issued    bigint   NOT NULL,
+  gained_month    bigint   NOT NULL,
+  redeemed_month  bigint   NOT NULL,
+  expiring_90d    bigint   NOT NULL
+);
+-- B23 旧表结构修复：meiyun_core 中 mall_product/mall_exchange 为早期版本 JPA 所建，
+-- pg_dump 克隆后 CREATE TABLE IF NOT EXISTS 全部跳过，需幂等补列并清理历史约束。
+-- Hibernate ddl-auto=update 只加列不删 CHECK/物理 FK、不改列长，故这里显式处理：
+--  1) mall_product 补 description/redeemed_count，product_type 放宽至 varchar(16)（旧表 varchar(8) 仅含 实物/项目/权益）；
+--  2) 删除 product_type 旧 CHECK（阻断「优惠券/服务」新类型）与 stock>=0 CHECK（阻断优惠券 stock=-1 不限库存）；
+--  3) mall_exchange 补 ship_* 收货三字段/client_token 幂等键/fulfilled_at 履约时间；
+--  4) 删除两个物理外键（项目约定业务表只建逻辑外键，不建物理 FK）。
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mall_product' AND column_name='description') THEN
+    ALTER TABLE mall_product ADD COLUMN description varchar(256);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mall_product' AND column_name='redeemed_count') THEN
+    ALTER TABLE mall_product ADD COLUMN redeemed_count integer NOT NULL DEFAULT 0;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mall_exchange' AND column_name='ship_name') THEN
+    ALTER TABLE mall_exchange ADD COLUMN ship_name varchar(32);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mall_exchange' AND column_name='ship_phone') THEN
+    ALTER TABLE mall_exchange ADD COLUMN ship_phone varchar(32);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mall_exchange' AND column_name='ship_address') THEN
+    ALTER TABLE mall_exchange ADD COLUMN ship_address varchar(128);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mall_exchange' AND column_name='client_token') THEN
+    ALTER TABLE mall_exchange ADD COLUMN client_token varchar(64);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='mall_exchange' AND column_name='fulfilled_at') THEN
+    ALTER TABLE mall_exchange ADD COLUMN fulfilled_at timestamptz;
+  END IF;
+END $$;
+ALTER TABLE mall_product ALTER COLUMN product_type TYPE varchar(16);
+ALTER TABLE mall_product DROP CONSTRAINT IF EXISTS mall_product_product_type_check;
+ALTER TABLE mall_product DROP CONSTRAINT IF EXISTS mall_product_stock_check;
+ALTER TABLE mall_exchange DROP CONSTRAINT IF EXISTS mall_exchange_product_id_fkey;
+ALTER TABLE mall_exchange DROP CONSTRAINT IF EXISTS mall_exchange_customer_id_fkey;
+
 -- B16 售卡开卡：member_card / txn_order 新列幂等兜底。
 -- 正常路径：meiyun_core 由 customer/txn 服务 JPA ddl-auto=update 自动加列后 pg_dump 克隆，下列语句全部跳过；
 -- 仅当克隆源库结构落后于本批实体（新服务尚未在 core 库启动过）时补列，保证种子 INSERT/启动不缺列。

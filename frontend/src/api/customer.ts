@@ -193,3 +193,147 @@ export const listAllTags = () =>
 /** 某客户的标签关联（仅 tagId，需与 listAllTags join 取中文名） */
 export const listCustomerTagRels = (id: string) =>
   client.get<CustomerTagRelDTO[]>(`/customer/${id}/tags`)
+
+// ============================================================
+// 积分商城（M3-20，对接 customer-service /customer/mall/*）
+// 后端状态/类型为中文枚举（库内即中文），前端在 store 适配层映射英文码喂字典。
+// ============================================================
+
+/** 积分商品（GET /customer/mall/products 真实字段；状态/类型为中文） */
+export interface MallProductDTO {
+  productId: string
+  productName: string
+  /** 商品类型中文：项目/实物/优惠券/服务 */
+  productType: string
+  /** 积分单价（单位「积分」） */
+  pointsPrice: number
+  /** 库存（-1 表示不限库存，如优惠券） */
+  stock: number
+  /** 商品状态中文：已上架/已下架（低库存≤50 为前端派生，不入库） */
+  status: string
+  /** 封面文案/图（可为空，前端按分类派生占位字） */
+  cover?: string | null
+  description?: string | null
+  /** 已兑数量 */
+  redeemedCount: number
+  createdAt: string
+}
+
+/** 兑换单（GET /customer/mall/exchanges 真实字段；customerName/productName 为后端只读冗余） */
+export interface MallExchangeDTO {
+  exchangeId: string
+  productId: string
+  customerId: string
+  /** 消耗积分总额（= 单价 × 数量；前端单价反推 pointsSpent / qty） */
+  pointsSpent: number
+  qty: number
+  /** 状态中文：待审核/已通过/已拒绝/已发放 */
+  status: string
+  sign1?: string | null
+  sign1Role?: string | null
+  signedAt1?: string | null
+  sign2?: string | null
+  sign2Role?: string | null
+  signedAt2?: string | null
+  rejectReason?: string | null
+  shipName?: string | null
+  shipPhone?: string | null
+  shipAddress?: string | null
+  clientToken?: string | null
+  fulfilledAt?: string | null
+  createdAt: string
+  /** 客户姓名（后端只读解析冗余，直接展示；缺失回退客户 ID） */
+  customerName?: string | null
+  /** 商品名称（后端只读解析冗余，直接展示；缺失回退商品 ID） */
+  productName?: string | null
+}
+
+/** 积分规则（GET /customer/mall/rule 真实字段；单行 rule_id=1） */
+export interface PointRuleDTO {
+  ruleId?: number
+  /** 消费 1 元累计积分数（倍率，对应前端 earnPerYuan） */
+  earnRate: number
+  /** 积分抵扣比例（百分比，前端表单无此格，保存时原值回传） */
+  redeemRatio: number
+  expireMonths: number
+  signInReward?: number | null
+  birthdayMultiplier?: number | null
+  referralReward?: number | null
+  manualGrantEnabled?: boolean | null
+  updatedAt?: string | null
+}
+
+/** 新建/编辑商品入参（type 兼容英文码 PROJECT/PHYSICAL/COUPON/SERVICE，后端归一中文） */
+export interface MallProductCmd {
+  name: string
+  type: string
+  pointsPrice: number
+  stock?: number
+  cover?: string
+  description?: string
+}
+
+/** 双签审核入参：店长初审 sign1 + 运营复核 sign2，两签不得同一人 */
+export interface MallReviewCmd {
+  sign1: string
+  sign1Role?: string
+  sign2: string
+  sign2Role?: string
+  reject?: boolean
+  rejectReason?: string
+}
+
+/** 兑换申请入参（积分按商品定价 × 数量后端计算，防篡改；实物须带收货信息；clientToken 幂等） */
+export interface MallPlaceExchangeCmd {
+  productId: string
+  customerId: string
+  qty?: number
+  shipName?: string
+  shipPhone?: string
+  shipAddress?: string
+  clientToken?: string
+}
+
+/** 商品列表（status 可选：传中文「已上架/已下架」过滤，不传查全部） */
+export const listMallProducts = (status?: string) =>
+  client.get<MallProductDTO[]>('/customer/mall/products', { params: status ? { status } : {} })
+
+/** 新建商品（stock=0 待上架，>0 或 -1 直接上架） */
+export const createMallProduct = (data: MallProductCmd) =>
+  client.post<MallProductDTO>('/customer/mall/product', data)
+
+/** 编辑商品资料（名称/类型/定价/说明/封面；库存走 adjust，上下架走 toggle） */
+export const editMallProduct = (id: string, data: MallProductCmd) =>
+  client.put<MallProductDTO>(`/customer/mall/product/${id}`, data)
+
+/** 上下架切换（库存 0 上架返回 422；幂等：目标状态一致直接返回） */
+export const toggleMallProduct = (id: string) =>
+  client.post<MallProductDTO>(`/customer/mall/product/${id}/toggle`)
+
+/** 调整库存/积分定价（库存 0 在售自动下架；stock=-1 不限库存） */
+export const adjustMallProduct = (id: string, data: { stock?: number; pointsPrice?: number }) =>
+  client.post<MallProductDTO>(`/customer/mall/product/${id}/adjust`, data)
+
+/** 积分规则配置（单行） */
+export const getMallRule = () =>
+  client.get<PointRuleDTO>('/customer/mall/rule')
+
+/** 保存积分规则（全字段覆盖；redeemRatio 表单无此格，原值回传） */
+export const saveMallRule = (data: Partial<PointRuleDTO>) =>
+  client.put<PointRuleDTO>('/customer/mall/rule', data)
+
+/** 兑换单列表（审核队列；status 可选中文过滤） */
+export const listMallExchanges = (status?: string) =>
+  client.get<MallExchangeDTO[]>('/customer/mall/exchanges', { params: status ? { status } : {} })
+
+/** 提交兑换申请（生成「待审核」单，审核通过时才扣积分/库存；clientToken 重放幂等） */
+export const placeMallExchange = (data: MallPlaceExchangeCmd) =>
+  client.post<MallExchangeDTO>('/customer/mall/exchange', data)
+
+/** 双签审核（通过/驳回；非「待审核」返回 409；通过时扣库存+积分，积分不足返回 422） */
+export const reviewMallExchange = (id: string, data: MallReviewCmd) =>
+  client.post<MallExchangeDTO>(`/customer/mall/exchange/${id}/review`, data)
+
+/** 履约发放（仅「已通过」可履约，其余 409；「已发放」幂等直返） */
+export const fulfillMallExchange = (id: string) =>
+  client.post<MallExchangeDTO>(`/customer/mall/exchange/${id}/fulfill`)

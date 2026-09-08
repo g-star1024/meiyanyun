@@ -273,4 +273,8 @@ public class CustomerService {
     /** 业务异常 → HTTP 状态码映射（由 GlobalExceptionHandler 处理）。 */
     public static class NotFound extends RuntimeException { public NotFound(String m){super(m);} }
     public static class BadReq extends RuntimeException { public BadReq(String m){super(m);} }
+    /** 状态机冲突 / 幂等重放冲突 → 409（审核重复提交、重复打标等，幂等提交方据此识别已受理）。 */
+    public static class Conflict extends RuntimeException { public Conflict(String m){super(m);} }
+    /** 业务不可处理（库存/积分不足等）→ 422，区别于参数格式错误 400。 */
+    public static class Unprocessable extends RuntimeException { public Unprocessable(String m){super(m);} }
 }

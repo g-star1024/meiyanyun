@@ -2,11 +2,26 @@
 // 积分商城 store（M3-05/20）
 // 商品管理 + 兑换审核 + 积分规则。
 // 对齐设计稿 326:1 / 326:153：4 KPI + 商品表 + 审核队列 + 规则配置。
+//
+// 双数据源（铁律：链路先行，mock 是活规格）：
+// - B 端 PointsMallView：onMounted 调 load()，商品/兑换单/规则全部走 customer-service
+//   /customer/mall/* 真实接口；后端库内枚举为中文（已上架/已下架、项目/实物…、
+//   待审核/已通过/已拒绝/已发放），本 store 适配层映射英文码喂前端字典。
+// - C 端 11 个移动页：继续调 seed() 使用演示会员（陈美玲 C-201）本地 mock，
+//   redeemFromMember/earnFromPurchase/grantPoints 保持纯前端联动不接真实接口
+//   （C 端真实兑换/积分累计依赖事件流，列入后续 Backlog）。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { errMsg } from './m5Coupon'
+import {
+  listMallProducts, listMallExchanges, getMallRule,
+  createMallProduct, editMallProduct, toggleMallProduct, adjustMallProduct,
+  saveMallRule, reviewMallExchange, fulfillMallExchange,
+  type MallProductDTO, type MallExchangeDTO, type PointRuleDTO,
+} from '@/api/customer'
 
 export type ProductCategory = 'PROJECT' | 'PHYSICAL' | 'COUPON' | 'SERVICE'
 export type ProductStatus = 'ON_SALE' | 'OFF_SHELF' | 'LOW_STOCK' | 'PENDING'
@@ -42,6 +57,8 @@ export interface RedemptionRecord {
 
 export interface PointsRule {
   earnPerYuan: number
+  /** 积分抵扣比例（百分比；表单无此格，后端原值回传） */
+  redeemRatio: number
   expireMonths: number
   signInReward: number
   birthdayMultiplier: number
@@ -63,6 +80,89 @@ const STATUS_LABEL: Record<ProductStatus, string> = {
   PENDING: '审核中',
 }
 
+/** 商品封面占位字（无 cover 时按分类派生） */
+export const CATEGORY_IMG: Record<ProductCategory, string> = {
+  PROJECT: '项目',
+  PHYSICAL: '实物',
+  COUPON: '券',
+  SERVICE: '服务',
+}
+
+/** 后端中文类型 → 前端英文码（normalizeType 后接口只会回中文） */
+function typeFromBack(t: string): ProductCategory {
+  switch ((t || '').trim()) {
+    case '项目': return 'PROJECT'
+    case '实物': return 'PHYSICAL'
+    case '优惠券': case '券': return 'COUPON'
+    case '服务': return 'SERVICE'
+    default: return 'PROJECT'
+  }
+}
+
+/** 后端中文状态 + 库存 → 前端状态码（低库存≤50 为前端派生，不入库） */
+function statusFromBack(status: string, stock: number): ProductStatus {
+  if ((status || '').trim() === '已下架' || stock === 0) return 'OFF_SHELF'
+  if (stock !== -1 && stock <= 50) return 'LOW_STOCK'
+  return 'ON_SALE'
+}
+
+/** 后端兑换单中文状态 → 前端英文码 */
+function exchangeStatusFromBack(s: string): RedemptionStatus {
+  switch ((s || '').trim()) {
+    case '已通过': return 'APPROVED'
+    case '已拒绝': return 'REJECTED'
+    case '已发放': return 'FULFILLED'
+    case '待审核':
+    default: return 'PENDING'
+  }
+}
+
+function mapProduct(d: MallProductDTO): PointsProduct {
+  const category = typeFromBack(d.productType)
+  const stock = d.stock ?? 0
+  return {
+    id: d.productId,
+    sku: d.productId,
+    name: d.productName,
+    category,
+    pointsCost: d.pointsPrice,
+    stock,
+    redeemedCount: d.redeemedCount ?? 0,
+    status: statusFromBack(d.status, stock),
+    imageText: d.cover || CATEGORY_IMG[category],
+    description: d.description || undefined,
+  }
+}
+
+function mapExchange(d: MallExchangeDTO): RedemptionRecord {
+  const qty = d.qty || 1
+  return {
+    id: d.exchangeId,
+    orderNo: d.exchangeId,
+    customerName: d.customerName || d.customerId,
+    productName: d.productName || d.productId,
+    pointsCost: qty > 0 ? Math.round((d.pointsSpent || 0) / qty) : (d.pointsSpent || 0),
+    qty,
+    status: exchangeStatusFromBack(d.status),
+    createdAt: d.createdAt,
+    address: d.shipAddress || undefined,
+    phone: d.shipPhone || undefined,
+    note: d.rejectReason || undefined,
+  }
+}
+
+function mapRule(d: PointRuleDTO): PointsRule {
+  return {
+    earnPerYuan: Number(d.earnRate ?? 1),
+    redeemRatio: Number(d.redeemRatio ?? 100),
+    expireMonths: d.expireMonths ?? 12,
+    signInReward: d.signInReward ?? 10,
+    birthdayMultiplier: Number(d.birthdayMultiplier ?? 2),
+    referralReward: d.referralReward ?? 500,
+    manualGrantEnabled: d.manualGrantEnabled ?? true,
+  }
+}
+
 export const usePointsStore = defineStore('points', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
@@ -71,6 +171,7 @@ export const usePointsStore = defineStore('points', () => {
   const redemptions = ref<RedemptionRecord[]>([])
   const rule = ref<PointsRule>({
     earnPerYuan: 1,
+    redeemRatio: 100,
     expireMonths: 24,
     signInReward: 10,
     birthdayMultiplier: 2,
@@ -118,68 +219,180 @@ export const usePointsStore = defineStore('points', () => {
     return products.value.find((p) => p.id === id)
   }
 
-  function createProduct(input: Omit<PointsProduct, 'id' | 'sku' | 'redeemedCount' | 'status'>): PointsProduct | null {
-    if (!auth.can('points:edit')) {
-      console.warn('[points] 无 points:edit 权限')
-      return null
-    }
-    const seq = products.value.length + 1
-    const p: PointsProduct = {
-      ...input,
-      id: nextId('pt'),
-      sku: `MALL-${String(seq).padStart(3, '0')}`,
-      redeemedCount: 0,
-      status: input.stock > 0 ? 'ON_SALE' : 'OFF_SHELF',
-    }
-    products.value.unshift(p)
-    activity.log(auth.user.name, `新建积分商品 ${p.name}（${p.pointsCost} 分）`, p.id)
-    return p
+  // ==================== B 端：真实 API（/customer/mall/*） ====================
+
+  /** B 端加载：商品 + 兑换单 + 积分规则并行拉取（兑换单后端已注入客户名/商品名） */
+  async function load() {
+    const [pRes, eRes, rRes] = await Promise.all([
+      listMallProducts(),
+      listMallExchanges(),
+      getMallRule(),
+    ])
+    products.value = (pRes.data || []).map(mapProduct)
+    redemptions.value = (eRes.data || []).map(mapExchange)
+    if (rRes.data) rule.value = mapRule(rRes.data)
   }
 
-  function updateProduct(id: string, patch: Partial<Pick<PointsProduct, 'name' | 'category' | 'pointsCost' | 'stock' | 'imageText'>>): boolean {
+  /** 新建商品（后端发单号 MP+日期-序号；stock=0 待上架，>0/-1 直接上架） */
+  async function createProduct(input: Omit<PointsProduct, 'id' | 'sku' | 'redeemedCount' | 'status'>): Promise<PointsProduct> {
+    if (!auth.can('points:edit')) throw new Error('无积分商品编辑权限')
+    try {
+      const { data } = await createMallProduct({
+        name: input.name,
+        type: input.category,
+        pointsPrice: input.pointsCost,
+        stock: input.stock,
+        cover: input.imageText,
+        description: input.description,
+      })
+      const p = mapProduct(data)
+      products.value.unshift(p)
+      activity.log(auth.user.name, `新建积分商品 ${p.name}（${p.pointsCost} 分）`, p.id)
+      return p
+    } catch (e) {
+      throw new Error(errMsg(e, '新建商品失败，请稍后重试'))
+    }
+  }
+
+  /**
+   * 编辑商品资料（名称/类型/定价/说明/封面走 PUT；库存单独走 /adjust）。
+   * patch.stock 与当前不同时追加一次调整调用（库存 0 在售后端自动下架）。
+   */
+  async function updateProduct(
+    id: string,
+    patch: Partial<Pick<PointsProduct, 'name' | 'category' | 'pointsCost' | 'stock' | 'imageText' | 'description'>>,
+  ): Promise<boolean> {
     const p = products.value.find((x) => x.id === id)
-    if (!p || !auth.can('points:edit')) return false
-    Object.assign(p, patch)
-    if (patch.stock !== undefined) {
-      if (patch.stock === 0) p.status = 'OFF_SHELF'
-      else if (patch.stock <= 50 && p.status !== 'PENDING') p.status = 'LOW_STOCK'
-      else if (p.status === 'OFF_SHELF' || p.status === 'LOW_STOCK') p.status = 'ON_SALE'
+    if (!p) throw new Error('商品不存在')
+    if (!auth.can('points:edit')) throw new Error('无积分商品编辑权限')
+    try {
+      const name = patch.name ?? p.name
+      const category = patch.category ?? p.category
+      const pointsCost = patch.pointsCost ?? p.pointsCost
+      const { data } = await editMallProduct(id, {
+        name,
+        type: category,
+        pointsPrice: pointsCost,
+        cover: patch.imageText ?? CATEGORY_IMG[category],
+        description: patch.description ?? p.description,
+      })
+      let updated = mapProduct(data)
+      if (patch.stock !== undefined && patch.stock !== p.stock) {
+        const adj = await adjustMallProduct(id, { stock: patch.stock })
+        updated = mapProduct(adj.data)
+      }
+      const idx = products.value.findIndex((x) => x.id === id)
+      if (idx >= 0) products.value[idx] = updated
+      activity.log(auth.user.name, `编辑积分商品 ${updated.name}`, id)
+      return true
+    } catch (e) {
+      throw new Error(errMsg(e, '编辑商品失败，请稍后重试'))
     }
-    activity.log(auth.user.name, `编辑积分商品 ${p.name}`, p.id)
-    return true
   }
 
-  function toggleShelf(id: string): boolean {
+  /** 上下架切换（库存 0 上架后端 422；幂等） */
+  async function toggleShelf(id: string): Promise<boolean> {
     const p = products.value.find((x) => x.id === id)
-    if (!p || !auth.can('points:edit')) return false
-    if (p.status === 'OFF_SHELF') p.status = p.stock > 50 ? 'ON_SALE' : 'LOW_STOCK'
-    else p.status = 'OFF_SHELF'
-    activity.log(auth.user.name, `${p.status === 'OFF_SHELF' ? '下架' : '上架'}商品 ${p.name}`, p.id)
-    return true
+    if (!p) throw new Error('商品不存在')
+    if (!auth.can('points:edit')) throw new Error('无积分商品编辑权限')
+    try {
+      const { data } = await toggleMallProduct(id)
+      const updated = mapProduct(data)
+      const idx = products.value.findIndex((x) => x.id === id)
+      if (idx >= 0) products.value[idx] = updated
+      activity.log(auth.user.name, `${updated.status === 'OFF_SHELF' ? '下架' : '上架'}商品 ${updated.name}`, id)
+      return true
+    } catch (e) {
+      throw new Error(errMsg(e, '上下架操作失败，请稍后重试'))
+    }
   }
 
-  function approveRedemption(id: string): boolean {
+  /**
+   * 双签审核通过：店长初审 sign1 + 运营复核 sign2（两签不得同一人，后端强校验）。
+   * 通过时后端扣库存/销量、扣客户积分；积分或库存不足返回 422。
+   */
+  async function approveRedemption(
+    id: string,
+    sign: { sign1: string; sign1Role?: string; sign2: string; sign2Role?: string },
+  ): Promise<boolean> {
     const r = redemptions.value.find((x) => x.id === id)
-    if (!r || r.status !== 'PENDING' || !auth.can('points:approve')) return false
-    r.status = 'APPROVED'
-    activity.log(auth.user.name, `通过兑换 ${r.orderNo}（${r.customerName}）`, r.id)
-    return true
-  }
-  function rejectRedemption(id: string, reason = '信息不全'): boolean {
-    const r = redemptions.value.find((x) => x.id === id)
-    if (!r || r.status !== 'PENDING' || !auth.can('points:approve')) return false
-    r.status = 'REJECTED'
-    r.note = reason
-    activity.log(auth.user.name, `驳回兑换 ${r.orderNo}：${reason}`, r.id)
-    return true
+    if (!r) throw new Error('兑换单不存在')
+    if (r.status !== 'PENDING') throw new Error('兑换单已审核，不可重复操作')
+    if (!auth.can('points:approve')) throw new Error('无兑换审核权限')
+    try {
+      const { data } = await reviewMallExchange(id, { ...sign, reject: false })
+      const idx = redemptions.value.findIndex((x) => x.id === id)
+      if (idx >= 0) redemptions.value[idx] = mapExchange(data)
+      activity.log(auth.user.name, `双签通过兑换 ${r.orderNo}（${r.customerName}）：${sign.sign1}、${sign.sign2}`, id)
+      return true
+    } catch (e) {
+      throw new Error(errMsg(e, '审核通过失败，请稍后重试'))
+    }
   }
 
-  function saveRule(patch: Partial<PointsRule>): boolean {
-    if (!auth.can('points:edit')) return false
-    Object.assign(rule.value, patch)
-    activity.log(auth.user.name, '保存积分规则')
-    return true
+  /** 双签审核驳回（须填驳回原因；后端落 rejectReason） */
+  async function rejectRedemption(
+    id: string,
+    reason: string,
+    sign: { sign1: string; sign1Role?: string; sign2: string; sign2Role?: string },
+  ): Promise<boolean> {
+    const r = redemptions.value.find((x) => x.id === id)
+    if (!r) throw new Error('兑换单不存在')
+    if (r.status !== 'PENDING') throw new Error('兑换单已审核，不可重复操作')
+    if (!auth.can('points:approve')) throw new Error('无兑换审核权限')
+    try {
+      const { data } = await reviewMallExchange(id, { ...sign, reject: true, rejectReason: reason })
+      const idx = redemptions.value.findIndex((x) => x.id === id)
+      if (idx >= 0) redemptions.value[idx] = mapExchange(data)
+      activity.log(auth.user.name, `双签驳回兑换 ${r.orderNo}：${reason}（${sign.sign1}、${sign.sign2}）`, id)
+      return true
+    } catch (e) {
+      throw new Error(errMsg(e, '驳回操作失败，请稍后重试'))
+    }
   }
+
+  /** 履约发放（仅「已通过」可履约；「已发放」后端幂等直返） */
+  async function fulfillRedemption(id: string): Promise<boolean> {
+    const r = redemptions.value.find((x) => x.id === id)
+    if (!r) throw new Error('兑换单不存在')
+    if (r.status === 'FULFILLED') return true
+    if (r.status !== 'APPROVED') throw new Error('仅「已通过」的兑换单可履约发放')
+    if (!auth.can('points:approve')) throw new Error('无兑换履约权限')
+    try {
+      const { data } = await fulfillMallExchange(id)
+      const idx = redemptions.value.findIndex((x) => x.id === id)
+      if (idx >= 0) redemptions.value[idx] = mapExchange(data)
+      activity.log(auth.user.name, `履约发放兑换 ${r.orderNo}（${r.customerName}）`, id)
+      return true
+    } catch (e) {
+      throw new Error(errMsg(e, '履约发放失败，请稍后重试'))
+    }
+  }
+
+  /** 保存积分规则（redeemRatio 表单无此格，取库内原值回传） */
+  async function saveRule(patch: Partial<PointsRule>): Promise<boolean> {
+    if (!auth.can('points:edit')) throw new Error('无积分规则编辑权限')
+    const next = { ...rule.value, ...patch }
+    try {
+      const { data } = await saveMallRule({
+        earnRate: next.earnPerYuan,
+        redeemRatio: next.redeemRatio,
+        expireMonths: next.expireMonths,
+        signInReward: next.signInReward,
+        birthdayMultiplier: next.birthdayMultiplier,
+        referralReward: next.referralReward,
+        manualGrantEnabled: next.manualGrantEnabled,
+      })
+      if (data) rule.value = mapRule(data)
+      else rule.value = next
+      activity.log(auth.user.name, '保存积分规则')
+      return true
+    } catch (e) {
+      throw new Error(errMsg(e, '保存规则失败，请稍后重试'))
+    }
+  }
+
+  // ==================== C 端：演示 mock（移动页使用，不接真实接口） ====================
 
   function grantPoints(customerName: string, points: number, reason: string) {
     if (!auth.can('points:edit')) return false
@@ -189,11 +402,11 @@ export const usePointsStore = defineStore('points', () => {
   }
 
   /**
-   * C 端会员兑换（B/C 联动 6-积分兑换）：
+   * C 端会员兑换（B/C 联动 6-积分兑换，演示 mock）：
    * 1. 校验积分余额、库存
    * 2. 扣减会员积分、扣库存、加销量
    * 3. 生成 PENDING 兑换记录，进入 B 端 M3-20 审核队列
-   * 不自动通过——必须由 B 端 approveRedemption 审核
+   * 不自动通过——必须由 B 端审核（真实链路走 placeMallExchange，依赖 C 端登录态，列 Backlog）
    */
   function redeemFromMember(productId: string, qty = 1, address?: string, phone?: string): { ok: boolean; reason?: string; record?: RedemptionRecord } {
     const p = products.value.find((x) => x.id === productId)
@@ -226,15 +439,7 @@ export const usePointsStore = defineStore('points', () => {
     return { ok: true, record }
   }
 
-  /** B 端审核通过后履约通知（C 端可查到状态） */
-  function fulfillRedemption(id: string): boolean {
-    const r = redemptions.value.find((x) => x.id === id)
-    if (!r || r.status !== 'APPROVED') return false
-    r.status = 'FULFILLED'
-    return true
-  }
-
-  /** 模拟 B 端收款后给 C 端累计积分（B/C 联动 2-积分累计） */
+  /** 模拟 B 端收款后给 C 端累计积分（B/C 联动 2-积分累计，演示 mock） */
   function earnFromPurchase(customerName: string, amount: number) {
     const earn = Math.floor(amount * rule.value.earnPerYuan)
     if (customerName === member.value.name) member.value.points += earn
@@ -276,9 +481,9 @@ export const usePointsStore = defineStore('points', () => {
     products, redemptions, rule, member, memberRedemptions,
     onSaleCount, monthRedeemed, pendingCount, totalPool, pendingRedemptions,
     filterCategory, filterStatus, keyword, filteredProducts,
-    get, createProduct, updateProduct, toggleShelf,
+    get, load, createProduct, updateProduct, toggleShelf,
     approveRedemption, rejectRedemption, fulfillRedemption, saveRule, grantPoints,
     redeemFromMember, earnFromPurchase,
-    seed, CATEGORY_LABEL, STATUS_LABEL,
+    seed, CATEGORY_LABEL, STATUS_LABEL, CATEGORY_IMG,
   }
 })

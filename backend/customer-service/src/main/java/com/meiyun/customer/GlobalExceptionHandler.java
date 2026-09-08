@@ -27,6 +27,20 @@ public class GlobalExceptionHandler {
                 .body(Map.of("code", "BAD_REQUEST", "message", ex.getMessage()));
     }
 
+    /** 客户域：审核重复提交/幂等重放等状态机冲突 → 409（幂等提交方据此识别已受理）。 */
+    @ExceptionHandler(CustomerService.Conflict.class)
+    public ResponseEntity<Map<String, Object>> customerConflict(CustomerService.Conflict ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("code", "CONFLICT", "message", ex.getMessage()));
+    }
+
+    /** 客户域：库存/积分不足等业务不可处理 → 422 中文（区别于参数格式错误 400）。 */
+    @ExceptionHandler(CustomerService.Unprocessable.class)
+    public ResponseEntity<Map<String, Object>> customerUnprocessable(CustomerService.Unprocessable ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .body(Map.of("code", "UNPROCESSABLE", "message", ex.getMessage()));
+    }
+
     /** 储值卡台账：卡/流水不存在 → 404（与客户不存在同口径，越权统一不泄露）。 */
     @ExceptionHandler(CardLedgerService.NotFound.class)
     public ResponseEntity<Map<String, Object>> cardNotFound(CardLedgerService.NotFound ex) {
