@@ -110,8 +110,16 @@ export const getOrgTree = () => client.get<OrgTreeNode>('/org/tree')
 export const getRegions = () => client.get<{ region: string; storeCount: number }[]>('/org/regions')
 export const listRoles = () => client.get<RoleDef[]>('/org/roles')
 export const getRoleMatrix = () => client.get<Record<string, number>>('/org/role-matrix')
-export const listStaff = (storeCode?: string) =>
-  client.get<Staff[]>('/org/staff', { params: { storeCode } })
+/**
+ * 员工列表（/org/staff，DataScope 注入：STORE 本店 / REGION 本区含大区编制 / GROUP 全量）。
+ * 兼容旧调用 listStaff(storeCode)；新调用可传 { storeCode, roleCode, region }：
+ * - roleCode：匹配主角色 + staff_role 兼岗并集（候选过滤）；
+ * - region：REGION 域被后端强制回收到登录人大区，禁止跨区取人。
+ */
+export const listStaff = (params?: string | { storeCode?: string; roleCode?: string; region?: string }) => {
+  const normalized = typeof params === 'string' ? { storeCode: params || undefined } : (params || {})
+  return client.get<Staff[]>('/org/staff', { params: normalized })
+}
 export const listStores = () => client.get<Store[]>('/stores')
 
 // -------------------- RBAC 管理：员工 --------------------

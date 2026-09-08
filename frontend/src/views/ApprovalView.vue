@@ -16,7 +16,9 @@ import {
   listApprovals, approveTodo, rejectTodo, transferTodo, addSignerTodo,
   type ApprovalTodoDTO,
 } from '@/api/approval'
+import { listStaff, type Staff } from '@/api/org'
 import { staffName } from '@/config/staff'
+import type { Role } from '@/types/domain'
 import CKpi from '@/components/CKpi.vue'
 import CCard from '@/components/CCard.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
@@ -65,6 +67,27 @@ function nameOf(id?: string | null): string {
 }
 
 const fen2yuan = (f: number | null | undefined) => (f == null ? 0 : f / 100)
+
+// 阶段角色闸门：镜像后端 ApprovalService.guardStageAssignee（权威闸门）。
+// refund:approve 被店长/区域经理/财务三方同持，不能按权限码判定阶段可见性——
+// REVIEW 须店长、REGION 须区域经理、FINANCE 须财务，超管全放行。
+const STAGE_ROLE: Record<ApprovalStage, Role> = {
+  REVIEW: 'STORE_MGR',
+  REGION: 'REGION_MGR',
+  FINANCE: 'FINANCE',
+}
+const STAGE_ROLE_LABEL: Record<ApprovalStage, string> = {
+  REVIEW: '店长（STORE_MGR）',
+  REGION: '区域经理（REGION_MGR）',
+  FINANCE: '财务（FINANCE）',
+}
+function stageRole(t: ApprovalTask): Role {
+  return STAGE_ROLE[t.stage] || 'STORE_MGR'
+}
+function canActStage(t: ApprovalTask): boolean {
+  if (auth.isSuper) return true
+  return (auth.user.roles || []).includes(stageRole(t))
+}
 
 function stagePerm(t: ApprovalTask): string {
   if (t.stage === 'FINANCE') {
@@ -133,10 +156,15 @@ const overdue = computed(() => {
   const now = Date.now()
   return todo.value.filter((t) => t.dueAt && new Date(t.dueAt).getTime() < now)
 })
-/** 当前用户可处理的待办（有当前阶段对应权限，且未指派给他人） */
-const myTodo = computed(() =>
-  todo.value.filter((t) => auth.can(stagePerm(t)) && (!t.assignee || t.assignee === auth.user.name)),
-)
+/** 当前用户可处理的待办：当前阶段角色闸门（镜像后端 guardStageAssignee）+ 指派/加签人按工号匹配 */
+const myTodo = computed(() => {
+  const me = auth.user.staffId
+  return todo.value.filter((t) => {
+    if (!canActStage(t)) return false
+    if (t.assignee && t.assignee !== me) return false
+    return true
+  })
+})
 const filtered = computed(() => {
   const base = tab.value === 'todo' ? myTodo.value : tab.value === 'done' ? done.value : tasks.value
   if (filterType.value === 'ALL') return base
@@ -181,7 +209,7 @@ async function transfer(id: string, to: string, commentValue = ''): Promise<bool
   try {
     await transferTodo(id, { actor: actor(), to, comment: commentValue || undefined })
     await load()
-    toast.success(`已转交给 ${to}`)
+    toast.success(`已转交给 ${nameOf(to)}`)
     return true
   } catch (e: any) {
     toast.error('转交失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
@@ -192,7 +220,7 @@ async function addSigner(id: string, who: string): Promise<boolean> {
   try {
     await addSignerTodo(id, { actor: actor(), who })
     await load()
-    toast.success(`已加签 ${who}`)
+    toast.success(`已加签 ${nameOf(who)}`)
     return true
   } catch (e: any) {
     toast.error('加签失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
@@ -250,15 +278,28 @@ const comment = ref('')
 const transferTo = ref('')
 const addSignWho = ref('')
 
-const staffOptions = [
-  { label: '陈雅琳（店长）', value: '陈雅琳（店长）' },
-  { label: '王财务', value: '王财务' },
-  { label: '张磊（区域经理）', value: '张磊（区域经理）' },
-  { label: '林主任（医务）', value: '林主任（医务）' },
-]
-
+// 转交/加签候选人：按当前阶段角色拉 /org/staff（DataScope 注入本店/本区 + roleCode 主角色/兼岗并集）
+const staffOptions = ref<{ label: string; value: string }[]>([])
+const staffList = ref<Staff[]>([])
+function stageRoleCode(t?: ApprovalTask): string {
+  return t ? stageRole(t) : 'STORE_MGR'
+}
+async function loadStaffOptions(t: ApprovalTask) {
+  try {
+    const res = await listStaff({ roleCode: stageRoleCode(t) })
+    staffList.value = res.data || []
+    const me = auth.user.staffId
+    staffOptions.value = staffList.value
+      .filter((s) => s.status === '在职' && s.staffId !== me)
+      .map((s) => ({ value: s.staffId, label: `${s.staffId} ${s.staffName}` }))
+  } catch (e: any) {
+    console.error('[approval] 候选人列表加载失败', e)
+    staffList.value = []
+    staffOptions.value = []
+  }
+}
 function canHandle(t: ApprovalTask) {
-  return t.status === 'PENDING' && auth.can(ap.permFor(t))
+  return t.status === 'PENDING' && canActStage(t)
 }
 
 async function doApprove() {
@@ -270,6 +311,19 @@ async function doApprove() {
 function openReject() {
   comment.value = ''
   rejectOpen.value = true
+}
+function openTransfer() {
+  if (!selected.value) return
+  transferTo.value = ''
+  comment.value = ''
+  loadStaffOptions(selected.value)
+  transferOpen.value = true
+}
+function openAddSign() {
+  if (!selected.value) return
+  addSignWho.value = ''
+  loadStaffOptions(selected.value)
+  addSignOpen.value = true
 }
 async function doReject() {
   if (selected.value && comment.value.trim()) {
@@ -304,8 +358,9 @@ function statusPill(t: ApprovalTask) {
   if (t.status === 'APPROVED') return { status: 'success' as const, text: '已通过' }
   if (t.status === 'REJECTED') return { status: 'danger' as const, text: '已驳回' }
   if (t.status === 'TRANSFERRED') return { status: 'info' as const, text: '已转交' }
-  if (t.stage === 'FINANCE') return { status: 'warning' as const, text: '待财务复核' }
-  return { status: 'primary' as const, text: '待审批' }
+  if (t.stage === 'FINANCE') return { status: 'warning' as const, text: '待财务终审' }
+  if (t.stage === 'REGION') return { status: 'warning' as const, text: '待区域经理复审' }
+  return { status: 'primary' as const, text: '待店长初审' }
 }
 
 function priorityPill(p: ApprovalTask['priority']) {
@@ -321,6 +376,19 @@ function fmtDate(iso: string) {
 
 function actionLabel(a: string) {
   return { SUBMIT: '提交', APPROVE: '通过', REJECT: '驳回', TRANSFER: '转交', ADD_SIGN: '加签' }[a] || a
+}
+
+function stageHint(t: ApprovalTask): string {
+  const threeStage = t.signTier === 'L3' && (t.bizType === 'REFUND' || t.bizType === 'CARD_CANCEL')
+  if (t.stage === 'FINANCE') {
+    return '当前为财务终审阶段，通过即办结（确认退款/退卡）；操作将写入审计日志。'
+  }
+  if (t.stage === 'REGION') {
+    return '当前为区域经理复审阶段（L3 大额第三签留痕），通过后流转财务终审；操作将写入审计日志。'
+  }
+  return threeStage
+    ? '当前为店长初审阶段，L3 大额单通过后流转区域经理复审，再由财务终审；操作将写入审计日志。'
+    : '当前为店长初审阶段，通过后流转财务复核；L3 金额需双签留痕。'
 }
 </script>
 
@@ -398,10 +466,10 @@ function actionLabel(a: string) {
         <div v-if="canHandle(selected)" class="det__ops">
           <CTextarea v-model="comment" label="审批意见" placeholder="请输入审批意见（驳回时必填）" :rows="2" />
           <div class="det__ops-row">
-            <CButton variant="secondary" size="sm" @click="addSignOpen = true">
+            <CButton variant="secondary" size="sm" @click="openAddSign">
               <CIcon name="user-check" :size="14" /> 加签
             </CButton>
-            <CButton variant="ghost" size="sm" @click="transferOpen = true">
+            <CButton variant="ghost" size="sm" @click="openTransfer">
               <CIcon name="handover" :size="14" /> 转交
             </CButton>
             <CButton variant="danger" size="sm" @click="openReject">
@@ -413,11 +481,11 @@ function actionLabel(a: string) {
           </div>
           <p class="det__ops-hint">
             <CIcon name="shield" :size="13" />
-            {{ selected.stage === 'FINANCE' ? '当前为财务复核阶段，通过即终审；操作将写入审计日志。' : '一审通过后将流转至财务复核；L3 金额需双签留痕。' }}
+            {{ stageHint(selected) }}
           </p>
         </div>
         <div v-else-if="selected.status === 'PENDING'" class="det__readonly">
-          <CStatusPill status="disabled">当前角色无该阶段审批权限（{{ ap.permFor(selected) }}）</CStatusPill>
+          <CStatusPill status="disabled">当前阶段需{{ STAGE_ROLE_LABEL[selected.stage] }}审批，当前角色无权处理</CStatusPill>
         </div>
 
         <!-- 审批历史 -->

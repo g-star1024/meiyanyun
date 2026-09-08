@@ -73,6 +73,8 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'compliance:edit', 'target:edit', 'health:edit', 'recall:edit', 'recall:create',
     'transfer:edit', 'transfer:create', 'writeoff:edit', 'queue:edit', 'complaint:approve', 'transfer:approve',
     'target:approve', 'sop:approve', 'inventory:approve', 'brand:approve',
+    // B19：L3 大额退款/退卡三阶段审批，区域经理为第二审（REVIEW 店长 → REGION 区域经理 → FINANCE 财务）
+    'refund:approve', 'cardcancel:approve',
     'customer:merge', 'settings:edit',
     'report:export', 'schedule:edit', 'schedule:approve',
     'workorder:edit', 'workorder:create', 'workorder:close', 'daily:edit', 'daily:submit',

@@ -120,19 +120,69 @@ public class OrgController {
 
     // ==================== 员工 ====================
 
+    /**
+     * 员工列表（双签复核人 / 审批人候选 + 员工管理）。
+     * 数据域强制注入：SELF/STORE 只见本店；REGION 见本区门店 + 大区编制账号（区域经理等无门店
+     * 编制人员，store_code 为空、region 有值，B19 三阶段审批/转交/加签候选来源）；GROUP/BRAND 全量。
+     * roleCode 匹配主角色 + staff_role 兼岗并集；region 参数按 staff.region 过滤（REGION 域强制
+     * 回收到登录人大区，禁止跨区取人）。
+     */
     @GetMapping("/staff")
     @RequirePerm({"rbac:view", "appointment:view"})
     public List<Staff> staff(@RequestParam(required = false) String storeCode,
-                             @RequestParam(required = false) String roleCode) {
-        // 数据域强制注入：SELF/STORE 只见本店，REGION 见本区门店（区域经理等无门店编制的账号不在列表内），GROUP/BRAND 全量
+                             @RequestParam(required = false) String roleCode,
+                             @RequestParam(required = false) String region) {
+        var u = DataScope.current();
+        // 门店编制账号：走通用门店数据域（STORE 本店 / REGION 本区门店 / GROUP 全量）
         Specification<Staff> spec = DataScope.storeSpec("storeCode");
         if (storeCode != null && !storeCode.isBlank()) {
             spec = spec.and((root, q, cb) -> cb.equal(root.get("storeCode"), storeCode));
         }
-        if (roleCode != null && !roleCode.isBlank()) {
-            spec = spec.and((root, q, cb) -> cb.equal(root.get("roleCode"), roleCode));
+        String regionParam = (region != null && !region.isBlank()) ? region.trim() : null;
+        // REGION 域：region 参数强制回收到登录人大区，防止跨区查人
+        if (u != null && DataScope.SCOPE_REGION.equals(u.scope()) && u.region() != null && !u.region().isBlank()) {
+            regionParam = u.region();
         }
-        List<Staff> list = staffRepo.findAll(spec, Sort.by("staffId"));
+        final String regionFilter = regionParam;
+        if (regionFilter != null) {
+            spec = spec.and((root, q, cb) -> cb.equal(root.get("region"), regionFilter));
+        }
+        List<Staff> merged = new ArrayList<>(staffRepo.findAll(spec, Sort.by("staffId")));
+
+        // 大区编制账号（store_code 为空：区域经理/区域财务/集团岗）——storeSpec 只按门店列过滤，
+        // 天然排除这批人；按数据域并入候选：REGION 见本区，GROUP/BRAND 及无上下文全量，STORE/SELF 不见
+        List<Staff> headStaff;
+        if (u == null || u.isSuper() || DataScope.SCOPE_GROUP.equals(u.scope()) || DataScope.SCOPE_BRAND.equals(u.scope())) {
+            Specification<Staff> headSpec = (root, q, cb) -> cb.isNull(root.get("storeCode"));
+            if (regionFilter != null) {
+                headSpec = headSpec.and((root, q, cb) -> cb.equal(root.get("region"), regionFilter));
+            }
+            headStaff = staffRepo.findAll(headSpec, Sort.by("staffId"));
+        } else if (DataScope.SCOPE_REGION.equals(u.scope()) && u.region() != null && !u.region().isBlank()) {
+            final String myRegion = u.region();
+            headStaff = staffRepo.findAll((root, q, cb) ->
+                    cb.and(cb.isNull(root.get("storeCode")), cb.equal(root.get("region"), myRegion)),
+                    Sort.by("staffId"));
+        } else {
+            headStaff = List.of();
+        }
+        for (Staff s : headStaff) {
+            if (merged.stream().noneMatch(x -> x.getStaffId().equals(s.getStaffId()))) {
+                merged.add(s);
+            }
+        }
+
+        // roleCode 匹配主角色 + staff_role 兼岗并集（主角色不同但兼岗持该角色的员工同样入选）
+        List<Staff> list = merged;
+        if (roleCode != null && !roleCode.isBlank()) {
+            Set<String> byRole = new HashSet<>();
+            staffRoleRepo.findByRoleCode(roleCode.trim()).forEach(r -> byRole.add(r.getStaffId()));
+            final String roleFilter = roleCode.trim();
+            list = merged.stream()
+                    .filter(s -> roleFilter.equals(s.getRoleCode()) || byRole.contains(s.getStaffId()))
+                    .sorted(Comparator.comparing(Staff::getStaffId))
+                    .collect(Collectors.toList());
+        }
         Map<String, RoleDef> roles = roleRepo.findAll().stream()
                 .collect(Collectors.toMap(RoleDef::getRoleCode, Function.identity()));
         list.forEach(s -> s.setRole(roles.get(s.getRoleCode())));

@@ -20,7 +20,8 @@ import java.util.List;
 
 /**
  * 交易域核心服务（M4）：退款 RF / 退卡 CC。
- * 串联三条红线：① 审批状态机（L1 直达财务复核；L2/L3 店长一审 → 财务终审；任一阶段可驳回）
+ * 串联三条红线：① 审批状态机（L1 直达财务复核；L2 店长一审 → 财务终审；
+ * L3 店长初审 → 区域经理复审（B19 第三签）→ 财务终审；任一阶段可驳回）
  * ② C-05 手续费手动窗口（退款默认 0；退卡默认 10% / 禁忌免收 / 逐单覆盖）
  * ③ 审计链（所有动作落 append-only）。
  * 签署层级阈值对齐前端设置中心活规格：L1 ¥1,000 / L2 ¥5,000 / L3 ¥20,000（金额单位分）。
@@ -210,6 +211,26 @@ public class TxnService {
             cancelRepo.save(c);
             audit.record("CARD_CANCEL", txnNo, actor, "APPROVE",
                     "{\"from\":\"PENDING_REVIEW\",\"to\":\"PENDING_FINANCE\",\"reviewedBy\":\"" + actor + "\"}");
+        }
+    }
+
+    /**
+     * B19：L3 区域经理复审通过第三签留痕（sign3 记区域经理工号，signedAt3 复审时间）。
+     * 与审批流 history JSON 互为佐证；调用方仅 REGION 阶段审批通过。
+     */
+    @Transactional
+    public void markThirdSign(String txnNo, String actor) {
+        OffsetDateTime now = OffsetDateTime.now();
+        if (txnNo.startsWith("RF")) {
+            TxnRefund r = requireRefund(txnNo);
+            r.setSign3(actor);
+            r.setSignedAt3(now);
+            refundRepo.save(r);
+        } else {
+            TxnCardCancel c = requireCardCancel(txnNo);
+            c.setSign3(actor);
+            c.setSignedAt3(now);
+            cancelRepo.save(c);
         }
     }
 

@@ -25,8 +25,8 @@ export type ApprovalBizType =
   | 'REQUISITION'   // 物料申领（M2 库存）
 
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'TRANSFERRED'
-/** 审批阶段：REVIEW=店长/运营一审；FINANCE=财务复核（L1 直达） */
-export type ApprovalStage = 'REVIEW' | 'FINANCE'
+/** 审批阶段：REVIEW=店长初审；REGION=区域经理复审（B19，仅 L3 退款/退卡）；FINANCE=财务终审（L1 直达） */
+export type ApprovalStage = 'REVIEW' | 'REGION' | 'FINANCE'
 export type SignTier = 'L1' | 'L2' | 'L3'
 
 export interface ApprovalAction {
@@ -178,7 +178,7 @@ export const useApprovalStore = defineStore('approval', () => {
     return t
   }
 
-  /** 审批通过：REVIEW 阶段通过后，L2/L3 进入 FINANCE；FINANCE 通过则终审 */
+  /** 审批通过：L3 退款/退卡 REVIEW→REGION→FINANCE 三阶段；其余 REVIEW→FINANCE；FINANCE 通过则终审 */
   function approve(id: string, comment = '同意'): boolean {
     const t = tasks.value.find((x) => x.id === id)
     if (!t || t.status !== 'PENDING') return false
@@ -190,12 +190,24 @@ export const useApprovalStore = defineStore('approval', () => {
     const now = new Date().toISOString()
     t.history.push({ actor: auth.user.name, action: 'APPROVE', comment, at: now })
 
-    if (t.stage === 'REVIEW') {
-      // 一审通过：推进到财务复核阶段，并回写业务单状态（退款/转移 PENDING_REVIEW→PENDING_FINANCE）
+    const threeStage = t.signTier === 'L3' && (t.bizType === 'REFUND' || t.bizType === 'CARD_CANCEL')
+    if (t.stage === 'REVIEW' && threeStage) {
+      // L3 店长初审通过：推进区域经理复审，暂不回写业务单（保持 PENDING_REVIEW）
+      t.stage = 'REGION'
+      t.assignee = undefined
+      activity.log(auth.user.name, `${BIZ_LABEL[t.bizType]} ${t.bizNo} 店长初审通过，进入区域经理复审`, t.id)
+    } else if (t.stage === 'REVIEW') {
+      // L1/L2 一审通过：推进财务复核，并回写业务单状态（退款/转移 PENDING_REVIEW→PENDING_FINANCE）
       t.stage = 'FINANCE'
       t.assignee = undefined
       writeback(t, true, false)
       activity.log(auth.user.name, `${BIZ_LABEL[t.bizType]} ${t.bizNo} 一审通过，进入财务复核`, t.id)
+    } else if (t.stage === 'REGION') {
+      // 区域经理复审通过：回写业务单 PENDING_REVIEW→PENDING_FINANCE（第三签留痕），推进财务终审
+      t.stage = 'FINANCE'
+      t.assignee = undefined
+      writeback(t, true, false)
+      activity.log(auth.user.name, `${BIZ_LABEL[t.bizType]} ${t.bizNo} 区域经理复审通过，进入财务终审`, t.id)
     } else {
       // 财务终审通过：审批办结，回写业务单完成（确认退款/执行转移）
       t.status = 'APPROVED'

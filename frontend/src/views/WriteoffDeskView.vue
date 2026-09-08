@@ -118,6 +118,8 @@ const execCards = ref<WdCardOption[]>([])
 const execStaff = ref<Staff[]>([])
 const execStaffLoading = ref(false)
 const execStaffError = ref('')
+// 角色化候选查询失败时降级为本店全量（客户端按主角色兜底过滤；后端分级硬校验仍为权威）
+const execStaffDegraded = ref(false)
 const execSubmitting = ref(false)
 const execCardOptions = computed(() =>
   execCards.value.map((c) => ({
@@ -134,11 +136,16 @@ const execTier = computed<'L1' | 'L2' | 'L3'>(() => {
 })
 const reviewerOptions = computed(() => {
   const me = auth.user?.staffId || ''
-  const allowMgrOnly = execTier.value !== 'L1'
+  // B19：候选已由 /org/staff?roleCode= 按主角色+兼岗并集在后端过滤好，客户端不再按
+  // 主角色 roleCode 二次筛选（否则兼岗店长/兼岗医生会被漏掉）；L2/L3 候选仅店长，
+  // L1 候选为四类角色并集。降级（角色查询失败回退本店全量）时客户端按主角色兜底过滤。
+  const degraded = execStaffDegraded.value
   return execStaff.value
     .filter((s) => s.status === '在职')
     .filter((s) => s.staffId !== me)
-    .filter((s) => (allowMgrOnly ? s.roleCode === 'STORE_MGR' : L1_REVIEWER_ROLES.includes(s.roleCode)))
+    .filter((s) => (degraded
+      ? (execTier.value !== 'L1' ? s.roleCode === 'STORE_MGR' : L1_REVIEWER_ROLES.includes(s.roleCode))
+      : true))
     .map((s) => ({ value: s.staffId, label: `${s.staffId} ${s.staffName}` }))
 })
 const selectedReviewerName = computed(() => {
@@ -163,14 +170,37 @@ async function openExec() {
     const bound = execCards.value.find((c) => c.cardNo === selected.value?.cardNo)
     execForm.value.cardNo = bound ? bound.cardNo : (execCards.value[0]?.cardNo || '')
   }
-  // 复核人候选：本店在职员工（/org/staff 经 DataScope 注入，门店账号只见本店）
+  // 复核人候选（B19 角色化）：按分级角色调 /org/staff?roleCode=，后端按主角色+兼岗并集返回
+  // （DataScope 注入本店）。L1 覆盖医生/操作师/前台/店长四角色并行合并去重；L2/L3 仅店长，
+  // 已包含在四角色并集内。切换卡导致 tier 变化时无需重新拉取；失败降级本店全量。
   execStaffLoading.value = true
+  execStaffError.value = ''
+  execStaffDegraded.value = false
+  const storeCode = selected.value.storeCode || auth.user?.storeId || undefined
   try {
-    const res = await listStaff(selected.value.storeCode || auth.user?.storeId || undefined)
-    execStaff.value = res.data || []
+    const results = await Promise.allSettled(
+      ['STORE_MGR', 'DOCTOR', 'OPERATOR', 'FRONT_DESK'].map((roleCode) =>
+        listStaff({ storeCode, roleCode }).then((r) => r.data || [])),
+    )
+    const merged = new Map<string, Staff>()
+    results.forEach((r) => {
+      if (r.status === 'fulfilled') {
+        r.value.forEach((s) => merged.set(s.staffId, s))
+      }
+    })
+    if (merged.size === 0) throw new Error('所有角色候选查询均失败')
+    execStaff.value = [...merged.values()].sort((a, b) => a.staffId.localeCompare(b.staffId))
   } catch (e) {
-    console.error('[writeoff-desk] 复核人员工列表加载失败', e)
-    execStaffError.value = '员工列表加载失败，请稍后重试；后端复核人校验仍为权威闸门'
+    console.error('[writeoff-desk] 复核人角色候选加载失败，降级本店全量', e)
+    try {
+      const res = await listStaff(storeCode)
+      execStaff.value = res.data || []
+      execStaffDegraded.value = true
+      execStaffError.value = '角色候选加载失败，已降级为本店员工列表；后端复核人校验仍为权威闸门'
+    } catch (e2) {
+      console.error('[writeoff-desk] 复核人员工列表加载失败', e2)
+      execStaffError.value = '员工列表加载失败，请稍后重试；后端复核人校验仍为权威闸门'
+    }
   } finally {
     execStaffLoading.value = false
   }

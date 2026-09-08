@@ -98,11 +98,18 @@ public class TxnRefund {
     @Column(length = 32)
     private String sign2;
 
+    // B19：L3 大额退款三签（REVIEW 店长 → REGION 区域经理 → FINANCE 财务）
+    @Column(length = 32)
+    private String sign3;
+
     @Column(name = "signed_at1")
     private OffsetDateTime signedAt1;
 
     @Column(name = "signed_at2")
     private OffsetDateTime signedAt2;
+
+    @Column(name = "signed_at3")
+    private OffsetDateTime signedAt3;
 
     @Column(name = "created_at")
     private OffsetDateTime createdAt;

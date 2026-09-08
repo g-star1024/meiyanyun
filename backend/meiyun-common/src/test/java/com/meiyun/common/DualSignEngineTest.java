@@ -24,8 +24,17 @@ class DualSignEngineTest {
     }
 
     @Test
-    void refund_28k_is_l2() {
-        assertEquals(SignTier.L2, DualSignEngine.computeTier(BizType.REFUND, 2_800_000L));
+    void refund_28k_is_l3() {
+        // B19 阈值对齐：¥28,000（2,800,000 分）≥ ¥20,000 → L3（需第三签/区域经理复审）
+        assertEquals(SignTier.L3, DualSignEngine.computeTier(BizType.REFUND, 2_800_000L));
+        assertEquals(3, DualSignEngine.requiredSignCount(BizType.REFUND, 2_800_000L));
+    }
+
+    @Test
+    void refund_19k_is_l2() {
+        // ¥19,000（1,900,000 分）落在 L2 双签区间（¥5,000 ~ ¥19,999）
+        assertEquals(SignTier.L2, DualSignEngine.computeTier(BizType.REFUND, 1_900_000L));
+        assertEquals(2, DualSignEngine.requiredSignCount(BizType.REFUND, 1_900_000L));
     }
 
     @Test
@@ -36,7 +45,7 @@ class DualSignEngineTest {
 
     @Test
     void card_cancel_medical_104k_is_l3() {
-        // TK...005 ¥104,000（10,400,000 分）≥ ¥100,000 → L3
+        // TK...005 ¥104,000（10,400,000 分）≥ ¥20,000 → L3
         assertEquals(SignTier.L3, DualSignEngine.computeTier(BizType.CARD_CANCEL, 10_400_000L));
     }
 

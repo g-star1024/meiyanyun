@@ -37,7 +37,11 @@ public class ApprovalController {
         return approvalService.find(todoNo);
     }
 
-    /** 同意：REVIEW 一审通过推进财务；FINANCE 终审通过办结（回写退款/退卡状态机）。 */
+    /**
+     * 同意（B19 三阶段）：L3 退款/退卡 REVIEW 店长初审通过推进 REGION 区域经理复审（不回写业务单），
+     * REGION 复审通过回写业务单 PENDING_FINANCE 并推进 FINANCE（第三签留痕 sign3），
+     * FINANCE 终审通过办结（confirmRefund）；L2 两阶段 REVIEW 通过即推进 FINANCE；L1 直达 FINANCE。
+     */
     @PostMapping("/{todoNo}/approve")
     @RequirePerm({"refund:approve", "cardcancel:approve"})
     public ApprovalTodo approve(@PathVariable String todoNo,

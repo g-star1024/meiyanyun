@@ -23,10 +23,13 @@ import java.util.Map;
  * 统一审批中心服务（T3-01）：审批待办提交 / 同意 / 驳回 / 转交 / 加签，全链路留痕。
  * 退款（RF）/ 退卡（CC）创建时由 TxnService 同事务调 {@link #submitForTxn} 生成待办：
  * L1 直达 FINANCE（财务复核），L2/L3 起始于 REVIEW（店长/运营一审）。
- * 审批动作同事务回写 TxnService 状态机：
- * REVIEW 同意 → txn.approve（PENDING_REVIEW→PENDING_FINANCE）；
+ * 审批动作同事务回写 TxnService 状态机（B19 三阶段）：
+ * L3（≥¥20,000）REVIEW 店长初审同意 → 仅推进 REGION（不回写业务单）；
+ * REGION 区域经理复审同意 → txn.approve（PENDING_REVIEW→PENDING_FINANCE）并推进 FINANCE；
+ * L2 REVIEW 同意 → txn.approve 并推进 FINANCE；
  * FINANCE 同意 → txn.confirmRefund（PENDING_FINANCE→REFUNDED，终审）；
  * 任一阶段驳回 → txn.reject（→REJECTED，原因透传）。
+ * 阶段角色闸门：REVIEW 须 STORE_MGR、REGION 须 REGION_MGR、FINANCE 须 FINANCE（超管放行）。
  * 耗材领用（REQUISITION）/ 报损（LOSS_REPORT）为 B5 双签闭环业务（口径定案并入审批中心）：
  * 提交时明细 SKU 行存 payload（TEXT JSON），终审（FINANCE）通过同事务回调库存域扣库
  * （{@link StoreConsumableClient}，远程失败整事务回滚）并由 {@link FinanceEventPublisher}
@@ -84,6 +87,8 @@ public class ApprovalService {
         t.setApplicantRole("OPERATOR");
         t.setSignTier(tier);
         t.setStatus("PENDING");
+        // B19：L3 大额（≥¥20,000）退款/退卡三阶段——REVIEW 店长初审 → REGION 区域经理复审 → FINANCE 财务终审；
+        // L1 直达财务；L2 两阶段（店长 → 财务）。
         t.setStage("L1".equals(tier) ? "FINANCE" : "REVIEW");
         t.setPriority("L3".equals(tier) ? "HIGH" : "MEDIUM");
         OffsetDateTime now = OffsetDateTime.now();
@@ -269,7 +274,14 @@ public class ApprovalService {
     // ---------------- 审批动作 ----------------
 
     /**
-     * 同意：REVIEW 一审通过 → 推进 FINANCE 并回写业务单；FINANCE 终审通过 → 办结并回写业务单完成。
+     * 同意（B19 三阶段状态机）：
+     * <ul>
+     *   <li>退款/退卡 L3：REVIEW 店长初审 → REGION 区域经理复审（回写业务单 PENDING_REVIEW→PENDING_FINANCE）
+     *       → FINANCE 财务终审（confirmRefund 办结）；L2 无 REGION，REVIEW 通过即推进 FINANCE；L1 直达 FINANCE。</li>
+     *   <li>耗材领用/报损：两阶段不变，REVIEW → FINANCE，终审回调库存域扣库。</li>
+     *   <li>L3 的 REVIEW 一审通过不回写业务单（业务单保持 PENDING_REVIEW，区域复审通过才进入待财务）；
+     *       L2 的 REVIEW 一审通过即回写业务单 PENDING_REVIEW→PENDING_FINANCE 推进财务。</li>
+     * </ul>
      */
     @Transactional
     public ApprovalTodo approve(String todoNo, ActionCmd cmd) {
@@ -282,15 +294,24 @@ public class ApprovalService {
         String actor = currentActor();
         String comment = cmd.comment() == null || cmd.comment().isBlank() ? "同意" : cmd.comment();
         OffsetDateTime now = OffsetDateTime.now();
-        boolean finalStage = "FINANCE".equals(t.getStage());
+        String stage = t.getStage();
+        boolean finalStage = "FINANCE".equals(stage);
         appendHistory(t, actor, "APPROVE", comment, now);
 
         TxnService.ApprovalCmd writeback = new TxnService.ApprovalCmd(actor, comment);
         if ("REFUND".equals(t.getBizType()) || "CARD_CANCEL".equals(t.getBizType())) {
             if (finalStage) {
                 txnService.confirmRefund(t.getBizNo(), writeback);
-            } else {
+            } else if ("REGION".equals(stage)) {
+                // L3 区域经理复审通过：业务单 PENDING_REVIEW → PENDING_FINANCE，待办推进财务终审；第三签留痕
                 txnService.approve(t.getBizNo(), writeback);
+                txnService.markThirdSign(t.getBizNo(), actor);
+            } else {
+                // REVIEW 一审通过：L2 无区域复审，回写业务单 PENDING_REVIEW → PENDING_FINANCE 并推进财务；
+                // L3 的 REVIEW 通过不回写（业务单保持 PENDING_REVIEW，待区域复审通过才进入待财务）
+                if (!"L3".equals(t.getSignTier())) {
+                    txnService.approve(t.getBizNo(), writeback);
+                }
             }
         } else if (("REQUISITION".equals(t.getBizType()) || "LOSS_REPORT".equals(t.getBizType()))
                 && finalStage) {
@@ -300,14 +321,19 @@ public class ApprovalService {
 
         if (finalStage) {
             t.setStatus("APPROVED");
+        } else if ("REVIEW".equals(stage) && "L3".equals(t.getSignTier())
+                && ("REFUND".equals(t.getBizType()) || "CARD_CANCEL".equals(t.getBizType()))) {
+            // B19：L3 退款/退卡插入区域经理复审阶段
+            t.setStage("REGION");
+            t.setAssignee(null);
         } else {
             t.setStage("FINANCE");
             t.setAssignee(null);
         }
         repo.save(t);
         audit.record("APPROVAL", todoNo, actor, "APPROVE",
-                String.format("{\"bizType\":\"%s\",\"bizNo\":\"%s\",\"stage\":\"%s\",\"final\":%b,\"comment\":%s}",
-                        t.getBizType(), t.getBizNo(), finalStage ? "FINANCE" : "REVIEW", finalStage, jsonStr(comment)));
+                String.format("{\"bizType\":\"%s\",\"bizNo\":\"%s\",\"stage\":\"%s\",\"nextStage\":\"%s\",\"final\":%b,\"comment\":%s}",
+                        t.getBizType(), t.getBizNo(), stage, t.getStage(), finalStage, jsonStr(comment)));
         return t;
     }
 
@@ -439,8 +465,8 @@ public class ApprovalService {
     }
 
     /**
-     * 审批/驳回前置闸门：① 阶段角色——REVIEW 须店长（或超管），FINANCE 须财务（或超管）；
-     * ② 指派人——已明确指派时仅指派人/会签人/超管可操作，指派人为空则按角色路由放行。
+     * 审批/驳回前置闸门：① 阶段角色——REVIEW 须店长（或超管），REGION 须区域经理（或超管，B19 L3 复审），
+     * FINANCE 须财务（或超管）；② 指派人——已明确指派时仅指派人/会签人/超管可操作，指派人为空则按角色路由放行。
      */
     private void guardStageAssignee(ApprovalTodo t) {
         LoginUser u = DataScope.current();
@@ -452,6 +478,10 @@ public class ApprovalService {
             if ("FINANCE".equals(t.getStage())) {
                 if (!roles.contains("FINANCE")) {
                     throw new ResponseStatusException(HttpStatus.FORBIDDEN, "当前阶段需财务审批");
+                }
+            } else if ("REGION".equals(t.getStage())) {
+                if (!roles.contains("REGION_MGR")) {
+                    throw new ResponseStatusException(HttpStatus.FORBIDDEN, "当前阶段需区域经理审批");
                 }
             } else if ("REVIEW".equals(t.getStage())) {
                 if (!roles.contains("STORE_MGR")) {
