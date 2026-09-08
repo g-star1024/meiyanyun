@@ -586,6 +586,19 @@ ALTER TABLE mall_product DROP CONSTRAINT IF EXISTS mall_product_stock_check;
 ALTER TABLE mall_exchange DROP CONSTRAINT IF EXISTS mall_exchange_product_id_fkey;
 ALTER TABLE mall_exchange DROP CONSTRAINT IF EXISTS mall_exchange_customer_id_fkey;
 
+-- B23 卡2 积分账户：points_ledger 为早期 JPA 所建并经 pg_dump 克隆，补人工调分幂等键。
+--  1) 补 client_token（系统流水为 NULL，多个 NULL 不违反唯一约束，仅人工调分带键且唯一）；
+--  2) 删除历史物理外键 points_ledger_customer_id_fkey（约定业务表只建逻辑外键）；
+--  3) balance_after >= 0 的旧 CHECK 与「扣减后余额不得为负」业务规则一致，保留。
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='points_ledger' AND column_name='client_token') THEN
+    ALTER TABLE points_ledger ADD COLUMN client_token varchar(64);
+  END IF;
+END $$;
+ALTER TABLE points_ledger DROP CONSTRAINT IF EXISTS points_ledger_customer_id_fkey;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_points_ledger_client_token ON points_ledger(client_token) WHERE client_token IS NOT NULL;
+
 -- B16 售卡开卡：member_card / txn_order 新列幂等兜底。
 -- 正常路径：meiyun_core 由 customer/txn 服务 JPA ddl-auto=update 自动加列后 pg_dump 克隆，下列语句全部跳过；
 -- 仅当克隆源库结构落后于本批实体（新服务尚未在 core 库启动过）时补列，保证种子 INSERT/启动不缺列。

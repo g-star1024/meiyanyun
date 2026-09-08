@@ -26,6 +26,7 @@ import {
   listAllTags,
   listCustomerTagRels,
   rechargeCard,
+  changeCustomerPoints,
   listCardLedger,
   type CustomerDTO,
   type MemberCardDTO,
@@ -60,6 +61,7 @@ const notFound = ref(false)
 const customer = ref<CustomerDTO | null>(null)
 const cards = ref<MemberCardDTO[]>([])
 const ledgers = ref<PointsLedgerDTO[]>([])
+const ledgerTotal = ref(0)
 const tagNames = ref<string[]>([])
 const orders = ref<CustomerOrderView[]>([])
 const consults = ref<CustomerConsultView[]>([])
@@ -241,11 +243,57 @@ async function openLedger(c: MemberCardDTO) {
   }
 }
 
+// ---- B23 卡2 人工调分弹层（POST /customer/{id}/points；clientToken 打开弹层时生成，重提同键幂等） ----
+const adjustShow = ref(false)
+const adjusting = ref(false)
+const adjustAmt = ref('')
+const adjustReason = ref('')
+const adjustToken = ref('')
+
+const adjustAmtNum = computed(() => {
+  const n = Number(adjustAmt.value)
+  return /^[+-]?\d+$/.test(adjustAmt.value.trim()) && n !== 0 ? n : 0
+})
+const adjustAfter = computed(() => (customer.value?.points ?? 0) + adjustAmtNum.value)
+const canAdjust = computed(() => {
+  if (adjusting.value || adjustAmtNum.value === 0) return false
+  if (adjustReason.value.trim().length === 0 || adjustReason.value.trim().length > 64) return false
+  if (adjustAfter.value < 0) return false
+  return true
+})
+
+function openAdjust() {
+  adjustAmt.value = ''
+  adjustReason.value = ''
+  // 每次打开生成新幂等键：提交失败网络重试时同键重放不会重复加减分；成功关闭后下次打开换新键
+  adjustToken.value = (crypto as Crypto).randomUUID()
+  adjustShow.value = true
+}
+
+async function submitAdjust() {
+  if (!canAdjust.value) return
+  adjusting.value = true
+  try {
+    const res = await changeCustomerPoints(customerId.value, {
+      changeAmt: adjustAmtNum.value,
+      reason: adjustReason.value.trim(),
+      clientToken: adjustToken.value,
+    })
+    toast.success(`调分成功：${adjustAmtNum.value > 0 ? '+' : ''}${adjustAmtNum.value}，当前余额 ${res.data.balanceAfter.toLocaleString('zh-CN')}`)
+    adjustShow.value = false
+    await load()
+  } catch (e: any) {
+    toast.error('调分失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    adjusting.value = false
+  }
+}
+
 // 4 KPI（全部真实字段，无 LTV/沉睡天数等臆造指标）
 const kpis = computed(() => [
   { label: '累计消费', value: `¥${(customer.value?.totalSpend ?? 0).toLocaleString('zh-CN')}`, sub: `客户状态：${statusPill.value.text}`, tone: 'teal' as const, bg: 'var(--c-success-bg)' },
   { label: '到店频次', value: `${customer.value?.visitCount ?? 0} 次`, sub: `归属 ${ownerText.value}`, tone: 'orange' as const, bg: 'var(--c-draft-bg)' },
-  { label: '积分余额', value: `${(customer.value?.points ?? 0).toLocaleString('zh-CN')}`, sub: `${ledgers.value.length} 笔积分流水`, tone: 'brand' as const, bg: 'var(--c-info-bg)' },
+  { label: '积分余额', value: `${(customer.value?.points ?? 0).toLocaleString('zh-CN')}`, sub: `${ledgerTotal.value} 笔积分流水`, tone: 'brand' as const, bg: 'var(--c-info-bg)' },
   { label: '卡余额', value: fmtMoneyYuan(cardBalanceTotal.value), sub: `${cards.value.length} 张会员卡`, tone: 'warning' as const, bg: 'var(--c-warning-bg)' },
 ])
 
@@ -279,7 +327,8 @@ async function load() {
     ])
     customer.value = custRes.data
     cards.value = cardRes.data ?? []
-    ledgers.value = (ledgerRes.data ?? []).slice().sort((a, b) => b.ledgerId - a.ledgerId)
+    ledgers.value = ledgerRes.data.content ?? []
+    ledgerTotal.value = ledgerRes.data.totalElements ?? ledgers.value.length
     // tagId（关联）→ tagName（全量字典）join
     const nameById = new Map(tagAllRes.data.map((t) => [t.tagId, t.tagName]))
     tagNames.value = (tagRelRes.data ?? []).map((r) => nameById.get(r.tagId)).filter((x): x is string => !!x)
@@ -518,7 +567,10 @@ const compliance = [
               </div>
             </div>
 
-            <div class="cp__sub-title">积分流水（{{ ledgers.length }}）</div>
+            <div class="cp__sub-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm);">
+              <span>积分流水（{{ ledgerTotal || ledgers.length }}）</span>
+              <CButton variant="primary" size="sm" v-perm.disable="'points:edit'" @click="openAdjust">调整积分</CButton>
+            </div>
             <div v-if="!ledgers.length" class="cp__empty">暂无积分流水</div>
             <div v-for="l in ledgers" :key="l.ledgerId" class="ledger-row">
               <span class="ledger-row__reason">{{ l.reason }}</span>
@@ -697,6 +749,40 @@ const compliance = [
         </div>
         <template #footer>
           <CButton variant="ghost" @click="ledgerShow = false">关闭</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- B23 卡2 人工调分弹层（POST /customer/{id}/points；正负整数、原因必填、幂等防重放；全程审计 POINTS/MANUAL_ADJUST） -->
+    <div v-if="adjustShow" class="modal-mask" @click.self="adjustShow = false">
+      <CCard class="modal" title="人工调整积分" padding="lg">
+        <div class="form">
+          <div class="form__row">
+            <label class="form__label">客户</label>
+            <div class="recharge-cardno">{{ customer?.customerId }} · {{ customer?.name }}</div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">积分变动</label>
+            <CInput v-model="adjustAmt" placeholder="正整数加分如 100，负数扣分如 -50" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">调分原因</label>
+            <CInput v-model="adjustReason" placeholder="必填，不超过 64 字" maxlength="64" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">余额预览</label>
+            <div :style="{ color: adjustAfter < 0 ? 'var(--c-danger-fg)' : 'var(--c-text-2)', fontSize: 'var(--t-base)' }">
+              当前余额 {{ (customer?.points ?? 0).toLocaleString('zh-CN') }}
+              → 调整后 {{ adjustAfter.toLocaleString('zh-CN') }}
+              <span v-if="adjustAfter < 0" style="margin-left: var(--s-sm);">调整后积分不能为负</span>
+            </div>
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="adjustShow = false">取消</CButton>
+          <CButton variant="primary" :disabled="!canAdjust" @click="submitAdjust">
+            {{ adjusting ? '提交中…' : `确认调分${adjustAmtNum !== 0 ? ' ' + (adjustAmtNum > 0 ? '+' : '') + adjustAmtNum.toLocaleString('zh-CN') : ''}` }}
+          </CButton>
         </template>
       </CCard>
     </div>

@@ -166,28 +166,57 @@ public class CustomerService {
     /**
      * 积分变更（append-only）：只插入流水台账，不改历史；
      * 同步更新 customer.points 终值与 points_pool 月度累计。
+     * 系统流水（兑换扣分等）无幂等键，走此入口。
      */
     @Transactional
     public PointsLedger changePoints(String customerId, long changeAmt, String reason) {
+        return adjustPoints(customerId, changeAmt, reason, null).ledger();
+    }
+
+    /**
+     * 人工调分（写接口四件套）：
+     * - 校验：changeAmt 非 0、reason 必填（≤64 字）、扣减后余额不得为负（422，业务不可处理）；
+     * - 幂等：clientToken 非空时同键重放直接返回既有流水（created=false），不重复加减分、不重复落审计；
+     * - 审计：由 Controller 仅在 created=true 时落 POINTS/MANUAL_ADJUST；
+     * - 中文错误：全部中文文案。
+     * synchronized 与 clientToken 唯一约束双保险防并发重复提交。
+     */
+    @Transactional
+    public synchronized AdjustResult adjustPoints(String customerId, Long changeAmtBoxed, String reason, String clientToken) {
+        if (changeAmtBoxed == null) throw new BadReq("调分金额不能为空");
+        long changeAmt = changeAmtBoxed;
+        if (changeAmt == 0) throw new BadReq("调分金额不能为 0");
+        String r = reason == null ? "" : reason.trim();
+        if (r.isEmpty()) throw new BadReq("调分原因不能为空");
+        if (r.length() > 64) throw new BadReq("调分原因不能超过 64 字");
+        String token = clientToken == null || clientToken.isBlank() ? null : clientToken.trim();
+        if (token != null) {
+            PointsLedger exist = ledgerRepo.findByClientToken(token).orElse(null);
+            if (exist != null) return new AdjustResult(exist, false);
+        }
         Customer c = customerRepo.findById(customerId)
                 .orElseThrow(() -> new NotFound("客户不存在: " + customerId));
         long after = c.getPoints() + changeAmt;
         if (after < 0) {
-            throw new BadReq("积分不足：当前 " + c.getPoints() + "，变更 " + changeAmt);
+            throw new Unprocessable("积分不足：当前 " + c.getPoints() + "，变更 " + changeAmt);
         }
         c.setPoints(after);
         customerRepo.save(c);
 
-        // 同步聚合池：获得计入 gained_month，兑换（负）计入 redeemed_month
+        // 同步聚合池：获得计入 gained_month，兑换/扣减（负）计入 redeemed_month（新建池各列置 0 防空指针）。
         PointsPool pool = pointsPoolRepo.findById(1).orElseGet(() -> {
             PointsPool p = new PointsPool();
             p.setPoolId(1);
+            p.setTotalIssued(0L);
+            p.setGainedMonth(0L);
+            p.setRedeemedMonth(0L);
+            p.setExpiring90d(0L);
             return p;
         });
         if (changeAmt > 0) {
-            pool.setGainedMonth(pool.getGainedMonth() + changeAmt);
+            pool.setGainedMonth(ns(pool.getGainedMonth()) + changeAmt);
         } else {
-            pool.setRedeemedMonth(pool.getRedeemedMonth() + Math.abs(changeAmt));
+            pool.setRedeemedMonth(ns(pool.getRedeemedMonth()) + Math.abs(changeAmt));
         }
         pointsPoolRepo.save(pool);
 
@@ -195,9 +224,13 @@ public class CustomerService {
         log.setCustomerId(customerId);
         log.setChangeAmt(changeAmt);
         log.setBalanceAfter(after);
-        log.setReason(reason);
-        return ledgerRepo.save(log);
+        log.setReason(r);
+        log.setClientToken(token);
+        return new AdjustResult(ledgerRepo.save(log), true);
     }
+
+    /** 调分结果：ledger 为流水（新建或重放的既有流水），created=false 表示幂等重放。 */
+    public record AdjustResult(PointsLedger ledger, boolean created) {}
 
     /**
      * 新建客户（写接口四件套：校验 / 防重 / 审计 / 中文错误）。
@@ -268,6 +301,11 @@ public class CustomerService {
 
     private static String trim(String s) {
         return s == null ? "" : s.trim();
+    }
+
+    /** Long 空值安全转 0（聚合池历史行可能为 null）。 */
+    private static long ns(Long v) {
+        return v == null ? 0L : v;
     }
 
     /** 业务异常 → HTTP 状态码映射（由 GlobalExceptionHandler 处理）。 */

@@ -366,15 +366,10 @@ public class MallController {
         p.setRedeemedCount((p.getRedeemedCount() == null ? 0 : p.getRedeemedCount()) + e.getQty());
         productRepo.save(p);
 
-        // 扣减客户积分（append-only，积分不足抛 Unprocessable 422）。
+        // 扣减客户积分（append-only，积分不足 service 直接抛 Unprocessable 422）。
         Customer c = customerRepo.findById(e.getCustomerId()).orElse(null);
-        try {
-            customerService.changePoints(e.getCustomerId(), -e.getPointsSpent(),
-                    "积分商城兑换：" + p.getProductName());
-        } catch (CustomerService.BadReq ex) {
-            // 积分不足 → 422 业务不可处理（区别于参数错误 400）。
-            throw new CustomerService.Unprocessable(ex.getMessage());
-        }
+        customerService.changePoints(e.getCustomerId(), -e.getPointsSpent(),
+                "积分商城兑换：" + p.getProductName());
 
         e.setStatus("已通过");
         MallExchange saved = exchangeRepo.save(e);

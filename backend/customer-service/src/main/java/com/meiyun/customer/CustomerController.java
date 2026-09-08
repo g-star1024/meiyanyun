@@ -104,26 +104,42 @@ public class CustomerController {
         return service.listCards(id, activeOnly);
     }
 
-    // ---- 积分：台账 + 池 + 变更 ----
+    // ---- 积分：台账（分页倒序） + 池 DTO + 人工调分（幂等 + 审计） ----
     @GetMapping("/{id}/points")
     @RequirePerm("points:view")
-    public List<PointsLedger> pointsLog(@PathVariable String id) {
+    public Page<PointsLedger> pointsLog(@PathVariable String id,
+                                        @PageableDefault(size = 50) Pageable pageable) {
         requireReadable(id);
-        return ledgerRepo.findByCustomerIdOrderByLedgerIdAsc(id);
+        return ledgerRepo.findByCustomerIdOrderByLedgerIdDesc(id, pageable);
     }
 
     @PostMapping("/{id}/points")
     @RequirePerm("points:edit")
     public PointsLedger changePoints(@PathVariable String id, @RequestBody PointsChangeReq req) {
         requireReadable(id);
-        return service.changePoints(id, req.changeAmt(), req.reason());
+        CustomerService.AdjustResult result = service.adjustPoints(id, req.changeAmt(), req.reason(), req.clientToken());
+        PointsLedger saved = result.ledger();
+        if (result.created()) {
+            audit.record("POINTS", String.valueOf(saved.getLedgerId()), DataScope.currentActor(),
+                    "MANUAL_ADJUST", "{\"customerId\":\"" + esc(id)
+                            + "\",\"changeAmt\":" + saved.getChangeAmt()
+                            + ",\"balanceAfter\":" + saved.getBalanceAfter()
+                            + ",\"reason\":\"" + esc(saved.getReason()) + "\"}");
+        }
+        return saved;
     }
 
+    /** 积分池读模型：只暴露四个统计口径，不直接序列化实体。 */
     @GetMapping("/points-pool")
     @RequirePerm({"points:view", "customer:view"})
-    public PointsPool pointsPool() {
-        return poolRepo.findById(1)
+    public PointsPoolDTO pointsPool() {
+        PointsPool p = poolRepo.findById(1)
                 .orElseThrow(() -> new CustomerService.NotFound("积分池未初始化"));
+        return new PointsPoolDTO(
+                p.getTotalIssued() == null ? 0L : p.getTotalIssued(),
+                p.getGainedMonth() == null ? 0L : p.getGainedMonth(),
+                p.getRedeemedMonth() == null ? 0L : p.getRedeemedMonth(),
+                p.getExpiring90d() == null ? 0L : p.getExpiring90d());
     }
 
     // ---- 标签 ----
@@ -219,5 +235,9 @@ public class CustomerController {
         return m;
     }
 
-    public record PointsChangeReq(Long changeAmt, String reason) {}
+    /** 人工调分请求：clientToken 为客户端生成的幂等键（同键重放返回既有流水，不重复加减分）。 */
+    public record PointsChangeReq(Long changeAmt, String reason, String clientToken) {}
+
+    /** 积分池读模型：累计发放 / 本月获得 / 本月核销 / 90 天内到期。 */
+    public record PointsPoolDTO(long totalIssued, long gainedMonth, long redeemedMonth, long expiring90d) {}
 }

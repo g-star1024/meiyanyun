@@ -32,6 +32,13 @@ public class PointsLedger {
     @Column(nullable = false, length = 64)
     private String reason;
 
+    /**
+     * 人工调分幂等键（客户端生成，唯一）：网络重试重放同键直接返回既有流水，不重复加减分。
+     * 兑换扣分等系统流水不带键（null，不参与唯一约束）。
+     */
+    @Column(name = "client_token", length = 64)
+    private String clientToken;
+
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 

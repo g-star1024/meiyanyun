@@ -17,7 +17,7 @@ import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { errMsg } from './m5Coupon'
 import {
-  listMallProducts, listMallExchanges, getMallRule,
+  listMallProducts, listMallExchanges, getMallRule, getPointsPool,
   createMallProduct, editMallProduct, toggleMallProduct, adjustMallProduct,
   saveMallRule, reviewMallExchange, fulfillMallExchange,
   type MallProductDTO, type MallExchangeDTO, type PointRuleDTO,
@@ -221,16 +221,19 @@ export const usePointsStore = defineStore('points', () => {
 
   // ==================== B 端：真实 API（/customer/mall/*） ====================
 
-  /** B 端加载：商品 + 兑换单 + 积分规则并行拉取（兑换单后端已注入客户名/商品名） */
+  /** B 端加载：商品 + 兑换单 + 积分规则 + 积分池统计并行拉取（兑换单后端已注入客户名/商品名） */
   async function load() {
-    const [pRes, eRes, rRes] = await Promise.all([
+    const [pRes, eRes, rRes, poolRes] = await Promise.all([
       listMallProducts(),
       listMallExchanges(),
       getMallRule(),
+      getPointsPool(),
     ])
     products.value = (pRes.data || []).map(mapProduct)
     redemptions.value = (eRes.data || []).map(mapExchange)
     if (rRes.data) rule.value = mapRule(rRes.data)
+    // 积分池读模型：累计发放（B23 卡2 起接真实统计，替换写死演示值）
+    if (poolRes.data) totalPool.value = poolRes.data.totalIssued
   }
 
   /** 新建商品（后端发单号 MP+日期-序号；stock=0 待上架，>0/-1 直接上架） */

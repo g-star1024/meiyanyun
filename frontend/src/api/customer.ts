@@ -53,9 +53,25 @@ export interface MemberLevel {
   discount: number
 }
 
+/** 积分池读模型（GET /customer/points-pool 四口径统计） */
 export interface PointsPool {
-  totalPoints: number
-  expiringSoon: number
+  /** 累计发放 */
+  totalIssued: number
+  /** 本月获得 */
+  gainedMonth: number
+  /** 本月核销 */
+  redeemedMonth: number
+  /** 90 天内到期 */
+  expiring90d: number
+}
+
+/** Spring Data Page 序列化结构（积分流水倒序分页） */
+export interface PointsLedgerPage {
+  content: PointsLedgerDTO[]
+  totalElements: number
+  totalPages: number
+  number: number
+  size: number
 }
 
 /** 积分流水（GET /customer/{id}/points 真实字段；余额单位「积分」） */
@@ -170,9 +186,15 @@ export const listMemberLevels = () =>
 export const getPointsPool = () =>
   client.get<PointsPool>('/customer/points-pool')
 
-/** 客户积分流水（单位「积分」） */
-export const listPointsLog = (id: string) =>
-  client.get<PointsLedgerDTO[]>(`/customer/${id}/points`)
+/** 客户积分流水（账龄倒序分页，单位「积分」） */
+export const listPointsLog = (id: string, params?: { page?: number; size?: number }) =>
+  client.get<PointsLedgerPage>(`/customer/${id}/points`, { params: { size: 50, ...params } })
+
+/** 人工调分（changeAmt 正=加分/负=扣分；reason 必填；clientToken 幂等键，同键重放不重复加减分） */
+export const changeCustomerPoints = (
+  id: string,
+  data: { changeAmt: number; reason: string; clientToken: string },
+) => client.post<PointsLedgerDTO>(`/customer/${id}/points`, data)
 
 /** 客户会员卡（balance 单位「分」） */
 export const listCustomerCards = (id: string) =>

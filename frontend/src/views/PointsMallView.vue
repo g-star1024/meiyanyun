@@ -48,7 +48,7 @@ const tab = ref<Tab>('PRODUCTS')
 const kpis = computed(() => [
   { label: '在售商品', icon: 'package', value: String(store.onSaleCount), tone: 'text' as const, sub: `共 ${store.products.length} 件` },
   { label: '本月兑换', icon: 'mall', value: `${(store.monthRedeemed / 10000).toFixed(1)} 万`, tone: 'brand' as const, sub: `${store.redemptions.length} 笔` },
-  { label: '积分池余额', icon: 'mall', value: `${(store.totalPool / 10000).toFixed(1)} 万`, tone: 'teal' as const, sub: '分' },
+  { label: '累计发放积分', icon: 'mall', value: `${(store.totalPool / 10000).toFixed(1)} 万`, tone: 'teal' as const, sub: '分' },
   { label: '待审核兑换', icon: 'mall', value: String(store.pendingCount), tone: 'danger' as const, sub: '需 24h 内处理' },
 ])
 
