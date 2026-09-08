@@ -12,7 +12,10 @@ import CIcon from '@/components/CIcon.vue'
 
 const router = useRouter()
 const nt = useNotificationStore()
-onMounted(() => void nt.fetch())
+onMounted(() => {
+  void nt.fetch()
+  void nt.fetchPreferences()
+})
 
 const categories: { key: NotifyCategory | 'ALL'; label: string; icon: string }[] = [
   { key: 'ALL', label: '全部通知', icon: 'bell' },

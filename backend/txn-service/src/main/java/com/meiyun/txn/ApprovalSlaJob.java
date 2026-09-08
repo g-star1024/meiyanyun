@@ -37,6 +37,7 @@ public class ApprovalSlaJob {
     private final ApprovalTodoRepository todoRepo;
     private final NotificationRepository notificationRepo;
     private final OrgStaffClient orgStaffClient;
+    private final NotifyPreferenceRepository preferenceRepo;
 
     /** REVIEW 店长/运营一审 SLA（小时），与 ApprovalService 配置同键同默认。 */
     @org.springframework.beans.factory.annotation.Value("${meiyun.approval.sla.review-hours:24}")
@@ -50,10 +51,11 @@ public class ApprovalSlaJob {
     private long remindIntervalMinutes;
 
     public ApprovalSlaJob(ApprovalTodoRepository todoRepo, NotificationRepository notificationRepo,
-                          OrgStaffClient orgStaffClient) {
+                          OrgStaffClient orgStaffClient, NotifyPreferenceRepository preferenceRepo) {
         this.todoRepo = todoRepo;
         this.notificationRepo = notificationRepo;
         this.orgStaffClient = orgStaffClient;
+        this.preferenceRepo = preferenceRepo;
     }
 
     @Scheduled(fixedDelay = 60_000L, initialDelay = 20_000L)
@@ -114,7 +116,14 @@ public class ApprovalSlaJob {
         String content = String.format("单号 %s（业务单 %s）%s%s已超过 %s 审批时限，请尽快处理。",
                 t.getTodoNo(), t.getBizNo(), stageLabel, amount, stageLabel);
         int n = 0;
+        int muted = 0;
         for (String staffId : recipients) {
+            // B21 通知偏好：收件人显式关闭 APPROVAL 类别订阅则免打扰（不落 INBOX；无偏好行=默认订阅）
+            if (preferenceRepo.findByStaffIdAndCategory(staffId, "APPROVAL")
+                    .filter(p -> !p.isEnabled()).isPresent()) {
+                muted++;
+                continue;
+            }
             String idemKey = "SLA:" + t.getTodoNo() + ":" + staffId + ":" + round;
             if (notificationRepo.existsByIdemKey(idemKey)) continue;
             Notification note = new Notification();
@@ -130,6 +139,10 @@ public class ApprovalSlaJob {
             note.setCreatedAt(now);
             notificationRepo.save(note);
             n++;
+        }
+        if (muted > 0) {
+            log.info("审批 SLA 催办按偏好免打扰 todoNo={} 第{}轮 跳过{}人（已关闭审批类通知订阅）",
+                    t.getTodoNo(), round, muted);
         }
         return n;
     }

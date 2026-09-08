@@ -1,15 +1,16 @@
 // ============================================================
-// Notification 消息通知 store（T3-03 + G-02 统一触达中心，B20 接真实 API）
+// Notification 消息通知 store（T3-03 + G-02 统一触达中心，B20 接真实 API，B21 偏好持久化）
 // 数据源：txn-service /txn/notifications（登录人按工号隔离）。
 // 当前生产源：审批 SLA 超时催办（ApprovalSlaJob：category=APPROVAL/level=URGENT）。
-// 已读/全部已读为服务端持久化；通知偏好（类别开关/渠道）暂为本地 UI 状态，
-// 后端偏好持久化属 Backlog（见 docs/DEVELOPMENT-ROADMAP.md）。
+// 已读/全部已读/通知偏好（类别开关/渠道）均为服务端持久化（B21 起 notify_preference 表）；
+// SLA 催办落库前按 APPROVAL 类别偏好过滤（关闭订阅则免打扰）。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
   listNotifications, markNotificationRead, markAllNotificationsRead,
-  type NotificationDTO,
+  getNotificationPreferences, updateNotificationPreference,
+  type NotificationDTO, type NotifyPreferenceDTO,
 } from '@/api/notification'
 
 export type NotifyCategory = 'APPROVAL' | 'CUSTOMER' | 'INVENTORY' | 'MARKETING' | 'SYSTEM'
@@ -68,12 +69,12 @@ export const useNotificationStore = defineStore('notification', () => {
   const items = ref<AppNotification[]>([])
   const activeCategory = ref<NotifyCategory | 'ALL'>('ALL')
   const readFilter = ref<'ALL' | 'UNREAD'>('UNREAD')
-  // 偏好暂为本地默认态（后端持久化属 Backlog）
+  // 偏好：本地默认态兜底，onMounted 调 fetchPreferences 拉取服务端持久化结果覆盖（B21）
   const preferences = ref<NotifyPreference[]>(
     CATEGORIES.map((c) => ({
       category: c,
       enabled: true,
-      channels: c === 'SYSTEM' ? ['INBOX', 'SMS'] : ['INBOX'],
+      channels: c === 'SYSTEM' ? ['INBOX', 'SMS'] : (['INBOX'] as NotifyChannel[]),
     })),
   )
 
@@ -137,23 +138,74 @@ export const useNotificationStore = defineStore('notification', () => {
     }
   }
 
-  function togglePreference(category: NotifyCategory, enabled: boolean) {
-    const p = preferences.value.find((x) => x.category === category)
-    if (p) p.enabled = enabled
+  const VALID_CHANNELS: NotifyChannel[] = ['INBOX', 'SMS', 'WECHAT', 'EMAIL']
+
+  function adaptPreference(d: NotifyPreferenceDTO): NotifyPreference {
+    const category = CATEGORIES.includes(d.category as NotifyCategory)
+      ? (d.category as NotifyCategory) : 'SYSTEM'
+    const channels = (d.channels || [])
+      .map((c) => c as NotifyChannel)
+      .filter((c) => VALID_CHANNELS.includes(c))
+    return { category, enabled: !!d.enabled, channels }
   }
 
-  function toggleChannel(category: NotifyCategory, channel: NotifyChannel) {
+  /** 拉取服务端持久化偏好（失败静默保留本地默认态——偏好为旁路能力，不阻断页面） */
+  async function fetchPreferences() {
+    try {
+      const res = await getNotificationPreferences()
+      const rows = (res.data.items || []).map(adaptPreference)
+      preferences.value = CATEGORIES.map(
+        (c) => rows.find((r) => r.category === c) || {
+          category: c, enabled: true,
+          channels: c === 'SYSTEM' ? ['INBOX', 'SMS'] : (['INBOX'] as NotifyChannel[]),
+        },
+      )
+    } catch (e) {
+      console.error('[notification] 通知偏好加载失败', e)
+    }
+  }
+
+  /** 类别订阅开关：乐观更新 + 服务端持久化（失败回滚）；关闭订阅时渠道清空由后端归一 */
+  async function togglePreference(category: NotifyCategory, enabled: boolean) {
+    const p = preferences.value.find((x) => x.category === category)
+    if (!p || p.enabled === enabled) return
+    const snapshot = { enabled: p.enabled, channels: [...p.channels] }
+    p.enabled = enabled
+    const channels = enabled ? (snapshot.channels.length ? snapshot.channels : ['INBOX'] as NotifyChannel[]) : []
+    try {
+      const res = await updateNotificationPreference({ category, enabled, channels })
+      preferences.value = (res.data.items || []).map(adaptPreference)
+    } catch (e) {
+      p.enabled = snapshot.enabled
+      p.channels = snapshot.channels
+      console.error('[notification] 偏好订阅开关保存失败', e)
+    }
+  }
+
+  /** 渠道勾选：乐观更新 + 服务端持久化（失败回滚）；后端约束订阅开启须含 INBOX */
+  async function toggleChannel(category: NotifyCategory, channel: NotifyChannel) {
     const p = preferences.value.find((x) => x.category === category)
     if (!p) return
+    const snapshot = { enabled: p.enabled, channels: [...p.channels] }
     const idx = p.channels.indexOf(channel)
     if (idx >= 0) p.channels.splice(idx, 1)
     else p.channels.push(channel)
+    try {
+      const res = await updateNotificationPreference({
+        category, enabled: p.enabled, channels: [...p.channels],
+      })
+      preferences.value = (res.data.items || []).map(adaptPreference)
+    } catch (e) {
+      p.enabled = snapshot.enabled
+      p.channels = snapshot.channels
+      console.error('[notification] 偏好渠道保存失败', e)
+    }
   }
 
   return {
     items, activeCategory, readFilter, preferences,
     unreadCount, unreadByCategory, filtered,
     categoryLabel, CATEGORY_LABEL,
-    fetch, markRead, markAllRead, togglePreference, toggleChannel,
+    fetch, fetchPreferences, markRead, markAllRead, togglePreference, toggleChannel,
   }
 })

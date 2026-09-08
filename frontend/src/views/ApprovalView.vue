@@ -166,12 +166,13 @@ function isOverdue(t: ApprovalTask): boolean {
   if (t.overdue) return true
   return !!t.dueAt && new Date(t.dueAt).getTime() < Date.now()
 }
-/** 当前用户可处理的待办：当前阶段角色闸门（镜像后端 guardStageAssignee）+ 指派/加签人按工号匹配 */
+/** 当前用户可处理的待办：当前阶段角色闸门（镜像后端 guardStageAssignee）+ 指派/会签人按工号匹配
+ *  （B21：assignee 非我但 coSigners 含我时仍放行——会签人同样可处理，与后端 list todo 过滤同口径） */
 const myTodo = computed(() => {
   const me = auth.user.staffId
   return todo.value.filter((t) => {
     if (!canActStage(t)) return false
-    if (t.assignee && t.assignee !== me) return false
+    if (t.assignee && t.assignee !== me && !(t.coSigners || []).includes(me)) return false
     return true
   })
 })
@@ -468,6 +469,15 @@ function stageHint(t: ApprovalTask): string {
               <span><CIcon name="clock" :size="12" /> {{ fmtDate(selected.submittedAt) }}</span>
               <span v-if="selected.dueAt" :class="{ 'det__sla-over': isOverdue(selected) }">
                 <CIcon name="alert" :size="12" /> {{ isOverdue(selected) ? '已超过处理时限' : '处理截止' }} {{ fmtDate(selected.dueAt) }}
+              </span>
+              <span v-if="selected.assignee">
+                <CIcon name="handover" :size="12" /> 当前指派人 {{ nameOf(selected.assignee) }}
+              </span>
+              <span v-else>
+                <CIcon name="handover" :size="12" /> 按角色路由（{{ STAGE_ROLE_LABEL[selected.stage] }}）
+              </span>
+              <span v-if="(selected.coSigners || []).length">
+                <CIcon name="user-check" :size="12" /> 会签人 {{ selected.coSigners.map(nameOf).join('、') }}
               </span>
             </div>
           </div>

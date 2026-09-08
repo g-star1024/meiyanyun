@@ -49,6 +49,7 @@ public class ApprovalService {
     private final StoreConsumableClient storeConsumableClient;
     private final FinanceEventPublisher financeEventPublisher;
     private final ApptRefNameResolver nameResolver;
+    private final OrgStaffClient orgStaffClient;
 
     /**
      * B20 SLA 各阶段审批时长（小时，可配置 meiyun.approval.sla.*）：
@@ -65,13 +66,15 @@ public class ApprovalService {
     public ApprovalService(ApprovalTodoRepository repo, @Lazy TxnService txnService, AuditRecorder audit,
                            StoreConsumableClient storeConsumableClient,
                            FinanceEventPublisher financeEventPublisher,
-                           ApptRefNameResolver nameResolver) {
+                           ApptRefNameResolver nameResolver,
+                           OrgStaffClient orgStaffClient) {
         this.repo = repo;
         this.txnService = txnService;
         this.audit = audit;
         this.storeConsumableClient = storeConsumableClient;
         this.financeEventPublisher = financeEventPublisher;
         this.nameResolver = nameResolver;
+        this.orgStaffClient = orgStaffClient;
     }
 
     // ---------------- 提交待办（退款/退卡创建同事务联动） ----------------
@@ -404,7 +407,11 @@ public class ApprovalService {
         return t;
     }
 
-    /** 转交：仅改指派人并留痕，不推进状态机。 */
+    /**
+     * 转交：仅改指派人并留痕，不推进状态机。
+     * B21 加固：操作人须过阶段角色/指派人闸门（与审批/驳回同口径，非指派人无权改派）；
+     * 目标审批人硬校验——真实在职且具备当前阶段审批角色，不可转交给自己（中文 400）。
+     */
     @Transactional
     public ApprovalTodo transfer(String todoNo, TransferCmd cmd) {
         if (cmd.to() == null || cmd.to().isBlank()) {
@@ -415,18 +422,29 @@ public class ApprovalService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "待办状态「" + t.getStatus() + "」不可转交（仅待处理待办可操作）");
         }
+        guardStageAssignee(t);
         String actor = currentActor();
-        t.setAssignee(cmd.to().trim());
-        String comment = "转交给 " + cmd.to().trim() + (cmd.comment() == null || cmd.comment().isBlank() ? "" : "：" + cmd.comment());
+        String to = cmd.to().trim();
+        if (to.equals(actor)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "转交目标不能是操作人自己（工号 " + to + "）");
+        }
+        OrgStaffClient.StaffProfile target = guardTargetApprover(t, to);
+        t.setAssignee(to);
+        String whoLabel = target.staffName().isBlank() ? to : target.staffName() + "（" + to + "）";
+        String comment = "转交给 " + whoLabel + (cmd.comment() == null || cmd.comment().isBlank() ? "" : "：" + cmd.comment());
         appendHistory(t, actor, "TRANSFER", comment, OffsetDateTime.now());
         repo.save(t);
         audit.record("APPROVAL", todoNo, actor, "TRANSFER",
-                String.format("{\"bizNo\":\"%s\",\"to\":%s,\"comment\":%s}",
-                        t.getBizNo(), jsonStr(cmd.to().trim()), jsonStr(cmd.comment())));
+                String.format("{\"bizNo\":\"%s\",\"to\":%s,\"toName\":%s,\"comment\":%s}",
+                        t.getBizNo(), jsonStr(to), jsonStr(target.staffName()), jsonStr(cmd.comment())));
         return t;
     }
 
-    /** 加签：追加会签人（去重），不改变当前审批人与阶段。 */
+    /**
+     * 加签：追加会签人，不改变当前审批人与阶段。
+     * B21 加固：操作人须过阶段角色/指派人闸门（防止权限持有人对指派他人的待办自行加签抢占）；
+     * 会签目标人硬校验同转交（真实在职 + 当前阶段审批角色）；重复会签 / 会签给指派人给明确 400。
+     */
     @Transactional
     public ApprovalTodo addSigner(String todoNo, AddSignerCmd cmd) {
         if (cmd.who() == null || cmd.who().isBlank()) {
@@ -437,18 +455,25 @@ public class ApprovalService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "待办状态「" + t.getStatus() + "」不可加签（仅待处理待办可操作）");
         }
+        guardStageAssignee(t);
         String actor = currentActor();
         String who = cmd.who().trim();
         List<String> signers = coSignerList(t.getCoSigners());
-        if (!signers.contains(who)) {
-            signers.add(who);
-            t.setCoSigners(String.join(",", signers));
+        if (signers.contains(who)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "工号 " + who + " 已在会签人列表中，请勿重复加签");
         }
-        appendHistory(t, actor, "ADD_SIGN", "加签 " + who, OffsetDateTime.now());
+        if (who.equals(t.getAssignee())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "工号 " + who + " 已是当前指派人，无需再加签");
+        }
+        OrgStaffClient.StaffProfile target = guardTargetApprover(t, who);
+        signers.add(who);
+        t.setCoSigners(String.join(",", signers));
+        String whoLabel = target.staffName().isBlank() ? who : target.staffName() + "（" + who + "）";
+        appendHistory(t, actor, "ADD_SIGN", "加签 " + whoLabel, OffsetDateTime.now());
         repo.save(t);
         audit.record("APPROVAL", todoNo, actor, "ADD_SIGN",
-                String.format("{\"bizNo\":\"%s\",\"who\":%s,\"coSigners\":%s}",
-                        t.getBizNo(), jsonStr(who), jsonStr(t.getCoSigners())));
+                String.format("{\"bizNo\":\"%s\",\"who\":%s,\"whoName\":%s,\"coSigners\":%s}",
+                        t.getBizNo(), jsonStr(who), jsonStr(target.staffName()), jsonStr(t.getCoSigners())));
         return t;
     }
 
@@ -534,6 +559,45 @@ public class ApprovalService {
                 throw new ResponseStatusException(HttpStatus.FORBIDDEN, "该待办已指派他人处理");
             }
         }
+    }
+
+    /**
+     * B21 转交/加签目标人硬校验：调 org internal 档案（工号不存在 / 离职 → 400 中文，
+     * org 不可用 → 502 硬失败，与双签红线同口径，绝不放行）；再按当前阶段校验目标人具备
+     * 对应审批角色（REVIEW 须店长、REGION 须区域经理、FINANCE 须财务；主角色或兼岗命中均可）。
+     */
+    private OrgStaffClient.StaffProfile guardTargetApprover(ApprovalTodo t, String targetId) {
+        OrgStaffClient.StaffProfile p;
+        try {
+            p = orgStaffClient.fetchStaff(targetId);
+        } catch (ResponseStatusException e) {
+            if (e.getStatusCode() == HttpStatus.BAD_REQUEST) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "目标审批人校验未通过：" + e.getReason());
+            }
+            throw e;
+        }
+        List<String> roles = new ArrayList<>(p.roles() == null ? List.of() : p.roles());
+        if (p.primaryRole() != null && !p.primaryRole().isBlank() && !roles.contains(p.primaryRole())) {
+            roles.add(p.primaryRole());
+        }
+        if ("FINANCE".equals(t.getStage())) {
+            if (!roles.contains("FINANCE")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "目标审批人 " + p.staffName() + "（" + targetId + "）不具备财务角色，当前财务终审阶段不可指派/加签");
+            }
+        } else if ("REGION".equals(t.getStage())) {
+            if (!roles.contains("REGION_MGR")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "目标审批人 " + p.staffName() + "（" + targetId + "）不具备区域经理角色，当前区域复审阶段不可指派/加签");
+            }
+        } else {
+            if (!roles.contains("STORE_MGR")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "目标审批人 " + p.staffName() + "（" + targetId + "）不具备店长角色，当前门店一审阶段不可指派/加签");
+            }
+        }
+        return p;
     }
 
     /** 当前操作人：统一委托 {@link DataScope#currentActor()}（JWT 登录人工号，body actor 忽略；匿名回落 system）。 */

@@ -38,3 +38,21 @@ export const markNotificationRead = (id: number) =>
 /** 全部标记已读（当前登录人），返回更新条数。 */
 export const markAllNotificationsRead = () =>
   client.post<{ updated: number }>('/txn/notifications/read-all')
+
+/** 通知偏好行 DTO（notify_preference 表；无落库行类别由后端回落默认值）。 */
+export interface NotifyPreferenceDTO {
+  category: string
+  enabled: boolean
+  channels: string[]
+}
+
+/** 我的通知偏好（五大类别全量；未设置类别后端回落系统默认）。 */
+export const getNotificationPreferences = () =>
+  client.get<{ items: NotifyPreferenceDTO[] }>('/txn/notifications/preferences')
+
+/** 更新单个类别偏好（upsert），返回更新后的全量偏好。 */
+export const updateNotificationPreference = (body: {
+  category: string
+  enabled: boolean
+  channels: string[]
+}) => client.put<{ items: NotifyPreferenceDTO[] }>('/txn/notifications/preferences', body)
