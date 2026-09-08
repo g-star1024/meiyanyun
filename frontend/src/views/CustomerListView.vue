@@ -8,9 +8,9 @@
  * channel 为内部来源码，展示时经 CUSTOMER_SOURCE 转中文。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { listCustomers, createCustomer, type CustomerDTO } from '@/api/customer'
+import { listCustomers, createCustomer, listAllTags, type CustomerDTO, type CustomerTagDTO } from '@/api/customer'
 import { useToast } from '@/composables/useToast'
 import CCard from '@/components/CCard.vue'
 import CTable from '@/components/CTable.vue'
@@ -21,6 +21,7 @@ import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
 import { CUSTOMER_SOURCE } from '@/config/dictionary'
 
+const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const toast = useToast()
@@ -48,6 +49,23 @@ const rows = ref<{
 
 const keyword = ref('')
 const level = ref('ALL')
+
+// 标签过滤：可由标签管理页"查看命中客户"带 ?tagId= 跳入预选
+const tagId = ref((route.query.tagId as string) || 'ALL')
+const tagOptions = ref<{ label: string; value: string }[]>([{ label: '全部标签', value: 'ALL' }])
+async function loadTags() {
+  try {
+    const res = await listAllTags()
+    tagOptions.value = [
+      { label: '全部标签', value: 'ALL' },
+      ...(res.data ?? []).map((t: CustomerTagDTO) => ({ label: t.tagName, value: t.tagId })),
+    ]
+    // 跳入带的 tagId 已被删除/不存在时回退全部
+    if (tagId.value !== 'ALL' && !tagOptions.value.some((o) => o.value === tagId.value)) tagId.value = 'ALL'
+  } catch (e) {
+    console.error('[CustomerList] 标签字典加载失败', e)
+  }
+}
 
 // 会员等级全站中文契约（与真实库 customer.level 一致）：value=中文等级，ALL=不过滤
 const LEVELS = [
@@ -92,6 +110,7 @@ async function load() {
       size: 200,
       level: level.value === 'ALL' ? undefined : level.value,
       keyword: keyword.value.trim() || undefined,
+      tagId: tagId.value === 'ALL' ? undefined : tagId.value,
     })
     const data = res.data
     total.value = data.totalElements
@@ -111,7 +130,11 @@ async function load() {
   }
 }
 
-onMounted(load)
+// 先加载标签字典（失效 tagId 回退 ALL），再拉列表，避免 ?tagId= 已删除时空查
+onMounted(async () => {
+  await loadTags()
+  await load()
+})
 
 // ---- 新建客户弹层（照抄字典管理弹层范式；归属门店/归属人由后端按登录上下文注入） ----
 const showForm = ref(false)
@@ -187,6 +210,7 @@ const columns = [
     <CCard>
       <div class="cust__toolbar">
         <CSelect v-model="level" :options="LEVELS" width="140px" @change="load" />
+        <CSelect v-model="tagId" :options="tagOptions" width="150px" @change="load" />
         <CInput v-model="keyword" placeholder="搜索姓名 / 手机号" @input="load" />
         <div class="cust__tools-right">
           <span class="cust__scope">数据域：{{ auth.scope }}</span>

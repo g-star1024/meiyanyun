@@ -25,6 +25,8 @@ import {
   listPointsLog,
   listAllTags,
   listCustomerTagRels,
+  assignCustomerTag,
+  removeCustomerTag,
   rechargeCard,
   changeCustomerPoints,
   listCardLedger,
@@ -32,6 +34,7 @@ import {
   type MemberCardDTO,
   type PointsLedgerDTO,
   type CardLedgerDTO,
+  type CustomerTagDTO,
 } from '@/api/customer'
 import {
   listCustomerOrders,
@@ -62,7 +65,17 @@ const customer = ref<CustomerDTO | null>(null)
 const cards = ref<MemberCardDTO[]>([])
 const ledgers = ref<PointsLedgerDTO[]>([])
 const ledgerTotal = ref(0)
-const tagNames = ref<string[]>([])
+// ---- B23 卡3 客户标签：已打标签（保留 tagId 供删标）+ 全量字典（供打标选择） ----
+const customerTags = ref<CustomerTagDTO[]>([])
+const allTags = ref<CustomerTagDTO[]>([])
+const tagBusy = ref(false)
+const newTagId = ref('')
+const canEditTag = computed(() => auth.can('tag:edit'))
+// 未打过的标签选项（已按全量字典顺序）；全部已打时为空
+const assignableTags = computed(() => {
+  const owned = new Set(customerTags.value.map((t) => t.tagId))
+  return allTags.value.filter((t) => !owned.has(t.tagId))
+})
 const orders = ref<CustomerOrderView[]>([])
 const consults = ref<CustomerConsultView[]>([])
 const appts = ref<CustomerApptView[]>([])
@@ -289,6 +302,66 @@ async function submitAdjust() {
   }
 }
 
+// ---- B23 卡3 360 页打标 / 删标（POST/DELETE /customer/{id}/tags/{tagId}；后端防重 409、未打删 404） ----
+// 五分类中文 → chip 配色，与标签管理页 TagsView 固定色一致
+const TAG_CHIP: Record<string, string> = {
+  '消费': 'var(--c-teal)',
+  '肤质': 'var(--c-purple)',
+  '行为': 'var(--c-blue)',
+  '价值': 'var(--c-warning-fg)',
+  '医疗': 'var(--c-danger-fg)',
+}
+function tagChipColor(category?: string): string {
+  return (category && TAG_CHIP[category]) || 'var(--c-blue)'
+}
+const assignTagOptions = computed(() =>
+  assignableTags.value.map((t) => ({ label: `${t.tagName}（${t.category}）`, value: t.tagId })),
+)
+
+// 打标 / 删标后只重拉标签两路数据，避免整页 reload 闪动
+async function syncTags() {
+  const id = customerId.value
+  const [tagRelRes, tagAllRes] = await Promise.all([listCustomerTagRels(id), listAllTags()])
+  allTags.value = tagAllRes.data ?? []
+  const tagById = new Map(allTags.value.map((t) => [t.tagId, t]))
+  customerTags.value = (tagRelRes.data ?? [])
+    .map((r) => tagById.get(r.tagId))
+    .filter((x): x is CustomerTagDTO => !!x)
+  if (!assignableTags.value.some((t) => t.tagId === newTagId.value)) {
+    newTagId.value = assignableTags.value[0]?.tagId ?? ''
+  }
+}
+
+async function assignTag() {
+  if (!newTagId.value || tagBusy.value) return
+  tagBusy.value = true
+  try {
+    await assignCustomerTag(customerId.value, newTagId.value)
+    const t = allTags.value.find((x) => x.tagId === newTagId.value)
+    toast.success(`已打标签「${t?.tagName ?? newTagId.value}」`)
+    await syncTags()
+  } catch (e: any) {
+    toast.error('打标失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    tagBusy.value = false
+  }
+}
+
+async function unassignTag(t: CustomerTagDTO) {
+  if (tagBusy.value) return
+  if (!window.confirm(`确认移除该客户的标签「${t.tagName}」？`)) return
+  tagBusy.value = true
+  try {
+    await removeCustomerTag(customerId.value, t.tagId)
+    toast.success(`已移除标签「${t.tagName}」`)
+    await syncTags()
+  } catch (e: any) {
+    toast.error('删标失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    tagBusy.value = false
+  }
+}
+
 // 4 KPI（全部真实字段，无 LTV/沉睡天数等臆造指标）
 const kpis = computed(() => [
   { label: '累计消费', value: `¥${(customer.value?.totalSpend ?? 0).toLocaleString('zh-CN')}`, sub: `客户状态：${statusPill.value.text}`, tone: 'teal' as const, bg: 'var(--c-success-bg)' },
@@ -329,9 +402,14 @@ async function load() {
     cards.value = cardRes.data ?? []
     ledgers.value = ledgerRes.data.content ?? []
     ledgerTotal.value = ledgerRes.data.totalElements ?? ledgers.value.length
-    // tagId（关联）→ tagName（全量字典）join
-    const nameById = new Map(tagAllRes.data.map((t) => [t.tagId, t.tagName]))
-    tagNames.value = (tagRelRes.data ?? []).map((r) => nameById.get(r.tagId)).filter((x): x is string => !!x)
+    // tagId（关联）→ 标签对象（全量字典）join，保留 tagId/category 供删标与分类着色
+    allTags.value = tagAllRes.data ?? []
+    const tagById = new Map(allTags.value.map((t) => [t.tagId, t]))
+    customerTags.value = (tagRelRes.data ?? [])
+      .map((r) => tagById.get(r.tagId))
+      .filter((x): x is CustomerTagDTO => !!x)
+    // 默认选中第一个可打标签（字典中尚未打过的）
+    newTagId.value = assignableTags.value[0]?.tagId ?? ''
   } catch (e: any) {
     const status = e?.response?.status
     if (status === 404 || status === 400) notFound.value = true
@@ -436,8 +514,36 @@ const compliance = [
               手机 {{ phoneText }} · 注册于 {{ registerDate }} · 来源 {{ channelText }}
             </div>
             <div class="hero__tags">
-              <span v-for="(t, i) in tagNames" :key="t" class="hero__tag" :class="{ 'hero__tag--primary': i === 0 }">{{ t }}</span>
-              <span v-if="!tagNames.length" class="hero__tag hero__tag--empty">暂无标签</span>
+              <span
+                v-for="t in customerTags"
+                :key="t.tagId"
+                class="hero__tag hero__tag--chip"
+                :style="{ '--chip': tagChipColor(t.category) }"
+              >
+                {{ t.tagName }}
+                <button
+                  v-if="canEditTag"
+                  type="button"
+                  class="hero__tag-x"
+                  title="移除标签"
+                  :disabled="tagBusy"
+                  @click.stop="unassignTag(t)"
+                >×</button>
+              </span>
+              <span v-if="!customerTags.length" class="hero__tag hero__tag--empty">暂无标签</span>
+              <!-- 打标：仅有权限且尚有未打标签时出现；标签定义在标签管理页维护 -->
+              <span v-if="canEditTag && assignTagOptions.length" class="hero__assign" @click.stop>
+                <CSelect
+                  v-model="newTagId"
+                  :options="assignTagOptions"
+                  placeholder="选择标签"
+                  width="168px"
+                  :disabled="tagBusy"
+                />
+                <CButton variant="ghost" size="sm" :disabled="tagBusy || !newTagId" @click="assignTag">
+                  <CIcon name="plus" :size="13" />打标
+                </CButton>
+              </span>
             </div>
           </div>
           <div class="hero__points">
@@ -814,10 +920,21 @@ const compliance = [
 .hero__name { font-size: var(--t-xl); font-weight: 700; }
 .hero__anon { font-size: var(--t-sm); color: var(--c-text-3); background: var(--c-disabled-bg); padding: 2px 10px; border-radius: var(--r-sm); }
 .hero__meta { font-size: var(--t-sm); color: var(--c-text-3); margin-top: 6px; }
-.hero__tags { display: flex; flex-wrap: wrap; gap: var(--s-xs); margin-top: var(--s-sm); }
+.hero__tags { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-xs); margin-top: var(--s-sm); }
 .hero__tag { font-size: var(--t-xs); padding: 4px 12px; border-radius: var(--r-pill); background: var(--c-info-bg); color: var(--c-blue); }
 .hero__tag--primary { background: var(--c-brand-soft); color: var(--c-brand); }
 .hero__tag--empty { background: var(--c-disabled-bg); color: var(--c-text-4); }
+/* 卡3：按五分类着色的标签 chip（--chip 由分类映射内联注入），右侧 × 删标 */
+.hero__tag--chip { display: inline-flex; align-items: center; gap: 4px; background: color-mix(in srgb, var(--chip) 12%, white); color: var(--chip); }
+.hero__tag-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; padding: 0; border: none; border-radius: 50%;
+  background: transparent; color: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+}
+.hero__tag-x:hover { background: color-mix(in srgb, var(--chip) 22%, white); }
+.hero__tag-x:disabled { cursor: not-allowed; opacity: 0.5; }
+.hero__assign { display: inline-flex; align-items: center; gap: var(--s-xxs); }
+.hero__assign :deep(.csel__trigger) { height: 28px; font-size: var(--t-xs); }
 .hero__points { flex-shrink: 0; text-align: center; padding: var(--s-md); border-radius: var(--r-xl); background: var(--c-brand-soft); min-width: 96px; }
 .hero__points strong { display: block; font-size: var(--t-xl); font-weight: 700; color: var(--c-brand); line-height: 1.1; font-variant-numeric: tabular-nums; }
 .hero__points span { font-size: var(--t-xs); color: var(--c-text-3); margin-top: 4px; display: block; }

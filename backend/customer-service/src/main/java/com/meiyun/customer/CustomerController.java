@@ -56,8 +56,9 @@ public class CustomerController {
             @RequestParam(required = false) String level,
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String channel,
-            @RequestParam(required = false) String keyword) {
-        return service.listRows(pageable, storeCode, level, status, channel, keyword);
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String tagId) {
+        return service.listRows(pageable, storeCode, level, status, channel, keyword, tagId);
     }
 
     @GetMapping("/{id}")
@@ -142,10 +143,55 @@ public class CustomerController {
                 p.getExpiring90d() == null ? 0L : p.getExpiring90d());
     }
 
-    // ---- 标签 ----
+    // ---- 标签：定义 CRUD（带覆盖人数读模型） + 客户打标/删标（防重 + 全程审计） ----
     @GetMapping("/tags")
     @RequirePerm({"tag:view", "customer:view"})
-    public List<CustomerTag> tags() { return tagRepo.findAll(); }
+    public List<TagStatDTO> tags() { return service.listTagStats(); }
+
+    /** 标签覆盖汇总：标签总数/去重覆盖客户数/累计打标人次/人均标签数（精确路径优先于 /{id} 匹配）。 */
+    @GetMapping("/tags/overview")
+    @RequirePerm({"tag:view", "customer:view"})
+    public TagOverviewDTO tagOverview() { return service.listTagOverview(); }
+
+    /** 新建标签：五分类白名单 / 重名 409 / TG### 编号均由 service 权威处理；落 TAG/CREATE 审计。 */
+    @PostMapping("/tags")
+    @RequirePerm("tag:edit")
+    public CustomerTag createTag(@RequestBody TagUpsertReq req) {
+        CustomerTag t = service.createTag(req == null ? null : req.tagName(),
+                req == null ? null : req.category());
+        audit.record("TAG", t.getTagId(), DataScope.currentActor(), "CREATE",
+                "{\"tagId\":\"" + esc(t.getTagId()) + "\",\"tagName\":\"" + esc(t.getTagName())
+                        + "\",\"category\":\"" + esc(t.getCategory()) + "\"}");
+        return t;
+    }
+
+    /** 改名/改分类：落 TAG/UPDATE 审计（记录变更后值）。 */
+    @PutMapping("/tags/{tagId}")
+    @RequirePerm("tag:edit")
+    public CustomerTag updateTag(@PathVariable String tagId, @RequestBody TagUpsertReq req) {
+        CustomerTag t = service.updateTag(tagId, req == null ? null : req.tagName(),
+                req == null ? null : req.category());
+        audit.record("TAG", t.getTagId(), DataScope.currentActor(), "UPDATE",
+                "{\"tagId\":\"" + esc(t.getTagId()) + "\",\"tagName\":\"" + esc(t.getTagName())
+                        + "\",\"category\":\"" + esc(t.getCategory()) + "\"}");
+        return t;
+    }
+
+    /** 删除标签：service 先级联解绑全部客户关联再删定义；落 TAG/DELETE 审计（带解绑客户数）。 */
+    @DeleteMapping("/tags/{tagId}")
+    @RequirePerm("tag:edit")
+    public Map<String, Object> deleteTag(@PathVariable String tagId) {
+        CustomerTag t = tagRepo.findById(tagId)
+                .orElseThrow(() -> new CustomerService.NotFound("标签不存在: " + tagId));
+        int removed = service.deleteTag(tagId);
+        audit.record("TAG", tagId, DataScope.currentActor(), "DELETE",
+                "{\"tagId\":\"" + esc(tagId) + "\",\"tagName\":\"" + esc(t.getTagName())
+                        + "\",\"unassignedCustomers\":" + removed + "}");
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("deleted", tagId);
+        m.put("unassignedCustomers", removed);
+        return m;
+    }
 
     @GetMapping("/{id}/tags")
     @RequirePerm({"tag:view", "customer:view"})
@@ -154,16 +200,30 @@ public class CustomerController {
         return tagRelRepo.findByCustomerId(id);
     }
 
+    /** 打标：requireReadable 强制数据域（不存在/越权统一 404）；重复打标 service 抛 409；落 TAG/ASSIGN 审计。 */
     @PostMapping("/{id}/tags/{tagId}")
     @RequirePerm("tag:edit")
     public CustomerTagRel addTag(@PathVariable String id, @PathVariable String tagId) {
         requireReadable(id);
-        tagRepo.findById(tagId)
-                .orElseThrow(() -> new CustomerService.NotFound("标签不存在: " + tagId));
-        CustomerTagRel rel = new CustomerTagRel();
-        rel.setCustomerId(id);
-        rel.setTagId(tagId);
-        return tagRelRepo.save(rel);
+        CustomerTagRel rel = service.assignTag(id, tagId);
+        audit.record("TAG", id, DataScope.currentActor(), "ASSIGN",
+                "{\"customerId\":\"" + esc(id) + "\",\"tagId\":\"" + esc(tagId) + "\"}");
+        return rel;
+    }
+
+    /** 删标（客户解绑单个标签）：落 TAG/UNASSIGN 审计；关联不存在 404。 */
+    @DeleteMapping("/{id}/tags/{tagId}")
+    @RequirePerm("tag:edit")
+    public Map<String, Object> removeTag(@PathVariable String id, @PathVariable String tagId) {
+        requireReadable(id);
+        service.unassignTag(id, tagId);
+        audit.record("TAG", id, DataScope.currentActor(), "UNASSIGN",
+                "{\"customerId\":\"" + esc(id) + "\",\"tagId\":\"" + esc(tagId) + "\"}");
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("customerId", id);
+        m.put("tagId", tagId);
+        m.put("removed", true);
+        return m;
     }
 
     /**
@@ -237,6 +297,9 @@ public class CustomerController {
 
     /** 人工调分请求：clientToken 为客户端生成的幂等键（同键重放返回既有流水，不重复加减分）。 */
     public record PointsChangeReq(Long changeAmt, String reason, String clientToken) {}
+
+    /** 标签新建/改名请求体：名称 + 五分类之一（白名单由 service 权威校验）。 */
+    public record TagUpsertReq(String tagName, String category) {}
 
     /** 积分池读模型：累计发放 / 本月获得 / 本月核销 / 90 天内到期。 */
     public record PointsPoolDTO(long totalIssued, long gainedMonth, long redeemedMonth, long expiring90d) {}

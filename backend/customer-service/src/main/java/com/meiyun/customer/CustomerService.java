@@ -29,6 +29,8 @@ public class CustomerService {
             Set.of("WALK_IN", "REFERRAL", "WECHAT", "DOUYIN", "XIAOHONGSHU", "MEITUAN", "OTHER");
     /** 大陆手机号：1 开头、第二位 3-9、共 11 位数字。 */
     private static final Pattern PHONE_RE = Pattern.compile("^1[3-9]\\d{9}$");
+    /** 标签分类白名单（对齐 customer_tag.category CHECK 五分类）。 */
+    private static final Set<String> TAG_CATEGORIES = Set.of("消费", "肤质", "行为", "价值", "医疗");
 
     private final CustomerRepository customerRepo;
     private final MemberLevelRepository levelRepo;
@@ -64,11 +66,11 @@ public class CustomerService {
 
     /**
      * 客户列表（分页 + 动态过滤 + 标签批量解析）。
-     * 过滤：门店/等级/状态/来源/关键字（姓名或手机号模糊）。
+     * 过滤：门店/等级/状态/来源/关键字（姓名或手机号模糊）/标签（命中指定 tagId，exists 子查询）。
      * 标签通过 findByCustomerIdIn 一次批量取出，避免 N+1。
      */
     public Page<CustomerRowDTO> listRows(Pageable pageable, String storeCode, String level,
-                                         String status, String channel, String keyword) {
+                                         String status, String channel, String keyword, String tagId) {
         // 数据域强制注入（服务端权威）：SELF 只见本人归属客户，STORE 本店，REGION 本区门店，GROUP/BRAND 全量；前端 storeCode 参数在域内收窄
         Specification<Customer> scopeSpec = DataScope.ownedSpec("storeCode", "ownerStaffId");
         // 手机号脱敏：无 customer:phone:decrypt 权限（或匿名服务间通道）仅见掩码；有权限见明文（列表仍受数据域约束）
@@ -79,6 +81,15 @@ public class CustomerService {
             if (level != null) ps.add(cb.equal(root.get("level"), level));
             if (status != null) ps.add(cb.equal(root.get("status"), status));
             if (channel != null) ps.add(cb.equal(root.get("channel"), channel));
+            if (tagId != null && !tagId.isBlank()) {
+                // 按标签过滤：客户在 customer_tag_rel 中存在该 tagId 关联即命中（数据域仍由 scopeSpec 强制）
+                var sq = q.subquery(CustomerTagRel.class);
+                var relRoot = sq.from(CustomerTagRel.class);
+                sq.select(relRoot).where(cb.and(
+                        cb.equal(relRoot.get("tagId"), tagId.trim()),
+                        cb.equal(relRoot.get("customerId"), root.get("customerId"))));
+                ps.add(cb.exists(sq));
+            }
             if (keyword != null && !keyword.isBlank()) {
                 String like = "%" + keyword + "%";
                 // 支持客户编号（SC001）检索：触达等 B 端操作页常按编号定位客户
@@ -297,6 +308,119 @@ public class CustomerService {
             }
         }
         return String.format("M%03d", seq + 1);
+    }
+
+    // ---- 标签：定义 CRUD / 打标 / 删标（写接口四件套：校验 / 防重 / 审计由 Controller 落 / 中文错误） ----
+
+    /** 标签列表读模型：全量标签 + 覆盖客户数（group by 一次取回，无关联计 0）。 */
+    @Transactional(readOnly = true)
+    public List<TagStatDTO> listTagStats() {
+        Map<String, Long> counts = new HashMap<>();
+        for (Object[] row : tagRelRepo.countGroupByTag()) {
+            if (row[0] != null) counts.put((String) row[0], ((Number) row[1]).longValue());
+        }
+        return tagRepo.findAll().stream()
+                .map(t -> new TagStatDTO(t.getTagId(), t.getTagName(), t.getCategory(),
+                        counts.getOrDefault(t.getTagId(), 0L)))
+                .toList();
+    }
+
+    /** 标签覆盖汇总：标签总数 / 去重覆盖客户数 / 累计打标人次 / 已打标客户人均标签数（无覆盖客户时人均 0）。 */
+    @Transactional(readOnly = true)
+    public TagOverviewDTO listTagOverview() {
+        long totalTags = tagRepo.count();
+        long covered = tagRelRepo.countDistinctCustomers();
+        long assignments = tagRelRepo.count();
+        double avg = covered == 0 ? 0d : Math.round(assignments * 100.0 / covered) / 100.0;
+        return new TagOverviewDTO(totalTags, covered, assignments, avg);
+    }
+
+    /** 新建标签：名称必填（≤32 字）且唯一、分类必须在五分类白名单；TG### 编号库内 max+1（synchronized 防重号）。 */
+    @Transactional
+    public synchronized CustomerTag createTag(String name, String category) {
+        String n = trim(name);
+        String cat = trim(category);
+        if (n.isEmpty()) throw new BadReq("标签名称不能为空");
+        if (n.length() > 32) throw new BadReq("标签名称最长 32 字");
+        if (!TAG_CATEGORIES.contains(cat)) throw new BadReq("标签分类取值非法：消费 / 肤质 / 行为 / 价值 / 医疗");
+        if (tagRepo.existsByTagName(n)) throw new Conflict("标签名称已存在：" + n);
+        CustomerTag t = new CustomerTag();
+        t.setTagId(nextTagId());
+        t.setTagName(n);
+        t.setCategory(cat);
+        return tagRepo.save(t);
+    }
+
+    /** 改名/改分类：标签不存在 404；分类白名单校验；改名时排除自身做唯一冲突 409。 */
+    @Transactional
+    public synchronized CustomerTag updateTag(String tagId, String name, String category) {
+        CustomerTag t = tagRepo.findById(tagId)
+                .orElseThrow(() -> new NotFound("标签不存在: " + tagId));
+        String n = trim(name);
+        String cat = trim(category);
+        if (n.isEmpty()) throw new BadReq("标签名称不能为空");
+        if (n.length() > 32) throw new BadReq("标签名称最长 32 字");
+        if (!TAG_CATEGORIES.contains(cat)) throw new BadReq("标签分类取值非法：消费 / 肤质 / 行为 / 价值 / 医疗");
+        if (!n.equals(t.getTagName()) && tagRepo.existsByTagName(n)) {
+            throw new Conflict("标签名称已存在：" + n);
+        }
+        t.setTagName(n);
+        t.setCategory(cat);
+        return tagRepo.save(t);
+    }
+
+    /**
+     * 删除标签：先删客户关联再删定义（customer_tag_rel 对 customer_tag 有物理外键，无 cascade 注解须显式删）。
+     * 返回被解绑的客户数，供 Controller 落审计；标签不存在 404。
+     */
+    @Transactional
+    public synchronized int deleteTag(String tagId) {
+        if (!tagRepo.existsById(tagId)) throw new NotFound("标签不存在: " + tagId);
+        int removed = tagRelRepo.deleteByTagId(tagId);
+        tagRepo.deleteById(tagId);
+        return removed;
+    }
+
+    /** 打标：客户/标签存在性校验（数据域由 Controller requireReadable 权威校验）；重复打标 409，复合主键天然兜底。 */
+    @Transactional
+    public CustomerTagRel assignTag(String customerId, String tagId) {
+        if (!customerRepo.existsById(customerId)) throw new NotFound("客户不存在: " + customerId);
+        if (!tagRepo.existsById(tagId)) throw new NotFound("标签不存在: " + tagId);
+        if (tagRelRepo.existsByCustomerIdAndTagId(customerId, tagId)) {
+            throw new Conflict("该客户已打此标签，请勿重复操作");
+        }
+        CustomerTagRel rel = new CustomerTagRel();
+        rel.setCustomerId(customerId);
+        rel.setTagId(tagId);
+        return tagRelRepo.save(rel);
+    }
+
+    /** 删标（客户解绑单个标签）：关联不存在 404；返回被删的关系供审计。 */
+    @Transactional
+    public CustomerTagRel unassignTag(String customerId, String tagId) {
+        CustomerTagRel.Key key = new CustomerTagRel.Key();
+        key.setCustomerId(customerId);
+        key.setTagId(tagId);
+        if (!tagRelRepo.existsById(key)) throw new NotFound("该客户未打此标签");
+        tagRelRepo.deleteByCustomerIdAndTagId(customerId, tagId);
+        CustomerTagRel snapshot = new CustomerTagRel();
+        snapshot.setCustomerId(customerId);
+        snapshot.setTagId(tagId);
+        return snapshot;
+    }
+
+    /** 生成下一个标签编号：TG+3 位序号，基于库内最大 TG 号递增（STG 种子标签不占号段，synchronized 防并发重号）。 */
+    private String nextTagId() {
+        String max = tagRepo.maxTgId();
+        int seq = 0;
+        if (max != null && max.startsWith("TG")) {
+            try {
+                seq = Integer.parseInt(max.substring(2));
+            } catch (NumberFormatException ignored) {
+                seq = 0;
+            }
+        }
+        return String.format("TG%03d", seq + 1);
     }
 
     private static String trim(String s) {

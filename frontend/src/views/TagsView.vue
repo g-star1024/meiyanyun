@@ -1,117 +1,172 @@
 <script setup lang="ts">
 /* ============================================================
- * 标签体系 /m3-tags（M3-06）
- * Desktop：4 KPI + 标签分类树（左）+ 打标统计/自动化规则（右）+ 标签详情弹层。
- * Tablet：KPI 2x2、分类树全宽、规则卡片堆叠、底部「批量打标」。
+ * 标签体系 /m3-tags（M3-06，P5-B23 卡3 真实化）
+ * Desktop：4 KPI + 标签分类树（左）+ 标签详情/打标统计/自动化规则（右）。
+ * 数据：customer-service /customer/tags(/overview)；五分类中文枚举库内即中文。
+ * 颜色无入库列，前端按五分类固定映射；自动化规则依赖事件流，列 Backlog 占位。
+ * 打标主路径在客户 360 页；本页"查看命中客户"跳客户列表按标签过滤。
  * ============================================================ */
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
 import CSelect from '@/components/CSelect.vue'
-import CTextarea from '@/components/CTextarea.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
-import { useTagStore, type TagCategory, type CustomerTag } from '@/stores/tag'
+import { useToast } from '@/composables/useToast'
+import {
+  listAllTags,
+  getTagOverview,
+  createTag,
+  updateTag,
+  deleteTag,
+  type CustomerTagDTO,
+  type TagOverviewDTO,
+  type TagUpsertReq,
+} from '@/api/customer'
 
-const store = useTagStore()
-onMounted(() => store.seed())
+const router = useRouter()
+const toast = useToast()
+
+// 五分类为库内 CHECK 约束权威取值；颜色不入库，按分类固定映射
+const CATEGORIES = ['消费', '肤质', '行为', '价值', '医疗'] as const
+type Category = (typeof CATEGORIES)[number]
+const CATEGORY_COLOR: Record<Category, string> = {
+  消费: '#10B981',
+  肤质: '#8B5CF6',
+  行为: '#6366F1',
+  价值: '#F59E0B',
+  医疗: '#EC4899',
+}
+const CATEGORY_PILL: Record<Category, 'primary' | 'success' | 'warning' | 'danger' | 'info'> = {
+  消费: 'success',
+  肤质: 'primary',
+  行为: 'info',
+  价值: 'warning',
+  医疗: 'danger',
+}
+
+const tags = ref<CustomerTagDTO[]>([])
+const overview = ref<TagOverviewDTO>({ totalTags: 0, coveredCustomers: 0, totalAssignments: 0, avgTagsPerCustomer: 0 })
+const loading = ref(false)
+const selectedId = ref<string>('')
+
+async function refresh(keepSelected = true) {
+  loading.value = true
+  try {
+    const [tagRes, ovRes] = await Promise.all([listAllTags(), getTagOverview()])
+    tags.value = tagRes.data ?? []
+    overview.value = ovRes.data
+    if (!keepSelected || !tags.value.some((t) => t.tagId === selectedId.value)) {
+      selectedId.value = tags.value[0]?.tagId ?? ''
+    }
+  } catch (e: any) {
+    toast.error('标签数据加载失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    loading.value = false
+  }
+}
+onMounted(() => refresh(false))
 
 const kpis = computed(() => [
-  { label: '标签总数', icon: 'customer', value: String(store.totalTags), tone: 'text' as const },
-  { label: '系统标签', icon: 'customer', value: String(store.systemTags.length), tone: 'brand' as const },
-  { label: '人工标签', icon: 'customer', value: String(store.manualTags.length), tone: 'warning' as const },
-  { label: '覆盖客户数', icon: 'customer', value: store.totalCovered.toLocaleString(), tone: 'success' as const },
+  { label: '标签总数', icon: 'customer', value: String(overview.value.totalTags), tone: 'text' as const },
+  { label: '覆盖客户数', icon: 'customer', value: overview.value.coveredCustomers.toLocaleString(), tone: 'brand' as const },
+  { label: '累计打标人次', icon: 'customer', value: overview.value.totalAssignments.toLocaleString(), tone: 'warning' as const },
+  { label: '人均标签数', icon: 'customer', value: String(overview.value.avgTagsPerCustomer), tone: 'success' as const },
 ])
 
-// 来源筛选（Tablet 设计）
-type Source = 'ALL' | TagCategory
+// 分类筛选（Tablet 设计）：全部 + 五分类
+type Source = 'ALL' | Category
 const source = ref<Source>('ALL')
 const keyword = ref('')
 
 const groups = computed(() => {
-  const all: Array<{ key: TagCategory; label: string; tags: CustomerTag[] }> = [
-    { key: 'SYSTEM', label: '系统标签', tags: store.systemTags },
-    { key: 'MANUAL', label: '人工标签', tags: store.manualTags },
-    { key: 'BEHAVIOR', label: '行为标签', tags: store.behaviorTags },
-  ]
-  return all
-    .filter((g) => source.value === 'ALL' || g.key === source.value)
-    .map((g) => ({
-      ...g,
-      tags: g.tags.filter((t) => !keyword.value.trim() || t.name.includes(keyword.value.trim())),
+  const kw = keyword.value.trim()
+  return CATEGORIES
+    .map((cat) => ({
+      key: cat,
+      label: cat + '标签',
+      color: CATEGORY_COLOR[cat],
+      tags: tags.value.filter(
+        (t) => t.category === cat && (!kw || t.tagName.includes(kw)),
+      ),
     }))
-    .filter((g) => g.tags.length > 0)
+    .filter((g) => (source.value === 'ALL' || g.key === source.value) && g.tags.length > 0)
 })
 
-function fmtDateTime(iso?: string) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
-}
+const selected = computed(() => tags.value.find((t) => t.tagId === selectedId.value) || null)
 
-// 新建标签弹层
+// 新建 / 编辑标签弹层（颜色按分类派生，不入库；命中规则/自动化归事件流 Backlog）
 const showForm = ref(false)
-const form = reactive({
-  name: '',
-  category: 'MANUAL' as TagCategory,
-  color: '#F59E0B',
-  rule: '',
-})
-const categoryOptions = [
-  { value: 'SYSTEM', label: '系统标签' },
-  { value: 'MANUAL', label: '人工标签' },
-  { value: 'BEHAVIOR', label: '行为标签' },
-]
-const colorPresets = [
-  { value: '#8B5CF6', label: '紫' },
-  { value: '#F59E0B', label: '橙' },
-  { value: '#6366F1', label: '蓝' },
-  { value: '#10B981', label: '绿' },
-  { value: '#EC4899', label: '粉' },
-  { value: '#EF4444', label: '红' },
-]
-function openForm() {
-  form.name = ''
-  form.category = 'MANUAL'
-  form.color = '#F59E0B'
-  form.rule = ''
+const editingId = ref<string | null>(null)
+const form = reactive<{ tagName: string; category: Category }>({ tagName: '', category: '价值' })
+const categoryOptions = CATEGORIES.map((c) => ({ value: c, label: c + '标签' }))
+const saving = ref(false)
+
+function openCreate() {
+  editingId.value = null
+  form.tagName = ''
+  form.category = '价值'
   showForm.value = true
 }
-function submitForm() {
-  if (!form.name.trim()) return
-  const t = store.createTag({
-    name: form.name.trim(),
-    category: form.category,
-    color: form.color,
-    rule: form.rule.trim() || '人工标记',
-  })
-  if (t) {
-    store.select(t.id)
+function openEdit() {
+  if (!selected.value) return
+  editingId.value = selected.value.tagId
+  form.tagName = selected.value.tagName
+  form.category = (CATEGORIES.includes(selected.value.category as Category)
+    ? selected.value.category
+    : '价值') as Category
+  showForm.value = true
+}
+async function submitForm() {
+  const name = form.tagName.trim()
+  if (!name) return
+  if (name.length > 32) {
+    toast.error('标签名称最长 32 字')
+    return
+  }
+  const payload: TagUpsertReq = { tagName: name, category: form.category }
+  saving.value = true
+  try {
+    if (editingId.value) {
+      await updateTag(editingId.value, payload)
+      toast.success('标签已更新')
+    } else {
+      const res = await createTag(payload)
+      selectedId.value = res.data.tagId
+      toast.success('标签已创建')
+    }
     showForm.value = false
+    await refresh()
+  } catch (e: any) {
+    toast.error((editingId.value ? '更新失败：' : '创建失败：') + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    saving.value = false
   }
 }
 
-// 批量打标确认
-const showBatch = ref(false)
-const batchForm = reactive({ tagName: '', customers: '' })
-function openBatch() {
-  batchForm.tagName = store.selected?.name ?? ''
-  batchForm.customers = ''
-  showBatch.value = true
-}
-function submitBatch() {
-  const names = batchForm.customers.split(/[\n,，]/).map((s) => s.trim()).filter(Boolean)
-  if (!batchForm.tagName || names.length === 0) return
-  if (store.batchTag(names, batchForm.tagName)) {
-    showBatch.value = false
-    toast.value = `已为 ${names.length} 位客户打标`
-    setTimeout(() => (toast.value = ''), 2000)
+async function removeSelected() {
+  const t = selected.value
+  if (!t) return
+  const hit = t.customerCount ?? 0
+  const tip = hit > 0 ? `，将同时解绑 ${hit} 位客户的该标签` : ''
+  if (!window.confirm(`确认删除标签「${t.tagName}」？${tip}删除后不可恢复。`)) return
+  try {
+    await deleteTag(t.tagId)
+    toast.success(hit > 0 ? `标签已删除，已解绑 ${hit} 位客户` : '标签已删除')
+    await refresh(false)
+  } catch (e: any) {
+    toast.error('删除失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
   }
 }
 
-const toast = ref('')
+// 查看命中客户：跳客户列表并按该标签过滤（打标/删标在客户 360 页操作）
+function viewCustomers() {
+  if (!selected.value) return
+  router.push({ path: '/customers', query: { tagId: selected.value.tagId } })
+}
 </script>
 
 <template>
@@ -120,14 +175,16 @@ const toast = ref('')
       <CKpi v-for="k in kpis" :key="k.label" :label="k.label" :value="k.value" :tone="k.tone" :icon="k.icon" />
     </div>
 
-    <!-- Tablet: 搜索+来源筛选 -->
+    <!-- Tablet: 搜索+分类筛选 -->
     <CCard class="tg__search" padding="md">
       <CInput v-model="keyword" placeholder="搜索标签名称" />
       <div class="src-tabs">
-        <button class="src" :class="{ 'src--active': source === 'ALL' }" @click="source = 'ALL'">全部来源</button>
-        <button class="src" :class="{ 'src--active': source === 'SYSTEM' }" @click="source = 'SYSTEM'">系统</button>
-        <button class="src" :class="{ 'src--active': source === 'MANUAL' }" @click="source = 'MANUAL'">人工</button>
-        <button class="src" :class="{ 'src--active': source === 'BEHAVIOR' }" @click="source = 'BEHAVIOR'">行为</button>
+        <button class="src" :class="{ 'src--active': source === 'ALL' }" @click="source = 'ALL'">全部分类</button>
+        <button
+          v-for="c in CATEGORIES" :key="c"
+          class="src" :class="{ 'src--active': source === c }"
+          @click="source = c"
+        >{{ c }}</button>
       </div>
     </CCard>
 
@@ -137,120 +194,116 @@ const toast = ref('')
         <template #header>
           <h3 class="tg__card-title">标签分类树</h3>
           <div class="tg__tree-actions">
-            <span class="tg__total">共 {{ store.totalTags }} 个标签</span>
-            <CButton variant="primary" size="sm" v-perm.disable="'tag:edit'" @click="openForm">
+            <span class="tg__total">共 {{ tags.length }} 个标签</span>
+            <CButton variant="primary" size="sm" v-perm.disable="'tag:edit'" @click="openCreate">
               <CIcon name="plus" :size="14" />新建标签
             </CButton>
           </div>
         </template>
 
+        <div v-if="loading && !tags.length" class="tg__hint">标签加载中…</div>
+        <div v-else-if="!groups.length" class="tg__hint">暂无符合条件的标签</div>
         <div v-for="g in groups" :key="g.key" class="tcat">
           <div class="tcat__head">
-            <span class="tcat__dot" :style="{ background: store.CATEGORY_COLOR[g.key] }" />
+            <span class="tcat__dot" :style="{ background: g.color }" />
             <span class="tcat__name">{{ g.label }}</span>
             <span class="tcat__count">{{ g.tags.length }} 个</span>
           </div>
           <div class="tcat__chips">
             <button
-              v-for="t in g.tags" :key="t.id"
+              v-for="t in g.tags" :key="t.tagId"
               class="chip"
-              :class="{ 'chip--active': store.selectedId === t.id }"
+              :class="{ 'chip--active': selectedId === t.tagId }"
               :style="{
-                '--chip-color': t.color,
-                background: store.selectedId === t.id ? t.color : `color-mix(in srgb, ${t.color} 12%, var(--c-surface))`,
-                color: store.selectedId === t.id ? '#fff' : t.color,
+                '--chip-color': g.color,
+                background: selectedId === t.tagId ? g.color : `color-mix(in srgb, ${g.color} 12%, var(--c-surface))`,
+                color: selectedId === t.tagId ? '#fff' : g.color,
               }"
-              @click="store.select(t.id)"
+              @click="selectedId = t.tagId"
             >
-              {{ t.name }}
+              {{ t.tagName }}
             </button>
           </div>
         </div>
       </CCard>
 
-      <!-- 右：统计 + 详情 + 规则 -->
+      <!-- 右：详情 + 统计 + 规则 -->
       <div class="tg__side">
         <!-- 选中标签详情 -->
-        <CCard v-if="store.selected" class="tg__detail" :title="store.selected.name" padding="lg">
+        <CCard v-if="selected" class="tg__detail" :title="selected.tagName" padding="lg">
           <template #header>
             <h3 class="tg__card-title">
-              <span class="dot" :style="{ background: store.selected.color }" />
-              {{ store.selected.name }}
+              <span class="dot" :style="{ background: CATEGORY_COLOR[(selected.category as Category) in CATEGORY_COLOR ? (selected.category as Category) : '价值'] }" />
+              {{ selected.tagName }}
             </h3>
-            <CStatusPill :status="store.selected.category === 'SYSTEM' ? 'primary' : store.selected.category === 'MANUAL' ? 'warning' : 'info'">
-              {{ store.CATEGORY_LABEL[store.selected.category] }}
+            <CStatusPill :status="CATEGORY_PILL[(selected.category as Category) in CATEGORY_COLOR ? (selected.category as Category) : '价值']">
+              {{ selected.category }}标签
             </CStatusPill>
           </template>
 
           <div class="detail-stats">
             <div class="detail-stats__item">
               <div class="detail-stats__label">命中客户数</div>
-              <div class="detail-stats__value" :style="{ color: store.selected.color }">{{ store.selected.customerCount.toLocaleString() }}</div>
+              <div class="detail-stats__value" :style="{ color: CATEGORY_COLOR[selected.category as Category] || CATEGORY_COLOR['价值'] }">
+                {{ (selected.customerCount ?? 0).toLocaleString() }}
+              </div>
+            </div>
+            <div class="detail-stats__item">
+              <div class="detail-stats__label">标签编号</div>
+              <div class="detail-stats__value detail-stats__value--code">{{ selected.tagId }}</div>
             </div>
           </div>
 
           <div class="detail-sec">
-            <div class="detail-sec__label">命中规则</div>
-            <div class="detail-sec__text">{{ store.selected.rule }}</div>
-          </div>
-
-          <div v-if="store.selected.recentHitCustomers?.length" class="detail-sec">
-            <div class="detail-sec__label">最近命中客户</div>
-            <div class="detail-sec__customers">
-              <span v-for="(c, i) in store.selected.recentHitCustomers" :key="i" class="cust-chip">
-                <CIcon name="user" :size="12" />{{ c }}
-              </span>
-            </div>
+            <div class="detail-sec__label">打标方式</div>
+            <div class="detail-sec__text">人工打标：在客户 360 页为单个客户打标/删标；本页可查看命中客户名单。</div>
           </div>
 
           <div class="detail-actions">
-            <CButton variant="primary" size="sm" v-perm.disable="'tag:edit'" @click="openBatch">
-              <CIcon name="plus" :size="14" />批量打标
+            <CButton variant="ghost" size="sm" @click="viewCustomers">
+              <CIcon name="customer" :size="14" />查看命中客户
+            </CButton>
+            <CButton variant="ghost" size="sm" v-perm.disable="'tag:edit'" @click="openEdit">
+              <CIcon name="edit" :size="14" />编辑
+            </CButton>
+            <CButton variant="danger" size="sm" v-perm.disable="'tag:edit'" @click="removeSelected">
+              <CIcon name="delete" :size="14" />删除
             </CButton>
           </div>
+        </CCard>
+        <CCard v-else class="tg__detail" title="标签详情" padding="lg">
+          <div class="tg__hint">请选择左侧标签查看详情</div>
         </CCard>
 
         <!-- 打标统计 -->
         <CCard class="tg__stats" title="打标统计" padding="lg">
           <div class="stat-row">
             <span class="stat-row__label">总覆盖人数</span>
-            <span class="stat-row__value">{{ store.totalCovered.toLocaleString() }} 人</span>
+            <span class="stat-row__value">{{ overview.coveredCustomers.toLocaleString() }} 人</span>
           </div>
           <div class="stat-row">
-            <span class="stat-row__label">今日新增打标</span>
-            <span class="stat-row__value stat-row__value--teal">+{{ store.todayTagged }} 人</span>
+            <span class="stat-row__label">累计打标人次</span>
+            <span class="stat-row__value stat-row__value--teal">{{ overview.totalAssignments.toLocaleString() }} 次</span>
           </div>
           <div class="stat-row">
             <span class="stat-row__label">人均标签数</span>
-            <span class="stat-row__value">{{ store.avgTagsPerCustomer }} 个</span>
+            <span class="stat-row__value">{{ overview.avgTagsPerCustomer }} 个</span>
           </div>
         </CCard>
 
-        <!-- 自动化规则 -->
+        <!-- 自动化规则（依赖事件流，列 Backlog） -->
         <CCard class="tg__rules" title="自动化规则" padding="lg">
           <template #header>
             <h3 class="tg__card-title">自动化规则</h3>
-            <CButton variant="text" size="sm" v-perm.disable="'tag:edit'">
-              <CIcon name="plus" :size="14" />添加规则
-            </CButton>
+            <CStatusPill status="disabled">规划中</CStatusPill>
           </template>
-          <div class="rule-list">
-            <div v-for="r in store.rules" :key="r.id" class="rule-item">
-              <div class="rule-item__head">
-                <span class="rule-item__name">{{ r.name }}</span>
-                <label class="mini-switch" @click.stop>
-                  <input type="checkbox" :checked="r.enabled" @change="store.toggleRule(r.id)" />
-                  <span class="mini-switch__track" />
-                </label>
-              </div>
-              <div class="rule-item__flow">
-                <span class="rule-item__trigger">{{ r.trigger }}</span>
-                <CIcon name="chevron-right" :size="12" />
-                <span class="rule-item__action">{{ r.action }}</span>
-              </div>
-              <div class="rule-item__meta">
-                <span>条件：{{ r.condition }}</span>
-                <span v-if="r.lastFiredAt">最近触发：{{ fmtDateTime(r.lastFiredAt) }}</span>
+          <div class="rule-soon">
+            <CIcon name="mall" :size="20" />
+            <div class="rule-soon__body">
+              <div class="rule-soon__title">事件流上线后开放</div>
+              <div class="rule-soon__desc">
+                支持「消费达标 / 到店频次 / 生日月 / 肤质检测」等触发条件自动打标与标签失效。
+                当前请在客户 360 页人工打标，规则引擎随消费事件流（Backlog）一并交付。
               </div>
             </div>
           </div>
@@ -258,71 +311,35 @@ const toast = ref('')
       </div>
     </div>
 
-    <!-- 底部批量打标（平板） -->
+    <!-- 底部新建标签（平板） -->
     <div class="tg__fab">
-      <CButton variant="primary" block size="lg" v-perm.disable="'tag:edit'" @click="openBatch">
-        <CIcon name="plus" :size="16" />批量打标
+      <CButton variant="primary" block size="lg" v-perm.disable="'tag:edit'" @click="openCreate">
+        <CIcon name="plus" :size="16" />新建标签
       </CButton>
     </div>
 
-    <!-- 新建标签弹层 -->
+    <!-- 新建/编辑标签弹层 -->
     <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
-      <CCard class="modal" title="新建标签" padding="lg">
+      <CCard class="modal" :title="editingId ? '编辑标签' : '新建标签'" padding="lg">
         <div class="form">
-          <CInput label="标签名称" v-model="form.name" placeholder="如：高净值客户" />
-          <div class="form__row form__row--2">
-            <div>
-              <label class="form__label">所属分类</label>
-              <CSelect v-model="form.category" width="100%" :options="categoryOptions" />
-            </div>
-            <div>
-              <label class="form__label">标签颜色</label>
-              <div class="color-row">
-                <button
-                  v-for="c in colorPresets" :key="c.value"
-                  type="button"
-                  class="color-dot"
-                  :class="{ 'color-dot--active': form.color === c.value }"
-                  :style="{ background: c.value }"
-                  :title="c.label"
-                  @click="form.color = c.value"
-                >
-                  <CIcon v-if="form.color === c.value" name="check" :size="12" />
-                </button>
-              </div>
-            </div>
+          <CInput label="标签名称" v-model="form.tagName" placeholder="如：高净值客户（最长 32 字）" />
+          <div class="form__row">
+            <label class="form__label">所属分类</label>
+            <CSelect v-model="form.category" width="100%" :options="categoryOptions" />
           </div>
-          <CTextarea label="命中规则描述" v-model="form.rule" placeholder="如：近 90 天累计消费 ≥ 10,000 元" :rows="3" />
+          <div class="form__tip">
+            <span class="form__tip-dot" :style="{ background: CATEGORY_COLOR[form.category] }" />
+            标签颜色按「{{ form.category }}」分类固定展示；标签名称全库唯一，删除标签将同时解绑全部客户。
+          </div>
         </div>
         <template #footer>
           <CButton variant="ghost" @click="showForm = false">取消</CButton>
-          <CButton variant="primary" :disabled="!form.name.trim()" @click="submitForm">创建</CButton>
+          <CButton variant="primary" :disabled="!form.tagName.trim() || saving" @click="submitForm">
+            {{ editingId ? '保存' : '创建' }}
+          </CButton>
         </template>
       </CCard>
     </div>
-
-    <!-- 批量打标弹层 -->
-    <div v-if="showBatch" class="modal-mask" @click.self="showBatch = false">
-      <CCard class="modal" title="批量打标" padding="lg">
-        <div class="form">
-          <CInput label="标签名称" v-model="batchForm.tagName" placeholder="选择或输入标签" />
-          <CTextarea
-            label="客户名单（每行一个，或用逗号分隔）"
-            v-model="batchForm.customers"
-            placeholder="陈美玲&#10;赵雨晴&#10;孙佳宁"
-            :rows="5"
-          />
-        </div>
-        <template #footer>
-          <CButton variant="ghost" @click="showBatch = false">取消</CButton>
-          <CButton variant="primary" :disabled="!batchForm.tagName || !batchForm.customers.trim()" @click="submitBatch">确认打标</CButton>
-        </template>
-      </CCard>
-    </div>
-
-    <transition name="toast">
-      <div v-if="toast" class="toast"><CIcon name="check" :size="16" />{{ toast }}</div>
-    </transition>
   </div>
 </template>
 
@@ -332,6 +349,8 @@ const toast = ref('')
 @media (max-width: 1024px) { .tg__head { grid-auto-flow: row; grid-template-columns: repeat(2, 1fr); } }
 :deep(.ckpi) { min-width: 0; }
 .tg__tree-actions { display: flex; align-items: center; gap: var(--s-sm); flex-shrink: 0; }
+
+.tg__hint { padding: var(--s-lg) 0; text-align: center; font-size: var(--t-sm); color: var(--c-text-3); }
 
 .tg__search { display: none; flex-direction: column; gap: var(--s-sm); }
 .src-tabs { display: flex; gap: var(--s-xs); flex-wrap: wrap; }
@@ -387,19 +406,12 @@ const toast = ref('')
 .detail-stats__item { flex: 1; text-align: center; }
 .detail-stats__label { font-size: var(--t-xs); color: var(--c-text-3); margin-bottom: 4px; }
 .detail-stats__value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.detail-stats__value--code { font-size: var(--t-md); color: var(--c-text-2); }
 
 .detail-sec { margin-bottom: var(--s-md); }
 .detail-sec__label { font-size: var(--t-xs); color: var(--c-text-3); margin-bottom: 4px; }
 .detail-sec__text { font-size: var(--t-sm); color: var(--c-text); line-height: var(--lh-md); }
-.detail-sec__customers { display: flex; flex-wrap: wrap; gap: var(--s-xs); }
-.cust-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 4px 10px;
-  background: var(--c-brand-soft); color: var(--c-brand);
-  border-radius: var(--r-capsule);
-  font-size: var(--t-xs);
-}
-.detail-actions { display: flex; justify-content: flex-end; padding-top: var(--s-sm); border-top: 1px solid var(--c-border-light); }
+.detail-actions { display: flex; justify-content: flex-end; gap: var(--s-xs); padding-top: var(--s-sm); border-top: 1px solid var(--c-border-light); }
 
 /* 统计卡 */
 .stat-row { display: flex; justify-content: space-between; align-items: center; padding: var(--s-sm) 0; border-bottom: 1px solid var(--c-border-light); }
@@ -408,39 +420,17 @@ const toast = ref('')
 .stat-row__value { font-size: var(--t-lg); font-weight: 700; color: var(--c-text); font-variant-numeric: tabular-nums; }
 .stat-row__value--teal { color: var(--c-teal-dark); }
 
-/* 规则卡 */
-.rule-list { display: flex; flex-direction: column; gap: var(--s-sm); }
-.rule-item {
+/* 自动化规则 Backlog 占位 */
+.rule-soon {
+  display: flex; gap: var(--s-md); align-items: flex-start;
   padding: var(--s-md);
   background: var(--c-surface-muted, #f5f6fa);
+  border: 1px dashed var(--c-border);
   border-radius: var(--r-md);
+  color: var(--c-text-3);
 }
-.rule-item__head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
-.rule-item__name { font-size: var(--t-sm); font-weight: 700; color: var(--c-text); }
-.rule-item__flow {
-  display: flex; align-items: center; gap: var(--s-xs);
-  font-size: var(--t-sm); color: var(--c-text-2);
-  margin-bottom: 4px;
-}
-.rule-item__trigger { color: var(--c-text-3); }
-.rule-item__action { color: var(--c-brand); font-weight: 600; }
-.rule-item__meta { display: flex; justify-content: space-between; font-size: var(--t-xs); color: var(--c-text-3); gap: var(--s-md); flex-wrap: wrap; }
-
-.mini-switch { display: inline-flex; position: relative; width: 36px; height: 20px; cursor: pointer; }
-.mini-switch input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
-.mini-switch__track {
-  position: absolute; inset: 0;
-  background: var(--c-border); border-radius: var(--r-capsule);
-  transition: background 0.15s;
-}
-.mini-switch__track::after {
-  content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
-  background: var(--c-surface); border-radius: 50%;
-  box-shadow: 0 1px 2px rgba(0,0,0,.2);
-  transition: transform 0.15s;
-}
-.mini-switch input:checked + .mini-switch__track { background: var(--c-brand); }
-.mini-switch input:checked + .mini-switch__track::after { transform: translateX(16px); }
+.rule-soon__title { font-size: var(--t-sm); font-weight: 700; color: var(--c-text-2); margin-bottom: 4px; }
+.rule-soon__desc { font-size: var(--t-xs); color: var(--c-text-3); line-height: var(--lh-md); }
 
 .tg__fab { display: none; }
 
@@ -448,34 +438,17 @@ const toast = ref('')
 .modal { width: 520px; max-width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-pop); }
 .form { display: flex; flex-direction: column; gap: var(--s-md); }
 .form__row { display: flex; flex-direction: column; gap: var(--s-xs); }
-.form__row--2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-md); }
 .form__label { font-size: var(--t-xs); color: var(--c-text-3); }
-.color-row { display: flex; gap: var(--s-xs); height: 36px; align-items: center; }
-.color-dot {
-  width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent;
-  display: inline-flex; align-items: center; justify-content: center;
-  color: #fff; cursor: pointer;
+.form__tip {
+  display: flex; align-items: flex-start; gap: var(--s-xs);
+  font-size: var(--t-xs); color: var(--c-text-3); line-height: var(--lh-md);
 }
-.color-dot--active { border-color: var(--c-text); }
-
-.toast {
-  position: fixed; bottom: var(--s-xl); left: 50%; transform: translateX(-50%);
-  display: inline-flex; align-items: center; gap: var(--s-xs);
-  padding: var(--s-sm) var(--s-lg);
-  background: var(--c-success-fg); color: #fff;
-  border-radius: var(--r-capsule);
-  font-size: var(--t-sm); font-weight: 600;
-  box-shadow: var(--shadow-pop);
-  z-index: 300;
-}
-.toast-enter-active, .toast-leave-active { transition: opacity 0.2s, transform 0.2s; }
-.toast-enter-from, .toast-leave-to { opacity: 0; transform: translate(-50%, 10px); }
+.form__tip-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex-shrink: 0; }
 
 @media (max-width: 1024px) {
   .tg__kpis { grid-template-columns: repeat(2, 1fr); min-width: 0; }
   .tg__body { grid-template-columns: 1fr; }
   .tg__search { display: flex; }
   .tg__fab { display: block; position: sticky; bottom: var(--s-md); z-index: 10; }
-  .rule-item__meta { flex-direction: column; gap: 2px; }
 }
 </style>

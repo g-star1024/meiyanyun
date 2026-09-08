@@ -145,18 +145,38 @@ export interface RechargeResultDTO {
   giftAfter: number
 }
 
-/** 标签（GET /customer/tags 全量字典） */
+/** 标签（GET /customer/tags 全量字典，带覆盖客户数） */
 export interface CustomerTagDTO {
   tagId: string
   tagName: string
-  /** 标签分类（价值/行为/消费/...） */
+  /** 标签分类（五分类中文枚举：消费/肤质/行为/价值/医疗，库内即中文） */
   category: string
+  /** 覆盖客户数（customer_tag_rel group by 聚合，无关联为 0） */
+  customerCount?: number
 }
 
 /** 客户-标签关联（GET /customer/{id}/tags，仅含 tagId，需与全量标签 join 取名） */
 export interface CustomerTagRelDTO {
   customerId: string
   tagId: string
+}
+
+/** 标签新建/改名入参（tagName 必填且唯一 ≤32 字，category 五分类；重名 409、非法分类 400） */
+export interface TagUpsertReq {
+  tagName: string
+  category: string
+}
+
+/** 标签覆盖汇总（GET /customer/tags/overview） */
+export interface TagOverviewDTO {
+  /** 标签总数 */
+  totalTags: number
+  /** 至少打过一个标签的去重客户数 */
+  coveredCustomers: number
+  /** 累计打标人次（customer_tag_rel 行数） */
+  totalAssignments: number
+  /** 已打标客户人均标签数 */
+  avgTagsPerCustomer: number
 }
 
 /** 客户列表（分页 + 门店/等级/状态/来源过滤 + 姓名手机号模糊搜索）
@@ -169,6 +189,8 @@ export const listCustomers = (params?: {
   status?: string
   channel?: string
   keyword?: string
+  /** 按标签过滤：命中该 tagId 的客户（exists 子查询） */
+  tagId?: string
 }) => client.get<CustomerPage>('/customer', { params })
 
 export const getCustomer = (id: string) =>
@@ -208,13 +230,37 @@ export const rechargeCard = (cardNo: string, amount: number, payMethod: string, 
 export const listCardLedger = (cardNo: string) =>
   client.get<CardLedgerDTO[]>(`/customer/cards/${cardNo}/ledger`)
 
-/** 全量标签字典（tagId → tagName/category） */
+/** 全量标签字典（tagId → tagName/category/customerCount） */
 export const listAllTags = () =>
   client.get<CustomerTagDTO[]>('/customer/tags')
+
+/** 标签覆盖汇总（标签总数/覆盖客户数/累计打标人次/人均标签数） */
+export const getTagOverview = () =>
+  client.get<TagOverviewDTO>('/customer/tags/overview')
 
 /** 某客户的标签关联（仅 tagId，需与 listAllTags join 取中文名） */
 export const listCustomerTagRels = (id: string) =>
   client.get<CustomerTagRelDTO[]>(`/customer/${id}/tags`)
+
+/** 新建标签（tagName 必填且唯一、category 五分类；重名 409；TG### 由后端生成） */
+export const createTag = (data: TagUpsertReq) =>
+  client.post<CustomerTagDTO>('/customer/tags', data)
+
+/** 标签改名/改分类（不存在 404、重名 409、分类非法 400） */
+export const updateTag = (tagId: string, data: TagUpsertReq) =>
+  client.put<CustomerTagDTO>(`/customer/tags/${tagId}`, data)
+
+/** 删除标签定义（后端先级联解绑全部客户关联；返回解绑客户数） */
+export const deleteTag = (tagId: string) =>
+  client.delete<{ deleted: string; unassignedCustomers: number }>(`/customer/tags/${tagId}`)
+
+/** 给客户打标（重复打标 409） */
+export const assignCustomerTag = (id: string, tagId: string) =>
+  client.post<CustomerTagRelDTO>(`/customer/${id}/tags/${tagId}`)
+
+/** 给客户删标（解绑单个标签；未打此标 404） */
+export const removeCustomerTag = (id: string, tagId: string) =>
+  client.delete<{ removed: boolean }>(`/customer/${id}/tags/${tagId}`)
 
 // ============================================================
 // 积分商城（M3-20，对接 customer-service /customer/mall/*）
