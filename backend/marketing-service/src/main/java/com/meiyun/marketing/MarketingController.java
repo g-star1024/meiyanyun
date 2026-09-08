@@ -1,12 +1,10 @@
 package com.meiyun.marketing;
 
-import com.meiyun.common.event.DomainEventPublisher;
 import com.meiyun.common.ratelimit.RateLimiter;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.HttpStatus;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -38,30 +36,26 @@ public class MarketingController {
     private final PushRecordRepository pushRepo;
     private final CouponWriteoffChainRepository chainRepo;
     private final RateLimiter rateLimiter;
-    private final DomainEventPublisher events;
     private final MarketingAssetService assetService;
     private final PosterService posterService;
     private final LiveService liveService;
     private final MarketingCfgService cfgService;
     private final CouponWriteoffService writeoffService;
+    private final PushService pushService;
 
-    private static final int PUSH_WINDOW_SECONDS = 7 * 24 * 3600; // 周频窗口
-    private static final String PUSH_TOPIC = "meiyun.marketing.push-sent";
-    /** 合法推送渠道码（与前端 PushChannel 契约一致；push_type 列 varchar(16)）。 */
-    private static final java.util.Set<String> PUSH_TYPES = java.util.Set.of("SMS", "WECOM", "WECHAT_MP");
-    private static final int PUSH_CONTENT_MAX = 256;
+    private static final int PUSH_WINDOW_SECONDS = PushService.WINDOW_SECONDS; // 周频窗口
 
     public MarketingController(CampaignService campaignService, CouponService couponService,
                                MarketingStatsService statsService,
                                ForbiddenWordService forbiddenWordService,
                                PushRecordRepository pushRepo, CouponWriteoffChainRepository chainRepo,
                                RateLimiter rateLimiter,
-                               DomainEventPublisher events,
                                MarketingAssetService assetService,
                                PosterService posterService,
                                LiveService liveService,
                                MarketingCfgService cfgService,
-                               CouponWriteoffService writeoffService) {
+                               CouponWriteoffService writeoffService,
+                               PushService pushService) {
         this.campaignService = campaignService;
         this.couponService = couponService;
         this.statsService = statsService;
@@ -69,12 +63,12 @@ public class MarketingController {
         this.pushRepo = pushRepo;
         this.chainRepo = chainRepo;
         this.rateLimiter = rateLimiter;
-        this.events = events;
         this.assetService = assetService;
         this.posterService = posterService;
         this.liveService = liveService;
         this.cfgService = cfgService;
         this.writeoffService = writeoffService;
+        this.pushService = pushService;
     }
 
     // ==================== 配置 ====================
@@ -167,46 +161,13 @@ public class MarketingController {
     // ==================== 触达（周频限 + 违禁词） ====================
 
     /**
-     * 发送触达：先违禁词校验，再周频限制（近 7 天 ≤ weekly_push_limit 条），双红线都过才落库。
+     * 发送触达：渠道白名单 → 违禁词 → 周频限（近 7 天 ≤ weekly_push_limit 条）→ 60 秒幂等重放，
+     * 通过后落库 + 领域事件 + 全动作审计（bizType=PUSH）。四件套在 {@link PushService}。
      */
     @PostMapping("/push")
     @RequirePerm("push:create")
-    @Transactional
     public PushRecord push(@RequestBody @Valid PushCmd cmd) {
-        // 渠道白名单：push_type 列 varchar(16)，只收三渠道英文码，非法值给中文 400（不放行到落库超长报错）
-        if (!PUSH_TYPES.contains(cmd.pushType())) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "推送渠道不合法：仅支持 短信(SMS)/企业微信(WECOM)/微信公众号(WECHAT_MP)");
-        }
-        if (cmd.content().length() > PUSH_CONTENT_MAX) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "推送内容过长：最多 " + PUSH_CONTENT_MAX + " 字，当前 " + cmd.content().length() + " 字");
-        }
-        // 红线②：违禁词校验（DB 词库 + 缓存，管理端可维护）
-        List<String> hits = forbiddenWordService.check(cmd.content());
-        if (!hits.isEmpty()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "营销合规拦截：命中违禁词 " + String.join("; ", hits));
-        }
-        // 红线①：周频限制（经 RateLimiter 抽象：DB 计数默认 / Redis 原子计数生产，配置切换）
-        int limit = config().getWeeklyPushLimit() == null ? 3 : config().getWeeklyPushLimit();
-        String rlKey = "push:customer:" + cmd.customerId();
-        if (!rateLimiter.tryAcquire(rlKey, limit, PUSH_WINDOW_SECONDS)) {
-            long sent = rateLimiter.currentCount(rlKey, PUSH_WINDOW_SECONDS);
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "触达频控拦截：客户 " + cmd.customerId() + " 近 7 天已触达 " + sent + " 条，上限 " + limit);
-        }
-        PushRecord p = new PushRecord();
-        p.setCustomerId(cmd.customerId());
-        p.setPushType(cmd.pushType());
-        p.setContent(cmd.content());
-        p.setSentAt(OffsetDateTime.now());
-        PushRecord saved = pushRepo.save(p);
-        // 发布领域事件（默认日志实现；生产切 MQ，由 Outbox 兜底补偿）
-        events.publish(PUSH_TOPIC, String.valueOf(saved.getPushId()),
-                "{\"pushId\":\"" + saved.getPushId() + "\",\"customerId\":\"" + cmd.customerId()
-                        + "\",\"pushType\":\"" + cmd.pushType() + "\"}");
-        return saved;
+        return pushService.send(cmd);
     }
 
     /** 查询某客户近 7 天触达计数与剩余额度。 */

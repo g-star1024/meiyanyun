@@ -71,6 +71,22 @@ public class StoreController {
         return out;
     }
 
+    /**
+     * 服务间调用专用：返回任意一家门店（编码+名称），供集团/大区账号（无所属门店）
+     * 在必须落门店编码的写链路（如券核销）中兜底，避免硬编码不存在的门店编码。
+     * 无门店时返回 {code:null,name:null}，调用方自行降级。
+     */
+    @GetMapping("/internal/first")
+    @RequirePerm("internal:name-map")
+    public Map<String, String> firstStore() {
+        Map<String, String> out = new LinkedHashMap<>();
+        storeRepository.findAll().stream().findFirst().ifPresent(s -> {
+            out.put("code", s.getStoreCode());
+            out.put("name", s.getStoreName());
+        });
+        return out;
+    }
+
     /** 六大区分布（含三层口径汇总，ID-2）。 */
     @GetMapping("/regions/dist")
     @RequirePerm("org:view")

@@ -119,7 +119,10 @@ const templateOptions = computed(() =>
     .filter((t) => t.status === 'ENABLED')
     .map((t) => ({ value: t.id, label: `${t.name}（${store.STYLE_LABEL[t.style]}）` })))
 const referrerOptions = computed(() =>
-  store.referrerOptions.map((r) => ({ value: r.name, label: `${r.name} · ${r.level} · 已推荐 ${r.total} 人` })))
+  store.referrerOptions.map((r) => ({
+    value: r.name,
+    label: r.total > 0 ? `${r.name} · ${r.level} · 已推荐 ${r.total} 人` : `${r.name} · ${r.level}`,
+  })))
 
 async function submitCreate() {
   formError.value = ''

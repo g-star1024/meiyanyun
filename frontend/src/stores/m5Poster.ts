@@ -9,13 +9,13 @@
 //  - 后端 dealAmount bigint 存「分」，前端活规格用「元」：fen2yuan
 //  - 后端 commissionRate = 百分比×10（5% = 50），前端用 0~1：rate50↔view（×1000 / ÷1000）
 //  - 字段名 templateId/posterId → id、templateName → name
-//  - 推荐人选项仍从转介绍关系链（referral mock）派生
+//  - 推荐人选项取真实在职员工（org-service /api/org/staff，B22 收口；原 referral mock 已移除）
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
-import { useReferralStore } from '@/stores/referral'
+import { listStaff } from '@/api/org'
 import * as api from '@/api/marketing'
 import type { PosterTemplateDTO, PosterRecordDTO } from '@/api/marketing'
 import { fen2yuan } from '@/stores/m5Coupon'
@@ -134,23 +134,30 @@ export function adaptPoster(d: PosterRecordDTO): Poster {
 export const useM5PosterStore = defineStore('m5Poster', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
-  const referral = useReferralStore()
 
   const templates = ref<PosterTemplate[]>([])
   const posters = ref<Poster[]>([])
+  const referrerOptions = ref<{ name: string; level: string; total: number }[]>([])
   const filterStatus = ref<'ALL' | PosterStatus>('ALL')
   const loaded = ref(false)
 
-  // 推荐人选项（去重，从转介绍关系链派生）
-  const referrerOptions = computed(() => {
-    const map = new Map<string, { name: string; level: string; total: number }>()
-    referral.referrals.forEach((r) => {
-      if (!map.has(r.referrerName)) {
-        map.set(r.referrerName, { name: r.referrerName, level: r.referrerLevel, total: r.referrerTotal })
-      }
-    })
-    return [...map.values()].sort((a, b) => b.total - a.total)
-  })
+  /** 推荐人选项：真实在职员工（org-service），按姓名排序；level 取主角色中文名 */
+  async function loadReferrers() {
+    try {
+      const { data } = await listStaff()
+      referrerOptions.value = (data ?? [])
+        .filter((s) => s.status !== '离职')
+        .map((s) => ({
+          name: s.staffName,
+          level: s.role?.roleName || s.roleCode || '员工',
+          total: 0,
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+    } catch {
+      // 员工服务不可用时下拉为空，页面仍可展示已生成海报（推荐人姓名已随海报记录持久化）
+      referrerOptions.value = []
+    }
+  }
 
   const filteredTemplates = computed(() => {
     if (filterStatus.value === 'ALL') return templates.value
@@ -217,11 +224,14 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
     return Math.round(Math.max(0, amount) * rate)
   }
 
-  /** 拉取真实模板 + 海报（幂等：已加载默认不重复，force 用于写后重拉）；推荐人选项仍走转介绍 mock */
+  /** 拉取真实模板 + 海报 + 推荐人员工（幂等：已加载默认不重复，force 用于写后重拉） */
   async function seed(force = false) {
     if (loaded.value && !force) return
-    referral.seed()
-    const [tplRes, posterRes] = await Promise.all([api.listPosterTemplates(), api.listPosters()])
+    const [tplRes, posterRes] = await Promise.all([
+      api.listPosterTemplates(),
+      api.listPosters(),
+      loadReferrers(),
+    ])
     templates.value = tplRes.data.map(adaptTemplate)
     posters.value = posterRes.data.map(adaptPoster)
     loaded.value = true

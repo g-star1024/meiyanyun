@@ -28,6 +28,13 @@ public class PushRecord {
     @Column(nullable = false, length = 256)
     private String content;
 
+    /**
+     * 幂等键：客户+渠道+内容的 SHA-256 前 16 位，60 秒窗口内重复提交直接返回已落库记录
+     * （防双击/重试导致的重复触达）；由 PushSchemaInitializer 补列 + 唯一索引自愈。
+     */
+    @Column(name = "dedup_key", length = 32)
+    private String dedupKey;
+
     @Column(name = "sent_at", nullable = false)
     private OffsetDateTime sentAt;
 }

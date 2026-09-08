@@ -40,7 +40,9 @@ public class PushSchemaInitializer implements ApplicationRunner {
             jdbc.execute("ALTER TABLE push_record ALTER COLUMN push_type TYPE varchar(16)");
             // 旧版实体遗留 CHECK（只收 短信/小程序/App）：渠道合法性已由 Controller 白名单兜底，旧约束必须删除
             jdbc.execute("ALTER TABLE push_record DROP CONSTRAINT IF EXISTS push_record_push_type_check");
-            log.info("push_record.push_type 已确认为 varchar(16) 且旧中文渠道 CHECK 约束已清理（承载 SMS/WECOM/WECHAT_MP）");
+            // 幂等键补列（B22：防双击/重试重复触达，60 秒窗口同键重放返回已落库记录；ddl-auto=update 会自动补列，此 ALTER 兜底旧库）
+            jdbc.execute("ALTER TABLE push_record ADD COLUMN IF NOT EXISTS dedup_key varchar(32)");
+            log.info("push_record.push_type 已确认为 varchar(16) 且旧中文渠道 CHECK 约束已清理（承载 SMS/WECOM/WECHAT_MP）；dedup_key 幂等列已确认");
         } catch (Exception e) {
             // 表尚不存在（首次启动 Hibernate 还未建表）等场景：不阻断启动，实体 length=16 已保证新表正确
             log.warn("push_record 表结构自愈跳过：{}", e.getMessage());

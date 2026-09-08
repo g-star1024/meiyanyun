@@ -28,7 +28,8 @@ import java.util.regex.Pattern;
 @Service
 public class CouponWriteoffService {
 
-    private static final String DEFAULT_STORE_CODE = "SST01";
+    /** 最终降级门店编码：远程门店服务不可达时回显（正常兜底走 store-service 首家真实门店）。 */
+    private static final String FALLBACK_STORE_CODE = "SST01";
     private static final String CHANNEL = "门店核销";
     private static final Pattern PHONE = Pattern.compile("^1[3-9]\\d{9}$");
 
@@ -88,8 +89,9 @@ public class CouponWriteoffService {
         rec.setCouponId(hit.map(CouponTemplate::getCouponId).orElse(null));
         rec.setCustomerName(cmd.customerName().trim());
         rec.setCustomerPhone(maskPhone(phone));
-        rec.setStoreCode(DEFAULT_STORE_CODE);
-        rec.setStoreName(resolveStoreName(DEFAULT_STORE_CODE));
+        String[] store = currentStore();
+        rec.setStoreCode(store[0]);
+        rec.setStoreName(store[1]);
         rec.setOrderAmountFen(cmd.orderAmountFen());
         rec.setDiscountFen(0L);
         rec.setChannel(CHANNEL);
@@ -189,6 +191,27 @@ public class CouponWriteoffService {
     private String operatorName() {
         String name = SecurityContext.currentStaffName();
         return (name == null || name.isBlank()) ? "前台" : name;
+    }
+
+    /**
+     * 当前核销门店 [编码, 名称]：门店角色取登录账号所属门店并远程解析名称；
+     * 集团/大区账号（storeCode 为空，如超管）远程取门店表首家真实门店兜底；
+     * 远程调用均失败时最终降级为固定编码（名称回显编码）。
+     */
+    private String[] currentStore() {
+        var user = SecurityContext.get();
+        String code = user == null ? null : user.storeCode();
+        if (code != null && !code.isBlank()) {
+            String c = code.trim();
+            return new String[]{c, resolveStoreName(c)};
+        }
+        Map<String, String> first = storeNameResolver.resolveFirstStore();
+        if (first != null) {
+            String c = first.get("code");
+            String n = first.get("name");
+            return new String[]{c, (n == null || n.isBlank()) ? c : n};
+        }
+        return new String[]{FALLBACK_STORE_CODE, FALLBACK_STORE_CODE};
     }
 
     private void audit(String action, String txnNo, Map<String, Object> payload) {

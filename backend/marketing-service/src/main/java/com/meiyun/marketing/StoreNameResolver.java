@@ -70,4 +70,27 @@ public class StoreNameResolver {
         }
         return out;
     }
+
+    /**
+     * 解析任意一家可用门店（集团/大区账号无所属门店时兜底）。
+     * 调 store-service {@code GET /api/stores/internal/first}，返回 {code,name}；
+     * 失败或无门店返回 null（调用方降级回显固定编码）。
+     */
+    public Map<String, String> resolveFirstStore() {
+        try {
+            String url = storeBaseUrl + "/api/stores/internal/first";
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            ResponseEntity<Map<String, String>> resp = restTemplate.exchange(
+                    url, HttpMethod.GET, new HttpEntity<>(headers),
+                    new ParameterizedTypeReference<Map<String, String>>() {});
+            Map<String, String> body = resp.getBody();
+            if (body != null && body.get("code") != null && !body.get("code").isBlank()) {
+                return body;
+            }
+        } catch (Exception e) {
+            log.warn("兜底门店解析失败，降级回显固定编码：{}", e.getMessage());
+        }
+        return null;
+    }
 }
