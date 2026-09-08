@@ -114,6 +114,17 @@ public class TxnService {
         if (cmd.balance() == null || cmd.balance() <= 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "卡内余额必须大于 0");
         }
+        // B18 冻结期防重：同卡若已有在途退卡单（待复核/待财务），卡已置「退卡中」，
+        // 拒绝重复发起（前端入口亦禁用），避免一卡多单、重复冻结/终审。
+        if (cmd.cardNo() != null && !cmd.cardNo().isBlank()) {
+            List<TxnCardCancel> inflight = cancelRepo.findByCardNoAndStatusInOrderByTxnNoDesc(
+                    cmd.cardNo().trim(), List.of("PENDING_REVIEW", "PENDING_FINANCE"));
+            if (!inflight.isEmpty()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "该卡已有在途退卡单 " + inflight.get(0).getTxnNo()
+                                + "（待复核/待财务终审），不可重复发起退卡；请先驳回原单或完成终审");
+            }
+        }
         FeeCalculator.FeePlan plan = FeeCalculator.compute(
                 cmd.balance(), Boolean.TRUE.equals(cmd.medical()),
                 Boolean.TRUE.equals(cmd.feeManualOverride()), cmd.feeCents());
@@ -161,6 +172,10 @@ public class TxnService {
                 "客户" + nvl(c.getCustomerName(), c.getCustomer()) + "退卡，违约金 ¥" + fenToYuan(plan.feeCents())
                         + "，实退 ¥" + fenToYuan(plan.refundCents()),
                 plan.refundCents(), tier, storeCode);
+        // B18 退卡冻结：CC 单创建同事务回调 customer 冻结卡（在用→退卡中，ADJUST 流水 bizRef=CC…-F）；
+        // 冻结期充值/消费/划扣/订单退款回加由 customer 侧「非在用」校验中文拦截。远程失败抛异常 → 本事务
+        // 整体回滚（CC 单不留存、审批任务不生成），杜绝「单据已建卡未冻」。customer 以 CC…-F 幂等，重试安全。
+        cardClient.freezeCard(c.getCardNo(), c.getTxnNo());
         return c;
     }
 
@@ -244,6 +259,9 @@ public class TxnService {
             cancelRepo.save(c);
             audit.record("CARD_CANCEL", txnNo, actor, "REJECT",
                     "{\"from\":\"" + from + "\",\"to\":\"REJECTED\",\"reason\":" + jsonStr(reason) + "}");
+            // B18 驳回解冻：CC 单驳回同事务回调 customer 解冻卡（退卡中→在用，ADJUST 流水 bizRef=CC…-U）；
+            // 远程失败抛异常 → 驳回事务整体回滚（单据保持原态），杜绝「已驳回但卡仍冻结」。以 CC…-U 幂等，重试安全。
+            cardClient.unfreezeCard(c.getCardNo(), c.getTxnNo());
         }
     }
 

@@ -23,8 +23,13 @@ import java.util.Set;
  * 内部扣款/退款回加/退卡按来源单号重放返回成功防双扣双加）；③全审计（audit 落 CARD 链）；④并发安全
  * （{@link MemberCardRepository#findForUpdate} 行锁 + synchronized 单号生成）。
  *
- * <p>资金联动：充值成功同事务经 {@link CardFinanceEventPublisher} 落 outbox（RF-DEPOSIT/IN）；
- * 消费/退款回加/退卡的资金分录由 txn 域 outbox 投递，本域只动卡台账。
+ * <p>资金联动：充值成功同事务经 {@link CardFinanceEventPublisher} 落 outbox（RF-DEPOSIT/IN，仅本金部分，
+ * 赠金属营销赠送不进资金分录）；消费/退款回加/退卡的资金分录由 txn 域 outbox 投递，本域只动卡台账。
+ *
+ * <p>B18 赠金：充值可带赠送金额（giftAmount），消费/划扣扣减<b>先赠金（gift_balance）后本金（balance）</b>，
+ * 赠金同台账留痕（card_ledger.gift_amount/gift_after 两列），对账恒等式 Σ gift_amount = gift_balance。
+ * B18 退卡冻结：CC 单发起即 freeze（在用→退卡中，冻结期非「在用」校验自然拦截消费/划扣/充值/退款回加），
+ * 驳回 unfreeze（退卡中→在用），终审 refund 置「已退卡」本金与赠金一并清零。
  */
 @Service
 public class CardLedgerService {
@@ -51,13 +56,15 @@ public class CardLedgerService {
     }
 
     /**
-     * 会员卡充值（对外收银端点）：行锁找卡 → 校验在用 → 余额加款 → 写 RECHARGE 流水（balance_after 快照）
-     * → 审计 → 同事务落资金事件 outbox。充值单号 RC+yyyyMMdd-序号 服务端生成；重放同号 409。
+     * 会员卡充值（对外收银端点）：行锁找卡 → 校验在用 → 本金/赠金分别加款 → 写 RECHARGE 流水
+     * （balance_after/gift_after 双快照）→ 审计 → 同事务落资金事件 outbox（仅本金部分，赠金不进资金分录）。
+     * 充值单号 RC+yyyyMMdd-序号 服务端生成；重放同号 409。giftAmount 为赠送金额（分，≥0，可省=0）。
      */
     @Transactional
-    public synchronized CardLedger recharge(String cardNo, long amount, String payMethod,
+    public synchronized CardLedger recharge(String cardNo, long amount, long giftAmount, String payMethod,
                                             String operator, String storeCode) {
         if (amount <= 0) throw new BadReq("充值金额必须为正（单位：分）");
+        if (giftAmount < 0) throw new BadReq("赠送金额不能为负（单位：分）");
         if (payMethod == null || !RECHARGE_METHODS.contains(payMethod)) {
             throw new BadReq("充值支付方式非法：仅支持 cash/card/wxpay/alipay（不可用储值余额充值）");
         }
@@ -69,7 +76,10 @@ public class CardLedgerService {
 
         String rcNo = nextRechargeNo();
         long after = (card.getBalance() == null ? 0L : card.getBalance()) + amount;
+        long giftBefore = card.getGiftBalance() == null ? 0L : card.getGiftBalance();
+        long giftAfter = giftBefore + giftAmount;
         card.setBalance(after);
+        card.setGiftBalance(giftAfter);
         cardRepo.save(card);
 
         CardLedger l = new CardLedger();
@@ -78,6 +88,8 @@ public class CardLedgerService {
         l.setChangeType("RECHARGE");
         l.setAmount(amount);
         l.setBalanceAfter(after);
+        l.setGiftAmount(giftAmount);
+        l.setGiftAfter(giftAfter);
         l.setBizRef(rcNo);
         l.setOperator(operator);
         l.setStoreCode(storeCode != null ? storeCode : card.getStoreCode());
@@ -86,9 +98,11 @@ public class CardLedgerService {
         String customerName = customerRepo.findById(card.getCustomerId())
                 .map(Customer::getName).orElse(card.getCustomerId());
         audit.record("CARD", rcNo, actor(operator), "RECHARGE",
-                json(Map.of("cardNo", cardNo, "customer", customerName, "amount", amount,
-                        "payMethod", payMethod, "balanceAfter", after,
-                        "summary", "会员卡充值 " + yuan(amount) + " 元（" + payMethod + "），余额 " + yuan(after) + " 元")));
+                json(rechargeAudit(cardNo, rcNo, customerName, amount, giftAmount, payMethod, after, giftAfter,
+                        "会员卡充值 " + yuan(amount) + " 元（" + payMethod + "）"
+                                + (giftAmount > 0 ? "，赠送 " + yuan(giftAmount) + " 元" : "")
+                                + "，本金余额 " + yuan(after) + " 元"
+                                + (giftAfter > 0 ? "、赠金余额 " + yuan(giftAfter) + " 元" : ""))));
         publisher.emitRecharge(rcNo, cardNo, amount, payMethod, l.getStoreCode(), customerName);
         return saved;
     }
@@ -151,6 +165,8 @@ public class CardLedgerService {
         l.setChangeType("RECHARGE");
         l.setAmount(priceFen);
         l.setBalanceAfter(priceFen);
+        l.setGiftAmount(giftBalance);
+        l.setGiftAfter(giftBalance);
         l.setBizRef(orderNo);
         l.setOrderNo(orderNo);
         l.setOperator("system");
@@ -169,8 +185,9 @@ public class CardLedgerService {
 
     /**
      * 储值余额消费扣款（txn 内部端点，X-Internal-Token 系统身份）：行锁找卡 → 校验在用 →
-     * 余额不足 422（中文，含当前余额）→ 余额扣款 → 写 CONSUME 负额流水（bizRef=订单号）。
-     * 同订单号重放幂等返回既有流水（网络重试不双扣）。
+     * 扣减顺序<b>先赠金后本金</b>（giftUsed=min(赠金余额, 扣款额)，剩余扣本金；本金+赠金合计不足 422 中文）
+     * → 写 CONSUME 负额流水（amount=-本金扣减、gift_amount=-赠金扣减，balance_after/gift_after 双快照，
+     * bizRef=订单号）。同订单号重放幂等返回既有流水（网络重试不双扣）。
      */
     @Transactional
     public CardLedger consume(String cardNo, String customerId, long amount, String orderNo) {
@@ -193,14 +210,20 @@ public class CardLedgerService {
             throw new BadReq("卡状态非「在用」（当前：" + card.getStatus() + "），不可扣款");
         }
         long before = card.getBalance() == null ? 0L : card.getBalance();
-        if (before < amount) {
-            throw new Unprocessable("储值余额不足，当前余额 " + yuan(before) + " 元，本次需扣 " + yuan(amount) + " 元");
+        long giftBefore = card.getGiftBalance() == null ? 0L : card.getGiftBalance();
+        if (before + giftBefore < amount) {
+            throw new Unprocessable("储值余额不足：本金 " + yuan(before) + " 元、赠金 " + yuan(giftBefore)
+                    + " 元，本次需扣 " + yuan(amount) + " 元");
         }
-        long after = before - amount;
+        long giftUsed = Math.min(giftBefore, amount);
+        long principalUsed = amount - giftUsed;
+        long after = before - principalUsed;
+        long giftAfter = giftBefore - giftUsed;
         card.setBalance(after);
-        // 扣尽状态流转：余额清零且卡已无剩余可用（储值卡无次数概念 total_times 占位 1；疗程卡须剩余次数也为 0）→ 已用完。
+        card.setGiftBalance(giftAfter);
+        // 扣尽状态流转：本金与赠金均清零且卡已无剩余可用（储值卡无次数概念 total_times 占位 1；疗程卡须剩余次数也为 0）→ 已用完。
         // 疗程卡余额为 0 但仍有剩余次数时，后续可走纯扣次（0 额）划扣，不得提前置「已用完」。
-        boolean depleted = after == 0
+        boolean depleted = after == 0 && giftAfter == 0
                 && ("CARD".equals(card.getCardType()) || (card.getRemainTimes() == null || card.getRemainTimes() == 0));
         if (depleted) {
             card.setStatus("已用完");
@@ -211,8 +234,10 @@ public class CardLedgerService {
         l.setCardNo(cardNo);
         l.setCustomerId(card.getCustomerId());
         l.setChangeType("CONSUME");
-        l.setAmount(-amount);
+        l.setAmount(-principalUsed);
         l.setBalanceAfter(after);
+        l.setGiftAmount(-giftUsed);
+        l.setGiftAfter(giftAfter);
         l.setBizRef(orderNo);
         l.setOrderNo(orderNo);
         l.setOperator("system");
@@ -220,11 +245,11 @@ public class CardLedgerService {
         CardLedger saved = ledgerRepo.save(l);
 
         audit.record("CARD", orderNo, "system", "CONSUME",
-                json(Map.of("cardNo", cardNo, "orderNo", orderNo, "amount", amount,
-                        "balanceAfter", after, "authority", "customer",
-                        "depleted", depleted,
-                        "summary", "储值消费扣款 " + yuan(amount) + " 元，余额 " + yuan(after) + " 元"
-                                + (depleted ? "，卡余额扣尽已置「已用完」" : ""))));
+                json(consumeAudit(cardNo, orderNo, amount, principalUsed, giftUsed, after, giftAfter,
+                        depleted, false,
+                        "储值消费扣款 " + yuan(amount) + " 元（赠金 " + yuan(giftUsed) + " 元、本金 "
+                                + yuan(principalUsed) + " 元），本金余额 " + yuan(after) + " 元、赠金余额 "
+                                + yuan(giftAfter) + " 元" + (depleted ? "，卡余额扣尽已置「已用完」" : ""))));
         return saved;
     }
 
@@ -294,17 +319,18 @@ public class CardLedgerService {
     }
 
     /**
-     * 退卡终审联动（txn 退卡 CC 终审后内部回调）：行锁找卡 → 状态置「已退卡」→ 余额清零 →
-     * 写 REFUND 负额流水（amount=-旧余额、balance_after=0，bizRef=退卡单号）。
-     * 已退卡/同退卡单号重放幂等返回（终审重试不重复清零）。资金分录由 txn 域 outbox 投递。
+     * 退卡终审联动（txn 退卡 CC 终审后内部回调）：行锁找卡 → 状态置「已退卡」→ 本金与赠金一并清零 →
+     * 写 REFUND 负额流水（amount=-旧本金、gift_amount=-旧赠金、balance_after/gift_after=0，bizRef=退卡单号）。
+     * 已退卡/同退卡单号 REFUND 重放幂等返回（终审重试不重复清零；冻结/解冻 ADJUST 行 bizRef 带 -F/-U 后缀，
+     * 不与本方法重放冲突）。资金分录由 txn 域 outbox 投递。
      */
     @Transactional
     public CardLedger refund(String cardNo, String cancelNo) {
         if (cancelNo == null || cancelNo.isBlank()) throw new BadReq("退卡单号不能为空");
-        Optional<CardLedger> replay = ledgerRepo.findFirstByBizRef(cancelNo);
+        Optional<CardLedger> replay = ledgerRepo.findFirstByBizRefAndChangeType(cancelNo, "REFUND");
         if (replay.isPresent()) {
             CardLedger r = replay.get();
-            if ("REFUND".equals(r.getChangeType()) && cardNo.equals(r.getCardNo())) {
+            if (cardNo.equals(r.getCardNo())) {
                 return r;
             }
             throw new Conflict("退卡单号 " + cancelNo + " 已存在其他卡流水，拒绝重复退卡");
@@ -312,9 +338,11 @@ public class CardLedgerService {
         MemberCard card = cardRepo.findForUpdate(cardNo)
                 .orElseThrow(() -> new NotFound("会员卡不存在: " + cardNo));
         long before = card.getBalance() == null ? 0L : card.getBalance();
+        long giftBefore = card.getGiftBalance() == null ? 0L : card.getGiftBalance();
 
         card.setStatus("已退卡");
         card.setBalance(0L);
+        card.setGiftBalance(0L);
         cardRepo.save(card);
 
         CardLedger l = new CardLedger();
@@ -323,15 +351,109 @@ public class CardLedgerService {
         l.setChangeType("REFUND");
         l.setAmount(-before);
         l.setBalanceAfter(0L);
+        l.setGiftAmount(-giftBefore);
+        l.setGiftAfter(0L);
         l.setBizRef(cancelNo);
         l.setOperator("system");
         l.setStoreCode(card.getStoreCode());
         CardLedger saved = ledgerRepo.save(l);
 
         audit.record("CARD", cancelNo, "system", "REFUND",
-                json(Map.of("cardNo", cardNo, "cancelNo", cancelNo, "refundAmount", before,
-                        "balanceAfter", 0L, "kind", "CARD_CANCEL",
-                        "summary", "退卡终审清零退回余额 " + yuan(before) + " 元，卡置「已退卡」")));
+                json(refundAudit(cardNo, cancelNo, before, giftBefore,
+                        "退卡终审清零：退回本金 " + yuan(before) + " 元、核销赠金 " + yuan(giftBefore)
+                                + " 元，卡置「已退卡」")));
+        return saved;
+    }
+
+    /**
+     * 退卡发起冻结（B18，txn CC 单创建后内部回调）：行锁找卡 → 在用→退卡中 → 写 ADJUST 流水
+     * （amount=0、balance_after=当前本金快照，gift 两列留 NULL，bizRef=退卡单号-F，仅状态留痕不动钱）。
+     * 冻结期 recharge/consume/writeoff/refundForOrder 均有「非在用」中文校验，自然拦截冻结期动账。
+     * 幂等：同单号 -F 的 ADJUST 重放返回既有行；卡已「退卡中」按成功处理；已「已退卡」409；其他状态 400。
+     */
+    @Transactional
+    public CardLedger freeze(String cardNo, String cancelNo) {
+        if (cancelNo == null || cancelNo.isBlank()) throw new BadReq("退卡单号不能为空");
+        String ref = cancelNo + "-F";
+        Optional<CardLedger> replay = ledgerRepo.findFirstByBizRefAndChangeType(ref, "ADJUST");
+        if (replay.isPresent()) {
+            return replay.get();
+        }
+        MemberCard card = cardRepo.findForUpdate(cardNo)
+                .orElseThrow(() -> new NotFound("会员卡不存在: " + cardNo));
+        if ("已退卡".equals(card.getStatus())) {
+            throw new Conflict("卡 " + cardNo + " 已退卡，不可冻结");
+        }
+        if (!"在用".equals(card.getStatus()) && !"退卡中".equals(card.getStatus())) {
+            throw new BadReq("卡状态为「" + card.getStatus() + "」，不可发起退卡冻结");
+        }
+        long balance = card.getBalance() == null ? 0L : card.getBalance();
+        long gift = card.getGiftBalance() == null ? 0L : card.getGiftBalance();
+
+        card.setStatus("退卡中");
+        cardRepo.save(card);
+
+        CardLedger l = new CardLedger();
+        l.setCardNo(cardNo);
+        l.setCustomerId(card.getCustomerId());
+        l.setChangeType("ADJUST");
+        l.setAmount(0L);
+        l.setBalanceAfter(balance);
+        l.setBizRef(ref);
+        l.setOperator("system");
+        l.setStoreCode(card.getStoreCode());
+        CardLedger saved = ledgerRepo.save(l);
+
+        audit.record("CARD", ref, "system", "FREEZE",
+                json(adjustAudit(cardNo, cancelNo, "FREEZE", balance, gift,
+                        "退卡发起冻结：卡置「退卡中」，冻结期不可消费/划扣/充值/退款回加，冻结时本金 "
+                                + yuan(balance) + " 元、赠金 " + yuan(gift) + " 元")));
+        return saved;
+    }
+
+    /**
+     * 退卡驳回解冻（B18，txn CC 单驳回后内部回调）：行锁找卡 → 退卡中→在用 → 写 ADJUST 流水
+     * （amount=0、balance_after=当前本金快照，gift 两列留 NULL，bizRef=退卡单号-U）。
+     * 幂等：同单号 -U 的 ADJUST 重放返回既有行；卡已「在用」按成功处理；已「已退卡」409（终审已清卡不可逆转）；
+     * 其他状态 400。
+     */
+    @Transactional
+    public CardLedger unfreeze(String cardNo, String cancelNo) {
+        if (cancelNo == null || cancelNo.isBlank()) throw new BadReq("退卡单号不能为空");
+        String ref = cancelNo + "-U";
+        Optional<CardLedger> replay = ledgerRepo.findFirstByBizRefAndChangeType(ref, "ADJUST");
+        if (replay.isPresent()) {
+            return replay.get();
+        }
+        MemberCard card = cardRepo.findForUpdate(cardNo)
+                .orElseThrow(() -> new NotFound("会员卡不存在: " + cardNo));
+        if ("已退卡".equals(card.getStatus())) {
+            throw new Conflict("卡 " + cardNo + " 已退卡终审，不可解冻");
+        }
+        if (!"退卡中".equals(card.getStatus()) && !"在用".equals(card.getStatus())) {
+            throw new BadReq("卡状态为「" + card.getStatus() + "」，不可解冻");
+        }
+        long balance = card.getBalance() == null ? 0L : card.getBalance();
+        long gift = card.getGiftBalance() == null ? 0L : card.getGiftBalance();
+
+        card.setStatus("在用");
+        cardRepo.save(card);
+
+        CardLedger l = new CardLedger();
+        l.setCardNo(cardNo);
+        l.setCustomerId(card.getCustomerId());
+        l.setChangeType("ADJUST");
+        l.setAmount(0L);
+        l.setBalanceAfter(balance);
+        l.setBizRef(ref);
+        l.setOperator("system");
+        l.setStoreCode(card.getStoreCode());
+        CardLedger saved = ledgerRepo.save(l);
+
+        audit.record("CARD", ref, "system", "UNFREEZE",
+                json(adjustAudit(cardNo, cancelNo, "UNFREEZE", balance, gift,
+                        "退卡驳回解冻：卡恢复「在用」，解冻时本金 " + yuan(balance) + " 元、赠金 "
+                                + yuan(gift) + " 元")));
         return saved;
     }
 
@@ -397,15 +519,19 @@ public class CardLedgerService {
             throw new Unprocessable("卡剩余次数不足：当前剩余 " + remain + " 次，本次需扣 " + timesUsed + " 次");
         }
         long before = card.getBalance() == null ? 0L : card.getBalance();
-        if (before < amount) {
-            throw new Unprocessable("卡余额不足：当前余额 " + yuan(before) + " 元，本次需扣 " + yuan(amount) + " 元");
+        long giftBefore = card.getGiftBalance() == null ? 0L : card.getGiftBalance();
+        if (before + giftBefore < amount) {
+            throw new Unprocessable("卡余额不足：本金 " + yuan(before) + " 元、赠金 " + yuan(giftBefore)
+                    + " 元，本次需扣 " + yuan(amount) + " 元");
         }
+        long giftUsed = Math.min(giftBefore, amount);
+        long principalUsed = amount - giftUsed;
+        long after = before - principalUsed;
+        long giftAfter = giftBefore - giftUsed;
 
         card.setRemainTimes(remain - timesUsed);
-        long after = before - amount;
-        if (amount > 0) {
-            card.setBalance(after);
-        }
+        card.setBalance(after);
+        card.setGiftBalance(giftAfter);
         if (card.getRemainTimes() == 0) {
             card.setStatus("已用完");
         }
@@ -415,19 +541,22 @@ public class CardLedgerService {
         l.setCardNo(cardNo);
         l.setCustomerId(card.getCustomerId());
         l.setChangeType("CONSUME");
-        l.setAmount(-amount);
+        l.setAmount(-principalUsed);
         l.setBalanceAfter(after);
+        l.setGiftAmount(-giftUsed);
+        l.setGiftAfter(giftAfter);
         l.setBizRef(writeoffId);
         l.setOperator("system");
         l.setStoreCode(storeCode != null && !storeCode.isBlank() ? storeCode : card.getStoreCode());
         CardLedger saved = ledgerRepo.save(l);
 
         audit.record("CARD", writeoffId, "system", "WRITEOFF",
-                json(writeoffPayload(cardNo, writeoffId, timesUsed, amount,
-                        card.getRemainTimes() == null ? 0 : card.getRemainTimes(), after, false,
+                json(writeoffPayload(cardNo, writeoffId, timesUsed, amount, principalUsed, giftUsed,
+                        card.getRemainTimes() == null ? 0 : card.getRemainTimes(), after, giftAfter, false,
                         "疗程卡扣次划扣：扣 " + timesUsed + " 次"
-                                + (amount > 0 ? "、扣额 " + yuan(amount) + " 元" : "（纯扣次）")
-                                + "，余额 " + yuan(after) + " 元")));
+                                + (amount > 0 ? "、扣额 " + yuan(amount) + " 元（赠金 " + yuan(giftUsed)
+                                        + " 元、本金 " + yuan(principalUsed) + " 元）" : "（纯扣次）")
+                                + "，本金余额 " + yuan(after) + " 元、赠金余额 " + yuan(giftAfter) + " 元")));
         return saved;
     }
 
@@ -473,18 +602,91 @@ public class CardLedgerService {
         }
     }
 
-    /** 划扣审计 payload：卡号/划扣单号/扣次/扣额/剩余次数与余额快照/回填标记，动账权威来源 customer。 */
+    /** 划扣审计 payload：卡号/划扣单号/扣次/扣额（总额+本金/赠金拆分）/剩余次数与双余额快照/回填标记，动账权威来源 customer。 */
     private static Map<String, Object> writeoffPayload(String cardNo, String writeoffId, int timesUsed,
-                                                       long amount, int remainTimesAfter, long balanceAfter,
+                                                       long amount, long principalUsed, long giftUsed,
+                                                       int remainTimesAfter, long balanceAfter, long giftAfter,
                                                        boolean backfill, String summary) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("cardNo", cardNo);
         m.put("writeoffId", writeoffId);
         m.put("timesUsed", timesUsed);
         m.put("amount", amount);
+        m.put("principalUsed", principalUsed);
+        m.put("giftUsed", giftUsed);
         m.put("remainTimesAfter", remainTimesAfter);
         m.put("balanceAfter", balanceAfter);
+        m.put("giftAfter", giftAfter);
         m.put("backfill", backfill);
+        m.put("authority", "customer");
+        m.put("summary", summary);
+        return m;
+    }
+
+    /** 充值审计 payload：卡号/充值单号/本金/赠金/支付方式/双余额快照，动账权威来源 customer。 */
+    private static Map<String, Object> rechargeAudit(String cardNo, String rcNo, String customerName,
+                                                     long amount, long giftAmount, String payMethod,
+                                                     long balanceAfter, long giftAfter, String summary) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("cardNo", cardNo);
+        m.put("rechargeNo", rcNo);
+        m.put("customer", customerName);
+        m.put("amount", amount);
+        m.put("giftAmount", giftAmount);
+        m.put("payMethod", payMethod);
+        m.put("balanceAfter", balanceAfter);
+        m.put("giftAfter", giftAfter);
+        m.put("authority", "customer");
+        m.put("summary", summary);
+        return m;
+    }
+
+    /** 消费扣款审计 payload：卡号/订单号/扣款总额/本金与赠金拆分/双余额快照/扣尽标记，动账权威来源 customer。 */
+    private static Map<String, Object> consumeAudit(String cardNo, String orderNo, long amount,
+                                                    long principalUsed, long giftUsed,
+                                                    long balanceAfter, long giftAfter,
+                                                    boolean depleted, boolean backfill, String summary) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("cardNo", cardNo);
+        m.put("orderNo", orderNo);
+        m.put("amount", amount);
+        m.put("principalUsed", principalUsed);
+        m.put("giftUsed", giftUsed);
+        m.put("balanceAfter", balanceAfter);
+        m.put("giftAfter", giftAfter);
+        m.put("depleted", depleted);
+        m.put("backfill", backfill);
+        m.put("authority", "customer");
+        m.put("summary", summary);
+        return m;
+    }
+
+    /** 退卡清零审计 payload：卡号/退卡单号/本金退回与赠金核销额，动账权威来源 customer。 */
+    private static Map<String, Object> refundAudit(String cardNo, String cancelNo, long refundAmount,
+                                                   long giftCleared, String summary) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("cardNo", cardNo);
+        m.put("cancelNo", cancelNo);
+        m.put("refundAmount", refundAmount);
+        m.put("giftCleared", giftCleared);
+        m.put("balanceAfter", 0L);
+        m.put("giftAfter", 0L);
+        m.put("kind", "CARD_CANCEL");
+        m.put("authority", "customer");
+        m.put("summary", summary);
+        return m;
+    }
+
+    /** 冻结/解冻 ADJUST 审计 payload：仅状态留痕不动钱，记录操作时本金/赠金快照供对账溯源。 */
+    private static Map<String, Object> adjustAudit(String cardNo, String cancelNo, String action,
+                                                   long balanceAtAction, long giftAtAction, String summary) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("cardNo", cardNo);
+        m.put("cancelNo", cancelNo);
+        m.put("action", action);
+        m.put("balanceAtAction", balanceAtAction);
+        m.put("giftAtAction", giftAtAction);
+        m.put("kind", "CARD_FREEZE_TOGGLE");
         m.put("authority", "customer");
         m.put("summary", summary);
         return m;

@@ -189,6 +189,12 @@ function ledgerSign(amt: number) {
   if (amt > 0) return '+'
   return ''
 }
+// B18 赠金变动行：gift_amount 为 null/0（冻结解冻 ADJUST、无赠金老流水）不展示
+function ledgerGift(t: CardLedgerDTO) {
+  const g = t.giftAmount ?? 0
+  if (!g) return ''
+  return `${g > 0 ? '+' : ''}赠 ${money(Math.abs(g))}`
+}
 
 // ---------------- 操作弹层 ----------------
 type Panel = null | 'purchase' | 'recharge' | 'ledger'
@@ -353,10 +359,11 @@ async function submitPay() {
   }
 }
 
-// ---- 充值（已有储值卡） ----
+// ---- 充值（已有储值卡；B18 起支持录入赠送金额，赠金入 gift_balance 不进资金分录） ----
 const rechargeCardNo = ref('')
 const rechargeCardItem = ref('')
 const rechargeAmountYuan = ref('')
+const rechargeGiftYuan = ref('')
 const rechargeMethod = ref('cash')
 const RECHARGE_METHODS = [
   { value: 'cash', label: '现金' },
@@ -369,15 +376,19 @@ function openRecharge(c: MemberCardDTO) {
   rechargeCardNo.value = c.cardNo
   rechargeCardItem.value = c.cardItem
   rechargeAmountYuan.value = ''
+  rechargeGiftYuan.value = ''
   rechargeMethod.value = 'cash'
 }
 async function submitRecharge() {
   const fen = Math.round((Number(rechargeAmountYuan.value) || 0) * 100)
   if (fen <= 0) { toast.error('请输入正确的充值金额'); return }
+  const giftFen = Math.round((Number(rechargeGiftYuan.value) || 0) * 100)
+  if (giftFen < 0) { toast.error('赠送金额不能为负'); return }
   busy.value = true
   try {
-    const res = await rechargeCard(rechargeCardNo.value, fen, rechargeMethod.value)
-    toast.success(`充值成功，单号 ${res.data.bizRef}，卡余额 ¥${(res.data.balanceAfter / 100).toLocaleString('zh-CN')}`)
+    const res = await rechargeCard(rechargeCardNo.value, fen, rechargeMethod.value, giftFen)
+    const giftText = giftFen > 0 ? `，赠金余额 ¥${(res.data.giftAfter / 100).toLocaleString('zh-CN')}` : ''
+    toast.success(`充值成功，单号 ${res.data.bizRef}，卡余额 ¥${(res.data.balanceAfter / 100).toLocaleString('zh-CN')}${giftText}`)
     close()
     await load()
     if (selectedId.value) await loadCardsOf(selectedId.value, true)
@@ -763,6 +774,11 @@ function tplSessionsText(t: CatalogProductDTO) {
             <label>充值金额（元）</label>
             <CInput v-model="rechargeAmountYuan" type="number" placeholder="0.00" />
           </div>
+          <div class="dlg__row">
+            <label>赠送金额（元，选填）</label>
+            <CInput v-model="rechargeGiftYuan" type="number" placeholder="0.00" />
+            <p class="dlg__tip">赠金入卡赠送余额，消费时优先扣减；不记资金收入分录。</p>
+          </div>
         </div>
         <template #footer>
           <CButton variant="ghost" @click="close">取消</CButton>
@@ -785,6 +801,7 @@ function tplSessionsText(t: CatalogProductDTO) {
                 <span class="txn-kind">{{ ledgerTypeText(t.changeType) }}</span>
                 <span class="txn-r" :style="{ color: ledgerColor(t.changeType) }">
                   {{ ledgerSign(t.amount) }}{{ money(Math.abs(t.amount)) }}
+                  <span v-if="ledgerGift(t)" class="txn-gift">{{ ledgerGift(t) }}</span>
                 </span>
                 <span class="txn-ref">{{ t.bizRef || '—' }}</span>
                 <span class="txn-op">{{ t.operator }}</span>
@@ -877,6 +894,7 @@ function tplSessionsText(t: CatalogProductDTO) {
 .txn-row { font-size: var(--t-sm); color: var(--c-text-2); border-bottom: 1px solid var(--c-border-light); }
 .txn-time { color: var(--c-text-3); font-variant-numeric: tabular-nums; }
 .txn-r { text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; }
+.txn-gift { display: block; font-size: var(--t-xs); font-weight: 500; color: var(--c-orange-dark); }
 .txn-ref { font-size: var(--t-xs); color: var(--c-text-3); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .txn-op { font-size: var(--t-xs); color: var(--c-text-3); }
 .txn-empty { text-align: center; color: var(--c-text-3); padding: var(--s-lg); font-size: var(--t-sm); }

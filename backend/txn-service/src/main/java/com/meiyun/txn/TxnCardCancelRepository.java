@@ -15,6 +15,9 @@ public interface TxnCardCancelRepository extends JpaRepository<TxnCardCancel, St
 
     List<TxnCardCancel> findByStatusOrderByTxnNoDesc(String status);
 
+    /** 同卡指定状态集的退卡单（B18 冻结期防重：存在 PENDING_REVIEW/PENDING_FINANCE 在途单则拦截重复发起）。 */
+    List<TxnCardCancel> findByCardNoAndStatusInOrderByTxnNoDesc(String cardNo, List<String> statuses);
+
     /** 当日退卡号最大序号（txn_no 形如 CC20260901-000007，序号从第 12 位起 6 位；历史 TK 前缀按 CC 独立序列）。 */
     @Query(value = "select coalesce(max(cast(substring(txn_no from 12) as bigint)), 0) " +
            "from txn_card_cancel where txn_no like :prefix", nativeQuery = true)

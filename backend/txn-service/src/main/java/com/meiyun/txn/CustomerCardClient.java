@@ -93,12 +93,37 @@ public class CustomerCardClient {
         post("/api/customer/internal/cards/issue", body, "售卡开卡");
     }
 
-    /** 退卡终审回写：POST /api/customer/internal/cards/refund（卡置「已退卡」、余额清零、REFUND 流水）。 */
+    /** 退卡终审回写：POST /api/customer/internal/cards/refund（卡置「已退卡」、本金与赠金清零、REFUND 流水）。 */
     public void refundCard(String cardNo, String cancelNo) {
         Map<String, Object> body = Map.of(
                 "cardNo", nz(cardNo),
                 "cancelNo", nz(cancelNo));
         post("/api/customer/internal/cards/refund", body, "退卡回写");
+    }
+
+    /**
+     * 退卡发起冻结（B18，CC 单创建后同事务回调）：POST /api/customer/internal/cards/freeze。
+     * customer 置卡「退卡中」并写 ADJUST 流水（bizRef=cancelNo-F）；冻结期充值/消费/划扣/退款回加
+     * 由 customer 侧「非在用」校验中文拦截。4xx 透传（远程失败则 CC 单事务整体回滚，不留「单据已建卡未冻」）；
+     * 同单号 -F 重放幂等，审批流重试安全。
+     */
+    public void freezeCard(String cardNo, String cancelNo) {
+        Map<String, Object> body = Map.of(
+                "cardNo", nz(cardNo),
+                "cancelNo", nz(cancelNo));
+        post("/api/customer/internal/cards/freeze", body, "退卡冻结");
+    }
+
+    /**
+     * 退卡驳回解冻（B18，CC 单驳回后同事务回调）：POST /api/customer/internal/cards/unfreeze。
+     * customer 置卡回「在用」并写 ADJUST 流水（bizRef=cancelNo-U）；已终审「已退卡」409 透传（不可逆转）；
+     * 同单号 -U 重放幂等。
+     */
+    public void unfreezeCard(String cardNo, String cancelNo) {
+        Map<String, Object> body = Map.of(
+                "cardNo", nz(cardNo),
+                "cancelNo", nz(cancelNo));
+        post("/api/customer/internal/cards/unfreeze", body, "退卡解冻");
     }
 
     /**

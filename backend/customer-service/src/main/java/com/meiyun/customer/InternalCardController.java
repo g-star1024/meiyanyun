@@ -102,6 +102,39 @@ public class InternalCardController {
     }
 
     /**
+     * 退卡发起冻结（B18，txn CC 单创建后同事务回调）：POST /api/customer/internal/cards/freeze。
+     * member_card 置「退卡中」并写 ADJUST 流水（amount=0、赠金两列 NULL，bizRef=cancelNo-F）；
+     * 冻结期充值/消费/划扣/退款回加由本域「非在用」校验中文拦截。已退卡 409、卡不存在 404 中文透传；
+     * 同 cancelNo-F 重放幂等返回既有流水（审批流重试安全）。
+     */
+    @PostMapping("/cards/freeze")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> freeze(@RequestBody FreezeCmd cmd) {
+        if (cmd == null) throw new CardLedgerService.BadReq("请求体不能为空");
+        CardLedger l = ledgerService.freeze(cmd.cardNo(), cmd.cancelNo());
+        return Map.of(
+                "ledgerId", l.getLedgerId(),
+                "changeType", l.getChangeType(),
+                "status", "退卡中");
+    }
+
+    /**
+     * 退卡驳回解冻（B18，txn CC 单驳回后同事务回调）：POST /api/customer/internal/cards/unfreeze。
+     * member_card 置回「在用」并写 ADJUST 流水（bizRef=cancelNo-U）；已终审「已退卡」409 中文透传（不可逆转）；
+     * 同 cancelNo-U 重放幂等返回既有流水。
+     */
+    @PostMapping("/cards/unfreeze")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> unfreeze(@RequestBody FreezeCmd cmd) {
+        if (cmd == null) throw new CardLedgerService.BadReq("请求体不能为空");
+        CardLedger l = ledgerService.unfreeze(cmd.cardNo(), cmd.cancelNo());
+        return Map.of(
+                "ledgerId", l.getLedgerId(),
+                "changeType", l.getChangeType(),
+                "status", "在用");
+    }
+
+    /**
      * 订单退款回加储值（B4.1，txn 退款终审 RF 后回调）：POST /api/customer/internal/cards/refund-order。
      * 经原订单 CONSUME 流水反查扣款卡，card_ledger 写 REFUND <b>正额</b>（bizRef=退款单号、order_no=订单号）、
      * member_card.balance 加回；累计回加 ≤ 原扣款（防超退）；同退款单号重放幂等返回；卡已退卡 422 中文拦截。
@@ -199,6 +232,9 @@ public class InternalCardController {
 
     /** 退卡回写入参：cardNo/cancelNo（退卡 CC 单号，幂等键）。 */
     public record RefundCmd(String cardNo, String cancelNo) {}
+
+    /** 退卡冻结/解冻入参：cardNo/cancelNo（退卡 CC 单号；冻结流水 bizRef=cancelNo-F、解冻=cancelNo-U）。 */
+    public record FreezeCmd(String cardNo, String cancelNo) {}
 
     /** 订单退款回加入参：refundNo（退款 RF 单号，幂等键）/orderNo（原订单号，反查扣款卡）/amount（分，&gt;0）。 */
     public record RefundOrderCmd(String refundNo, String orderNo, Long amount) {}

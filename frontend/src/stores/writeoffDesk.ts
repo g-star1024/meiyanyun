@@ -42,7 +42,10 @@ export interface WriteoffDeskItem {
   /** 本次划扣金额（元） */
   amount: number
   operator: string
+  /** 双签复核人展示串「工号 姓名」（执行后回显） */
   reviewer?: string
+  /** B18 双签复核人工号（执行后回显；待执行为 undefined） */
+  reviewerId?: string
   source: WdSource
   status: WdStatus
   exceptionReason: WdExceptionReason
@@ -99,6 +102,7 @@ function adapt(dto: WdTaskDTO): WriteoffDeskItem {
     amount: fen2yuan(dto.amount),
     operator: dto.operator || '—',
     reviewer: dto.reviewer ?? undefined,
+    reviewerId: dto.reviewerId ?? undefined,
     source: (dto.source || 'APPOINTMENT') as WdSource,
     status: (dto.status || 'PENDING') as WdStatus,
     exceptionReason: (dto.exceptionReason || 'NONE') as WdExceptionReason,
@@ -187,30 +191,35 @@ export const useWriteoffDeskStore = defineStore('writeoffDesk', () => {
   }
 
   /**
-   * 双签划扣：reviewer 必填，cardNo 可选（缺省用任务绑定卡）。
-   * 后端同事务扣卡余次/余额、写 writeoff_record（sign1 操作人 / sign2 复核人）、任务置 DONE。
+   * 双签划扣：reviewerId 复核人工号必填（B18 工号化，后端硬校验存在/在职/角色分级/禁同人），
+   * reviewerName 仅用于操作日志展示；cardNo 可选（缺省用任务绑定卡）。
+   * 后端同事务扣卡余次/余额（先赠金后本金）、写 writeoff_record（sign1 操作人 / sign2「工号 姓名」）、任务置 DONE。
    * 返回 { ok, reason }，不抛出，由页面 toast 中文原因。
    */
   async function execute(
     id: string,
-    reviewer: string,
+    reviewerId: string,
     cardNo?: string,
     remark?: string,
+    reviewerName?: string,
   ): Promise<{ ok: boolean; reason?: string }> {
     const it = items.value.find((i) => i.id === id)
     if (!it) return { ok: false, reason: '任务不存在' }
     if (it.status === 'DONE') return { ok: false, reason: '该任务已划扣，请勿重复操作' }
     if (it.status === 'EXCEPTION') return { ok: false, reason: '异常单请先解除异常后再划扣' }
     if (!auth.can('writeoff:create')) return { ok: false, reason: '无划扣执行权限' }
-    if (!reviewer.trim()) return { ok: false, reason: '请填写复核人' }
+    const rid = reviewerId.trim()
+    if (!rid) return { ok: false, reason: '请选择复核人' }
+    if (rid === (auth.user?.staffId || '')) return { ok: false, reason: '复核人不能与操作人为同一人' }
     try {
       const { data } = await executeWdTask(it.no, {
-        reviewer: reviewer.trim(),
+        reviewerId: rid,
         ...(cardNo ? { cardNo } : {}),
         ...(remark && remark.trim() ? { remark: remark.trim() } : {}),
       })
       upsert(adapt(data))
-      activity.log(auth.user?.name ?? '前台', `双签划扣 ${it.no}：${it.customerName} - ${it.project}（复核 ${reviewer.trim()}）`, it.id)
+      const reviewerText = reviewerName?.trim() ? `${rid} ${reviewerName.trim()}` : rid
+      activity.log(auth.user?.name ?? '前台', `双签划扣 ${it.no}：${it.customerName} - ${it.project}（复核 ${reviewerText}）`, it.id)
       return { ok: true }
     } catch (e) {
       return { ok: false, reason: errText(e) }

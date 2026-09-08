@@ -26,13 +26,16 @@ public class OrgController {
     private final OrgUnitRepository orgRepo;
     private final RoleDefRepository roleRepo;
     private final StaffRepository staffRepo;
+    private final StaffRoleRepository staffRoleRepo;
 
     public OrgController(TenantRepository tenantRepo, OrgUnitRepository orgRepo,
-                         RoleDefRepository roleRepo, StaffRepository staffRepo) {
+                         RoleDefRepository roleRepo, StaffRepository staffRepo,
+                         StaffRoleRepository staffRoleRepo) {
         this.tenantRepo = tenantRepo;
         this.orgRepo = orgRepo;
         this.roleRepo = roleRepo;
         this.staffRepo = staffRepo;
+        this.staffRoleRepo = staffRoleRepo;
     }
 
     // ==================== 租户 ====================
@@ -168,6 +171,34 @@ public class OrgController {
         staffRepo.findAllById(distinct)
                 .forEach(s -> out.put(s.getStaffId(), s.getStaffName()));
         return out;
+    }
+
+    /**
+     * 员工档案单查（服务间调用专用，B18 划扣双签复核人硬校验）：GET /api/org/internal/staff/{id}。
+     * 返回工号/姓名/主角色/全量角色（staff_role 并集）/在职状态/门店；无 DataScope——调用方（txn）
+     * 按真实工号做存在性、在职、角色闸门校验，校验不过不得执行划扣（与 name-map 只读降级不同，
+     * 本端点不可用时 txn 侧按 502 硬失败）。员工不存在 404，由调用方转 400 中文提示。
+     */
+    @GetMapping("/internal/staff/{id}")
+    @RequirePerm("internal:name-map")
+    public Map<String, Object> internalStaffProfile(@PathVariable String id) {
+        Staff s = staffRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "员工不存在: " + id));
+        List<String> roles = staffRoleRepo.findByStaffId(id).stream()
+                .map(StaffRole::getRoleCode)
+                .filter(Objects::nonNull)
+                .distinct()
+                .sorted()
+                .collect(Collectors.toList());
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("staffId", s.getStaffId());
+        m.put("staffName", s.getStaffName());
+        m.put("primaryRole", s.getRoleCode());
+        m.put("roles", roles);
+        m.put("status", s.getStatus());
+        m.put("storeCode", s.getStoreCode());
+        m.put("region", s.getRegion());
+        return m;
     }
 
     // ==================== 内部方法 ====================

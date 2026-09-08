@@ -45,14 +45,16 @@ public class CardController {
             throw new CustomerService.NotFound("数据不存在或无权查看");
         }
         long amount = req.amount() == null ? 0L : req.amount();
+        long gift = req.giftAmount() == null ? 0L : req.giftAmount();
         String operator = DataScope.currentActor();
-        CardLedger l = ledgerService.recharge(cardNo, amount,
+        CardLedger l = ledgerService.recharge(cardNo, amount, gift,
                 req.payMethod() == null ? "" : req.payMethod().trim(),
                 operator, card.getStoreCode());
         return Map.of(
                 "ledgerId", l.getLedgerId(),
                 "bizRef", l.getBizRef(),
-                "balanceAfter", l.getBalanceAfter());
+                "balanceAfter", l.getBalanceAfter(),
+                "giftAfter", l.getGiftAfter() == null ? 0L : l.getGiftAfter());
     }
 
     /** 卡储值流水：GET /api/customer/cards/{cardNo}/ledger（卡详情「储值流水」读模型，账龄正序）。 */
@@ -65,17 +67,22 @@ public class CardController {
             throw new CustomerService.NotFound("数据不存在或无权查看");
         }
         return ledgerService.listLedger(cardNo).stream()
-                .map(l -> Map.<String, Object>of(
-                        "ledgerId", l.getLedgerId(),
-                        "changeType", l.getChangeType(),
-                        "amount", l.getAmount(),
-                        "balanceAfter", l.getBalanceAfter(),
-                        "bizRef", l.getBizRef() == null ? "" : l.getBizRef(),
-                        "operator", l.getOperator() == null ? "" : l.getOperator(),
-                        "createdAt", l.getCreatedAt() == null ? "" : l.getCreatedAt().toString()))
+                .map(l -> {
+                    Map<String, Object> m = new java.util.LinkedHashMap<>();
+                    m.put("ledgerId", l.getLedgerId());
+                    m.put("changeType", l.getChangeType());
+                    m.put("amount", l.getAmount());
+                    m.put("balanceAfter", l.getBalanceAfter());
+                    m.put("giftAmount", l.getGiftAmount() == null ? 0L : l.getGiftAmount());
+                    m.put("giftAfter", l.getGiftAfter() == null ? 0L : l.getGiftAfter());
+                    m.put("bizRef", l.getBizRef() == null ? "" : l.getBizRef());
+                    m.put("operator", l.getOperator() == null ? "" : l.getOperator());
+                    m.put("createdAt", l.getCreatedAt() == null ? "" : l.getCreatedAt().toString());
+                    return m;
+                })
                 .toList();
     }
 
-    /** 充值入参：amount 分（&gt;0）、payMethod（cash/card/wxpay/alipay，禁用 balance）；operator/storeCode 由服务端注入。 */
-    public record RechargeReq(Long amount, String payMethod) {}
+    /** 充值入参：amount 本金分（&gt;0）、giftAmount 赠送金额分（≥0，可省=0）、payMethod（cash/card/wxpay/alipay，禁用 balance）；operator/storeCode 由服务端注入。 */
+    public record RechargeReq(Long amount, Long giftAmount, String payMethod) {}
 }

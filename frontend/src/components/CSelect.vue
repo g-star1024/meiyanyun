@@ -13,8 +13,9 @@ const props = withDefaults(
     options: { label: string; value: string }[]
     placeholder?: string
     width?: string
+    disabled?: boolean
   }>(),
-  { placeholder: '请选择', width: '160px' },
+  { placeholder: '请选择', width: '160px', disabled: false },
 )
 
 const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>()
@@ -91,6 +92,14 @@ onUnmounted(() => document.removeEventListener('click', onDocClick))
 .csel__trigger:hover,
 .csel__trigger.is-open {
   border-color: var(--c-brand-border);
+}
+.csel__trigger.is-disabled {
+  background: var(--c-disabled-bg);
+  color: var(--c-text-3);
+  cursor: not-allowed;
+}
+.csel__trigger.is-disabled:hover {
+  border-color: var(--c-border);
 }
 .csel__label {
   overflow: hidden;

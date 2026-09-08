@@ -2,7 +2,7 @@
 // M2-01 划扣核销台 API（对接 txn-service /api/txn/writeoff-desk）
 //  ① GET  /tasks            今日（或指定日期）待划扣队列，富化客户名/掩码手机号/卡项
 //  ② POST /tasks            老客未预约直接到店：手工建 WALKIN 任务
-//  ③ POST /tasks/{wdNo}/execute   双签划扣（reviewer 必填，cardNo 可选缺省用绑定卡）
+//  ③ POST /tasks/{wdNo}/execute   双签划扣（reviewerId 复核人工号必填，cardNo 可选缺省用绑定卡）
 //  ④ POST /tasks/{wdNo}/exception 标记异常（DONE 不可标）
 //  ⑤ POST /tasks/{wdNo}/reset     解除异常恢复待执行
 //  ⑥ GET  /customer-cards   客户本店在用卡列表（双签弹窗/手工建单选卡）
@@ -27,6 +27,8 @@ export interface WdTaskDTO {
   amount: number
   operator: string
   reviewer: string | null
+  /** B18 双签复核人工号（执行后回显；待执行为 null） */
+  reviewerId?: string | null
   source: 'APPOINTMENT' | 'WALKIN'
   status: 'PENDING' | 'DONE' | 'EXCEPTION'
   exceptionReason: 'NONE' | 'CUSTOMER_ABSENT' | 'COUNT_MISMATCH' | 'EQUIPMENT_FAULT' | 'OTHER'
@@ -60,8 +62,8 @@ export const createWdWalkin = (cmd: {
   cardNo?: string
 }) => client.post<WdTaskDTO>('/txn/writeoff-desk/tasks', cmd)
 
-/** 双签划扣执行：reviewer 必填，cardNo 可选（卡选择器改卡），remark 可选。 */
-export const executeWdTask = (wdNo: string, cmd: { reviewer: string; cardNo?: string; remark?: string }) =>
+/** 双签划扣执行：reviewerId 复核人工号必填（后端硬校验存在/在职/角色分级/禁同人），cardNo 可选，remark 可选。 */
+export const executeWdTask = (wdNo: string, cmd: { reviewerId: string; cardNo?: string; remark?: string }) =>
   client.post<WdTaskDTO>(`/txn/writeoff-desk/tasks/${wdNo}/execute`, cmd)
 
 /** 标记异常。 */

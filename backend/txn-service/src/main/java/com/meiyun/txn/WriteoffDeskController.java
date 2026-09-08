@@ -55,11 +55,11 @@ public class WriteoffDeskController {
         return toViews(List.of(t)).get(0);
     }
 
-    /** 双签划扣执行：body 复核人必填、卡选择器可选（缺省用任务绑定卡）。 */
+    /** 双签划扣执行：body 复核人工号必填（B18 起为真实在职员工工号，org 硬校验 + 金额分级角色闸门）、卡选择器可选。 */
     @PostMapping("/tasks/{wdNo}/execute")
     @RequirePerm("writeoff:create")
     public WdView execute(@PathVariable String wdNo, @RequestBody @Valid ExecuteCmd cmd) {
-        WriteoffDeskTask t = service.execute(wdNo, cmd.reviewer(), cmd.cardNo(), cmd.remark());
+        WriteoffDeskTask t = service.execute(wdNo, cmd.reviewerId(), cmd.cardNo(), cmd.remark());
         return toViews(List.of(t)).get(0);
     }
 
@@ -134,7 +134,7 @@ public class WriteoffDeskController {
                     t.getProject(), cardName, total, remain,
                     t.getAmount(),
                     staffNames.getOrDefault(t.getOperator(), t.getOperator()),
-                    t.getReviewer(),
+                    t.getReviewer(), t.getReviewerId(),
                     t.getSource(), t.getStatus(), t.getExceptionReason(),
                     t.getAppointmentTime(), t.getExecutedAt(),
                     service.readTimeline(t.getTimeline())));
@@ -153,7 +153,7 @@ public class WriteoffDeskController {
             String project, String cardName,
             int totalCount, int remainingCount,
             long amount,
-            String operator, String reviewer,
+            String operator, String reviewer, String reviewerId,
             String source, String status, String exceptionReason,
             OffsetDateTime appointmentTime, OffsetDateTime executedAt,
             List<Map<String, String>> timeline) {}
@@ -168,7 +168,8 @@ public class WriteoffDeskController {
             @NotBlank String project,
             String cardNo) {}
 
-    public record ExecuteCmd(@NotBlank String reviewer, String cardNo, String remark) {}
+    /** 双签执行命令：reviewerId=复核人真实工号（org 硬校验存在/在职/角色分级）；cardNo 缺省用任务绑定卡。 */
+    public record ExecuteCmd(@NotBlank String reviewerId, String cardNo, String remark) {}
 
     public record ExceptionCmd(@NotBlank String reason, String note) {}
 }

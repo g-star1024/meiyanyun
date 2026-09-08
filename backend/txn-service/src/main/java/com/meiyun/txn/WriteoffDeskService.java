@@ -57,13 +57,14 @@ public class WriteoffDeskService {
     private final FinanceEventPublisher financeEvents;
     private final CustomerCardClient customerCardClient;
     private final BomDeductService bomDeductService;
+    private final OrgStaffClient orgStaffClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public WriteoffDeskService(WriteoffDeskTaskRepository wdRepo, MemberCardRepository cardRepo,
                                WriteoffRepository writeoffRepo, WriteoffNoGenerator noGen,
                                AuditRecorder audit, ApptRefNameResolver names,
                                FinanceEventPublisher financeEvents, CustomerCardClient customerCardClient,
-                               BomDeductService bomDeductService) {
+                               BomDeductService bomDeductService, OrgStaffClient orgStaffClient) {
         this.wdRepo = wdRepo;
         this.cardRepo = cardRepo;
         this.writeoffRepo = writeoffRepo;
@@ -73,6 +74,7 @@ public class WriteoffDeskService {
         this.financeEvents = financeEvents;
         this.customerCardClient = customerCardClient;
         this.bomDeductService = bomDeductService;
+        this.orgStaffClient = orgStaffClient;
     }
 
     // ==================== 任务生成 ====================
@@ -154,11 +156,16 @@ public class WriteoffDeskService {
 
     /**
      * 双签划扣执行：PENDING → DONE。同事务完成卡校验、扣次/扣额、写 writeoff_record（card_no 非空、
-     * sign1=操作人工号、sign2=复核人）、任务回写。幂等：DONE 任务重复执行直接返回当前态。
+     * sign1=操作人工号、sign2=复核人「工号 姓名」）、任务回写。幂等：DONE 任务重复执行直接返回当前态。
      * 卡选择器：cardNo 非空时改卡扣减并回写任务；为空时用任务绑定卡（绑定卡也空则 400 提示选卡）。
+     *
+     * <p>B18 双签金额分级：reviewerId 为复核人真实工号，经 org 服务硬校验（存在/在职/角色，不可降级，
+     * org 不可用 → 502 未执行划扣）；禁同人（复核人 ≠ 登录操作人）；按单次划扣额 tier：
+     * L1（&lt;¥1,000）持 writeoff:create 角色员工互签（医生/操作师/前台/店长），L2（¥1,000~5,000）
+     * 与 L3（≥¥20,000）复核人须店长（L3 前端另强提示区域经理）。
      */
     @Transactional
-    public WriteoffDeskTask execute(String wdNo, String reviewer, String cardNo, String remark) {
+    public WriteoffDeskTask execute(String wdNo, String reviewerId, String cardNo, String remark) {
         WriteoffDeskTask t = requireTask(wdNo);
         if (ST_DONE.equals(t.getStatus())) {
             return t; // 幂等：已划扣，返回当前态
@@ -166,10 +173,14 @@ public class WriteoffDeskService {
         if (ST_EXCEPTION.equals(t.getStatus())) {
             throw badRequest("该任务处于异常状态，请先解除异常再划扣");
         }
-        if (reviewer == null || reviewer.trim().isBlank()) {
-            throw badRequest("双签复核人不能为空");
+        if (reviewerId == null || reviewerId.trim().isBlank()) {
+            throw badRequest("双签复核人工号不能为空");
         }
         String actor = DataScope.currentActor();
+        String rid = reviewerId.trim();
+        if (rid.equals(actor)) {
+            throw badRequest("复核人不能与操作人为同一人（须第二位员工双签复核）");
+        }
 
         String useCardNo = (cardNo != null && !cardNo.isBlank()) ? cardNo.trim() : t.getCardNo();
         if (useCardNo == null || useCardNo.isBlank()) {
@@ -195,13 +206,20 @@ public class WriteoffDeskService {
             throw badRequest("账实校验失败：卡余额 " + card.getBalance() + " 分 < 单次划扣额 " + unit + " 分");
         }
 
+        // B18 双签分级硬闸门：org 校验复核人工号存在 + 在职（不降级，失败 400/502，未动卡）；
+        // 按单次划扣额 tier 校验角色——L1 四角色互签，L2/L3 须店长。
+        String tier = TxnService.tierFor(unit);
+        OrgStaffClient.StaffProfile reviewer = orgStaffClient.fetchStaff(rid);
+        OrgStaffClient.requireReviewerRole(reviewer, tier);
+        String display = rid + " " + reviewer.staffName();
+
         // B6 G1：WO 单号先于联动生成并作为幂等键（customer 成功后重试不双扣；失败整体回滚不留痕）
         String writeoffId = noGen.nextWriteoffNo();
 
         // 权威扣卡：customer 卡台账行锁扣次/扣额 + CONSUME 流水（4xx 中文透传 / 5xx 网络异常 502，失败即中止回滚）
         customerCardClient.writeoff(card.getCardNo(), writeoffId, 1, unit, t.getStoreCode(), false);
 
-        // 落划扣记录（卡扣次：card_no 非空，status=DONE，sign1/sign2 双签留痕）
+        // 落划扣记录（卡扣次：card_no 非空，status=DONE，sign1/sign2 双签留痕，sign2 为「工号 姓名」）
         WriteoffRecord w = new WriteoffRecord();
         w.setWriteoffId(writeoffId);
         w.setCardNo(card.getCardNo());
@@ -213,14 +231,15 @@ public class WriteoffDeskService {
         w.setOperator(actor);
         w.setStatus("DONE");
         w.setSign1(actor);
-        w.setSign2(reviewer.trim());
+        w.setSign2(display);
         writeoffRepo.save(w);
 
         // B3 合规写：卡扣划扣完成同事务入资金事件 outbox（预收转出+确认收入成对；unit=0 纯扣次跳过）
         financeEvents.emitWriteoffDone(w);
 
         t.setStatus(ST_DONE);
-        t.setReviewer(reviewer.trim());
+        t.setReviewer(display);
+        t.setReviewerId(rid);
         t.setCardNo(card.getCardNo());
         t.setAmount(unit);
         t.setWriteoffId(w.getWriteoffId());
@@ -228,13 +247,15 @@ public class WriteoffDeskService {
         if (remark != null && !remark.isBlank()) {
             t.setNote(remark.trim());
         }
-        appendTimeline(t, actor, "双签划扣完成，复核人：" + reviewer.trim()
+        appendTimeline(t, actor, "双签划扣完成（" + tier + " 级），复核人：" + display
                 + "；扣卡 " + card.getCardNo() + " 1 次/" + unit + " 分，划扣单号 " + w.getWriteoffId());
         WriteoffDeskTask saved = wdRepo.save(t);
 
         audit.record("WDESK", wdNo, actor, "EXECUTE",
                 "{\"card\":\"" + card.getCardNo() + "\",\"writeoffId\":\"" + w.getWriteoffId()
-                        + "\",\"reviewer\":\"" + esc(reviewer.trim()) + "\",\"amount\":" + unit
+                        + "\",\"reviewerId\":\"" + esc(rid) + "\",\"reviewer\":\"" + esc(display)
+                        + "\",\"reviewerRole\":\"" + esc(reviewer.primaryRole())
+                        + "\",\"tier\":\"" + tier + "\",\"amount\":" + unit
                         + ",\"timesUsed\":1,\"authority\":\"customer\"}");
 
         // B10：BOM 自动扣料注册在划扣事务提交后执行（扣库/成本事件/异常登记均不在本事务内，

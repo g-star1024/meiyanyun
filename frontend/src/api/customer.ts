@@ -83,7 +83,7 @@ export interface MemberCardDTO {
   remainTimes: number | null
   /** 卡余额：bigint，单位「分」（展示需 /100 转元） */
   balance: number
-  /** 赠金余额（分）；售卡本批固定 0，充值赠金后续批次启用。 */
+  /** 赠金余额（分）；B18 起充值支持录入赠送金额，消费先扣赠金后扣本金；售卡赠金仍固定 0。 */
   giftBalance?: number
   /** 卡项模板编码快照（CD-/CS-），开卡后模板改价/下架不影响本卡。 */
   productCode?: string | null
@@ -107,6 +107,10 @@ export interface CardLedgerDTO {
   amount: number
   /** 变动后卡余额（分） */
   balanceAfter: number
+  /** B18 赠金变动（分，带符号：充值赠送 +、消费先扣赠金 -、退卡清零 -）；冻结/解冻 ADJUST 行为 0/null */
+  giftAmount?: number
+  /** B18 变动后赠金余额（分） */
+  giftAfter?: number
   /** 业务单号：充值 RC 单号 / 消费订单号 / 退卡 CC 单号 */
   bizRef: string
   /** 操作人 */
@@ -121,6 +125,8 @@ export interface RechargeResultDTO {
   bizRef: string
   /** 充值后卡余额（分） */
   balanceAfter: number
+  /** B18 充值后赠金余额（分） */
+  giftAfter: number
 }
 
 /** 标签（GET /customer/tags 全量字典） */
@@ -172,9 +178,9 @@ export const listPointsLog = (id: string) =>
 export const listCustomerCards = (id: string) =>
   client.get<MemberCardDTO[]>(`/customer/${id}/cards`)
 
-/** 会员卡充值（amount 分；payMethod cash/card/wxpay/alipay，禁用 balance；RC 单号重放幂等） */
-export const rechargeCard = (cardNo: string, amount: number, payMethod: string) =>
-  client.post<RechargeResultDTO>(`/customer/cards/${cardNo}/recharge`, { amount, payMethod })
+/** 会员卡充值（amount 本金分；giftAmount 赠送金额分，默认 0；payMethod cash/card/wxpay/alipay，禁用 balance；RC 单号重放幂等） */
+export const rechargeCard = (cardNo: string, amount: number, payMethod: string, giftAmount = 0) =>
+  client.post<RechargeResultDTO>(`/customer/cards/${cardNo}/recharge`, { amount, giftAmount, payMethod })
 
 /** 卡储值流水（账龄正序；amount 带符号分：RECHARGE + / CONSUME - / REFUND -） */
 export const listCardLedger = (cardNo: string) =>

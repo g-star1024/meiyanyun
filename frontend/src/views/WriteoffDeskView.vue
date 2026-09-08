@@ -16,10 +16,14 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import { useWriteoffDeskStore, type WriteoffDeskItem, type WdExceptionReason, type WdCardOption } from '@/stores/writeoffDesk'
 import { searchCustomers, type CustomerDTO } from '@/api/customer'
+import { listStaff, type Staff } from '@/api/org'
 import { WRITEOFF_DESK_STATUS, dictPill } from '@/config/dictionary'
+import { DEFAULT_SETTINGS, signTierForAmount } from '@/config/settings'
+import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 
 const store = useWriteoffDeskStore()
+const auth = useAuthStore()
 const toast = useToast()
 const route = useRoute()
 onMounted(async () => {
@@ -98,10 +102,22 @@ function fmtTime(iso?: string) {
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// 执行划扣弹层（双签 + 卡选择器）
+// 执行划扣弹层（双签 + 卡选择器；B18 复核人工号化 + 金额分级角色闸门）
+// L1（<¥5,000）：持划扣权限员工互签（医生/操作师/前台/店长）；L2（¥5,000~20,000）：须店长；
+// L3（≥¥20,000）：须店长并须区域经理知晓。前端按列表主角色预过滤做 UX 收敛，
+// 后端调 org /internal/staff/{id} 以全角色并集硬校验（存在/在职/分级/禁同人）为权威。
+const L1_REVIEWER_ROLES = ['DOCTOR', 'OPERATOR', 'FRONT_DESK', 'STORE_MGR']
+const TIER_HINT: Record<'L1' | 'L2' | 'L3', string> = {
+  L1: 'L1 级（<¥5,000）：复核人须为持划扣权限的员工（医生/操作师/前台/店长），且不能是操作人本人。',
+  L2: 'L2 级（¥5,000~20,000）：复核人须为门店店长，且不能是操作人本人。',
+  L3: 'L3 级（≥¥20,000）：复核人须为门店店长；大额划扣请同步报备区域经理。',
+}
 const showExec = ref(false)
-const execForm = ref({ reviewer: '', remark: '', cardNo: '' })
+const execForm = ref({ reviewerId: '', remark: '', cardNo: '' })
 const execCards = ref<WdCardOption[]>([])
+const execStaff = ref<Staff[]>([])
+const execStaffLoading = ref(false)
+const execStaffError = ref('')
 const execSubmitting = ref(false)
 const execCardOptions = computed(() =>
   execCards.value.map((c) => ({
@@ -110,16 +126,53 @@ const execCardOptions = computed(() =>
   })),
 )
 const execSingleCard = computed(() => (execCards.value.length === 1 ? execCards.value[0] : null))
-const canExec = computed(() => execForm.value.reviewer.trim().length > 0 && !execSubmitting.value)
+// 本笔划扣分级：以选中卡单次均价为准（与后端 unit 口径一致），未选卡时退回任务金额兜底
+const execTier = computed<'L1' | 'L2' | 'L3'>(() => {
+  const card = execCards.value.find((c) => c.cardNo === execForm.value.cardNo)
+  const unitYuan = card ? card.unitAmount : (selected.value?.amount ?? 0)
+  return signTierForAmount(unitYuan, DEFAULT_SETTINGS.system.dualSign)
+})
+const reviewerOptions = computed(() => {
+  const me = auth.user?.staffId || ''
+  const allowMgrOnly = execTier.value !== 'L1'
+  return execStaff.value
+    .filter((s) => s.status === '在职')
+    .filter((s) => s.staffId !== me)
+    .filter((s) => (allowMgrOnly ? s.roleCode === 'STORE_MGR' : L1_REVIEWER_ROLES.includes(s.roleCode)))
+    .map((s) => ({ value: s.staffId, label: `${s.staffId} ${s.staffName}` }))
+})
+const selectedReviewerName = computed(() => {
+  const s = execStaff.value.find((x) => x.staffId === execForm.value.reviewerId)
+  return s?.staffName || ''
+})
+const canExec = computed(() => execForm.value.reviewerId.trim().length > 0 && !execSubmitting.value)
+// 切换划扣所用卡会改变金额分级：tier 变化后原选复核人可能不再满足角色闸门，重置选择
+function onExecCardChange(v: string) {
+  execForm.value.cardNo = v
+  execForm.value.reviewerId = ''
+}
 async function openExec() {
   if (!selected.value || selected.value.status !== 'PENDING') return
-  execForm.value = { reviewer: '', remark: '', cardNo: selected.value.cardNo || '' }
+  execForm.value = { reviewerId: '', remark: '', cardNo: selected.value.cardNo || '' }
   execCards.value = []
+  execStaff.value = []
+  execStaffError.value = ''
   showExec.value = true
   if (selected.value.customerId) {
     execCards.value = await store.customerCards(selected.value.customerId, selected.value.storeCode)
     const bound = execCards.value.find((c) => c.cardNo === selected.value?.cardNo)
     execForm.value.cardNo = bound ? bound.cardNo : (execCards.value[0]?.cardNo || '')
+  }
+  // 复核人候选：本店在职员工（/org/staff 经 DataScope 注入，门店账号只见本店）
+  execStaffLoading.value = true
+  try {
+    const res = await listStaff(selected.value.storeCode || auth.user?.storeId || undefined)
+    execStaff.value = res.data || []
+  } catch (e) {
+    console.error('[writeoff-desk] 复核人员工列表加载失败', e)
+    execStaffError.value = '员工列表加载失败，请稍后重试；后端复核人校验仍为权威闸门'
+  } finally {
+    execStaffLoading.value = false
   }
 }
 async function submitExec() {
@@ -128,13 +181,14 @@ async function submitExec() {
   try {
     const res = await store.execute(
       selected.value.id,
-      execForm.value.reviewer,
+      execForm.value.reviewerId,
       execForm.value.cardNo || undefined,
       execForm.value.remark || undefined,
+      selectedReviewerName.value,
     )
     if (res.ok) {
       showExec.value = false
-      toast.success(`双签划扣完成，复核人 ${execForm.value.reviewer.trim()}`)
+      toast.success(`双签划扣完成，复核人 ${execForm.value.reviewerId} ${selectedReviewerName.value}`.trim())
     } else {
       toast.error(res.reason || '划扣失败')
     }
@@ -377,7 +431,7 @@ async function submitWalkin() {
           </div>
           <div v-if="execCards.length > 1" class="form__row">
             <label class="form__label">划扣所用卡</label>
-            <CSelect v-model="execForm.cardNo" :options="execCardOptions" width="100%" />
+            <CSelect :model-value="execForm.cardNo" :options="execCardOptions" width="100%" @update:model-value="onExecCardChange" />
           </div>
           <div v-else-if="execSingleCard" class="form__row">
             <label class="form__label">划扣所用卡</label>
@@ -388,7 +442,25 @@ async function submitWalkin() {
           </div>
           <div class="form__row">
             <label class="form__label">复核人 <span class="req">*</span></label>
-            <CInput v-model="execForm.reviewer" placeholder="请输入复核人姓名，如：陈雅琳（店长）" />
+            <CSelect
+              v-model="execForm.reviewerId"
+              :options="reviewerOptions"
+              width="100%"
+              :disabled="execStaffLoading"
+              :placeholder="execStaffLoading ? '员工列表加载中…' : '请选择复核人工号'"
+            />
+            <div class="form__hint" :class="{ 'form__hint--danger': execTier === 'L3' }">
+              <CIcon :name="(execTier === 'L3' ? 'alert' : 'shield') as any" :size="12" />
+              {{ TIER_HINT[execTier] }}
+            </div>
+            <div v-if="execStaffLoading" class="form__hint">正在加载本店员工…</div>
+            <div v-else-if="execStaffError" class="form__hint form__hint--danger">
+              <CIcon name="alert" :size="12" /> {{ execStaffError }}
+            </div>
+            <div v-else-if="reviewerOptions.length === 0" class="form__hint form__hint--danger">
+              <CIcon name="alert" :size="12" />
+              {{ execTier === 'L1' ? '本店无符合条件的复核人（在职持划扣权限员工，且非操作人本人）' : '本店无符合条件的门店店长可复核，请联系区域经理' }}
+            </div>
           </div>
           <div class="form__row">
             <label class="form__label">备注（可选）</label>
@@ -529,6 +601,9 @@ async function submitWalkin() {
 .form__row { display: flex; flex-direction: column; gap: var(--s-xs); }
 .form__label { font-size: var(--t-xs); color: var(--c-text-3); }
 .req { color: var(--c-danger-fg); }
+.form__hint { display: flex; align-items: flex-start; gap: 4px; font-size: var(--t-xs); color: var(--c-text-3); line-height: 1.5; }
+.form__hint .cicon { flex-shrink: 0; margin-top: 2px; }
+.form__hint--danger { color: var(--c-danger-fg); font-weight: 600; }
 .sign-box { background: var(--c-brand-soft); border-radius: var(--r-md); padding: var(--s-md); }
 .sign-box__title { display: flex; align-items: center; gap: var(--s-xs); font-size: var(--t-sm); font-weight: 600; color: var(--c-brand); margin-bottom: var(--s-xxs); }
 .sign-box__text { font-size: var(--t-sm); color: var(--c-text-2); }

@@ -15,14 +15,19 @@ withDefaults(
   { modelValue: '', label: '', placeholder: '', disabled: false, error: false, type: 'text' },
 )
 
-const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>()
+const emit = defineEmits<{
+  (e: 'update:modelValue', v: string): void
+  (e: 'input', v: string): void
+}>()
 
 const fieldEl = ref<HTMLInputElement | null>(null)
 function focus() { fieldEl.value?.focus() }
 defineExpose({ focus })
 
 function onInput(ev: Event) {
-  emit('update:modelValue', (ev.target as HTMLInputElement).value)
+  const v = (ev.target as HTMLInputElement).value
+  emit('update:modelValue', v)
+  emit('input', v)
 }
 </script>
 

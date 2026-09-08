@@ -62,9 +62,13 @@ public class WriteoffDeskTask {
     @Column(nullable = false, length = 32)
     private String operator;
 
-    /** 双签复核人姓名（execute 时必填，自由文本）。 */
+    /** 双签复核人展示串「工号 姓名」（execute 时必填；B18 起复核人为真实在职员工，org 硬校验工号/角色）。 */
     @Column(length = 32)
     private String reviewer;
+
+    /** 双签复核人工号（B18：与 reviewer 展示串一并落库，供追溯与角色闸门审计）。 */
+    @Column(name = "reviewer_id", length = 16)
+    private String reviewerId;
 
     /** 异常原因：NONE / CUSTOMER_ABSENT / COUNT_MISMATCH / EQUIPMENT_FAULT / OTHER。 */
     @Column(name = "exception_reason", nullable = false, length = 32)
