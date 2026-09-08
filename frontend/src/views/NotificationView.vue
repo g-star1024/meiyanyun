@@ -12,7 +12,7 @@ import CIcon from '@/components/CIcon.vue'
 
 const router = useRouter()
 const nt = useNotificationStore()
-onMounted(() => nt.seed())
+onMounted(() => void nt.fetch())
 
 const categories: { key: NotifyCategory | 'ALL'; label: string; icon: string }[] = [
   { key: 'ALL', label: '全部通知', icon: 'bell' },
@@ -47,8 +47,8 @@ function catIcon(c: NotifyCategory): string {
   return { APPROVAL: 'check-square', CUSTOMER: 'customer', INVENTORY: 'box', MARKETING: 'marketing', SYSTEM: 'settings' }[c]
 }
 
-function openItem(id: string, link?: string) {
-  nt.markRead(id)
+function openItem(id: number, link?: string) {
+  void nt.markRead(id)
   if (link) router.push(link).catch(() => {})
 }
 

@@ -13,4 +13,6 @@ public interface OrgUnitRepository extends JpaRepository<OrgUnit, String> {
     List<OrgUnit> findByParentCodeOrderBySortNoAsc(String parentCode);
 
     List<OrgUnit> findByRegionOrderBySortNoAsc(String region);
+
+    java.util.Optional<OrgUnit> findFirstByStoreCode(String storeCode);
 }

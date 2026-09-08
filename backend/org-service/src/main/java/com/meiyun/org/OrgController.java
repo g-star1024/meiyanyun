@@ -251,6 +251,59 @@ public class OrgController {
         return m;
     }
 
+    /**
+     * 按角色列在职员工（服务间调用专用，B20 审批 SLA 催办目标人解析）：
+     * GET /api/org/internal/staff/by-role?roleCode=FINANCE&storeCode=SST01&region=华东。
+     *
+     * <p>命中口径与公开 /staff 一致——主角色 staff.role_code 或兼岗 staff_role.role_code 任一命中即返回，
+     * 且仅返回在职（status=在职）。无 DataScope（系统内部任务使用，调用方持 internal:name-map）。
+     * storeCode / region 为可选收敛过滤：REGION_MGR 无门店归属，调方传 storeCode 时此处先把门店
+     * 解析为区域再按区域过滤；STORE_MGR / FINANCE 直接忽略 region（前者按门店、后者全量）。
+     */
+    @GetMapping("/internal/staff/by-role")
+    @RequirePerm("internal:name-map")
+    public List<Map<String, Object>> internalStaffByRole(@RequestParam("roleCode") String roleCode,
+                                                         @RequestParam(value = "storeCode", required = false) String storeCode,
+                                                         @RequestParam(value = "region", required = false) String region) {
+        String role = roleCode == null ? "" : roleCode.trim();
+        if (role.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "roleCode 必填");
+        }
+        LinkedHashSet<String> ids = new LinkedHashSet<>();
+        staffRepo.findByRoleCodeOrderByStaffIdAsc(role).stream()
+                .map(Staff::getStaffId).forEach(ids::add);
+        staffRoleRepo.findByRoleCode(role).stream()
+                .map(StaffRole::getStaffId).forEach(ids::add);
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Staff s : staffRepo.findAllById(ids)) {
+            if (!"在职".equals(s.getStatus())) continue;
+            if (storeCode != null && !storeCode.isBlank()) {
+                if ("REGION_MGR".equals(role)) {
+                    String storeRegion = regionOfStore(storeCode.trim());
+                    if (storeRegion == null || !storeRegion.equals(s.getRegion())) continue;
+                } else if (!storeCode.trim().equals(s.getStoreCode())) {
+                    continue;
+                }
+            } else if (region != null && !region.isBlank() && !region.trim().equals(s.getRegion())) {
+                continue;
+            }
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("staffId", s.getStaffId());
+            m.put("staffName", s.getStaffName());
+            m.put("primaryRole", s.getRoleCode());
+            m.put("status", s.getStatus());
+            m.put("storeCode", s.getStoreCode());
+            m.put("region", s.getRegion());
+            out.add(m);
+        }
+        return out;
+    }
+
+    /** 门店码 → 所属区域（org_unit 门店节点 region 列，org_code 为 O- 前缀、store_code 为门店码）；找不到返回 null。 */
+    private String regionOfStore(String storeCode) {
+        return orgRepo.findFirstByStoreCode(storeCode).map(OrgUnit::getRegion).orElse(null);
+    }
+
     // ==================== 内部方法 ====================
 
     private Map<String, Object> node(OrgUnit u) {

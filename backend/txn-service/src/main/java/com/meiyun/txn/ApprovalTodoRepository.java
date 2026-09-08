@@ -15,6 +15,9 @@ public interface ApprovalTodoRepository extends JpaRepository<ApprovalTodo, Stri
 
     List<ApprovalTodo> findByStatusOrderBySubmittedAtDesc(String status);
 
+    /** B20 SLA：限批 50 条待处理待办（FIFO，最早提交先扫描），供 ApprovalSlaJob 回填 dueAt / 超时判定。 */
+    List<ApprovalTodo> findFirst50ByStatusOrderBySubmittedAtAsc(String status);
+
     List<ApprovalTodo> findByStatusNotOrderBySubmittedAtDesc(String status);
 
     List<ApprovalTodo> findByBizTypeOrderBySubmittedAtDesc(String bizType);

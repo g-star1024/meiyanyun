@@ -19,12 +19,15 @@ export interface ApprovalTodoDTO {
   status: string // PENDING/APPROVED/REJECTED/TRANSFERRED
   stage: string // REVIEW/REGION/FINANCE（REGION 为 B19 新增：L3 退款/退卡区域经理复审）
   priority: string // HIGH/MEDIUM/LOW
+  storeCode: string | null // B20：门店码，候选人门店预过滤用
   storeName: string | null
   assignee: string | null
   coSigners: string | null // 逗号分隔串，适配层拆数组
   history: string // JSON 数组字符串 [{actor,action,comment,at},...]
   submittedAt: string
   dueAt: string | null
+  overdue: boolean // B20：服务端 SLA 扫描置位（超过阶段时限）
+  remindCount: number // B20：已催办轮数
   createdAt: string | null
 }
 

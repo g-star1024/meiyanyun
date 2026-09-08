@@ -126,9 +126,12 @@ function adapt(d: ApprovalTodoDTO): ApprovalTask {
     status: d.status as ApprovalTask['status'],
     stage: (d.stage as ApprovalStage) || 'REVIEW',
     priority: (d.priority as ApprovalTask['priority']) || 'MEDIUM',
+    storeCode: d.storeCode || undefined,
     storeName: d.storeName || '默认门店',
     submittedAt: d.submittedAt || '',
     dueAt: d.dueAt || undefined,
+    overdue: !!d.overdue,
+    remindCount: d.remindCount || 0,
     assignee: d.assignee || undefined,
     coSigners: d.coSigners ? d.coSigners.split(',').filter(Boolean) : [],
     history,
@@ -152,10 +155,17 @@ onMounted(load)
 
 const todo = computed(() => tasks.value.filter((t) => t.status === 'PENDING'))
 const done = computed(() => tasks.value.filter((t) => t.status !== 'PENDING'))
+/** 逾期：以服务端 SLA 扫描置位的 overdue 为准；前端 dueAt 兜底（SLA 未扫描到的边界单） */
 const overdue = computed(() => {
   const now = Date.now()
-  return todo.value.filter((t) => t.dueAt && new Date(t.dueAt).getTime() < now)
+  return todo.value.filter((t) => t.overdue || (t.dueAt && new Date(t.dueAt).getTime() < now))
 })
+/** 列表行超时态：服务端 overdue 或本地 dueAt 已过 */
+function isOverdue(t: ApprovalTask): boolean {
+  if (t.status !== 'PENDING') return false
+  if (t.overdue) return true
+  return !!t.dueAt && new Date(t.dueAt).getTime() < Date.now()
+}
 /** 当前用户可处理的待办：当前阶段角色闸门（镜像后端 guardStageAssignee）+ 指派/加签人按工号匹配 */
 const myTodo = computed(() => {
   const me = auth.user.staffId
@@ -286,7 +296,14 @@ function stageRoleCode(t?: ApprovalTask): string {
 }
 async function loadStaffOptions(t: ApprovalTask) {
   try {
-    const res = await listStaff({ roleCode: stageRoleCode(t) })
+    // B20 候选人预过滤：REVIEW 转交给同门店店长（待办门店优先，回退当前登录门店）；
+    // REGION 区域经理/FINANCE 财务无门店归属，按角色全集拉取，由 DataScope 按大区/集团收敛。
+    const roleCode = stageRoleCode(t)
+    const params: { roleCode: string; storeCode?: string } = { roleCode }
+    if (t.stage === 'REVIEW') {
+      params.storeCode = t.storeCode || auth.user.storeId || undefined
+    }
+    const res = await listStaff(params)
     staffList.value = res.data || []
     const me = auth.user.staffId
     staffOptions.value = staffList.value
@@ -429,6 +446,9 @@ function stageHint(t: ApprovalTask): string {
             <div class="task__foot">
               <span class="tier tier--{{ t.signTier.toLowerCase() }}">{{ t.signTier }}</span>
               <CStatusPill :status="priorityPill(t.priority).status">{{ priorityPill(t.priority).text }}优先</CStatusPill>
+              <span v-if="isOverdue(t)" class="task__overdue">
+                <CIcon name="alert" :size="12" /> 已超时{{ t.remindCount ? ` · 已催办${t.remindCount}次` : '' }}
+              </span>
               <span class="task__time">{{ fmtDate(t.submittedAt) }}</span>
             </div>
           </div>
@@ -446,11 +466,17 @@ function stageHint(t: ApprovalTask): string {
               <span><CIcon name="profile" :size="12" /> 申请人 {{ selected.applicant }}（{{ selected.applicantRole }}）</span>
               <span><CIcon name="store" :size="12" /> {{ selected.storeName }}</span>
               <span><CIcon name="clock" :size="12" /> {{ fmtDate(selected.submittedAt) }}</span>
+              <span v-if="selected.dueAt" :class="{ 'det__sla-over': isOverdue(selected) }">
+                <CIcon name="alert" :size="12" /> {{ isOverdue(selected) ? '已超过处理时限' : '处理截止' }} {{ fmtDate(selected.dueAt) }}
+              </span>
             </div>
           </div>
           <div class="det__badges">
             <CStatusPill :status="statusPill(selected).status">{{ statusPill(selected).text }}</CStatusPill>
             <CStatusPill :status="priorityPill(selected.priority).status">{{ priorityPill(selected.priority).text }}优先级</CStatusPill>
+            <CStatusPill v-if="isOverdue(selected)" status="danger">
+              已超时{{ selected.remindCount ? `（已催办 ${selected.remindCount} 次）` : '' }}
+            </CStatusPill>
           </div>
         </div>
 
@@ -569,8 +595,9 @@ function stageHint(t: ApprovalTask): string {
 .task__title { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); margin-bottom: var(--s-xs); line-height: 1.4; }
 .task__meta { display: flex; flex-wrap: wrap; gap: var(--s-md); font-size: var(--t-xs); color: var(--c-text-3); margin-bottom: var(--s-xs); }
 .task__meta span { display: inline-flex; align-items: center; gap: 4px; }
-.task__foot { display: flex; align-items: center; gap: var(--s-xs); }
+.task__foot { display: flex; align-items: center; gap: var(--s-xs); flex-wrap: wrap; }
 .task__time { margin-left: auto; font-size: 10px; color: var(--c-text-3); }
+.task__overdue { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; font-weight: 600; color: var(--c-danger-fg); }
 .tier { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: var(--r-sm); }
 .tier--l1 { background: rgba(82,196,26,.12); color: var(--c-success-fg); }
 .tier--l2 { background: rgba(250,140,22,.12); color: var(--c-warning-fg); }
@@ -583,6 +610,7 @@ function stageHint(t: ApprovalTask): string {
 .det__title { margin: 0 0 var(--s-xs); font-size: var(--t-lg); font-weight: 700; color: var(--c-text); }
 .det__sub { display: flex; flex-wrap: wrap; gap: var(--s-md); font-size: var(--t-xs); color: var(--c-text-3); }
 .det__sub span { display: inline-flex; align-items: center; gap: 4px; }
+.det__sub .det__sla-over { color: var(--c-danger-fg); font-weight: 600; }
 .det__badges { display: flex; flex-direction: column; gap: var(--s-xs); align-items: flex-end; flex-shrink: 0; }
 .det__summary { margin: var(--s-md) 0; padding: var(--s-md); background: var(--c-surface-muted, #f7f8fa); border-radius: var(--r-md); font-size: var(--t-sm); color: var(--c-text-2); line-height: var(--lh-md); }
 .det__amount { display: flex; align-items: baseline; gap: var(--s-sm); padding: var(--s-md); border: 1px solid var(--c-brand-border); border-radius: var(--r-md); background: var(--c-brand-soft); margin-bottom: var(--s-md); }

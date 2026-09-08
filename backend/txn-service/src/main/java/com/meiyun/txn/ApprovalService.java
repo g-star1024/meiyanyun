@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.LoginUser;
 import com.meiyun.txn.audit.AuditRecorder;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
@@ -49,6 +50,18 @@ public class ApprovalService {
     private final FinanceEventPublisher financeEventPublisher;
     private final ApptRefNameResolver nameResolver;
 
+    /**
+     * B20 SLA 各阶段审批时长（小时，可配置 meiyun.approval.sla.*）：
+     * REVIEW 店长/运营一审 24h、REGION 区域经理复审（L3）8h、FINANCE 财务终审 4h（资金出库最后一道闸优先）。
+     * 提交 / 阶段推进时按当前阶段回填 dueAt；ApprovalSlaJob 扫描 dueAt 超时仍 PENDING 的待办发催办通知。
+     */
+    @Value("${meiyun.approval.sla.review-hours:24}")
+    private long slaReviewHours;
+    @Value("${meiyun.approval.sla.region-hours:8}")
+    private long slaRegionHours;
+    @Value("${meiyun.approval.sla.finance-hours:4}")
+    private long slaFinanceHours;
+
     public ApprovalService(ApprovalTodoRepository repo, @Lazy TxnService txnService, AuditRecorder audit,
                            StoreConsumableClient storeConsumableClient,
                            FinanceEventPublisher financeEventPublisher,
@@ -93,6 +106,7 @@ public class ApprovalService {
         t.setPriority("L3".equals(tier) ? "HIGH" : "MEDIUM");
         OffsetDateTime now = OffsetDateTime.now();
         t.setSubmittedAt(now);
+        t.setDueAt(now.plusHours(stageSlaHours(t.getStage())));
         t.setCoSigners("");
         t.setHistory(historyJson(new HistoryEntry(currentActor(), "SUBMIT", "提交审批", now)));
         repo.save(t);
@@ -156,6 +170,7 @@ public class ApprovalService {
         t.setPriority(amount != null && amount >= 2_000_000L ? "HIGH" : "MEDIUM");
         OffsetDateTime now = OffsetDateTime.now();
         t.setSubmittedAt(now);
+        t.setDueAt(now.plusHours(stageSlaHours(t.getStage())));
         t.setCoSigners("");
         t.setHistory(historyJson(new HistoryEntry(currentActor(), "SUBMIT", "提交审批", now)));
         t.setPayload(payloadJson(lines));
@@ -266,6 +281,23 @@ public class ApprovalService {
         return (s == null || s.isBlank()) ? fallback : s;
     }
 
+    /** B20 SLA：当前阶段审批时长（小时）。REVIEW 店长一审 24h、REGION 区域复审 8h、FINANCE 财务终审 4h。 */
+    private long stageSlaHours(String stage) {
+        return switch (stage == null ? "" : stage) {
+            case "REGION" -> slaRegionHours;
+            case "FINANCE" -> slaFinanceHours;
+            default -> slaReviewHours;
+        };
+    }
+
+    /** B20 SLA：阶段推进后重置截止时间（从推进时刻起算新阶段时长）并清零超时/催办态。 */
+    private void resetStageSla(ApprovalTodo t, OffsetDateTime now) {
+        t.setDueAt(now.plusHours(stageSlaHours(t.getStage())));
+        t.setOverdue(false);
+        t.setRemindCount(0);
+        t.setLastRemindedAt(null);
+    }
+
     private static String truncate(String s, int max) {
         if (s == null) return null;
         return s.length() <= max ? s : s.substring(0, max);
@@ -321,14 +353,19 @@ public class ApprovalService {
 
         if (finalStage) {
             t.setStatus("APPROVED");
+            t.setOverdue(false);
+            t.setRemindCount(0);
+            t.setLastRemindedAt(null);
         } else if ("REVIEW".equals(stage) && "L3".equals(t.getSignTier())
                 && ("REFUND".equals(t.getBizType()) || "CARD_CANCEL".equals(t.getBizType()))) {
             // B19：L3 退款/退卡插入区域经理复审阶段
             t.setStage("REGION");
             t.setAssignee(null);
+            resetStageSla(t, now);
         } else {
             t.setStage("FINANCE");
             t.setAssignee(null);
+            resetStageSla(t, now);
         }
         repo.save(t);
         audit.record("APPROVAL", todoNo, actor, "APPROVE",
@@ -353,6 +390,9 @@ public class ApprovalService {
         OffsetDateTime now = OffsetDateTime.now();
         appendHistory(t, actor, "REJECT", cmd.comment(), now);
         t.setStatus("REJECTED");
+        t.setOverdue(false);
+        t.setRemindCount(0);
+        t.setLastRemindedAt(null);
 
         if ("REFUND".equals(t.getBizType()) || "CARD_CANCEL".equals(t.getBizType())) {
             txnService.reject(t.getBizNo(), new TxnService.ApprovalCmd(actor, cmd.comment()));

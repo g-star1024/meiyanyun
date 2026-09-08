@@ -49,9 +49,13 @@ export interface ApprovalTask {
   status: ApprovalStatus
   stage: ApprovalStage
   priority: 'HIGH' | 'MEDIUM' | 'LOW'
+  storeCode?: string
   storeName: string
   submittedAt: string
   dueAt?: string
+  /** B20 SLA：服务端扫描置位的超时标记 + 已催办轮数 */
+  overdue?: boolean
+  remindCount?: number
   /** 当前审批人（转交/加签后变化）；空表示按角色自动路由 */
   assignee?: string
   /** 加签人列表 */

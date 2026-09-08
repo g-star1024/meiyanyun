@@ -65,7 +65,7 @@ const userMenuOpen = ref(false)
 const roleSwitching = ref<Role | ''>('')
 
 onMounted(() => {
-  notification.seed()
+  void notification.fetch()
 })
 
 const currentPage = computed(() => {

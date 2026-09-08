@@ -94,6 +94,18 @@ public class ApprovalTodo {
     @Column(name = "due_at")
     private OffsetDateTime dueAt;
 
+    /** B20 SLA：已超时标记（dueAt 已过且仍 PENDING，ApprovalSlaJob 扫描置 true，前端红色提示）。 */
+    @Column(name = "overdue", nullable = false, columnDefinition = "boolean default false")
+    private boolean overdue = false;
+
+    /** B20 SLA：累计催办次数（每次 ApprovalSlaJob 催办通知 +1；阶段推进/审批办结后清零）。 */
+    @Column(name = "remind_count", nullable = false, columnDefinition = "int default 0")
+    private int remindCount = 0;
+
+    /** B20 SLA：最近一次催办时间（催办节流用：距上次不足 remindInterval 分钟不重复催）。 */
+    @Column(name = "last_reminded_at")
+    private OffsetDateTime lastRemindedAt;
+
     @Column(name = "created_at")
     private OffsetDateTime createdAt;
 

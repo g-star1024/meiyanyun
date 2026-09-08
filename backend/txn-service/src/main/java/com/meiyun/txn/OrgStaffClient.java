@@ -106,6 +106,50 @@ public class OrgStaffClient {
         }
     }
 
+    /**
+     * 按角色列在职员工（B20 审批 SLA 催办目标人解析）：GET org /internal/staff/by-role。
+     * 仅返主角色或兼岗命中 roleCode 的在职员工；storeCode/region 为可选收敛过滤（REGION_MGR 由
+     * org 侧把门店解析为区域）。与 {@link #fetchStaff} 的合规硬失败不同：催办是通知类旁路动作，
+     * org 不可用 / 超时 / 出错一律软降级为空列表（log.warn，本轮不催，下轮定时任务自愈重试），
+     * 绝不因催办失败影响审批主链路。
+     */
+    public List<StaffBrief> listStaffByRole(String roleCode, String storeCode, String region) {
+        String role = roleCode == null ? "" : roleCode.trim();
+        if (role.isEmpty()) return List.of();
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            String url = orgBaseUrl + "/api/org/internal/staff/by-role?roleCode="
+                    + URLEncoder.encode(role, StandardCharsets.UTF_8);
+            if (storeCode != null && !storeCode.isBlank()) {
+                url += "&storeCode=" + URLEncoder.encode(storeCode.trim(), StandardCharsets.UTF_8);
+            }
+            if (region != null && !region.isBlank()) {
+                url += "&region=" + URLEncoder.encode(region.trim(), StandardCharsets.UTF_8);
+            }
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> body = restTemplate.exchange(
+                    url, HttpMethod.GET, new HttpEntity<>(headers), List.class).getBody();
+            if (body == null) return List.of();
+            List<StaffBrief> out = new ArrayList<>();
+            for (Map<String, Object> m : body) {
+                String id = str(m.get("staffId"));
+                if (id.isBlank()) continue;
+                out.add(new StaffBrief(id, str(m.get("staffName")),
+                        str(m.get("storeCode")), str(m.get("region"))));
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("SLA 催办目标人解析失败（软降级，本轮不催）role={} store={}: {}",
+                    role, storeCode, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** 催办目标人简要档案（工号/姓名/门店/区域）。 */
+    public record StaffBrief(String staffId, String staffName, String storeCode, String region) {
+    }
+
     /** 复核人角色闸门：L1 须持 writeoff:create 四角色之一；L2/L3 须店长。不符 → 400 中文（提示层级与所需角色）。 */
     public static void requireReviewerRole(StaffProfile profile, String tier) {
         String reviewerId = profile.staffId();
