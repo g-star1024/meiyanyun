@@ -14,7 +14,7 @@ import java.time.OffsetDateTime;
  * <pre>
  *   PENDING 待咨询 → ACTIVE 咨询中 → PENDING_REVIEW 待医生审核
  *     → APPROVED 审核通过·待写病历 → READY_PAY 待支付（签病历自动生成缴费单）
- *     → PAID 已支付·待治疗（下期接 TREATING/DONE）
+ *     → PAID 已支付·待治疗 → TREATING 治疗中（术前四项核对）→ DONE 已完成（治疗记录归档）
  *   打回：PENDING_REVIEW → REJECTED（咨询师改单重提）；可 ABANDONED 作废。
  * </pre>
  * 状态码存英文枚举（与前端 domain ConsultStatus 一致，前端 pill 映射中文展示）。
@@ -119,6 +119,30 @@ public class ConsultPlan {
 
     @Column(name = "paid_at")
     private OffsetDateTime paidAt;
+
+    /** 术前四项核对结果（JSON：consentChecked/contraChecked/drugChecked/siteChecked/room/note），开始治疗时落库 */
+    @Column(name = "pre_op_checklist", columnDefinition = "TEXT")
+    private String preOpJson;
+
+    /** 治疗开始时间（PAID → TREATING） */
+    @Column(name = "treating_at")
+    private OffsetDateTime treatingAt;
+
+    /** 治疗完成时间（TREATING → DONE） */
+    @Column(name = "treated_at")
+    private OffsetDateTime treatedAt;
+
+    /** 治疗过程 / 操作记录（完成治疗时必填） */
+    @Column(name = "treat_note", columnDefinition = "TEXT")
+    private String treatNote;
+
+    /** 术后医嘱 / 注意事项 */
+    @Column(name = "treat_prescription", columnDefinition = "TEXT")
+    private String treatPrescription;
+
+    /** 治疗记录病历号（完成治疗时生成，电子签名归档） */
+    @Column(name = "treat_emr_id", length = 32)
+    private String treatEmrId;
 
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;

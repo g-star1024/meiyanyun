@@ -5,7 +5,8 @@
  *   开单审核：待审核单【驳回 / 改单 / 审核通过】。
  *     审核通过 = 签署首程病历 + 系统自动生成缴费单（诊断/方案自动带入，可直接补改）。
  *   待支付：前往收银台收款（收款后自动解锁治疗）。
- *   治疗执行：待治疗【术前四项核对 → 开始治疗】→ 治疗中【完成治疗】（自动排术后随访）。
+ *   治疗执行：待治疗【术前四项核对 → 开始治疗】→ 治疗中【完成治疗】。
+ *   mock 演示单完成后自动排术后 SOP；真实单术后随访暂无后端域，不自动排程（界面诚实提示）。
  * 合规顺序：病历先于收费、收费先于治疗；治疗解锁双条件＝首程病历已签 + 缴费单已支付。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
@@ -18,7 +19,15 @@ import { useStoreContext } from '@/stores/storeContext'
 import { staffName } from '@/config/staff'
 import { RISK_TAG_LABEL } from '@/composables/useCompliance'
 import { useToast } from '@/composables/useToast'
-import { listPlans, rejectPlan, doctorEditPlan, signPlanEmr, type PlanViewDTO } from '@/api/consultPlan'
+import {
+  listPlans,
+  rejectPlan,
+  doctorEditPlan,
+  signPlanEmr,
+  treatStart,
+  treatDone,
+  type PlanViewDTO,
+} from '@/api/consultPlan'
 import { injectPlanShadows, toPlanItemCmd, isRealPlan, REAL_FLAG } from '@/adapters/consultPlan'
 import CWorkbenchShell from '@/components/CWorkbenchShell.vue'
 import CButton from '@/components/CButton.vue'
@@ -51,19 +60,19 @@ onMounted(async () => {
 })
 
 // ============================================================
-// 真实方案单加载（开单审核队列）：listPlans(PENDING_REVIEW/APPROVED) → 影子注入 mock store
-// 治疗执行（READY_PAY/PAID/TREATING）后端暂无「开始/完成治疗」端点，保持 mock 演示、不注入真实单，
-// 避免真实单落入缺口动作造成本地假交互（真实单签病历后走收银台收款，符合诊疗主线）。
+// 真实方案单加载：listPlans(审核两态 + 治疗三态 READY_PAY/PAID/TREATING) → 影子注入 mock store
+// 治疗执行已接后端 treat-start/treat-done（术前四项核对、治疗记录电子签名归档）。
+// 边界：术后 SOP 多节点随访无后端域，真实单完成治疗后不自动排随访（完成提示诚实化）。
 // ============================================================
+const REAL_PLAN_STATUSES = ['PENDING_REVIEW', 'APPROVED', 'READY_PAY', 'PAID', 'TREATING'] as const
 async function loadRealPlans() {
   if (!storeCtx.loaded) await storeCtx.loadStores()
   try {
     const store = storeCtx.currentStoreCode
-    const [pend, appr] = await Promise.all([
-      listPlans({ size: 50, status: 'PENDING_REVIEW', storeCode: store }),
-      listPlans({ size: 50, status: 'APPROVED', storeCode: store }),
-    ])
-    const dtos: PlanViewDTO[] = [...pend.data.content, ...appr.data.content]
+    const pages = await Promise.all(
+      REAL_PLAN_STATUSES.map((status) => listPlans({ size: 50, status, storeCode: store })),
+    )
+    const dtos: PlanViewDTO[] = pages.flatMap((p) => p.data.content)
     // 清掉上一批真实影子单（mock seed 单无 REAL_FLAG，不受影响）
     consultation.consultations = consultation.consultations.filter((c) => !isRealPlan(c as any))
     dtos.forEach((d) => {
@@ -85,10 +94,8 @@ const readyPay = computed(() => consultation.readyPay)
 const paid = computed(() => consultation.paid)
 const treating = computed(() => consultation.treating)
 const reviewQueue = computed(() => [...reviewing.value, ...approved.value])
-// 治疗执行队列：仅 mock 演示单（排除真实影子单，治疗后端端点待补）
-const treatQueue = computed(() =>
-  consultation.treatmentQueue.filter((c) => !isRealPlan(c as any)),
-)
+// 治疗执行队列：真实影子单 + mock 演示单（treat-start/treat-done 已接后端）
+const treatQueue = computed(() => consultation.treatmentQueue)
 
 const canSeeMargin = computed(() => auth.can('finance:margin:view'))
 
@@ -315,8 +322,29 @@ const preOpPhotos = computed(() =>
 )
 const preOpBefore = computed(() => preOpPhotos.value[0]?.dataUrl)
 
-function confirmStartTreatment() {
-  if (!selectedId.value) return
+async function confirmStartTreatment() {
+  if (!selectedId.value || !sel.value) return
+  // 真实方案单：走后端 treat-start（术前四项 + 知情签名双校验，PAID → TREATING，幂等）
+  if (isRealPlan(sel.value as any)) {
+    try {
+      await treatStart(selectedId.value, {
+        operator: auth.user.staffId,
+        consentChecked: preOp.value.consentChecked,
+        contraChecked: preOp.value.contraChecked,
+        drugChecked: preOp.value.drugChecked,
+        siteChecked: preOp.value.siteChecked,
+        room: preOp.value.room,
+        note: preOp.value.note,
+      })
+      toast.success('术前核对完成，已开始治疗')
+      await loadRealPlans()
+      // 留在原单，面板会随状态切到治疗中
+      selectConsult(selectedId.value)
+    } catch (e: any) {
+      toast.error('开始治疗失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+    }
+    return
+  }
   const r = consultation.startTreatment(selectedId.value, { ...preOp.value })
   if (!r.ok) {
     toast.error(r.error || '操作失败')
@@ -332,8 +360,26 @@ function confirmStartTreatment() {
 // ============================================================
 const treatNote = ref('')
 const treatPrescription = ref('')
-function completeTreatment() {
+async function completeTreatment() {
   if (!selectedId.value || !sel.value) return
+  // 真实方案单：走后端 treat-done（治疗记录必填、生成 EM 号电子签名归档，TREATING → DONE，幂等）
+  // 术后 SOP 多节点随访暂无后端域，真实单不自动排程，提示医生线下/随访工作台登记
+  if (isRealPlan(sel.value as any)) {
+    try {
+      const res = await treatDone(selectedId.value, {
+        operator: auth.user.staffId,
+        treatmentNote: treatNote.value,
+        prescription: treatPrescription.value,
+      })
+      toast.success(`治疗记录 ${res.data.treatEmrId || ''} 已电子签名归档`)
+      toast.info('术后随访暂未自动排程，请在随访工作台登记 24h 关怀 / 复诊回访')
+      selectedId.value = ''
+      await loadRealPlans()
+    } catch (e: any) {
+      toast.error('完成治疗失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+    }
+    return
+  }
   const r = consultation.completeTreatment(selectedId.value, {
     customerName: customer.nameOf(sel.value.customerId),
     treatmentNote: treatNote.value,
@@ -609,7 +655,7 @@ function goEmr() {
                   <CIcon name="pos" :size="28" class="pay-panel__ic" />
                   <div class="pay-panel__main">
                     <h4>病历已签 · 缴费单待支付</h4>
-                    <p>缴费单 <strong>{{ orderOf(sel)?.orderNo || '—' }}</strong> · 金额 <strong>¥{{ sel.planAmount ?? 0 }}</strong> 已推送收银台与客户小程序。</p>
+                    <p>缴费单 <strong>{{ orderOf(sel)?.orderNo || sel.orderId || '—' }}</strong> · 金额 <strong>¥{{ sel.planAmount ?? 0 }}</strong> 已推送收银台与客户小程序。</p>
                     <p class="pay-panel__tip">收款完成后<strong>自动转入待治疗</strong>，未支付不可排治疗。可在收银台核单收款。</p>
                   </div>
                   <CButton variant="primary" size="sm" @click="goCashier">前往收银台收款 →</CButton>
@@ -685,7 +731,10 @@ function goEmr() {
               <section class="blk">
                 <CTextarea v-model="treatPrescription" label="术后医嘱 / 注意事项" :rows="3" placeholder="术后护理、防晒、复诊要求" />
               </section>
-              <div class="issue issue--ok">
+              <div v-if="sel && isRealPlan(sel as any)" class="issue issue--ok">
+                提交后治疗记录将以登录医生身份电子签名归档（生成治疗记录病历号）。术后随访暂无自动排程，请在随访工作台登记 24h 关怀 / 第3天回访 / 第7天恢复 / 第30天复诊。
+              </div>
+              <div v-else class="issue issue--ok">
                 提交后治疗记录将电子签名归档，并按术后 SOP <strong>自动生成多节点随访计划</strong>（24h 关怀 / 第3天回访 / 第7天恢复 / 第30天复诊）。
               </div>
             </template>
@@ -697,8 +746,14 @@ function goEmr() {
                   <CIcon name="check" :size="28" class="pay-panel__ic" />
                   <div class="pay-panel__main">
                     <h4>治疗已完成并归档</h4>
-                    <p>治疗记录已电子签名归档，术后 SOP 多节点随访计划已自动生成。</p>
-                    <p class="pay-panel__tip">下一步：按 SOP 跟进术后回访与复诊，复诊可转新方案单。</p>
+                    <template v-if="sel && isRealPlan(sel as any)">
+                      <p>治疗记录 <strong>{{ sel.treatmentEmrId || '—' }}</strong> 已电子签名归档。</p>
+                      <p class="pay-panel__tip">术后随访暂未自动排程，请在随访工作台登记回访；复诊可转新方案单。</p>
+                    </template>
+                    <template v-else>
+                      <p>治疗记录已电子签名归档，术后 SOP 多节点随访计划已自动生成。</p>
+                      <p class="pay-panel__tip">下一步：按 SOP 跟进术后回访与复诊，复诊可转新方案单。</p>
+                    </template>
                   </div>
                   <CButton variant="secondary" size="sm" @click="router.push('/sop')">查看 SOP 进度 →</CButton>
                 </div>

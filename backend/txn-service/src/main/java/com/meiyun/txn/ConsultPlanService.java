@@ -101,6 +101,13 @@ public class ConsultPlanService {
                              String presentIllness, String pastHistory, String diagnosis,
                              String treatment, String prescription, String note) {}
 
+    /** 术前四项核对（开始治疗）：知情同意/禁忌复核/药品耗材/治疗部位四项必须全部确认。 */
+    public record TreatStartCmd(String operator, Boolean consentChecked, Boolean contraChecked,
+                                Boolean drugChecked, Boolean siteChecked, String room, String note) {}
+
+    /** 完成治疗：治疗过程/操作记录必填，术后医嘱选填；以登录医生身份电子签名归档。 */
+    public record TreatDoneCmd(String operator, String treatmentNote, String prescription) {}
+
     public record RetailCmd(String customerId, String storeCode, String consultant,
                             String project, List<M4FlowController.OrderItemCmd> items, String operator) {}
 
@@ -123,12 +130,15 @@ public class ConsultPlanService {
                            String conclusion, Long planAmount, Long planCost,
                            Object contraindications,
                            Boolean consentConsultant, Boolean consentCustomer,
+                           String consentSignatureDataUrl,
                            String consentSignerName, String consentDocVersion,
                            OffsetDateTime consentAt, String skinReportId,
                            OffsetDateTime submittedAt, OffsetDateTime reviewedAt,
                            String reviewedByName, String rejectReason,
                            String emrId, OffsetDateTime emrSignedAt,
                            String orderNo, String orderStatus, OffsetDateTime paidAt,
+                           Object preOp, OffsetDateTime treatingAt, OffsetDateTime treatedAt,
+                           String treatNote, String treatPrescription, String treatEmrId,
                            OffsetDateTime createdAt,
                            List<PlanItemView> items, List<RevisionView> revisions) {}
 
@@ -627,6 +637,92 @@ public class ConsultPlanService {
         });
     }
 
+    // ==================== 医生：治疗执行（PAID → TREATING → DONE） ====================
+
+    /**
+     * 开始治疗：PAID → TREATING。合规双前提（首程病历已签 + 缴费单已支付）由状态机本身保证。
+     * 强校验：术前四项（知情同意归档 / 禁忌过敏复核 / 药品耗材批号 / 部位项目参数）全部确认；
+     * 知情同意须有客户手写电子签名归档。幂等：TREATING 重复提交直接返回当前单（不重复落 treatingAt/留痕）。
+     */
+    @Transactional
+    public PlanView treatStart(String planId, TreatStartCmd cmd) {
+        ConsultPlan p = requirePlan(planId);
+        final String actor = DataScope.currentActor();
+        if ("TREATING".equals(p.getStatus()) || "DONE".equals(p.getStatus())) {
+            return get(planId);
+        }
+        if (!"PAID".equals(p.getStatus())) {
+            throw bad("仅「已支付·待治疗」的方案单可开始治疗，当前: " + p.getStatus()
+                    + "（须先签首程病历并完成缴费单收款）");
+        }
+        if (cmd == null
+                || !Boolean.TRUE.equals(cmd.consentChecked())
+                || !Boolean.TRUE.equals(cmd.contraChecked())
+                || !Boolean.TRUE.equals(cmd.drugChecked())
+                || !Boolean.TRUE.equals(cmd.siteChecked())) {
+            throw bad("术前核对四项必须全部确认：知情同意归档、禁忌/过敏复核、药品/耗材批号、治疗部位与参数");
+        }
+        if (blank(p.getConsentSignatureDataUrl())) {
+            throw bad("未查到客户《知情同意书》手写电子签名，请回到咨询环节补签后再开始治疗");
+        }
+
+        Map<String, Object> preOp = new LinkedHashMap<>();
+        preOp.put("consentChecked", true);
+        preOp.put("contraChecked", true);
+        preOp.put("drugChecked", true);
+        preOp.put("siteChecked", true);
+        preOp.put("room", cmd.room() == null ? "" : cmd.room().trim());
+        preOp.put("note", cmd.note() == null ? "" : cmd.note().trim());
+        OffsetDateTime now = OffsetDateTime.now();
+        p.setPreOpJson(toJson(preOp));
+        p.setTreatingAt(now);
+        p.setStatus("TREATING");
+        planRepo.save(p);
+
+        String room = cmd.room() == null ? "" : cmd.room().trim();
+        addRevision(planId, "TREAT_START", actor,
+                "术前四项核对通过" + (blank(room) ? "" : "，" + room), null);
+        audit.record("PLAN", planId, actor, "TREAT_START",
+                "{\"room\":\"" + esc(room) + "\",\"preOp\":4}");
+        return get(planId);
+    }
+
+    /**
+     * 完成治疗：TREATING → DONE。治疗过程/操作记录必填，术后医嘱随治疗记录一并电子签名归档，
+     * 生成治疗记录病历号（EM 号）。术后 SOP 多节点随访暂无后端域，不做自动排程（见交付文档边界）。
+     * 幂等：DONE 重复提交直接返回当前单。
+     */
+    @Transactional
+    public PlanView treatDone(String planId, TreatDoneCmd cmd) {
+        ConsultPlan p = requirePlan(planId);
+        final String actor = DataScope.currentActor();
+        if ("DONE".equals(p.getStatus())) {
+            return get(planId);
+        }
+        if (!"TREATING".equals(p.getStatus())) {
+            throw bad("仅「治疗中」的方案单可完成治疗，当前: " + p.getStatus());
+        }
+        if (cmd == null || blank(cmd.treatmentNote())) {
+            throw bad("请填写治疗过程 / 操作记录后再完成治疗（项目、参数、术中反应、生命体征等）");
+        }
+        String note = cmd.treatmentNote().trim();
+        String prescription = cmd.prescription() == null ? null : cmd.prescription().trim();
+        String emrNo = nextEmrNo();
+        OffsetDateTime now = OffsetDateTime.now();
+        p.setTreatNote(note);
+        p.setTreatPrescription(prescription);
+        p.setTreatEmrId(emrNo);
+        p.setTreatedAt(now);
+        p.setStatus("DONE");
+        planRepo.save(p);
+
+        addRevision(planId, "TREAT_DONE", actor,
+                "治疗记录 " + emrNo + " 已电子签名归档", null);
+        audit.record("PLAN", planId, actor, "TREAT_DONE",
+                "{\"treatEmr\":\"" + emrNo + "\",\"noteLen\":" + note.length() + "}");
+        return get(planId);
+    }
+
     // ==================== 读模型 ====================
 
     /**
@@ -702,12 +798,16 @@ public class ConsultPlanService {
                 p.getConclusion(), p.getPlanAmount(), p.getPlanCost(),
                 parseJson(p.getContraindicationsJson()),
                 p.getConsentConsultant(), p.getConsentCustomer(),
+                p.getConsentSignatureDataUrl(),
                 p.getConsentSignerName(), p.getConsentDocVersion(),
                 p.getConsentAt(), p.getSkinReportId(),
                 p.getSubmittedAt(), p.getReviewedAt(),
                 blank(p.getReviewedBy()) ? p.getReviewedByName() : staff.get(p.getReviewedBy()),
                 p.getRejectReason(), p.getEmrId(), p.getEmrSignedAt(),
-                p.getOrderNo(), orderStatus, p.getPaidAt(), p.getCreatedAt(),
+                p.getOrderNo(), orderStatus, p.getPaidAt(),
+                parseJson(p.getPreOpJson()), p.getTreatingAt(), p.getTreatedAt(),
+                p.getTreatNote(), p.getTreatPrescription(), p.getTreatEmrId(),
+                p.getCreatedAt(),
                 itemViews, revViews);
     }
 

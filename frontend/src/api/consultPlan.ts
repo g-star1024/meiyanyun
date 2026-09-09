@@ -78,6 +78,7 @@ export interface PlanViewDTO {
   contraindications: ContraCmd | Record<string, unknown> | null
   consentConsultant: boolean | null
   consentCustomer: boolean | null
+  consentSignatureDataUrl: string | null
   consentSignerName: string | null
   consentDocVersion: string | null
   consentAt: string | null
@@ -91,9 +92,24 @@ export interface PlanViewDTO {
   orderNo: string | null
   orderStatus: string | null
   paidAt: string | null
+  preOp: PreOpChecklistDTO | null
+  treatingAt: string | null
+  treatedAt: string | null
+  treatNote: string | null
+  treatPrescription: string | null
+  treatEmrId: string | null
   createdAt: string | null
   items: PlanItemViewDTO[]
   revisions: PlanRevisionViewDTO[]
+}
+
+export interface PreOpChecklistDTO {
+  consentChecked: boolean
+  contraChecked: boolean
+  drugChecked: boolean
+  siteChecked: boolean
+  room?: string
+  note?: string
 }
 
 export interface PlanPage {
@@ -148,6 +164,24 @@ export interface DoctorEditCmd {
   reason: string
 }
 
+/** 术前四项核对（开始治疗）：四项必须全部确认。 */
+export interface TreatStartCmd {
+  operator?: string
+  consentChecked: boolean
+  contraChecked: boolean
+  drugChecked: boolean
+  siteChecked: boolean
+  room?: string
+  note?: string
+}
+
+/** 完成治疗：治疗过程必填，术后医嘱随治疗记录电子签名归档。 */
+export interface TreatDoneCmd {
+  operator?: string
+  treatmentNote: string
+  prescription?: string
+}
+
 /** 咨询师：保存草稿（新建/覆盖 PENDING/ACTIVE/REJECTED），不做强校验。 */
 export const saveDraft = (cmd: SaveDraftCmd) =>
   client.post<PlanViewDTO>('/txn/consult-plan/draft', cmd)
@@ -175,6 +209,14 @@ export const doctorEditPlan = (planId: string, cmd: DoctorEditCmd) =>
 /** 医生：签首程病历 → 系统自动生成「待收款」缴费单，返回订单读模型。幂等：已开单返回原单。 */
 export const signPlanEmr = (planId: string, cmd: SignEmrCmd = {}) =>
   client.post<OrderViewDTO>(`/txn/consult-plan/${planId}/sign-emr`, cmd)
+
+/** 医生：术前四项核对通过，开始治疗（PAID → TREATING，幂等）。 */
+export const treatStart = (planId: string, cmd: TreatStartCmd) =>
+  client.post<PlanViewDTO>(`/txn/consult-plan/${planId}/treat-start`, cmd)
+
+/** 医生：完成治疗，治疗记录电子签名归档（TREATING → DONE，幂等）。 */
+export const treatDone = (planId: string, cmd: TreatDoneCmd) =>
+  client.post<PlanViewDTO>(`/txn/consult-plan/${planId}/treat-done`, cmd)
 
 /** 方案单队列（咨询师/医生工作台）：按状态、门店过滤，分页。 */
 export const listPlans = (params: { page?: number; size?: number; status?: string; storeCode?: string }) =>

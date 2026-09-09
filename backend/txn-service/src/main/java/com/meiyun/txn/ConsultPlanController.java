@@ -10,6 +10,8 @@ import com.meiyun.txn.ConsultPlanService.SaveDraftCmd;
 import com.meiyun.txn.ConsultPlanService.SignEmrCmd;
 import com.meiyun.txn.ConsultPlanService.StartCmd;
 import com.meiyun.txn.ConsultPlanService.SubmitCmd;
+import com.meiyun.txn.ConsultPlanService.TreatDoneCmd;
+import com.meiyun.txn.ConsultPlanService.TreatStartCmd;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
@@ -94,6 +96,28 @@ public class ConsultPlanController {
     public M4FlowController.OrderView signEmr(@PathVariable String planId,
                                               @RequestBody(required = false) SignEmrCmd cmd) {
         return planService.signEmr(planId, cmd);
+    }
+
+    // ==================== 医生：治疗执行（PAID → TREATING → DONE） ====================
+
+    /**
+     * 开始治疗（术前四项核对通过）：PAID → TREATING。知情同意手写签名为强前提；
+     * 幂等：TREATING/DONE 重复提交直接返回当前单。
+     */
+    @PostMapping("/consult-plan/{planId}/treat-start")
+    @RequirePerm({ "consult:review", "emr:edit" })
+    public PlanView treatStart(@PathVariable String planId, @RequestBody TreatStartCmd cmd) {
+        return planService.treatStart(planId, cmd);
+    }
+
+    /**
+     * 完成治疗（治疗记录电子签名归档）：TREATING → DONE。治疗过程必填；
+     * 幂等：DONE 重复提交直接返回当前单。术后 SOP 随访排程暂无后端域，不联动。
+     */
+    @PostMapping("/consult-plan/{planId}/treat-done")
+    @RequirePerm({ "consult:review", "emr:edit" })
+    public PlanView treatDone(@PathVariable String planId, @RequestBody TreatDoneCmd cmd) {
+        return planService.treatDone(planId, cmd);
     }
 
     // ==================== 读模型 ====================

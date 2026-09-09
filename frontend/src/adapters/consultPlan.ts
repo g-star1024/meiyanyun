@@ -16,6 +16,7 @@ import type {
   ConsultContraindication,
   PlanItem,
   PlanRevision,
+  PreOpChecklist,
   Customer,
 } from '@/types/domain'
 
@@ -81,6 +82,7 @@ export function adaptPlan(dto: PlanViewDTO): Consultation {
     contraindications: contra ? { ...noContra(), ...contra } : noContra(),
     consentConsultant: dto.consentConsultant ?? false,
     consentCustomer: dto.consentCustomer ?? false,
+    consentSignatureDataUrl: dto.consentSignatureDataUrl || undefined,
     consentSignerName: dto.consentSignerName || undefined,
     consentDocVersion: dto.consentDocVersion || undefined,
     consentAt: dto.consentAt || undefined,
@@ -94,6 +96,19 @@ export function adaptPlan(dto: PlanViewDTO): Consultation {
     emrSignedAt: dto.emrSignedAt || undefined,
     orderId: dto.orderNo || undefined,
     paidAt: dto.paidAt || undefined,
+    preOp: dto.preOp
+      ? {
+          consentChecked: !!dto.preOp.consentChecked,
+          contraChecked: !!dto.preOp.contraChecked,
+          drugChecked: !!dto.preOp.drugChecked,
+          siteChecked: !!dto.preOp.siteChecked,
+          room: dto.preOp.room || '',
+          note: dto.preOp.note || '',
+        } satisfies PreOpChecklist
+      : undefined,
+    treatingAt: dto.treatingAt || undefined,
+    treatedAt: dto.treatedAt || undefined,
+    treatmentEmrId: dto.treatEmrId || undefined,
   }
 }
 
