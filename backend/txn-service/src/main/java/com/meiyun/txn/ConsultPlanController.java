@@ -6,7 +6,9 @@ import com.meiyun.txn.ConsultPlanService.CardSaleCmd;
 import com.meiyun.txn.ConsultPlanService.PlanView;
 import com.meiyun.txn.ConsultPlanService.RetailCmd;
 import com.meiyun.txn.ConsultPlanService.ReviewCmd;
+import com.meiyun.txn.ConsultPlanService.SaveDraftCmd;
 import com.meiyun.txn.ConsultPlanService.SignEmrCmd;
+import com.meiyun.txn.ConsultPlanService.StartCmd;
 import com.meiyun.txn.ConsultPlanService.SubmitCmd;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -38,7 +40,21 @@ public class ConsultPlanController {
         this.planService = planService;
     }
 
-    // ==================== 咨询师：提交方案 → 待医生审核 ====================
+    // ==================== 咨询师：保存草稿 / 接诊 / 提交方案 ====================
+
+    /** 保存咨询草稿（新建或覆盖 PENDING/ACTIVE/REJECTED 草稿），不做强校验，返回最新方案单。 */
+    @PostMapping("/consult-plan/draft")
+    @RequirePerm("consult:edit")
+    public PlanView saveDraft(@RequestBody SaveDraftCmd cmd) {
+        return planService.saveDraft(cmd);
+    }
+
+    /** 接诊 / 开始咨询（PENDING → ACTIVE）；幂等：已在咨询中直接返回。 */
+    @PostMapping("/consult-plan/{planId}/start")
+    @RequirePerm("consult:edit")
+    public PlanView start(@PathVariable String planId, @RequestBody(required = false) StartCmd cmd) {
+        return planService.start(planId, cmd);
+    }
 
     @PostMapping("/consult-plan")
     @RequirePerm("consult:create")

@@ -72,11 +72,26 @@ public class ConsultPlanService {
     public record ContraCmd(Boolean pregnant, Boolean allergy, Boolean scarConstitution,
                             Boolean skinLesion, Boolean coagulationAbn, Boolean seriousIllness, String note) {}
 
-    public record SubmitCmd(String customerId, String storeCode, String consultantId, String doctorId,
+    public record SubmitCmd(String planId, String arrivalId,
+                            String customerId, String storeCode, String consultantId, String doctorId,
                             String conclusion, List<PlanItemCmd> items, ContraCmd contraindications,
                             Boolean consentConsultant, Boolean consentCustomer,
                             String consentSignatureDataUrl, String consentSignerName, String consentDocVersion,
                             String skinReportId, String operator) {}
+
+    /**
+     * 保存草稿入参（PENDING/ACTIVE/REJECTED 可反复保存）：planId 为空=新建 PENDING 草稿（出 CP 单号）；
+     * planId 非空=更新既有草稿。草稿不做提交强校验（允许空结论/空项目/未签名），仅校验客户/门店存在性。
+     */
+    public record SaveDraftCmd(String planId, String arrivalId,
+                               String customerId, String storeCode, String consultantId, String doctorId,
+                               String conclusion, List<PlanItemCmd> items, ContraCmd contraindications,
+                               Boolean consentConsultant, Boolean consentCustomer,
+                               String consentSignatureDataUrl, String consentSignerName, String consentDocVersion,
+                               String skinReportId, String operator) {}
+
+    /** 接诊入参（均可空）：operator 仅审计兜底（实际取 JWT），arrivalId 关联到店登记。 */
+    public record StartCmd(String operator, String arrivalId) {}
 
     public record ReviewCmd(String operator, String note) {}
 
@@ -104,6 +119,7 @@ public class ConsultPlanService {
                            String storeCode, String storeName,
                            String consultantId, String consultantName,
                            String doctorId, String doctorName, String status,
+                           String arrivalId, OffsetDateTime startedAt,
                            String conclusion, Long planAmount, Long planCost,
                            Object contraindications,
                            Boolean consentConsultant, Boolean consentCustomer,
@@ -116,8 +132,85 @@ public class ConsultPlanService {
                            OffsetDateTime createdAt,
                            List<PlanItemView> items, List<RevisionView> revisions) {}
 
-    // ==================== 咨询师：提交方案审核 ====================
+    // ==================== 咨询师：保存草稿 / 接诊 / 提交方案审核 ====================
 
+    /**
+     * 保存咨询草稿：planId 为空→新建 PENDING 草稿（出 CP 单号）；planId 非空→更新既有草稿。
+     * 草稿不做提交强校验（允许空结论/空项目/未签名），仅校验客户/门店存在性，便于咨询师边面诊边存。
+     * 可保存状态：PENDING（待咨询）/ ACTIVE（咨询中）/ REJECTED（驳回改单中）；其余状态禁止覆盖。
+     */
+    @Transactional
+    public PlanView saveDraft(SaveDraftCmd cmd) {
+        if (blank(cmd.customerId())) throw bad("客户不能为空");
+        if (!names.customerNames(List.of(cmd.customerId())).containsKey(cmd.customerId())) {
+            throw bad("客户不存在: " + cmd.customerId());
+        }
+        if (blank(cmd.storeCode()) || !names.storeNames(List.of(cmd.storeCode())).containsKey(cmd.storeCode())) {
+            throw bad("门店不存在或未指定: " + cmd.storeCode());
+        }
+        if (!blank(cmd.doctorId()) && !names.staffNames(List.of(cmd.doctorId())).containsKey(cmd.doctorId())) {
+            throw bad("所选医生不存在: " + cmd.doctorId());
+        }
+
+        boolean isNew = blank(cmd.planId());
+        ConsultPlan p;
+        if (isNew) {
+            p = new ConsultPlan();
+            p.setPlanId(nextPlanNo());
+            p.setCustomerId(cmd.customerId());
+            p.setStatus("PENDING");
+        } else {
+            p = requirePlan(cmd.planId());
+            String st = p.getStatus();
+            if (!"PENDING".equals(st) && !"ACTIVE".equals(st) && !"REJECTED".equals(st)) {
+                throw bad("当前方案单状态（" + st + "）不允许保存草稿");
+            }
+        }
+        applyEditableFields(p, cmd.customerId(), cmd.storeCode(), cmd.consultantId(), cmd.doctorId(),
+                cmd.conclusion(), cmd.contraindications(), cmd.consentConsultant(), cmd.consentCustomer(),
+                cmd.consentSignatureDataUrl(), cmd.consentSignerName(), cmd.consentDocVersion(),
+                cmd.skinReportId(), cmd.arrivalId());
+        long total = rebuildItems(p.getPlanId(), cmd.items(), false);
+        p.setPlanAmount(total);
+        p.setPlanCost(Math.round(total * 0.35));
+        planRepo.save(p);
+
+        String reason = isNew ? "咨询草稿已创建" : "咨询草稿已保存";
+        addRevision(p.getPlanId(), "SAVE_DRAFT", DataScope.currentActor(), reason, null);
+        audit.record("PLAN", p.getPlanId(), actor(cmd.operator()), "SAVE_DRAFT",
+                "{\"customer\":\"" + p.getCustomerId() + "\",\"items\":"
+                        + (cmd.items() == null ? 0 : cmd.items().size()) + "}");
+        return get(p.getPlanId());
+    }
+
+    /**
+     * 接诊 / 开始咨询：PENDING → ACTIVE，首诊时间 startedAt 首次落库后不被覆盖。
+     * 幂等：已 ACTIVE 直接返回当前视图（重复点击/网络重试不报错、不重复留痕）；其余状态拒绝。
+     */
+    @Transactional
+    public PlanView start(String planId, StartCmd cmd) {
+        String operator = cmd == null ? null : cmd.operator();
+        String arrivalId = cmd == null ? null : cmd.arrivalId();
+        ConsultPlan p = requirePlan(planId);
+        if ("ACTIVE".equals(p.getStatus())) {
+            return get(planId);
+        }
+        if (!"PENDING".equals(p.getStatus())) {
+            throw bad("仅「待咨询」的草稿可开始咨询，当前: " + p.getStatus());
+        }
+        p.setStatus("ACTIVE");
+        if (p.getStartedAt() == null) p.setStartedAt(OffsetDateTime.now());
+        if (!blank(arrivalId) && blank(p.getArrivalId())) p.setArrivalId(arrivalId);
+        planRepo.save(p);
+        addRevision(planId, "START_CONSULT", DataScope.currentActor(), "已接诊，开始咨询面诊", null);
+        audit.record("PLAN", planId, actor(operator), "START_CONSULT", "{}");
+        return get(planId);
+    }
+
+    /**
+     * 提交方案审核：planId 为空=直接提交（历史行为，新建后进 PENDING_REVIEW）；
+     * planId 非空=草稿/驳回单续提（PENDING/ACTIVE 首提记 SUBMIT，REJECTED 改单重提记 RESUBMIT，驳回原因保留留痕）。
+     */
     @Transactional
     public PlanView submit(SubmitCmd cmd) {
         // 外键存在性（服务间调用）
@@ -152,16 +245,84 @@ public class ConsultPlanService {
             throw bad("存在禁忌阳性项，必须填写医生备注 / 处置说明");
         }
 
+        boolean fromDraft = !blank(cmd.planId());
+        boolean resubmit = false;
+        ConsultPlan p;
+        if (fromDraft) {
+            p = requirePlan(cmd.planId());
+            String st = p.getStatus();
+            if (!"PENDING".equals(st) && !"ACTIVE".equals(st) && !"REJECTED".equals(st)) {
+                throw bad("当前方案单状态（" + st + "）不允许提交审核");
+            }
+            resubmit = "REJECTED".equals(st);
+        } else {
+            p = new ConsultPlan();
+            p.setPlanId(nextPlanNo());
+            p.setCustomerId(cmd.customerId());
+        }
+        applyEditableFields(p, cmd.customerId(), cmd.storeCode(), cmd.consultantId(), cmd.doctorId(),
+                cmd.conclusion(), c, Boolean.TRUE, Boolean.TRUE,
+                cmd.consentSignatureDataUrl(), cmd.consentSignerName(), cmd.consentDocVersion(),
+                cmd.skinReportId(), cmd.arrivalId());
+        long total = rebuildItems(p.getPlanId(), cmd.items(), true);
+        p.setPlanAmount(total);
+        p.setPlanCost(Math.round(total * 0.35));
+        p.setConsentAt(p.getConsentAt() == null ? OffsetDateTime.now() : p.getConsentAt());
+        p.setStatus("PENDING_REVIEW");
+        p.setSubmittedAt(OffsetDateTime.now());
+        planRepo.save(p);
+
+        String kind = resubmit ? "RESUBMIT" : "SUBMIT";
+        String reason = resubmit ? "驳回后改单重新提交医生审核" : "方案已与客户沟通确认，提交医生审核";
+        addRevision(p.getPlanId(), kind, DataScope.currentActor(), reason, null);
+        audit.record("PLAN", p.getPlanId(), actor(cmd.operator()), kind,
+                "{\"customer\":\"" + p.getCustomerId() + "\",\"amount\":" + total
+                        + ",\"items\":" + (cmd.items() == null ? 0 : cmd.items().size())
+                        + ",\"doctor\":\"" + p.getDoctorId() + "\"}");
+        return get(p.getPlanId());
+    }
+
+    /** 草稿/提交共用：把可编辑的方案单字段覆盖落实体（不含状态、金额、子项、时间戳）。 */
+    private void applyEditableFields(ConsultPlan p, String customerId, String storeCode, String consultantId,
+                                     String doctorId, String conclusion, ContraCmd c,
+                                     Boolean consentConsultant, Boolean consentCustomer,
+                                     String signatureDataUrl, String signerName, String docVersion,
+                                     String skinReportId, String arrivalId) {
+        p.setCustomerId(customerId);
+        p.setStoreCode(storeCode);
+        p.setConsultantId(consultantId);
+        p.setDoctorId(doctorId);
+        p.setConclusion(blank(conclusion) ? null : conclusion);
+        p.setContraindicationsJson(toJson(c));
+        p.setConsentConsultant(Boolean.TRUE.equals(consentConsultant));
+        p.setConsentCustomer(Boolean.TRUE.equals(consentCustomer));
+        p.setConsentSignatureDataUrl(blank(signatureDataUrl) ? null : signatureDataUrl);
+        p.setConsentSignerName(blank(signerName) ? null : signerName);
+        if (!blank(docVersion)) p.setConsentDocVersion(docVersion);
+        else if (blank(p.getConsentDocVersion())) p.setConsentDocVersion("MEIYUN-ICF-v2026.1");
+        p.setSkinReportId(blank(skinReportId) ? null : skinReportId);
+        if (!blank(arrivalId)) p.setArrivalId(arrivalId);
+    }
+
+    /**
+     * 重建方案子项（删旧重插），返回合计金额（分）。
+     * strict=true 时逐行校验项目名（提交场景）；false 容忍空名行（草稿场景）。
+     */
+    private long rebuildItems(String planId, List<PlanItemCmd> items, boolean strict) {
+        itemRepo.deleteByPlanId(planId);
+        if (items == null || items.isEmpty()) return 0L;
         long total = 0L;
-        List<PlanItem> entities = new ArrayList<>();
         int line = 1;
-        for (PlanItemCmd it : cmd.items()) {
-            if (blank(it.itemName())) throw bad("第 " + line + " 行项目名称不能为空");
+        List<PlanItem> entities = new ArrayList<>();
+        for (PlanItemCmd it : items) {
+            if (strict && blank(it.itemName())) throw bad("第 " + line + " 行项目名称不能为空");
+            if (blank(it.itemName())) { line++; continue; }
             int qty = it.qty() == null || it.qty() < 1 ? 1 : it.qty();
             long price = it.unitPrice() == null || it.unitPrice() < 0 ? 0L : it.unitPrice();
             long sub = price * qty;
             total += sub;
             PlanItem pi = new PlanItem();
+            pi.setPlanId(planId);
             pi.setLineNo(line);
             pi.setItemCode(it.itemCode());
             pi.setItemName(it.itemName());
@@ -173,35 +334,8 @@ public class ConsultPlanService {
             entities.add(pi);
             line++;
         }
-
-        ConsultPlan p = new ConsultPlan();
-        p.setPlanId(nextPlanNo());
-        p.setCustomerId(cmd.customerId());
-        p.setStoreCode(cmd.storeCode());
-        p.setConsultantId(cmd.consultantId());
-        p.setDoctorId(cmd.doctorId());
-        p.setStatus("PENDING_REVIEW");
-        p.setConclusion(cmd.conclusion());
-        p.setPlanAmount(total);
-        p.setPlanCost(Math.round(total * 0.35));
-        p.setContraindicationsJson(toJson(c));
-        p.setConsentConsultant(Boolean.TRUE.equals(cmd.consentConsultant()));
-        p.setConsentCustomer(Boolean.TRUE.equals(cmd.consentCustomer()));
-        p.setConsentSignatureDataUrl(cmd.consentSignatureDataUrl());
-        p.setConsentSignerName(cmd.consentSignerName());
-        p.setConsentDocVersion(blank(cmd.consentDocVersion()) ? "MEIYUN-ICF-v2026.1" : cmd.consentDocVersion());
-        p.setConsentAt(OffsetDateTime.now());
-        p.setSkinReportId(cmd.skinReportId());
-        p.setSubmittedAt(OffsetDateTime.now());
-        planRepo.save(p);
-
-        for (PlanItem pi : entities) { pi.setPlanId(p.getPlanId()); itemRepo.save(pi); }
-
-        addRevision(p.getPlanId(), "SUBMIT", DataScope.currentActor(), "方案已与客户沟通确认，提交医生审核", null);
-        audit.record("PLAN", p.getPlanId(), actor(cmd.operator()), "SUBMIT",
-                "{\"customer\":\"" + p.getCustomerId() + "\",\"amount\":" + total
-                        + ",\"items\":" + entities.size() + ",\"doctor\":\"" + p.getDoctorId() + "\"}");
-        return get(p.getPlanId());
+        itemRepo.saveAll(entities);
+        return total;
     }
 
     // ==================== 医生：审核通过 / 驳回 / 改单 ====================
@@ -564,7 +698,8 @@ public class ConsultPlanService {
                 p.getStoreCode(), blank(p.getStoreCode()) ? null : stores.get(p.getStoreCode()),
                 p.getConsultantId(), blank(p.getConsultantId()) ? null : staff.get(p.getConsultantId()),
                 p.getDoctorId(), blank(p.getDoctorId()) ? null : staff.get(p.getDoctorId()),
-                p.getStatus(), p.getConclusion(), p.getPlanAmount(), p.getPlanCost(),
+                p.getStatus(), p.getArrivalId(), p.getStartedAt(),
+                p.getConclusion(), p.getPlanAmount(), p.getPlanCost(),
                 parseJson(p.getContraindicationsJson()),
                 p.getConsentConsultant(), p.getConsentCustomer(),
                 p.getConsentSignerName(), p.getConsentDocVersion(),

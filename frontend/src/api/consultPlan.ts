@@ -70,6 +70,8 @@ export interface PlanViewDTO {
   doctorId: string | null
   doctorName: string | null
   status: PlanStatus | string
+  arrivalId: string | null
+  startedAt: string | null
   conclusion: string | null
   planAmount: number // 方案应收（分）
   planCost: number // 成本（分）
@@ -103,6 +105,8 @@ export interface PlanPage {
 }
 
 export interface SubmitPlanCmd {
+  planId?: string
+  arrivalId?: string
   customerId: string
   storeCode: string
   consultantId?: string
@@ -117,6 +121,12 @@ export interface SubmitPlanCmd {
   consentDocVersion?: string
   skinReportId?: string
   operator?: string
+}
+
+/** 保存草稿：字段同提交单但全部宽松（允许空结论/空项目/未签名），planId 空=新建草稿。 */
+export type SaveDraftCmd = Partial<Omit<SubmitPlanCmd, 'customerId' | 'storeCode'>> & {
+  customerId: string
+  storeCode: string
 }
 
 export interface SignEmrCmd {
@@ -138,7 +148,15 @@ export interface DoctorEditCmd {
   reason: string
 }
 
-/** 咨询师：提交方案 → 待医生审核。 */
+/** 咨询师：保存草稿（新建/覆盖 PENDING/ACTIVE/REJECTED），不做强校验。 */
+export const saveDraft = (cmd: SaveDraftCmd) =>
+  client.post<PlanViewDTO>('/txn/consult-plan/draft', cmd)
+
+/** 咨询师：接诊 / 开始咨询（PENDING → ACTIVE，幂等）。 */
+export const startPlan = (planId: string, arrivalId?: string) =>
+  client.post<PlanViewDTO>(`/txn/consult-plan/${planId}/start`, { arrivalId })
+
+/** 咨询师：提交方案 → 待医生审核（带 planId 即草稿/驳回单续提）。 */
 export const submitPlan = (cmd: SubmitPlanCmd) =>
   client.post<PlanViewDTO>('/txn/consult-plan', cmd)
 

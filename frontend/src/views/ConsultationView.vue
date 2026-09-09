@@ -22,8 +22,12 @@ import { estimateCommission } from '@/api/commission'
 import { useStoreContext } from '@/stores/storeContext'
 import { useCompliance, RISK_TAG_LABEL } from '@/composables/useCompliance'
 import { useToast } from '@/composables/useToast'
-import { listPlans, type PlanViewDTO } from '@/api/consultPlan'
-import { injectPlanShadows, isRealPlan, REAL_FLAG } from '@/adapters/consultPlan'
+import {
+  listPlans, saveDraft as apiSaveDraft, startPlan, submitPlan as apiSubmitPlan,
+  type PlanViewDTO, type SaveDraftCmd, type SubmitPlanCmd,
+} from '@/api/consultPlan'
+import { searchCustomers, type CustomerDTO } from '@/api/customer'
+import { injectPlanShadows, isRealPlan, REAL_FLAG, toPlanItemCmd } from '@/adapters/consultPlan'
 import { staffName, DOCTORS } from '@/config/staff'
 import CWorkbenchShell from '@/components/CWorkbenchShell.vue'
 import CButton from '@/components/CButton.vue'
@@ -58,24 +62,17 @@ onMounted(async () => {
 })
 
 // ============================================================
-// 真实方案单加载（已驳回 / 已提交只读回看）：
-//   咨询师「待咨询/咨询中」接诊草稿段后端暂无方案单草稿/接诊端点，保持 mock 演示；
-//   已驳回（REJECTED）与已提交（PENDING_REVIEW→DONE 履约链路）接真实数据，注入 mock store 影子记录，
-//   详情只读回看（真实驳回原因/进度时间线）。真实单不可在本页编辑重提（后端改单重提由医师工作台/后续端点承接）。
+// 真实方案单加载（PENDING/ACTIVE 草稿接诊 + REJECTED 改单 + PENDING_REVIEW→DONE 履约回看）：
+//   全量拉本店真实方案单（作废 ABANDONED 不入列），注入 mock store 影子记录。
+//   真实单的保存草稿/接诊/提交全部走真实 API（影子就地刷新）；mock seed 单继续走本地 store action 演示。
 // ============================================================
 async function loadRealPlans() {
   if (!storeCtx.loaded) await storeCtx.loadStores()
   try {
     const store = storeCtx.currentStoreCode
-    // 一次拉足各状态真实单（分页 size 取大）
-    const [rej, flow] = await Promise.all([
-      listPlans({ size: 50, status: 'REJECTED', storeCode: store }),
-      listPlans({ size: 100, storeCode: store }),
-    ])
-    // 履约链路状态（已提交回看）：待审核→完成
-    const FLOW = ['PENDING_REVIEW', 'APPROVED', 'READY_PAY', 'PAID', 'TREATING', 'DONE']
-    const flowDtos = flow.data.content.filter((d) => FLOW.includes(d.status))
-    const dtos: PlanViewDTO[] = [...rej.data.content, ...flowDtos]
+    // 一次拉足本店全部真实单（分页 size 取大），作废单不进任何分段
+    const page = await listPlans({ size: 200, storeCode: store })
+    const dtos = page.data.content.filter((d) => d.status !== 'ABANDONED')
     // 清上一批真实影子单（mock seed 无 REAL_FLAG，不受影响）
     consultation.consultations = consultation.consultations.filter((c) => !isRealPlan(c as any))
     dtos.forEach((d) => {
@@ -87,9 +84,8 @@ async function loadRealPlans() {
   }
 }
 
-const queue = computed(() =>
-  consultation.queue.filter((c) => !isRealPlan(c as any)),
-)
+// 待咨询段：真实草稿（PENDING/ACTIVE）已在 loadRealPlans 注入，mock seed 演示单同段共存
+const queue = computed(() => consultation.queue)
 const rejected = computed(() =>
   consultation.active.filter((c) => c.status === 'REJECTED' && isRealPlan(c as any)),
 )
@@ -109,8 +105,9 @@ const selectedId = ref('')
 const listData = computed(() =>
   listTab.value === 'queue' ? queue.value : listTab.value === 'rejected' ? rejected.value : submittedList.value,
 )
-// 已提交进入审核/履约链路的单为只读回看（不可再编辑方案）
-const READONLY_STATUSES: ConsultStatus[] = ['PENDING_REVIEW', 'APPROVED', 'READY_PAY', 'PAID', 'TREATING', 'DONE']
+// 已提交进入审核/履约链路及已作废的单为只读回看（不可再编辑方案）；
+// 真实 PENDING/ACTIVE/REJECTED 单在本页可编辑（保存草稿/接诊/续提均走真实 API）
+const READONLY_STATUSES: ConsultStatus[] = ['PENDING_REVIEW', 'APPROVED', 'READY_PAY', 'PAID', 'TREATING', 'DONE', 'ABANDONED']
 
 function pill(status: ConsultStatus): { s: any; t: string } {
   const map: Record<ConsultStatus, { s: any; t: string }> = {
@@ -173,13 +170,12 @@ const SKIN_TYPES = ['干性·屏障受损', '油性·痤疮', '混合性', '敏�
 const planConsult = computed(() => consultation.get(selectedId.value))
 const planCustomer = computed(() => (planConsult.value ? customer.get(planConsult.value.customerId) : undefined))
 
-// 已提交单：只读回看（不可再编辑方案）；真实方案单（含真实驳回单）一律只读回看，
-// 不在本页走本地 mock 重提（后端改单重提由医师工作台/后续端点承接，避免本地改状态不持久化的假交互）。
+// 只读与否只看状态：审核/履约链路 + 作废为只读回看；PENDING/ACTIVE/REJECTED（真实或 mock）均可编辑。
 const isReadonly = computed(
-  () =>
-    !!planConsult.value &&
-    (READONLY_STATUSES.includes(planConsult.value.status) || isRealPlan(planConsult.value as any)),
+  () => !!planConsult.value && READONLY_STATUSES.includes(planConsult.value.status),
 )
+// 当前选中的是否真实方案单（决定写动作走真实 API 还是本地 mock store）
+const isCurrentReal = computed(() => !!planConsult.value && isRealPlan(planConsult.value as any))
 
 /** 已提交单的履约进度步骤（用于只读回看时间线） */
 const FLOW_STEPS: { key: ConsultStatus; label: string }[] = [
@@ -275,12 +271,134 @@ function selectConsult(id: string) {
   loadPlanForm(consultation.get(id)!)
 }
 
-/** 待咨询单：显式开始咨询，激活接诊状态（PENDING→ACTIVE） */
-function beginConsult() {
-  if (!selectedId.value) return
+/** 写动作后用后端最新读模型就地刷新影子单（保留 REAL_FLAG） */
+function refreshRealPlan(dto: PlanViewDTO) {
+  const c = injectPlanShadows(dto, { consultation: consultation as any, customer: customer as any })
+  ;(c as any)[REAL_FLAG] = true
+}
+
+/** 组装保存草稿 / 提交共用的可编辑字段（金额经 toPlanItemCmd 元→分） */
+function buildPlanCmd(): {
+  customerId: string
+  storeCode: string
+  consultantId?: string
+  doctorId?: string
+  conclusion: string
+  items: ReturnType<typeof toPlanItemCmd>
+  contraindications: typeof contra.value
+  consentConsultant: boolean
+  consentCustomer: boolean
+  consentSignatureDataUrl?: string
+  consentSignerName?: string
+  skinReportId?: string
+} {
+  const c = planConsult.value!
+  return {
+    customerId: c.customerId,
+    storeCode: storeCtx.currentStoreCode,
+    consultantId: c.consultantId || auth.user.staffId || undefined,
+    doctorId: planDoctorId.value || undefined,
+    conclusion: planConclusion.value.trim(),
+    items: toPlanItemCmd(planItems.value),
+    contraindications: contra.value,
+    consentConsultant: planConsentC.value,
+    consentCustomer: planConsentCustomer.value,
+    consentSignatureDataUrl: signatureDataUrl.value || undefined,
+    consentSignerName: signerName.value.trim() || undefined,
+    skinReportId: savedSkinReportId.value || undefined,
+  }
+}
+
+/** 待咨询单：显式开始咨询，激活接诊状态（PENDING→ACTIVE）。真实单调接诊 API 并刷新影子。 */
+async function beginConsult() {
+  if (!selectedId.value || !planConsult.value) return
+  if (isRealPlan(planConsult.value as any)) {
+    try {
+      const { data } = await startPlan(selectedId.value, planConsult.value.arrivalId)
+      refreshRealPlan(data)
+      toast.success('已接诊，请完善面诊与方案')
+    } catch (e: any) {
+      toast.error('接诊失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+    }
+    return
+  }
   const ok = consultation.start(selectedId.value)
   if (ok) toast.success('已开始咨询，请完善面诊与方案')
   else toast.warning('当前无咨询权限或单据状态不可开始')
+}
+
+/** 保存草稿（PENDING/ACTIVE/REJECTED 均可反复保存；弱校验，仅真实单调真实 API） */
+const savingDraft = ref(false)
+async function saveCurrentDraft() {
+  if (!selectedId.value || !planConsult.value || savingDraft.value) return
+  if (!isRealPlan(planConsult.value as any)) {
+    toast.warning('演示数据不支持保存草稿，请对真实咨询单操作')
+    return
+  }
+  persistPhotos()
+  savingDraft.value = true
+  try {
+    const body = buildPlanCmd()
+    const cmd: SaveDraftCmd = {
+      planId: planConsult.value.id,
+      arrivalId: planConsult.value.arrivalId,
+      ...body,
+    }
+    const { data } = await apiSaveDraft(cmd)
+    refreshRealPlan(data)
+    toast.success('草稿已保存')
+  } catch (e: any) {
+    toast.error('草稿保存失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    savingDraft.value = false
+  }
+}
+
+// —— 新建咨询草稿：内联客户搜索，选中即调 /consult-plan/draft 建 PENDING 草稿并选中 ——
+// 边界：到店分诊（arrival）暂不联动建咨询单，这里提供咨询师手工新建草稿的最小入口。
+const showDraftPicker = ref(false)
+const draftKeyword = ref('')
+const draftResults = ref<CustomerDTO[]>([])
+const creatingDraft = ref(false)
+let draftSearchTimer: ReturnType<typeof setTimeout> | null = null
+watch(draftKeyword, (kw) => {
+  if (draftSearchTimer) clearTimeout(draftSearchTimer)
+  const q = kw.trim()
+  if (!q) { draftResults.value = []; return }
+  draftSearchTimer = setTimeout(async () => {
+    try {
+      draftResults.value = (await searchCustomers(q)).data || []
+    } catch {
+      draftResults.value = []
+    }
+  }, 300)
+})
+function toggleDraftPicker() {
+  showDraftPicker.value = !showDraftPicker.value
+  draftKeyword.value = ''
+  draftResults.value = []
+}
+async function pickDraftCustomer(c: CustomerDTO) {
+  if (creatingDraft.value) return
+  creatingDraft.value = true
+  try {
+    const { data } = await apiSaveDraft({
+      customerId: c.customerId,
+      storeCode: storeCtx.currentStoreCode,
+      consultantId: auth.user.staffId || undefined,
+    })
+    refreshRealPlan(data)
+    showDraftPicker.value = false
+    draftKeyword.value = ''
+    draftResults.value = []
+    listTab.value = 'queue'
+    selectConsult(data.planId)
+    toast.success('已为客户新建咨询草稿，可开始咨询或先完善方案')
+  } catch (e: any) {
+    toast.error('新建草稿失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    creatingDraft.value = false
+  }
 }
 
 function loadPlanForm(c: NonNullable<ReturnType<typeof consultation.get>>) {
@@ -373,13 +491,36 @@ function removeItem(idx: number) {
   planItems.value.splice(idx, 1)
 }
 
-function submitPlan() {
-  if (!selectedId.value || !planConsult.value) return
+const submittingPlan = ref(false)
+async function submitPlan() {
+  if (!selectedId.value || !planConsult.value || submittingPlan.value) return
   if (!signatureDataUrl.value || !signerName.value.trim()) {
     toast.warning('请客户在《知情同意书》上手写电子签名后再提交')
     return
   }
   persistPhotos()
+  // 真实方案单：草稿/驳回单续提（带 planId），调真实 API 后就地刷新，状态转入待审核
+  if (isRealPlan(planConsult.value as any)) {
+    submittingPlan.value = true
+    try {
+      const body = buildPlanCmd()
+      const cmd: SubmitPlanCmd = {
+        planId: planConsult.value.id,
+        arrivalId: planConsult.value.arrivalId,
+        ...body,
+        doctorId: planDoctorId.value,
+      }
+      const { data } = await apiSubmitPlan(cmd)
+      refreshRealPlan(data)
+      toast.success('方案已提交医生审核')
+      selectedId.value = ''
+    } catch (e: any) {
+      toast.error('提交失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+    } finally {
+      submittingPlan.value = false
+    }
+    return
+  }
   const r = consultation.submitPlan(selectedId.value, {
     conclusion: planConclusion.value.trim(),
     planItems: planItems.value,
@@ -618,6 +759,36 @@ onUnmounted(() => {
 
     <!-- ============ 左侧列表 ============ -->
     <template #list>
+        <div class="new-draft-bar">
+          <CButton
+            v-if="!showDraftPicker"
+            variant="secondary"
+            size="sm"
+            :disabled="!canConsult"
+            @click="toggleDraftPicker"
+          >
+            <CIcon name="plus" :size="13" />新建咨询草稿
+          </CButton>
+          <CButton v-else variant="ghost" size="sm" @click="toggleDraftPicker">收起</CButton>
+        </div>
+        <!-- 新建草稿：按姓名/手机号搜客户，点选即建 PENDING 草稿 -->
+        <div v-if="showDraftPicker" class="draft-picker">
+          <CInput v-model="draftKeyword" placeholder="输入客户姓名/手机号搜索" />
+          <div class="draft-picker__results">
+            <button
+              v-for="c in draftResults"
+              :key="c.customerId"
+              class="search-item"
+              :disabled="creatingDraft"
+              @click="pickDraftCustomer(c)"
+            >
+              <span class="search-item__name">{{ c.name }} <em class="draft-picker__id">{{ c.customerId }}</em></span>
+              <span class="draft-picker__phone">{{ c.phone }}</span>
+            </button>
+            <p v-if="draftKeyword.trim() && !draftResults.length" class="search-empty">未找到匹配客户</p>
+          </div>
+        </div>
+
         <div class="tabs">
           <button class="tab" :class="{ 'tab--active': listTab === 'queue' }" @click="listTab = 'queue'">
             待咨询 ({{ queue.length }})
@@ -989,9 +1160,18 @@ onUnmounted(() => {
             {{ readonlyNext.label }} →
           </CButton>
         </template>
-        <!-- 待咨询：先「开始咨询」激活接诊；咨询中/已驳回：完善方案后「提交审核」 -->
+        <!-- 待咨询：先「开始咨询」激活接诊；咨询中/已驳回：可「保存草稿」或完善后「提交审核」 -->
         <template v-else>
           <CButton variant="ghost" @click="closeDetail">取消</CButton>
+          <!-- 保存草稿：PENDING/ACTIVE/REJECTED 真实单均可反复保存（弱校验） -->
+          <CButton
+            v-if="isCurrentReal"
+            variant="secondary"
+            :disabled="!canConsult || savingDraft"
+            @click="saveCurrentDraft"
+          >
+            {{ savingDraft ? '保存中…' : '保存草稿' }}
+          </CButton>
           <!-- 待咨询（尚未接诊）：显式开始咨询 -->
           <CButton
             v-if="planConsult.status === 'PENDING'"
@@ -1001,11 +1181,11 @@ onUnmounted(() => {
           >
             开始咨询
           </CButton>
-          <!-- 咨询中 / 已驳回改单：提交审核 -->
+          <!-- 咨询中 / 已驳回改单：提交审核（真实单为草稿/驳回单续提） -->
           <CButton
             v-else
             variant="primary"
-            :disabled="!scan.canSubmit || !planConclusion.trim() || !planItems.length || !planDoctorId || !planConsentC || !planConsentCustomer || !signatureDataUrl || !signerName.trim()"
+            :disabled="submittingPlan || !scan.canSubmit || !planConclusion.trim() || !planItems.length || !planDoctorId || !planConsentC || !planConsentCustomer || !signatureDataUrl || !signerName.trim()"
             @click="submitPlan"
           >
             提交审核
@@ -1027,6 +1207,15 @@ onUnmounted(() => {
   border-bottom: 2px solid transparent; transition: all .15s;
 }
 .tab--active { color: var(--c-brand); border-bottom-color: var(--c-brand); font-weight: 600; }
+
+/* 新建咨询草稿（内联客户搜索） */
+.new-draft-bar { padding: var(--s-sm) var(--s-sm) 0; flex-shrink: 0; }
+.draft-picker { padding: var(--s-sm); border-bottom: 1px solid var(--c-border-light); display: flex; flex-direction: column; gap: var(--s-xs); flex-shrink: 0; }
+.draft-picker__results { max-height: 220px; overflow-y: auto; border: 1px solid var(--c-border-light); border-radius: var(--r-md); }
+.draft-picker__results .search-item { width: 100%; background: none; border: none; border-bottom: 1px solid var(--c-border-light); }
+.draft-picker__results .search-item:last-child { border-bottom: none; }
+.draft-picker__id { font-style: normal; font-size: var(--t-xs); color: var(--c-text-3); margin-left: 4px; }
+.draft-picker__phone { font-size: var(--t-xs); color: var(--c-text-3); white-space: nowrap; }
 
 .cw__items { flex: 1; overflow-y: auto; }
 .row {

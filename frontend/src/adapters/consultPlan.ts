@@ -72,6 +72,8 @@ export function adaptPlan(dto: PlanViewDTO): Consultation {
     doctorId: dto.doctorId || undefined,
     // 后端英文状态枚举与前端 ConsultStatus 一致，直接用
     status: dto.status as Consultation['status'],
+    arrivalId: dto.arrivalId || undefined,
+    startedAt: dto.startedAt || undefined,
     conclusion: dto.conclusion || '',
     planAmount: fen2yuan(dto.planAmount),
     planCost: fen2yuan(dto.planCost),
