@@ -68,6 +68,25 @@ public class InternalCardController {
     }
 
     /**
+     * 客户目录投影（域⑤ 赠金/外部渠道回传跨域硬校验）：GET /api/customer/internal/customers/{customerId}。
+     * 仅回 customerId/姓名/归属门店/状态（不回手机号等敏感字段）；客户不存在 404，由调用方转中文 4xx。
+     * 仅系统身份（X-Internal-Token，持 internal:customer-directory）可调，营销域不直读 customer 表。
+     */
+    @GetMapping("/customers/{customerId}")
+    @RequirePerm("internal:customer-directory")
+    public CustomerDirectoryDTO customerDirectory(
+            @org.springframework.web.bind.annotation.PathVariable("customerId") String customerId) {
+        if (customerId == null || customerId.isBlank()) {
+            throw new CardLedgerService.BadReq("客户ID不能为空");
+        }
+        Customer c = customerRepo.findById(customerId.trim())
+                .orElseThrow(() -> new CardLedgerService.NotFound("客户不存在: " + customerId));
+        return new CustomerDirectoryDTO(c.getCustomerId(), c.getName(),
+                c.getStoreCode() == null ? "" : c.getStoreCode(),
+                c.getStatus() == null ? "" : c.getStatus());
+    }
+
+    /**
      * 储值余额消费扣款（txn balance 支付实扣）：POST /api/customer/internal/cards/consume。
      * 行锁扣 member_card.balance 并写 card_ledger（CONSUME 负额，bizRef=订单号）；
      * 余额不足 422 中文拦截；同订单号重放幂等返回既有流水（网络重试不双扣）。
@@ -257,6 +276,9 @@ public class InternalCardController {
 
     /** 储值扣款入参：cardNo/customerId/amount（分，&gt;0）/orderNo（幂等键）。 */
     public record ConsumeCmd(String cardNo, String customerId, Long amount, String orderNo) {}
+
+    /** 客户目录投影：customerId/姓名/归属门店（空串=集团/公海）/中文状态。不含手机号等敏感字段。 */
+    public record CustomerDirectoryDTO(String customerId, String name, String storeCode, String status) {}
 
     /** 划扣流水投影：ledgerId/cardNo/bizRef（WO 单号）/changeType/amount（负额分，0 为纯扣次）/operator（system-backfill 为回填行）/storeCode。 */
     public record WriteoffLedgerDTO(Long ledgerId, String cardNo, String bizRef, String changeType,
