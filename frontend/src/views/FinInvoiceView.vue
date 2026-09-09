@@ -16,10 +16,30 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import { useFinInvoiceStore } from '@/stores/finInvoice'
 import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
+import { exportInvoiceCsv, type InvoiceStatus, type InvoiceType } from '@/api/finance'
 
 const store = useFinInvoiceStore()
 const auth = useAuthStore()
+const toast = useToast()
+const exporting = ref(false)
 onMounted(() => store.seed())
+
+async function onExport() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    await exportInvoiceCsv({
+      status: store.filterStatus === 'ALL' ? undefined : (store.filterStatus as InvoiceStatus),
+      type: store.filterType === 'ALL' ? undefined : (store.filterType as InvoiceType),
+      keyword: store.keyword.trim() || undefined,
+    })
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '发票台账导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 
 const selectedId = ref<string | null>(null)
 const selected = computed(() => {
@@ -131,8 +151,9 @@ function submitVoid() {
         <div class="filters">
           <CSelect v-model="store.filterType" :options="typeOptions" />
           <CSelect v-model="store.filterStatus" width="120px" :options="statusOptions" />
-          <CButton variant="secondary" size="sm" v-perm.disable="'finance:export'">
-            <CIcon name="export" :size="14" />导出
+          <CButton variant="secondary" size="sm" :disabled="exporting"
+            v-perm.disable="'finance:export'" @click="onExport">
+            <CIcon name="export" :size="14" />{{ exporting ? '导出中…' : '导出' }}
           </CButton>
           <CButton v-if="canEdit" variant="primary" size="sm" @click="openCreate">
             <CIcon name="plus" :size="14" />申请开票

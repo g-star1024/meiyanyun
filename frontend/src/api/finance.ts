@@ -293,6 +293,17 @@ export const exportCostCsv = async (params?: { month?: string; storeCode?: strin
   downloadCsv(resp, '成本汇总.csv')
 }
 
+/** 发票台账导出（过滤条件同发票列表；status/type 传 undefined 表示全部） */
+export const exportInvoiceCsv = async (params?: {
+  storeCode?: string
+  status?: InvoiceStatus
+  type?: InvoiceType
+  keyword?: string
+}) => {
+  const resp = await client.get('/finance/export/invoices.csv', { params, responseType: 'blob' })
+  downloadCsv(resp, '发票台账.csv')
+}
+
 export const getRevenue = (storeCode?: string, month?: string) =>
   client.get<RevenueMonthly[]>('/finance/revenue', { params: { storeCode, month } })
 

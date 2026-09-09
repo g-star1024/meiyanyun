@@ -5,7 +5,7 @@
  * 近7日收支柱状图 + 当日按渠道收支明细表
  * 红线：仅镜像聚合收银/渠道流水，不直接动账。
  * ============================================================ */
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
@@ -13,9 +13,27 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CBarChart from '@/components/CBarChart.vue'
 import { useFinReportsStore } from '@/stores/finReports'
+import { useToast } from '@/composables/useToast'
+import { exportLedgerCsv } from '@/api/finance'
 
 const store = useFinReportsStore()
+const toast = useToast()
+const exporting = ref(false)
 onMounted(() => store.seed())
+
+async function onExport() {
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    // 复用资金分录台账报表，区间锁定到页面口径的「最近营业日」；无营业日时导出全量
+    const day = store.latestDate || undefined
+    await exportLedgerCsv({ from: day, to: day })
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '资金日报导出失败')
+  } finally {
+    exporting.value = false
+  }
+}
 
 const kpis = computed(() => [
   { label: '本日收入', icon: 'finance', value: money(store.todayIncome), tone: 'brand' as const },
@@ -49,8 +67,9 @@ const totalExpense = computed(() => store.channelFlows.reduce((s, c) => s + c.ex
       <template #header>
         <div class="card-head">
           <h3 class="card-head__title">渠道收支明细（最近营业日{{ store.latestDate ? ` ${store.latestDate}` : '' }}）</h3>
-          <CButton variant="secondary" size="sm" v-perm.disable="'finance:export'">
-            <CIcon name="export" :size="14" />导出报表
+          <CButton variant="secondary" size="sm" :disabled="exporting"
+            v-perm.disable="'finance:export'" @click="onExport">
+            <CIcon name="export" :size="14" />{{ exporting ? '导出中…' : '导出报表' }}
           </CButton>
         </div>
       </template>

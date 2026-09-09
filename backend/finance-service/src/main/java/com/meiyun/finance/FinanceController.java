@@ -317,6 +317,20 @@ public class FinanceController {
         return csvResponse(exportService.exportCost(storeCode, month));
     }
 
+    /**
+     * 发票台账导出 CSV（B24 卡1）：GET /api/finance/export/invoices.csv，
+     * 过滤参数与权限（finance:invoice:view）同 FinConfigController#listInvoices。
+     */
+    @GetMapping("/export/invoices.csv")
+    @RequirePerm("finance:invoice:view")
+    public ResponseEntity<byte[]> exportInvoices(
+            @RequestParam(required = false) String storeCode,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String type,
+            @RequestParam(required = false) String keyword) {
+        return csvResponse(exportService.exportInvoices(storeCode, status, type, keyword));
+    }
+
     /** 统一 CSV 附件响应：Content-Disposition 中文文件名走 filename*=UTF-8'' 编码，兼容 BOM 防乱码。 */
     private ResponseEntity<byte[]> csvResponse(FinanceExportService.CsvReport report) {
         String encoded = URLEncoder.encode(report.filename(), StandardCharsets.UTF_8).replace("+", "%20");

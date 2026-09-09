@@ -268,6 +268,7 @@ function subjectKind(code: SubjectCode): 'RF' | 'TK' {
           <span class="log-by">{{ l.by }}</span>
           <span class="log-at">{{ fmt(l.at) }}</span>
         </div>
+        <div v-if="store.logs.length === 0" class="log-empty">暂无财务设置变更记录</div>
       </div>
     </CCard>
 
@@ -364,6 +365,7 @@ function subjectKind(code: SubjectCode): 'RF' | 'TK' {
 
 /* 审计记录 */
 .log-list { display: flex; flex-direction: column; }
+.log-empty { padding: var(--s-md) 0; color: var(--c-text-3); font-size: var(--t-sm); text-align: center; }
 .log-row { display: flex; align-items: center; gap: var(--s-md); padding: var(--s-sm) 0; border-bottom: 1px solid var(--c-border-light); font-size: var(--t-sm); }
 .log-row:last-child { border-bottom: none; }
 .log-field { flex: 1; color: var(--c-text); font-weight: 500; }

@@ -8,7 +8,7 @@
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { useStoreContext } from './storeContext'
 import {
@@ -252,59 +252,8 @@ export const useFinInvoiceStore = defineStore('finInvoice', () => {
     return [...map.values()].sort((a, b) => a.rate - b.rate)
   })
 
-  // ===== 种子：优先拉真实数据，失败回落内置演示数据 =====
+  // ===== 加载：只拉真实发票数据；服务不可达时保持诚实空态，不注入演示数据（B24 卡1 去 mock） =====
   let seeding: Promise<void> | null = null
-  function seedMock() {
-    const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
-    const data: Array<Omit<InvoiceItem, 'id'>> = [
-      {
-        invoiceNo: 'INV-20260815-0001', type: 'ELECTRONIC', category: 'SERVICE',
-        title: '上海美研医疗美容门诊部有限公司', taxNo: '91310106MA1FY8XX1Y',
-        amount: 12800, taxAmount: 0, taxRate: 0, buyerName: '陈美玲', orderRefs: ['ORD-20260815-01'],
-        store: '静安旗舰店', status: 'ISSUED', issuedAt: hoursAgo(26), operator: '夏沫（前台）', reviewer: '苏晴（店长）',
-      },
-      {
-        invoiceNo: 'INV-20260815-0002', type: 'SPECIAL', category: 'SERVICE',
-        title: '上海星颜企业管理咨询有限公司', taxNo: '91310115MA1K3UXX2Z',
-        amount: 29800, taxAmount: 1686.79, taxRate: 0.06, buyerName: '赵雨晴（企业客户）', orderRefs: ['ORD-20260816-02'],
-        store: '静安旗舰店', status: 'ISSUED', issuedAt: hoursAgo(20), operator: '夏沫（前台）', reviewer: '苏晴（店长）',
-      },
-      {
-        invoiceNo: 'INV-20260816-0003', type: 'ELECTRONIC', category: 'PRODUCT',
-        title: '林晓彤', taxNo: '',
-        amount: 1260, taxAmount: 36.7, taxRate: 0.03, buyerName: '林晓彤', orderRefs: ['ORD-20260816-05'],
-        store: '静安旗舰店', status: 'ISSUED', issuedAt: hoursAgo(12), operator: '夏沫（前台）',
-      },
-      {
-        invoiceNo: 'INV-20260817-0004', type: 'NORMAL', category: 'MEMBERSHIP',
-        title: '上海恒美文化传媒有限公司', taxNo: '91310104MA1FP8XX3A',
-        amount: 20000, taxAmount: 1132.08, taxRate: 0.06, buyerName: '王诗涵（企业）', orderRefs: ['RC-20260814-01'],
-        store: '静安旗舰店', status: 'DRAFT', issuedAt: hoursAgo(2), operator: '夏沫（前台）',
-      },
-      {
-        invoiceNo: 'INV-20260813-0005', type: 'NORMAL', category: 'SERVICE',
-        title: '周慧敏', taxNo: '',
-        amount: 3600, taxAmount: 0, taxRate: 0, buyerName: '周慧敏', orderRefs: ['ORD-20260813-08'],
-        store: '万象城店', status: 'VOIDED', issuedAt: hoursAgo(72), operator: '李娜（前台）', reviewer: '陈雅琳（店长）',
-        remark: '客户抬头信息有误，当月作废重开',
-      },
-      {
-        invoiceNo: 'INV-20260720-0006', type: 'SPECIAL', category: 'SERVICE',
-        title: '上海润美健康科技有限公司', taxNo: '91310110MA1G8GXX4B',
-        amount: 56000, taxAmount: 3169.81, taxRate: 0.06, buyerName: '吴思琪（企业）', orderRefs: ['ORD-20260720-12'],
-        store: '万象城店', status: 'RED_FLUSHED', issuedAt: hoursAgo(24 * 28), operator: '李娜（前台）', reviewer: '陈雅琳（店长）',
-        remark: '上月服务退款，按规定开具红字信息表后红冲',
-      },
-      {
-        invoiceNo: 'INV-20260817-0007', type: 'ELECTRONIC', category: 'PRODUCT',
-        title: '孙佳宁', taxNo: '',
-        amount: 680, taxAmount: 19.81, taxRate: 0.03, buyerName: '孙佳宁', orderRefs: ['ORD-20260817-02'],
-        store: '静安旗舰店', status: 'DRAFT', issuedAt: hoursAgo(1), operator: '夏沫（前台）',
-      },
-    ]
-    items.value = data.map((d) => ({ id: nextId('inv'), ...d }))
-  }
-
   function seed(force = false): Promise<void> {
     if (seeding && !force) return seeding
     if (loaded && !force) return Promise.resolve()
@@ -313,8 +262,10 @@ export const useFinInvoiceStore = defineStore('finInvoice', () => {
         await storeCtx.loadStores()
         await fetchInvoices()
       } catch (e) {
-        console.error('[finInvoice] 加载发票失败，回落演示数据', e)
-        if (items.value.length === 0) seedMock()
+        // 不造任何假发票：列表保持空态，loaded 留 false 以便重试 seed(true)
+        console.error('[finInvoice] 加载发票失败，保持空态', e)
+      } finally {
+        seeding = null
       }
     })()
     return seeding

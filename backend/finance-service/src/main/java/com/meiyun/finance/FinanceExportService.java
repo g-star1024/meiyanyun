@@ -49,19 +49,38 @@ public class FinanceExportService {
             "ERP", "系统划扣",
             "MANUAL", "人工录入");
 
+    private static final Map<String, String> INVOICE_TYPE_CN = Map.of(
+            "NORMAL", "增值税普通发票",
+            "SPECIAL", "增值税专用发票",
+            "ELECTRONIC", "增值税电子普通发票");
+
+    private static final Map<String, String> INVOICE_CATEGORY_CN = Map.of(
+            "SERVICE", "医疗服务",
+            "PRODUCT", "产品销售",
+            "MEMBERSHIP", "会员卡/疗程");
+
+    private static final Map<String, String> INVOICE_STATUS_CN = Map.of(
+            "DRAFT", "待开票",
+            "ISSUED", "已开票",
+            "VOIDED", "已作废",
+            "RED_FLUSHED", "已红冲");
+
     private final SettlementService settlementService;
     private final TripartiteReconcileService tripartiteService;
     private final FinanceAggregationService aggregation;
     private final CostAllocationRepository costRepo;
+    private final FinConfigService configService;
 
     public FinanceExportService(SettlementService settlementService,
                                 TripartiteReconcileService tripartiteService,
                                 FinanceAggregationService aggregation,
-                                CostAllocationRepository costRepo) {
+                                CostAllocationRepository costRepo,
+                                FinConfigService configService) {
         this.settlementService = settlementService;
         this.tripartiteService = tripartiteService;
         this.aggregation = aggregation;
         this.costRepo = costRepo;
+        this.configService = configService;
     }
 
     // ==================== 四张报表 ====================
@@ -181,7 +200,49 @@ public class FinanceExportService {
         return report("成本汇总" + (month == null || month.isBlank() ? "" : "-" + month.substring(0, 7)), sb);
     }
 
+    /**
+     * 发票台账导出（B24 卡1；权限 finance:invoice:view，与 GET /invoices 同源同过滤同数据域）。
+     * 列表薄调 {@link FinConfigService#listInvoices}，视图金额本就是「元」，税率为 BigDecimal 原值。
+     * 草稿（DRAFT）未开票时 issuedAt 为空，开票日期列留空；关联订单多单号以顿号连接。
+     */
+    public CsvReport exportInvoices(String storeCode, String status, String type, String keyword) {
+        List<Map<String, Object>> rows = configService.listInvoices(storeCode, status, type, keyword);
+        StringBuilder sb = new StringBuilder();
+        row(sb, "票号", "票种", "项目类别", "状态", "发票抬头", "税号", "购方名称",
+                "价税合计(元)", "税额(元)", "税率", "门店编码", "门店名称", "关联订单",
+                "开票人", "复核人", "开票日期", "备注");
+        for (Map<String, Object> r : rows) {
+            Object refs = r.get("orderRefs");
+            String refText = "";
+            if (refs instanceof List<?> list && !list.isEmpty()) {
+                refText = list.stream().filter(java.util.Objects::nonNull)
+                        .map(String::valueOf).collect(java.util.stream.Collectors.joining("、"));
+            }
+            Object rate = r.get("taxRate");
+            String rateText = rate == null ? "" : (rate + "（" + percent(rate) + "）");
+            row(sb, r.get("invoiceNo"),
+                    INVOICE_TYPE_CN.getOrDefault(str(r.get("type")), nz(r.get("type"))),
+                    INVOICE_CATEGORY_CN.getOrDefault(str(r.get("category")), nz(r.get("category"))),
+                    INVOICE_STATUS_CN.getOrDefault(str(r.get("status")), nz(r.get("status"))),
+                    r.get("title"), r.get("taxNo"), r.get("buyerName"),
+                    yuanObj(r.get("amount")), yuanObj(r.get("taxAmount")), rateText,
+                    r.get("storeCode"), r.get("store"), refText,
+                    r.get("operator"), r.get("reviewer"), ts(r.get("issuedAt")), nz(r.get("remark")));
+        }
+        return report("发票台账", sb);
+    }
+
     // ==================== CSV 工具 ====================
+
+    /** 税率小数（0.06）→ 百分号文本（6%），用于发票导出括注；无法解析时原样返回。 */
+    private String percent(Object v) {
+        try {
+            java.math.BigDecimal bd = new java.math.BigDecimal(String.valueOf(v));
+            return bd.multiply(java.math.BigDecimal.valueOf(100)).stripTrailingZeros().toPlainString() + "%";
+        } catch (NumberFormatException e) {
+            return String.valueOf(v);
+        }
+    }
 
     /** 写一行（表头/数据共用）：null 与空串输出空列，CRLF 结尾。 */
     private void row(StringBuilder sb, Object... vals) {

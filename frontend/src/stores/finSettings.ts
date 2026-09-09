@@ -258,17 +258,8 @@ export const useFinSettingsStore = defineStore('finSettings', () => {
   const canEdit = computed(() => auth.can('finance:settings:edit'))
   const enabledSubjectCount = computed(() => subjectEnable.value.filter((s) => s.enabled).length)
 
-  // ===== 种子：优先拉真实数据，失败回落默认值 + 内置审计记录 =====
+  // ===== 加载：只拉真实设置与审计日志；服务不可达时设置回落内置默认值，日志保持诚实空态（B24 卡1 去 mock） =====
   let seeding: Promise<void> | null = null
-  function seedMockLogs() {
-    const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000).toISOString()
-    logs.value = [
-      { id: nextId('flog'), by: '钱进（财务审核）', at: hoursAgo(26), field: FIELD_LABEL.diffThreshold, oldValue: '¥50', newValue: '¥100' },
-      { id: nextId('flog'), by: '钱进（财务审核）', at: hoursAgo(72), field: FIELD_LABEL.reconcileTn, oldValue: 'T+0', newValue: 'T+1' },
-      { id: nextId('flog'), by: '陈野（区域经理）', at: hoursAgo(24 * 9), field: FIELD_LABEL.mirrorKingdee, oldValue: '关闭', newValue: '开启' },
-    ]
-  }
-
   function seed(force = false): Promise<void> {
     if (seeding && !force) return seeding
     if (loaded && !force) return Promise.resolve()
@@ -278,8 +269,10 @@ export const useFinSettingsStore = defineStore('finSettings', () => {
         applyBundle(data)
         loaded.value = true
       } catch (e) {
-        console.error('[finSettings] 加载财务设置失败，回落默认值', e)
-        if (logs.value.length === 0) seedMockLogs()
+        // 设置项保留 DEFAULT_SETTINGS 默认值兜底；审计日志不造假，留空等待重试
+        console.error('[finSettings] 加载财务设置失败，设置回落默认值、日志留空', e)
+      } finally {
+        seeding = null
       }
     })()
     return seeding

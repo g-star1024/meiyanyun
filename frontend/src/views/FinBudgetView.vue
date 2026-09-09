@@ -146,6 +146,10 @@ const draftTotal = computed(() =>
           </tbody>
         </table>
       </div>
+      <p class="budget-note">
+        <CIcon name="shield" :size="14" />
+        营销费用、房租分摊的费用报销/摊销系统尚未接入，实际发生额暂记 0，待费用域（P6 Backlog）接入后自动回填；其余科目实际额镜像自资金台账与成本分摊真实数据。
+      </p>
     </CCard>
 
     <!-- 配置预算弹层 -->
@@ -264,6 +268,8 @@ const draftTotal = computed(() =>
 .confirm__text { font-size: var(--t-sm); color: var(--c-text-2); margin: 0; line-height: 1.6; }
 .confirm__meta { font-size: var(--t-sm); color: var(--c-text-3); margin: 0; }
 .confirm__meta strong { color: var(--c-brand); font-variant-numeric: tabular-nums; }
+
+.budget-note { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--c-warning-fg); background: var(--c-warn-soft-bg); padding: var(--s-sm) var(--s-lg); margin: 0; border-top: 1px solid var(--c-border-light); }
 
 @media (max-width: 1024px) {
   .bg__kpis { grid-template-columns: repeat(2, 1fr); min-width: 0; }
