@@ -3,7 +3,8 @@
  * 我的工作台 /my-workbench（角色待办首页）
  * 一线个人首页：我的待办（行内计数 → 点击直达对应作业页）+ 高频操作 + 今日概览。
  * 待办项用「权限 + 实时计数」驱动，天然按当前角色/权限过滤，无需硬编码角色分支。
- * 数据全部来自现有 store，不建新状态机。
+ * 真实计数：审批待办 / 待收款订单 / 今日预约（看板剔除已取消）/ 方案单五态队列（listPlans totalElements）。
+ * 演示计数：候诊接待 / 病历草稿 / 术后 SOP / 复诊提醒（所属域暂无后端，文案带「演示」后缀、不计入真实总数）。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -12,29 +13,37 @@ import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useArrivalStore } from '@/stores/arrival'
-import { useAppointmentStore } from '@/stores/appointment'
-import { useConsultationStore } from '@/stores/consultation'
 import { useEmrStore } from '@/stores/emr'
 import { useFollowupStore } from '@/stores/followup'
 import { useRecallStore } from '@/stores/recall'
 import { useStoreContext } from '@/stores/storeContext'
 import { listApprovals, type ApprovalTodoDTO } from '@/api/approval'
 import { listOrders } from '@/api/order'
+import { listPlans } from '@/api/consultPlan'
+import { appointmentBoard } from '@/api/appointment'
 import { staffName } from '@/config/staff'
 
 const router = useRouter()
 const auth = useAuthStore()
 const arrival = useArrivalStore()
-const appointment = useAppointmentStore()
-const consultation = useConsultationStore()
 const emr = useEmrStore()
 const followup = useFollowupStore()
 const recall = useRecallStore()
 const storeCtx = useStoreContext()
 
-// ---- 审批「我的待办」/ 待收款订单计数：真实 API（其余待办仍来自 mock store） ----
+// ---- 真实计数：审批待办 / 待收款订单 / 今日预约 / 方案单各状态队列（按权限分别拉取，失败静默降级为 0 隐藏） ----
 const myTodoCount = ref(0)
 const pendingPayCount = ref(0)
+const todayApptCount = ref(0)
+const planQueueCount = ref(0)
+const planReviewCount = ref(0)
+const planPaidCount = ref(0)
+const planTreatingCount = ref(0)
+
+function todayLocal(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 const BIZ_PERM_WB: Record<string, string> = {
   REFUND: 'refund:approve', CARD_CANCEL: 'cardcancel:approve', TRANSFER: 'transfer:approve',
@@ -64,28 +73,72 @@ function stagePermWb(d: ApprovalTodoDTO): string {
 async function loadTxnCounts() {
   try {
     if (!storeCtx.loaded) await storeCtx.loadStores()
-    const [apRes, ordRes] = await Promise.all([
-      listApprovals({ tab: 'todo' }),
-      listOrders({ size: 100, status: '待收款', storeCode: storeCtx.currentStoreCode }),
-    ])
-    myTodoCount.value = apRes.data.filter((t) => {
-      if (t.status !== 'PENDING') return false
-      if (!auth.can(stagePermWb(t))) return false
-      const assignee = t.assignee ? nameOfWb(t.assignee) : ''
-      return !assignee || assignee === auth.user.name
-    }).length
-    pendingPayCount.value = ordRes.data.totalElements ?? ordRes.data.content.length
   } catch {
-    // 工作台计数失败静默降级为 0（待办项自动隐藏），不影响首页其余 mock 待办
-    myTodoCount.value = 0
-    pendingPayCount.value = 0
+    return
+  }
+  const store = storeCtx.currentStoreCode || undefined
+
+  // 审批待办（真实）：PENDING + 当前人有签署权 + 指派人匹配
+  if (auth.can('approval:view')) {
+    try {
+      const apRes = await listApprovals({ tab: 'todo' })
+      myTodoCount.value = apRes.data.filter((t) => {
+        if (t.status !== 'PENDING') return false
+        if (!auth.can(stagePermWb(t))) return false
+        const assignee = t.assignee ? nameOfWb(t.assignee) : ''
+        return !assignee || assignee === auth.user.name
+      }).length
+    } catch {
+      myTodoCount.value = 0
+    }
+  }
+
+  // 待收款订单（真实，订单口径：含方案单缴费单 + 零售/药妆应收单）
+  if (auth.can('cashier:view')) {
+    try {
+      const ordRes = await listOrders({ size: 100, status: '待收款', storeCode: store })
+      pendingPayCount.value = ordRes.data.totalElements ?? ordRes.data.content.length
+    } catch {
+      pendingPayCount.value = 0
+    }
+  }
+
+  // 今日预约（真实）：看板 total 剔除已取消；医生 SELF 数据域只见本人
+  if (auth.can('appointment:view')) {
+    try {
+      const board = await appointmentBoard(store, todayLocal())
+      todayApptCount.value = Math.max(0, (board.data.total ?? 0) - (board.data.cancelled ?? 0))
+    } catch {
+      todayApptCount.value = 0
+    }
+  }
+
+  // 方案单各队列（真实）：列表端点挂 consult:view，size:1 只取 totalElements
+  if (auth.can('consult:view')) {
+    try {
+      const [pending, active, review, paid, treating] = await Promise.all([
+        listPlans({ size: 1, status: 'PENDING', storeCode: store }),
+        listPlans({ size: 1, status: 'ACTIVE', storeCode: store }),
+        listPlans({ size: 1, status: 'PENDING_REVIEW', storeCode: store }),
+        listPlans({ size: 1, status: 'PAID', storeCode: store }),
+        listPlans({ size: 1, status: 'TREATING', storeCode: store }),
+      ])
+      planQueueCount.value = (pending.data.totalElements ?? 0) + (active.data.totalElements ?? 0)
+      planReviewCount.value = review.data.totalElements ?? 0
+      planPaidCount.value = paid.data.totalElements ?? 0
+      planTreatingCount.value = treating.data.totalElements ?? 0
+    } catch {
+      planQueueCount.value = 0
+      planReviewCount.value = 0
+      planPaidCount.value = 0
+      planTreatingCount.value = 0
+    }
   }
 }
 
 onMounted(() => {
+  // 以下域暂无后端（候诊接待 / 病历独立域 / 术后 SOP / 复诊提醒），计数为演示数据
   arrival.seed()
-  appointment.seed()
-  consultation.seed()
   emr.seed()
   followup.seed()
   recall.seed()
@@ -102,26 +155,30 @@ interface Todo {
   icon: IconName
   tone: 'brand' | 'warning' | 'danger' | 'success'
   perm?: string
+  /** 演示数据：所属域暂无后端（候诊接待 / 病历独立域 / 术后 SOP / 复诊提醒），不计入真实待办总数 */
+  demo?: boolean
   group: '临床诊疗' | '收银履约' | '术后跟进' | '管理协同'
 }
 
 const todos = computed<Todo[]>(() => {
   const all: Todo[] = [
-    // 临床诊疗
-    { key: 'appt', label: '今日预约', count: appointment.today.length, to: '/appointment', icon: 'calendar', tone: 'brand', perm: 'appointment:view', group: '临床诊疗' },
-    { key: 'waiting', label: '候诊待接待', count: arrival.waiting.length, to: '/reception', icon: 'home', tone: 'brand', perm: 'reception:view', group: '临床诊疗' },
-    { key: 'consult', label: '待咨询 / 面诊', count: consultation.pending.length, to: '/consultation', icon: 'chat', tone: 'brand', perm: 'consult:view', group: '临床诊疗' },
-    { key: 'review', label: '待医生审核方案', count: consultation.reviewing.length, to: '/doctor', icon: 'shield', tone: 'warning', perm: 'consult:review', group: '临床诊疗' },
-    { key: 'emr-draft', label: '病历草稿待签', count: emr.drafts.length, to: '/emr', icon: 'edit', tone: 'warning', perm: 'emr:view', group: '临床诊疗' },
-    { key: 'paid', label: '待治疗 / 术前核对', count: consultation.paid.length, to: '/doctor', icon: 'check-square', tone: 'brand', perm: 'consult:review', group: '临床诊疗' },
-    { key: 'treating', label: '治疗中待归档', count: consultation.treating.length, to: '/doctor', icon: 'tool', tone: 'brand', perm: 'consult:review', group: '临床诊疗' },
+    // 临床诊疗（真实计数）
+    { key: 'appt', label: '今日预约', count: todayApptCount.value, to: '/appointment', icon: 'calendar', tone: 'brand', perm: 'appointment:view', group: '临床诊疗' },
+    // 候诊接待域暂无后端 → 演示数据
+    { key: 'waiting', label: '候诊待接待（演示）', count: arrival.waiting.length, to: '/reception', icon: 'home', tone: 'brand', perm: 'reception:view', demo: true, group: '临床诊疗' },
+    { key: 'consult', label: '待咨询 / 面诊', count: planQueueCount.value, to: '/consultation', icon: 'chat', tone: 'brand', perm: 'consult:view', group: '临床诊疗' },
+    { key: 'review', label: '待医生审核方案', count: planReviewCount.value, to: '/doctor', icon: 'shield', tone: 'warning', perm: 'consult:review', group: '临床诊疗' },
+    // 病历为独立域（Backlog）→ 演示数据
+    { key: 'emr-draft', label: '病历草稿待签（演示）', count: emr.drafts.length, to: '/emr', icon: 'edit', tone: 'warning', perm: 'emr:view', demo: true, group: '临床诊疗' },
+    { key: 'paid', label: '待治疗 / 术前核对', count: planPaidCount.value, to: '/doctor', icon: 'check-square', tone: 'brand', perm: 'consult:review', group: '临床诊疗' },
+    { key: 'treating', label: '治疗中待归档', count: planTreatingCount.value, to: '/doctor', icon: 'tool', tone: 'brand', perm: 'consult:review', group: '临床诊疗' },
     // 收银履约：订单口径（含方案单自动生成的缴费单 + 零售/药妆应收单），不遗漏非诊疗单
     { key: 'pay', label: '待收款订单', count: pendingPayCount.value, to: '/order', icon: 'pos', tone: 'danger', perm: 'cashier:view', group: '收银履约' },
-    // 术后跟进
-    { key: 'fu', label: '术后待回访', count: followup.sopPending.length, to: '/followup', icon: 'phone', tone: 'success', perm: 'followup:view', group: '术后跟进' },
-    { key: 'fu-overdue', label: 'SOP 超期未回访', count: followup.sopOverdue.length, to: '/sop', icon: 'alert', tone: 'danger', perm: 'followup:view', group: '术后跟进' },
-    { key: 'recall', label: '复诊待提醒', count: recall.pending.length, to: '/recall', icon: 'bell', tone: 'warning', perm: 'recall:view', group: '术后跟进' },
-    // 管理协同
+    // 术后 SOP / 复诊提醒域暂无后端（Backlog）→ 演示数据
+    { key: 'fu', label: '术后待回访（演示）', count: followup.sopPending.length, to: '/followup', icon: 'phone', tone: 'success', perm: 'followup:view', demo: true, group: '术后跟进' },
+    { key: 'fu-overdue', label: 'SOP 超期未回访（演示）', count: followup.sopOverdue.length, to: '/sop', icon: 'alert', tone: 'danger', perm: 'followup:view', demo: true, group: '术后跟进' },
+    { key: 'recall', label: '复诊待提醒（演示）', count: recall.pending.length, to: '/recall', icon: 'bell', tone: 'warning', perm: 'recall:view', demo: true, group: '术后跟进' },
+    // 管理协同（真实计数）
     { key: 'approval', label: '待我审批', count: myTodoCount.value, to: '/approval', icon: 'check-square', tone: 'warning', perm: 'approval:view', group: '管理协同' },
   ]
   // 按权限过滤 + 仅保留有待办的项
@@ -135,7 +192,8 @@ const groups = computed(() => {
     .filter((g) => g.items.length > 0)
 })
 
-const todoTotal = computed(() => todos.value.reduce((s, t) => s + t.count, 0))
+// 真实待办总数（演示域不计入欢迎条数字，避免把 mock 当真实工作量）
+const todoTotal = computed(() => todos.value.filter((t) => !t.demo).reduce((s, t) => s + t.count, 0))
 
 const quickActions = computed(() => {
   const acts: { label: string; icon: IconName; to: string; perm?: string }[] = [
