@@ -43,6 +43,10 @@ spring:
 finance:
   service:
     url: ${FINANCE_SERVICE_URL:http://localhost:8087}
+txn:
+  service:
+    # 消费自动积分引擎拉取已收款/已退款订单的只读内部端点（txn-service InternalOrderController）
+    url: ${TXN_SERVICE_URL:http://localhost:8083}
 
 # ES 客户全文检索（JDK HttpClient 直连，零客户端依赖；不可用时自动降级 DB 过滤）
 meiyun:
