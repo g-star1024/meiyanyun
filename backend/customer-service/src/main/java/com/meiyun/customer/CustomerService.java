@@ -9,10 +9,14 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.text.NumberFormat;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -32,8 +36,35 @@ public class CustomerService {
     /** 标签分类白名单（对齐 customer_tag.category CHECK 五分类）。 */
     private static final Set<String> TAG_CATEGORIES = Set.of("消费", "肤质", "行为", "价值", "医疗");
 
+    /** 等级序：五级中文短名主键 → sortNo（member_level.sort_no 回填前的兜底口径）。 */
+    private static final Map<String, Integer> LEVEL_ORDER = Map.of(
+            "普通", 1, "银卡", 2, "金卡", 3, "钻石", 4, "黑卡", 5);
+    /** 等级英文码兜底（tier 列回填前）。 */
+    private static final Map<String, String> LEVEL_TIER = Map.of(
+            "普通", "NORMAL", "银卡", "SILVER", "金卡", "GOLD", "钻石", "DIAMOND", "黑卡", "BLACK");
+    /** 等级主色兜底（color 列回填前，对齐前端 COLOR_BY_TIER；NORMAL/SILVER 同为 #8B5CF6）。 */
+    private static final Map<String, String> LEVEL_COLOR = Map.of(
+            "普通", "#8B5CF6", "银卡", "#8B5CF6", "金卡", "#F59E0B", "钻石", "#6366F1", "黑卡", "#10B981");
+    /** 升级累计消费阈值兜底（0/5000/20000/50000/100000，upgrade_threshold 回填前）。 */
+    private static final Map<String, BigDecimal> LEVEL_THRESHOLD = Map.of(
+            "普通", BigDecimal.ZERO,
+            "银卡", new BigDecimal("5000"),
+            "金卡", new BigDecimal("20000"),
+            "钻石", new BigDecimal("50000"),
+            "黑卡", new BigDecimal("100000"));
+    /** 默认权益清单兜底（benefits 列回填前，文案逐字对齐前端 stores/level.ts 默认）。 */
+    private static final Map<String, List<String>> LEVEL_BENEFITS = Map.of(
+            "普通", List.of("项目基础价"),
+            "银卡", List.of("项目折扣 9.5 折", "生日当月 1.2 倍积分"),
+            "金卡", List.of("项目折扣 9 折", "生日当月 1.5 倍积分", "专属咨询师"),
+            "钻石", List.of("项目折扣 8.5 折", "生日当月 2 倍积分", "专属咨询师 + 免排队", "每月 1 次免费护理"),
+            "黑卡", List.of("项目折扣 8 折", "生日当月 3 倍积分", "专属咨询师 + 免排队", "每月 2 次免费护理"));
+    /** 升降级规则单行主键（仿 point_rule rule_id=1）。 */
+    private static final int RULE_ID = 1;
+
     private final CustomerRepository customerRepo;
     private final MemberLevelRepository levelRepo;
+    private final LevelRuleConfigRepository levelRuleRepo;
     private final MemberCardRepository cardRepo;
     private final PointsLedgerRepository ledgerRepo;
     private final PointsPoolRepository pointsPoolRepo;
@@ -42,12 +73,14 @@ public class CustomerService {
     private final RefNameResolver nameResolver;
 
     public CustomerService(CustomerRepository customerRepo, MemberLevelRepository levelRepo,
+                           LevelRuleConfigRepository levelRuleRepo,
                            MemberCardRepository cardRepo,
                            PointsLedgerRepository ledgerRepo, PointsPoolRepository pointsPoolRepo,
                            CustomerTagRelRepository tagRelRepo, CustomerTagRepository tagRepo,
                            RefNameResolver nameResolver) {
         this.customerRepo = customerRepo;
         this.levelRepo = levelRepo;
+        this.levelRuleRepo = levelRuleRepo;
         this.cardRepo = cardRepo;
         this.ledgerRepo = ledgerRepo;
         this.pointsPoolRepo = pointsPoolRepo;
@@ -422,6 +455,239 @@ public class CustomerService {
         }
         return String.format("TG%03d", seq + 1);
     }
+
+    // ---- 会员等级：读模型（实时人数）/ 阈值权益配置 / 升降级规则 / 手工调级 / 按消费自动升级 ----
+
+    /**
+     * 等级读模型：五级按 sortNo 升序，人数读时实时 count(customer) group by level（不读 cnt 历史假数据）；
+     * memberPercent 为整数四舍五入百分比，不强制合计 100（对齐 mock 60/24/11/4/1 口径）。
+     * tier/颜色/阈值/权益列在 prod 回填 SQL 执行前由 LEVEL_* 常量兜底，页面不出现空值。
+     */
+    @Transactional(readOnly = true)
+    public List<MemberLevelDTO> listLevelDTOs() {
+        Map<String, Long> counts = new HashMap<>();
+        for (Object[] row : customerRepo.countGroupByLevel()) {
+            if (row[0] != null) counts.put((String) row[0], ((Number) row[1]).longValue());
+        }
+        long total = counts.values().stream().mapToLong(Long::longValue).sum();
+        return sortedLevels().stream()
+                .map(lv -> toLevelDTO(lv, counts.getOrDefault(lv.getLevel(), 0L), total))
+                .toList();
+    }
+
+    /** 五级按 sortNo 升序；sort_no 为空（回填前）回落到 LEVEL_ORDER 常量序。 */
+    private List<MemberLevel> sortedLevels() {
+        return levelRepo.findAll().stream()
+                .sorted(Comparator.comparingInt(lv -> lv.getSortNo() != null
+                        ? lv.getSortNo()
+                        : LEVEL_ORDER.getOrDefault(lv.getLevel(), 99)))
+                .toList();
+    }
+
+    private MemberLevelDTO toLevelDTO(MemberLevel lv, long count, long total) {
+        String id = lv.getLevel();
+        BigDecimal threshold = lv.getUpgradeThreshold() != null
+                ? lv.getUpgradeThreshold()
+                : LEVEL_THRESHOLD.getOrDefault(id, BigDecimal.ZERO);
+        List<String> benefits = lv.getBenefits() != null && !lv.getBenefits().isEmpty()
+                ? List.copyOf(lv.getBenefits())
+                : LEVEL_BENEFITS.getOrDefault(id, List.of());
+        long percent = total == 0 ? 0L : Math.round(count * 100.0 / total);
+        boolean top = lv.getIsTop() != null ? lv.getIsTop() : "黑卡".equals(id);
+        return new MemberLevelDTO(
+                id,
+                lv.getTier() != null ? lv.getTier() : LEVEL_TIER.get(id),
+                id + "会员",
+                lv.getColor() != null ? lv.getColor() : LEVEL_COLOR.get(id),
+                threshold,
+                upgradeCondition(threshold),
+                benefits,
+                count,
+                percent,
+                top,
+                lv.getDiscount());
+    }
+
+    /** 升级条件文案：阈值 0=注册即享；>0=累计消费 ≥ ¥x,xxx（美式千分位，对齐前端 toLocaleString）。 */
+    private static String upgradeCondition(BigDecimal threshold) {
+        if (threshold == null || threshold.signum() <= 0) return "注册即享（无门槛）";
+        NumberFormat nf = NumberFormat.getNumberInstance(Locale.US);
+        nf.setMaximumFractionDigits(2);
+        nf.setMinimumFractionDigits(0);
+        return "累计消费 ≥ ¥" + nf.format(threshold.stripTrailingZeros());
+    }
+
+    /**
+     * 更新等级阈值/权益（写接口四件套）：等级不存在 404；阈值必填非负、普通固定 0、不得超过 1 亿；
+     * 权益清单最多 10 条、单条 ≤40 字。全部参数与现值相同则 changed=false（幂等同态短路，Controller 不重复审计）。
+     */
+    @Transactional
+    public synchronized LevelConfigResult updateLevelConfig(String level, BigDecimal threshold, List<String> benefits) {
+        MemberLevel lv = levelRepo.findById(level)
+                .orElseThrow(() -> new NotFound("会员等级不存在：" + level));
+        if (threshold == null) throw new BadReq("升级阈值不能为空");
+        if (threshold.signum() < 0) throw new BadReq("升级阈值不能为负数");
+        if (threshold.compareTo(new BigDecimal("100000000")) > 0) throw new BadReq("升级阈值超出合理上限（1 亿）");
+        if ("普通".equals(level) && threshold.signum() != 0) {
+            throw new BadReq("普通会员为注册即享等级，阈值必须为 0");
+        }
+        List<String> cleaned = List.of();
+        if (benefits != null) {
+            cleaned = benefits.stream()
+                    .filter(b -> b != null && !b.isBlank())
+                    .map(String::trim)
+                    .toList();
+            if (cleaned.size() > 10) throw new BadReq("权益清单最多 10 条");
+            if (cleaned.stream().anyMatch(b -> b.length() > 40)) throw new BadReq("单条权益不能超过 40 字");
+        }
+        BigDecimal oldThreshold = lv.getUpgradeThreshold() != null
+                ? lv.getUpgradeThreshold()
+                : LEVEL_THRESHOLD.getOrDefault(level, BigDecimal.ZERO);
+        List<String> oldBenefits = lv.getBenefits() != null && !lv.getBenefits().isEmpty()
+                ? List.copyOf(lv.getBenefits())
+                : LEVEL_BENEFITS.getOrDefault(level, List.of());
+        boolean changed = oldThreshold.compareTo(threshold) != 0 || !oldBenefits.equals(cleaned);
+        if (changed) {
+            lv.setUpgradeThreshold(threshold);
+            lv.setBenefits(cleaned);
+            levelRepo.save(lv);
+        }
+        Map<String, Long> counts = new HashMap<>();
+        for (Object[] row : customerRepo.countGroupByLevel()) {
+            if (row[0] != null) counts.put((String) row[0], ((Number) row[1]).longValue());
+        }
+        long total = counts.values().stream().mapToLong(Long::longValue).sum();
+        return new LevelConfigResult(toLevelDTO(lv, counts.getOrDefault(level, 0L), total), changed,
+                oldThreshold, oldBenefits);
+    }
+
+    /** 等级配置更新结果：dto 为更新后读模型；changed=false 表示同态短路不审计；old* 供审计 before/after。 */
+    public record LevelConfigResult(MemberLevelDTO dto, boolean changed,
+                                    BigDecimal oldThreshold, List<String> oldBenefits) {}
+
+    /** 升降级规则读模型：未配置时返回默认（不落库，与积分规则 orElseGet 同风格）。 */
+    @Transactional(readOnly = true)
+    public LevelRuleConfig getLevelRule() {
+        return levelRuleRepo.findById(RULE_ID).orElseGet(CustomerService::defaultRule);
+    }
+
+    private static LevelRuleConfig defaultRule() {
+        LevelRuleConfig r = new LevelRuleConfig();
+        r.setRuleId(RULE_ID);
+        r.setCalcPeriod("自然月（每月1号）");
+        r.setDowngradeProtectMonths(3);
+        r.setAutoUpgrade(true);
+        r.setPointsMultiplier(BigDecimal.ONE);
+        return r;
+    }
+
+    /**
+     * 保存升降级规则（四件套）：周期文案必填（≤32 字）、保护期 0~36 月、积分倍率 0.01~10；
+     * 全字段同现值时 changed=false（幂等不审计）；行不存在则按默认值兜底新建。
+     */
+    @Transactional
+    public synchronized RuleSaveResult saveLevelRule(String calcPeriod, Integer protectMonths,
+                                                     Boolean autoUpgrade, BigDecimal pointsMultiplier) {
+        String period = trim(calcPeriod);
+        if (period.isEmpty()) throw new BadReq("等级计算周期不能为空");
+        if (period.length() > 32) throw new BadReq("等级计算周期不能超过 32 字");
+        int protect = protectMonths == null ? 3 : protectMonths;
+        if (protect < 0 || protect > 36) throw new BadReq("降级保护期须在 0~36 月之间");
+        boolean auto = autoUpgrade == null || autoUpgrade;
+        BigDecimal mult = pointsMultiplier == null ? BigDecimal.ONE : pointsMultiplier;
+        if (mult.compareTo(BigDecimal.ZERO) <= 0 || mult.compareTo(new BigDecimal("10")) > 0) {
+            throw new BadReq("消费积分倍率须在 0.01~10 之间");
+        }
+
+        LevelRuleConfig r = levelRuleRepo.findById(RULE_ID).orElseGet(CustomerService::defaultRule);
+        boolean changed = !period.equals(r.getCalcPeriod())
+                || protect != (r.getDowngradeProtectMonths() == null ? 3 : r.getDowngradeProtectMonths())
+                || auto != (r.getAutoUpgrade() == null || r.getAutoUpgrade())
+                || mult.compareTo(r.getPointsMultiplier() == null ? BigDecimal.ONE : r.getPointsMultiplier()) != 0;
+        if (changed) {
+            r.setCalcPeriod(period);
+            r.setDowngradeProtectMonths(protect);
+            r.setAutoUpgrade(auto);
+            r.setPointsMultiplier(mult);
+            r.setUpdatedAt(java.time.OffsetDateTime.now());
+            levelRuleRepo.save(r);
+        }
+        return new RuleSaveResult(r, changed);
+    }
+
+    /** 规则保存结果：changed=false 表示同态短路不落审计。 */
+    public record RuleSaveResult(LevelRuleConfig rule, boolean changed) {}
+
+    /**
+     * 手工调级（四件套）：数据域由 Controller requireReadable 强制；目标等级须在五级白名单；
+     * 与当前等级相同返回 changed=false（幂等同态短路，不重复落审计）。返回调级后的客户实体。
+     */
+    @Transactional
+    public synchronized LevelAdjustResult adjustCustomerLevel(Customer c, String targetLevel, String reason) {
+        String target = trim(targetLevel);
+        String r = trim(reason);
+        if (target.isEmpty()) throw new BadReq("目标等级不能为空");
+        if (!levelRepo.existsById(target)) throw new BadReq("会员等级不存在：" + target);
+        if (r.isEmpty()) throw new BadReq("调整原因不能为空");
+        if (r.length() > 64) throw new BadReq("调整原因不能超过 64 字");
+        String from = c.getLevel();
+        if (target.equals(from)) return new LevelAdjustResult(c, false, from, target);
+        c.setLevel(target);
+        return new LevelAdjustResult(customerRepo.save(c), true, from, target);
+    }
+
+    /** 手工调级结果：changed=false 表示与现等级相同（幂等短路）。 */
+    public record LevelAdjustResult(Customer customer, boolean changed, String fromLevel, String toLevel) {}
+
+    /**
+     * 按累计消费自动升级（手动触发批量重算；定时批处理列 Backlog）。
+     * 规则：遍历五级（sortNo 升序），客户 totalSpend ≥ 目标阈值且当前等级序严格低于目标序才升级——只升不降，
+     * 已在更高等级的客户即使消费不足也绝不回落（降级引擎另列 Backlog）。一次批量升级完成后统一返回明细，
+     * 由 Controller 在 upgraded>0 时落单条 LEVEL/AUTO_UPGRADE 汇总审计。
+     */
+    @Transactional
+    public synchronized AutoUpgradeResult autoUpgrade() {
+        List<MemberLevel> levels = sortedLevels();
+        Map<String, Integer> order = new HashMap<>();
+        Map<String, BigDecimal> threshold = new HashMap<>();
+        for (MemberLevel lv : levels) {
+            order.put(lv.getLevel(), lv.getSortNo() != null
+                    ? lv.getSortNo()
+                    : LEVEL_ORDER.getOrDefault(lv.getLevel(), 99));
+            threshold.put(lv.getLevel(), lv.getUpgradeThreshold() != null
+                    ? lv.getUpgradeThreshold()
+                    : LEVEL_THRESHOLD.getOrDefault(lv.getLevel(), BigDecimal.ZERO));
+        }
+        List<UpgradeItem> items = new ArrayList<>();
+        for (Customer c : customerRepo.findAll()) {
+            Integer curOrder = order.get(c.getLevel());
+            if (curOrder == null) continue;
+            String target = c.getLevel();
+            for (MemberLevel lv : levels) {
+                Integer to = order.get(lv.getLevel());
+                if (to > curOrder
+                        && c.getTotalSpend() != null
+                        && c.getTotalSpend().compareTo(threshold.get(lv.getLevel())) >= 0
+                        && to > order.get(target)) {
+                    target = lv.getLevel();
+                }
+            }
+            if (!target.equals(c.getLevel())) {
+                String from = c.getLevel();
+                c.setLevel(target);
+                customerRepo.save(c);
+                items.add(new UpgradeItem(c.getCustomerId(), c.getName(), from, target, c.getTotalSpend()));
+            }
+        }
+        return new AutoUpgradeResult(items.size(), items);
+    }
+
+    /** 自动升级明细行。 */
+    public record UpgradeItem(String customerId, String name, String fromLevel, String toLevel,
+                              java.math.BigDecimal totalSpend) {}
+
+    /** 自动升级结果：upgraded=升级人数，items 为全部明细（审计 payload + 接口返回共用）。 */
+    public record AutoUpgradeResult(int upgraded, List<UpgradeItem> items) {}
 
     private static String trim(String s) {
         return s == null ? "" : s.trim();

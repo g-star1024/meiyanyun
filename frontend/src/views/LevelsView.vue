@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /* ============================================================
- * 会员等级体系 /m3-levels（M3-04）
+ * 会员等级体系 /m3-levels（M3-04，接真实 customer-service）
  * Desktop：4 KPI + 5 张等级卡片横排 + 升降级规则 + 审计追踪。
  * Tablet：等级卡片单列、信息压缩为一行。
+ * 模板与样式零改动：差异全部收敛在本 script（真实 API + LEVEL 审计链）。
  * ============================================================ */
 import { computed, onMounted, reactive, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
@@ -14,16 +15,23 @@ import CStatusPill from '@/components/CStatusPill.vue'
 import { useLevelStore, type MemberLevel } from '@/stores/level'
 
 const store = useLevelStore()
-onMounted(() => store.seed())
+
+const toast = ref('')
+let toastTimer: ReturnType<typeof setTimeout> | undefined
+function showToast(msg: string) {
+  toast.value = msg
+  if (toastTimer) clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => (toast.value = ''), 2000)
+}
 
 const kpis = computed(() => [
   { label: '总会员数', icon: 'customer', value: store.totalMembers.toLocaleString(), tone: 'text' as const },
-  { label: '最高等级', icon: 'customer', value: `${store.topLevel?.name ?? '—'} ${store.topLevel?.memberCount.toLocaleString() ?? ''}`, tone: 'brand' as const },
+  { label: '最高等级', icon: 'customer', value: `${store.topLevel?.name ?? '—'} ${store.topLevel ? store.topLevel.memberCount.toLocaleString() : ''}`, tone: 'brand' as const },
   { label: '本月升级', icon: 'customer', value: String(store.monthUpgraded), tone: 'success' as const },
   { label: '本月降级', icon: 'customer', value: String(store.monthDowngraded), tone: 'warning' as const },
 ])
 
-// 等级阈值编辑（本地草稿）
+// 等级阈值编辑（本地草稿，保存时随该等级现有权益原样回传）
 const drafts = ref<Record<string, { threshold: string }>>({})
 function ensureDraft(l: MemberLevel) {
   if (!drafts.value[l.id]) drafts.value[l.id] = { threshold: String(l.upgradeThreshold) }
@@ -33,38 +41,62 @@ function isDirty(l: MemberLevel) {
   const d = drafts.value[l.id]
   return d && d.threshold !== String(l.upgradeThreshold)
 }
-function saveLevel(l: MemberLevel) {
+async function saveLevel(l: MemberLevel) {
   const d = drafts.value[l.id]
   if (!d) return
   const n = Number(d.threshold)
-  if (Number.isNaN(n) || n < 0) return
-  store.updateLevel(l.id, { upgradeThreshold: n })
+  if (d.threshold.trim() === '' || Number.isNaN(n) || n < 0) {
+    showToast('请输入不小于 0 的阈值')
+    return
+  }
+  const r = await store.updateLevel(l.id, { upgradeThreshold: n })
+  if (r.ok) {
+    drafts.value[l.id] = { threshold: String(store.get(l.id)?.upgradeThreshold ?? n) }
+    showToast(`${l.name}阈值已保存`)
+  } else {
+    showToast(r.reason ?? '保存失败')
+  }
 }
 
-// 规则表单
-const ruleDraft = reactive({ ...store.rule })
+// 规则表单（seed 完成后从真实规则回填）
+const ruleDraft = reactive({
+  calcPeriod: '',
+  downgradeProtectMonths: 3,
+  autoUpgrade: true,
+  pointsMultiplier: 1,
+})
 const ruleDirty = ref(false)
 function syncRule<K extends keyof typeof ruleDraft>(key: K, v: (typeof ruleDraft)[K]) {
   ruleDraft[key] = v
   ruleDirty.value = true
 }
-function saveRule() {
-  if (store.saveRule({ ...ruleDraft })) {
-    ruleDirty.value = false
-    toast.value = '规则已保存'
-    setTimeout(() => (toast.value = ''), 2000)
-  }
-}
-function resetDefault() {
-  if (store.resetDefault()) {
+async function saveRule() {
+  const r = await store.saveRule({ ...ruleDraft })
+  if (r.ok) {
     Object.assign(ruleDraft, store.rule)
     ruleDirty.value = false
-    toast.value = '已恢复默认'
-    setTimeout(() => (toast.value = ''), 2000)
+    showToast('规则已保存')
+  } else {
+    showToast(r.reason ?? '保存失败')
+  }
+}
+async function resetDefault() {
+  const r = await store.resetDefault()
+  if (r.ok) {
+    Object.assign(ruleDraft, store.rule)
+    Object.values(drafts.value).forEach((d) => { d.threshold = '' })
+    store.levels.forEach((l) => (drafts.value[l.id] = { threshold: String(l.upgradeThreshold) }))
+    ruleDirty.value = false
+    showToast('已恢复默认')
+  } else {
+    showToast(r.reason ?? '重置失败')
   }
 }
 
-const toast = ref('')
+onMounted(async () => {
+  await store.seed()
+  Object.assign(ruleDraft, store.rule)
+})
 </script>
 
 <template>

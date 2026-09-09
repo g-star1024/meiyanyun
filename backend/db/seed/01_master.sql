@@ -13,20 +13,33 @@
 INSERT INTO tenant (tenant_id, tenant_name, brand, status) VALUES
   ('T001', '美颜集团（种子）', '美颜·', '在用');
 
--- ---------- 会员等级（cnt=升级累计消费门槛/元，discount=折扣） ----------
-INSERT INTO member_level (level, cnt, discount) VALUES
-  ('普通', 29160, 1.00),
-  ('银卡', 11664, 0.95),
-  ('金卡',  5346, 0.90),
-  ('钻石', 1944, 0.85),
-  ('黑卡',  486, 0.80);
+-- ---------- 会员等级（cnt=ID-5 历史聚合口径列保留不暴露；阈值/权益/颜色为 B23 卡4 新列） ----------
+-- upgrade_threshold=升级累计消费门槛/元；benefits=权益 JSON 数组（text 落库）；sort_no=等级序；is_top=最高级。
+INSERT INTO member_level
+  (level, cnt, discount, tier, sort_no, upgrade_threshold, benefits, color, is_top)
+VALUES
+  ('普通', 29160, 1.00, 'NORMAL',  1, 0,
+   '["项目基础价"]', '#8B5CF6', false),
+  ('银卡', 11664, 0.95, 'SILVER',  2, 5000,
+   '["项目折扣 9.5 折","生日当月 1.2 倍积分"]', '#8B5CF6', false),
+  ('金卡',  5346, 0.90, 'GOLD',    3, 20000,
+   '["项目折扣 9 折","生日当月 1.5 倍积分","专属咨询师"]', '#F59E0B', false),
+  ('钻石', 1944, 0.85, 'DIAMOND',  4, 50000,
+   '["项目折扣 8.5 折","生日当月 2 倍积分","专属咨询师 + 免排队","每月 1 次免费护理"]', '#6366F1', false),
+  ('黑卡',  486, 0.80, 'BLACK',    5, 100000,
+   '["项目折扣 8 折","生日当月 3 倍积分","专属咨询师 + 免排队","每月 2 次免费护理"]', '#10B981', true);
 
--- ---------- 积分规则 / 营销配置（单行配置表） ----------
+-- ---------- 积分规则 / 会员升降级规则 / 营销配置（单行配置表） ----------
 -- B23：point_rule 补全签到/生日倍乘/转介绍/手动调分开关四列（rule_id 恒 1）。
 INSERT INTO point_rule
   (rule_id, earn_rate, redeem_ratio, expire_months, sign_in_reward, birthday_multiplier, referral_reward, manual_grant_enabled, updated_at)
 VALUES
   (1, 1.00, 100.00, 12, 10, 2.00, 500, true, '2026-08-15 00:00:00+08');
+-- B23 卡4：会员升降级规则单行（rule_id 恒 1），字段对齐前端 LevelRule。
+INSERT INTO level_rule_config
+  (rule_id, calc_period, downgrade_protect_months, auto_upgrade, points_multiplier, updated_at)
+VALUES
+  (1, '自然月（每月1号）', 3, true, 1.00, '2026-09-09 00:00:00+08');
 INSERT INTO marketing_cfg (cfg_id, referral_arrived_reward, referral_deal_reward, commission_rate, weekly_push_limit) VALUES
   (1, 200, 350, 0.05, 3);
 

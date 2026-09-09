@@ -46,11 +46,60 @@ export interface CustomerPage {
   size: number
 }
 
-export interface MemberLevel {
-  code: string
+/** 会员等级读模型（GET /customer/member-levels 对齐 MemberLevelDTO；人数为实时 count group by level） */
+export interface MemberLevelDTO {
+  /** 等级中文短名（member_level 主键：普通/银卡/金卡/钻石/黑卡） */
+  id: string
+  /** 英文档：NORMAL/SILVER/GOLD/DIAMOND/BLACK */
+  tier: string
+  /** 展示名：后端派生 id+「会员」 */
   name: string
-  threshold: number
-  discount: number
+  /** 等级主色（卡片左边框/圆点/条件底色） */
+  color: string
+  /** 升级累计消费阈值（元）；普通为 0 */
+  upgradeThreshold: number
+  /** 升级条件文案（后端权威：注册即享/累计消费 ≥ ¥x,xxx） */
+  upgradeCondition: string
+  /** 权益清单（JSON 数组列，后端已兜底非空） */
+  benefits: string[]
+  /** 当前等级人数（实时统计，不读历史聚合 cnt 假数据） */
+  memberCount: number
+  /** 占总会员百分比（整数四舍五入，不强制合计 100） */
+  memberPercent: number
+  /** 是否最高级（黑卡） */
+  isTop: boolean
+  /** 项目折扣（0.8~1.0，供 360 权益卡展示） */
+  discount: number | null
+}
+
+/** 升降级规则（GET/PUT /customer/level-rule，单行 rule_id=1；未配置时后端返回默认不落库） */
+export interface LevelRuleDTO {
+  ruleId?: number
+  /** 等级计算周期文案，如「自然月（每月1号）」 */
+  calcPeriod: string
+  /** 降级保护期（月）0~36 */
+  downgradeProtectMonths: number
+  /** 达标后自动升级 */
+  autoUpgrade: boolean
+  /** 消费积分倍率（0.01~10） */
+  pointsMultiplier: number
+  updatedAt?: string | null
+}
+
+/** 自动升级明细行（POST /customer/member-levels/auto-upgrade） */
+export interface LevelUpgradeItemDTO {
+  customerId: string
+  name: string
+  fromLevel: string
+  toLevel: string
+  /** 客户累计消费（元） */
+  totalSpend: number
+}
+
+/** 自动升级结果：只升不降；upgraded=0 时后端不落审计 */
+export interface AutoUpgradeResultDTO {
+  upgraded: number
+  items: LevelUpgradeItemDTO[]
 }
 
 /** 积分池读模型（GET /customer/points-pool 四口径统计） */
@@ -202,8 +251,33 @@ export const createCustomer = (data: Omit<CustomerDTO, 'customerId'> & { custome
 export const searchCustomers = (q: string) =>
   client.get<CustomerDTO[]>('/customer/search', { params: { q } })
 
-export const listMemberLevels = () =>
-  client.get<MemberLevel[]>('/customer/member-levels')
+/** 会员等级读模型（五级，实时人数） */
+export const getMemberLevels = () =>
+  client.get<MemberLevelDTO[]>('/customer/member-levels')
+
+/** 更新等级阈值/权益（阈值必填非负；benefits 原值回传，页面只改阈值）；同态短路返回未变更 DTO 不审计 */
+export const updateMemberLevel = (
+  level: string,
+  data: { upgradeThreshold: number; benefits: string[] },
+) => client.put<MemberLevelDTO>(`/customer/member-levels/${encodeURIComponent(level)}`, data)
+
+/** 按累计消费批量自动升级（手动触发，只升不降；upgraded=0 后端不落审计） */
+export const autoUpgradeLevels = () =>
+  client.post<AutoUpgradeResultDTO>('/customer/member-levels/auto-upgrade')
+
+/** 升降级规则（单行；未配置时后端返回默认值） */
+export const getLevelRule = () =>
+  client.get<LevelRuleDTO>('/customer/level-rule')
+
+/** 保存升降级规则（全字段覆盖；同态短路不审计，落 LEVEL/RULE_SAVE） */
+export const saveLevelRule = (data: Partial<LevelRuleDTO>) =>
+  client.put<LevelRuleDTO>('/customer/level-rule', data)
+
+/** 手工调级（targetLevel 五级白名单；reason 必填；同值短路；落 LEVEL/ADJUST） */
+export const changeCustomerLevel = (
+  id: string,
+  data: { targetLevel: string; reason: string },
+) => client.post<CustomerDTO>(`/customer/${id}/level`, data)
 
 export const getPointsPool = () =>
   client.get<PointsPool>('/customer/points-pool')

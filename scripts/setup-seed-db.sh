@@ -586,6 +586,39 @@ ALTER TABLE mall_product DROP CONSTRAINT IF EXISTS mall_product_stock_check;
 ALTER TABLE mall_exchange DROP CONSTRAINT IF EXISTS mall_exchange_product_id_fkey;
 ALTER TABLE mall_exchange DROP CONSTRAINT IF EXISTS mall_exchange_customer_id_fkey;
 
+-- B23 卡4 会员等级：member_level 为早期 JPA 所建（level/cnt/discount 三列）并经 pg_dump 克隆，
+-- 幂等补 tier/sort_no/upgrade_threshold/benefits/color/is_top 六列；level 主键值不可改（customer 物理 FK 引用）。
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_level' AND column_name='tier') THEN
+    ALTER TABLE member_level ADD COLUMN tier varchar(16);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_level' AND column_name='sort_no') THEN
+    ALTER TABLE member_level ADD COLUMN sort_no integer;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_level' AND column_name='upgrade_threshold') THEN
+    ALTER TABLE member_level ADD COLUMN upgrade_threshold numeric(12,2);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_level' AND column_name='benefits') THEN
+    ALTER TABLE member_level ADD COLUMN benefits text;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_level' AND column_name='color') THEN
+    ALTER TABLE member_level ADD COLUMN color varchar(16);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='member_level' AND column_name='is_top') THEN
+    ALTER TABLE member_level ADD COLUMN is_top boolean;
+  END IF;
+END $$;
+-- 会员升降级规则单行表（rule_id=1，字段对齐前端 LevelRule）。
+CREATE TABLE IF NOT EXISTS level_rule_config (
+  rule_id                    integer      PRIMARY KEY,
+  calc_period                varchar(32),
+  downgrade_protect_months   integer,
+  auto_upgrade               boolean,
+  points_multiplier          numeric(4,2),
+  updated_at                 timestamptz  NOT NULL
+);
+
 -- B23 卡2 积分账户：points_ledger 为早期 JPA 所建并经 pg_dump 克隆，补人工调分幂等键。
 --  1) 补 client_token（系统流水为 NULL，多个 NULL 不违反唯一约束，仅人工调分带键且唯一）；
 --  2) 删除历史物理外键 points_ledger_customer_id_fkey（约定业务表只建逻辑外键）；
@@ -645,7 +678,7 @@ TRUNCATE TABLE
   cost_allocation, coupon_grant, coupon_template, coupon_writeoff_chain, coupon_writeoff_record,
   cross_domain_coeff, customer, customer_tag, customer_tag_rel, dual_sign_ticket,
   fin_budget, fin_change_log, fin_invoice, fin_setting, fin_subject_enable, finance_event,
-  fund_entry, inventory_item, inventory_log, mall_exchange, mall_product, marketing_cfg,
+  fund_entry, inventory_item, inventory_log, level_rule_config, mall_exchange, mall_product, marketing_cfg,
   member_card, member_level, order_payment, org_unit, outbox_record, point_rule,
   points_ledger, points_pool, prepay_pool, push_record, region_dist, repurchase,
   revenue_monthly, role_def, settlement_period, sign_role_pair, sign_tier, staff, staff_comp_config, store,

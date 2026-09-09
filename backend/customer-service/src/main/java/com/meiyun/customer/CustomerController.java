@@ -10,6 +10,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +21,6 @@ public class CustomerController {
 
     private final CustomerService service;
     private final CustomerRepository customerRepo;
-    private final MemberLevelRepository levelRepo;
     private final MemberCardRepository cardRepo;
     private final PointsLedgerRepository ledgerRepo;
     private final PointsPoolRepository poolRepo;
@@ -32,13 +32,12 @@ public class CustomerController {
     private AuditRecorder audit;
 
     public CustomerController(CustomerService service, CustomerRepository customerRepo,
-                              MemberLevelRepository levelRepo, MemberCardRepository cardRepo,
+                              MemberCardRepository cardRepo,
                               PointsLedgerRepository ledgerRepo, PointsPoolRepository poolRepo,
                               CustomerTagRepository tagRepo, CustomerTagRelRepository tagRelRepo,
                               CustomerSearchService searchService) {
         this.service = service;
         this.customerRepo = customerRepo;
-        this.levelRepo = levelRepo;
         this.cardRepo = cardRepo;
         this.ledgerRepo = ledgerRepo;
         this.poolRepo = poolRepo;
@@ -89,11 +88,114 @@ public class CustomerController {
         return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
-    // ---- 会员等级聚合（ID-5：五级合计 48,600） ----
+    // ---- 会员等级：读模型（实时人数）/ 阈值权益配置 / 升降级规则 / 手工调级 / 按消费自动升级（全程 LEVEL 审计） ----
+
+    /** 等级读模型：五级 DTO（人数实时 count customer，不暴露 cnt 历史聚合假数据）。 */
     @GetMapping("/member-levels")
-    @RequirePerm("customer:view")
-    public List<MemberLevel> levels() {
-        return levelRepo.findAll();
+    @RequirePerm("level:view")
+    public List<MemberLevelDTO> levels() {
+        return service.listLevelDTOs();
+    }
+
+    /**
+     * 更新等级阈值/权益：service 校验 + 同态短路（changed=false 不重复审计）；
+     * 落 LEVEL/UPDATE，payload 记录 before/after 全动作。精确路径优先于 /{id} 匹配。
+     */
+    @PutMapping("/member-levels/{level}")
+    @RequirePerm("level:edit")
+    public MemberLevelDTO updateLevel(@PathVariable String level, @RequestBody LevelConfigReq req) {
+        CustomerService.LevelConfigResult result = service.updateLevelConfig(
+                level, req == null ? null : req.upgradeThreshold(), req == null ? null : req.benefits());
+        if (result.changed()) {
+            audit.record("LEVEL", level, DataScope.currentActor(), "UPDATE",
+                    "{\"level\":\"" + esc(level) + "\",\"name\":\"" + esc(result.dto().name())
+                            + "\",\"before\":{\"upgradeThreshold\":" + result.oldThreshold()
+                            + ",\"benefits\":" + jsonList(result.oldBenefits())
+                            + "},\"after\":{\"upgradeThreshold\":" + result.dto().upgradeThreshold()
+                            + ",\"benefits\":" + jsonList(result.dto().benefits()) + "}}");
+        }
+        return result.dto();
+    }
+
+    /** 按累计消费批量自动升级（手动触发；只升不降），有实际升级时落单条 LEVEL/AUTO_UPGRADE 汇总审计。 */
+    @PostMapping("/member-levels/auto-upgrade")
+    @RequirePerm("level:edit")
+    public CustomerService.AutoUpgradeResult autoUpgrade() {
+        CustomerService.AutoUpgradeResult result = service.autoUpgrade();
+        if (result.upgraded() > 0) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"upgraded\":").append(result.upgraded()).append(",\"items\":[");
+            for (int i = 0; i < result.items().size(); i++) {
+                CustomerService.UpgradeItem it = result.items().get(i);
+                if (i > 0) sb.append(',');
+                sb.append("{\"customerId\":\"").append(esc(it.customerId()))
+                        .append("\",\"name\":\"").append(esc(it.name()))
+                        .append("\",\"fromLevel\":\"").append(esc(it.fromLevel()))
+                        .append("\",\"toLevel\":\"").append(esc(it.toLevel()))
+                        .append("\",\"totalSpend\":").append(it.totalSpend()).append('}');
+            }
+            sb.append("]}");
+            audit.record("LEVEL", "AUTO-UPGRADE", DataScope.currentActor(), "AUTO_UPGRADE", sb.toString());
+        }
+        return result;
+    }
+
+    /** 升降级规则读模型：未配置时 service 返回默认值（不落库）。 */
+    @GetMapping("/level-rule")
+    @RequirePerm("level:view")
+    public LevelRuleConfig levelRule() {
+        return service.getLevelRule();
+    }
+
+    /** 保存升降级规则：同态短路不审计；变更落 LEVEL/RULE_SAVE（bizId=RULE-1，对齐积分规则 MALL/RULE-1）。 */
+    @PutMapping("/level-rule")
+    @RequirePerm("level:edit")
+    public LevelRuleConfig saveLevelRule(@RequestBody LevelRuleReq req) {
+        CustomerService.RuleSaveResult result = service.saveLevelRule(
+                req == null ? null : req.calcPeriod(),
+                req == null ? null : req.downgradeProtectMonths(),
+                req == null ? null : req.autoUpgrade(),
+                req == null ? null : req.pointsMultiplier());
+        LevelRuleConfig r = result.rule();
+        if (result.changed()) {
+            audit.record("LEVEL", "RULE-1", DataScope.currentActor(), "RULE_SAVE",
+                    "{\"calcPeriod\":\"" + esc(r.getCalcPeriod())
+                            + "\",\"downgradeProtectMonths\":" + r.getDowngradeProtectMonths()
+                            + ",\"autoUpgrade\":" + r.getAutoUpgrade()
+                            + ",\"pointsMultiplier\":" + r.getPointsMultiplier() + "}");
+        }
+        return r;
+    }
+
+    /**
+     * 手工调级：requireReadable 强制数据域（不存在/越权统一 404）；目标等级白名单 + 原因校验由 service 处理；
+     * 同值重放短路不审计；变更落 LEVEL/ADJUST（bizId=客户号）。
+     */
+    @PostMapping("/{id}/level")
+    @RequirePerm("level:edit")
+    public Customer changeLevel(@PathVariable String id, @RequestBody LevelAdjustReq req) {
+        Customer c = requireReadable(id);
+        CustomerService.LevelAdjustResult result = service.adjustCustomerLevel(
+                c, req == null ? null : req.targetLevel(), req == null ? null : req.reason());
+        if (result.changed()) {
+            audit.record("LEVEL", id, DataScope.currentActor(), "ADJUST",
+                    "{\"customerId\":\"" + esc(id) + "\",\"name\":\"" + esc(c.getName())
+                            + "\",\"fromLevel\":\"" + esc(result.fromLevel())
+                            + "\",\"toLevel\":\"" + esc(result.toLevel())
+                            + "\",\"reason\":\"" + esc(req.reason()) + "\"}");
+        }
+        return result.customer();
+    }
+
+    /** 字符串清单序列化为 JSON 数组（审计 payload 内嵌 benefits 用；元素经 esc 转义，不留 JSON 注入）。 */
+    private String jsonList(List<String> list) {
+        if (list == null || list.isEmpty()) return "[]";
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append('"').append(esc(list.get(i))).append('"');
+        }
+        return sb.append(']').toString();
     }
 
     // ---- 会员卡项 ----
@@ -303,4 +405,14 @@ public class CustomerController {
 
     /** 积分池读模型：累计发放 / 本月获得 / 本月核销 / 90 天内到期。 */
     public record PointsPoolDTO(long totalIssued, long gainedMonth, long redeemedMonth, long expiring90d) {}
+
+    /** 等级阈值/权益更新请求体：阈值必填非负（普通固定 0），权益可空（空数组=无权益）。 */
+    public record LevelConfigReq(BigDecimal upgradeThreshold, List<String> benefits) {}
+
+    /** 升降级规则保存请求体：四字段对齐前端 LevelRule（缺省由 service 置默认并校验区间）。 */
+    public record LevelRuleReq(String calcPeriod, Integer downgradeProtectMonths,
+                               Boolean autoUpgrade, BigDecimal pointsMultiplier) {}
+
+    /** 手工调级请求体：目标等级为五级中文短名（白名单由 service 校验）；原因必填 ≤64 字。 */
+    public record LevelAdjustReq(String targetLevel, String reason) {}
 }
