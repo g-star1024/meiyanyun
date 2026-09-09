@@ -34,7 +34,7 @@ public class LevelMonthlyJob {
      * 每月 1 号 00:05 执行（cron：秒 分 时 日 月 周）。
      * 自然月口径与 LevelRuleConfig.calcPeriod 默认文案一致；若后续支持「每季/每半年」再扩展 cron。
      */
-    @Scheduled(cron = "0 5 0 1 * ?")
+    @Scheduled(cron = "${meiyun.level-monthly.cron:0 5 0 1 * ?}")
     public void monthlyUpgrade() {
         boolean auto = true;
         try {

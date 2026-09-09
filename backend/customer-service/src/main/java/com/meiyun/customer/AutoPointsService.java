@@ -78,8 +78,11 @@ public class AutoPointsService {
     /**
      * 执行一次积分对账：窗口 = (last_run_at, now]。扫描已收款订单发分、已退款流水回退，
      * 成功后把 last_run_at 推进到当前窗口上界。txn 不可用时返回 error 且不推进游标（下轮重试）。
+     *
+     * <p>事务边界：本方法刻意不包大事务——每笔 {@link CustomerService#adjustPoints} 各自独立事务提交，
+     * 单笔失败（客户不存在/余额不足）只跳过该笔并告警，绝不毒化整批导致 UnexpectedRollbackException 全量回滚；
+     * 游标推进随最后一次独立提交落库。幂等键保证重跑不重复加减分。
      */
-    @Transactional
     public ScanResult scan() {
         OffsetDateTime now = OffsetDateTime.now();
         AutoPointsState state = stateRepo.findById(1).orElseGet(() -> {
@@ -112,16 +115,19 @@ public class AutoPointsService {
                 long pts = computePoints(o.amount());
                 if (pts <= 0) continue;
                 try {
-                    customerService.adjustPoints(o.customerId(), pts,
+                    CustomerService.AdjustResult r = customerService.adjustPoints(o.customerId(), pts,
                             "消费自动积分（订单 " + o.orderNo() + "）", "AUTOPOINTS:" + o.orderNo());
-                    awardedOrders++;
-                    awardedPoints += pts;
-                } catch (CustomerService.NotFound | CustomerService.Conflict ex) {
-                    // 客户不存在（已删）/ 幂等重放（已发过）→ 计入已发不计错
-                    if (ex instanceof CustomerService.Conflict) {
+                    // 仅真实新建流水才计入发分；clientToken 幂等重放（created=false）静默跳过，
+                    // 否则同窗口重扫会虚增计数并让 Job 重复落 AUTO_POINTS 审计（唯一索引已保证不重复扣分）。
+                    if (r.created()) {
                         awardedOrders++;
                         awardedPoints += pts;
                     }
+                } catch (CustomerService.NotFound ex) {
+                    // 客户不存在（已删/脏数据）→ 跳过并告警，不影响整批
+                    log.warn("自动发分跳过（客户不存在）：orderNo={} customer={}", o.orderNo(), o.customerId());
+                } catch (CustomerService.Conflict ex) {
+                    // 兼容防御：并发唯一冲突等同幂等重放，不计发分
                 } catch (CustomerService.Unprocessable ex) {
                     log.warn("自动积分跳过（余额不足不应发生于发放）：orderNo={} customer={}", o.orderNo(), o.customerId());
                 }
@@ -144,14 +150,16 @@ public class AutoPointsService {
                 long pts = -computePoints(base);
                 if (pts == 0) continue;
                 try {
-                    customerService.adjustPoints(r.customerId(), pts,
+                    CustomerService.AdjustResult adj = customerService.adjustPoints(r.customerId(), pts,
                             "退款回退积分（退款单 " + r.txnNo() + " / 订单 " + r.orderNo() + "）",
                             "AUTOPOINTS_REFUND:" + r.orderNo());
-                    refundedOrders++;
-                    refundedPoints += Math.abs(pts);
+                    // 仅真实新建回退流水才计数；幂等重放静默跳过（避免虚增计数/重复落审计）。
+                    if (adj.created()) {
+                        refundedOrders++;
+                        refundedPoints += Math.abs(pts);
+                    }
                 } catch (CustomerService.Conflict ex) {
-                    refundedOrders++;
-                    refundedPoints += Math.abs(pts);
+                    // 兼容防御：并发唯一冲突等同幂等重放，不计退分
                 } catch (CustomerService.NotFound ex) {
                     // 客户不存在 → 跳过
                 } catch (CustomerService.Unprocessable ex) {

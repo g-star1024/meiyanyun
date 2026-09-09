@@ -51,6 +51,8 @@ services:
       # 开发期免密登录（/api/org/auth/dev-login）：生产必须关闭。默认 false，
       # 联调/演示时在宿主环境或 .env 显式 MEIYUN_DEV_LOGIN=true 开启。
       MEIYUN_DEV_LOGIN: "${MEIYUN_DEV_LOGIN:-false}"
+      # 等级月批触发 cron（默认每月1号00:05；冒烟可临时覆盖为近未来时刻）。
+      MEIYUN_LEVEL_MONTHLY_CRON: "${MEIYUN_LEVEL_MONTHLY_CRON:-0 5 0 1 * ?}"
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8082' && exit 0 || exit 1"]
       interval: 15s

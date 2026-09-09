@@ -68,8 +68,19 @@ public class InternalOrderController {
             @RequestParam(value = "storeCode", required = false) String storeCode,
             @RequestParam(value = "from", required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate from,
             @RequestParam(value = "to", required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate to) {
-        return refundRepo.findAll(refundSpec(storeCode, from, to)).stream()
-                .map(r -> new RefundedOrderView(r.getTxnNo(), r.getOrderNo(), r.getCustomer(),
+        List<TxnRefund> refunds = refundRepo.findAll(refundSpec(storeCode, from, to));
+        // txn_refund.customer 仅冗余客户姓名（非客户域 M 编号），客户 ID 必须从原单 txn_order.customer_id 解析，
+        // 否则 customer-service 按姓名 findById 必然 NotFound（运行态冒烟以真实数据核实）。批量预载避免 N+1。
+        List<String> orderNos = refunds.stream().map(TxnRefund::getOrderNo)
+                .filter(no -> no != null && !no.isBlank()).distinct().toList();
+        java.util.Map<String, String> orderCustomer = orderNos.isEmpty()
+                ? java.util.Map.of()
+                : orderRepo.findAllById(orderNos).stream()
+                        .collect(java.util.stream.Collectors.toMap(TxnOrder::getOrderNo,
+                                o -> o.getCustomerId() == null ? "" : o.getCustomerId(), (a, b) -> a));
+        return refunds.stream()
+                .map(r -> new RefundedOrderView(r.getTxnNo(), r.getOrderNo(),
+                        r.getOrderNo() == null ? null : orderCustomer.get(r.getOrderNo()),
                         r.getStoreCode(), r.getRefundAmt(), r.getCreatedAt()))
                 .toList();
     }

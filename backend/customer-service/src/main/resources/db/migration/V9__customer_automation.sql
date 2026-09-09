@@ -1,7 +1,8 @@
--- V6__customer_automation.sql
+-- V9__customer_automation.sql
 -- 美研云门店中台 - 域①客户域自动化（标签自动化规则 + 消费自动积分游标）
--- 版本号说明：共享库 flyway_schema_history 中 V4 已被 finance-service 占用（B3 批次），
---   V5 为 card_ledger（B4 批次），本迁移用 V6，避免同版本号 checksum 冲突。
+-- 版本号说明：全库共享 flyway_schema_history 全局递增版本号——V4 finance fund entry、
+--   V5 card_ledger、V6 revenue monthly rate check、V7 settlement period、V8 outbox txn no widen
+--   均已占用（运行态冒烟核实 flyway_schema_history），故本迁移取首个空号 V9，避免同版本号/校验冲突。
 -- 创建时间: 2026-09-09
 -- 数据库: PostgreSQL 15+
 --
