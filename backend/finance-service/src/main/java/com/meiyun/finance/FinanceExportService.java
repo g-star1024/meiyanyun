@@ -65,6 +65,26 @@ public class FinanceExportService {
             "VOIDED", "已作废",
             "RED_FLUSHED", "已红冲");
 
+    private static final Map<String, String> LEDGER_TYPE_CN = Map.of(
+            "RECHARGE", "充值",
+            "CONSUME", "划扣",
+            "REFUND", "退款",
+            "ADJUST", "调整");
+
+    private static final Map<String, String> WRITEOFF_STATUS_CN = Map.of(
+            "DONE", "已核销",
+            "ABNORMAL", "异常",
+            "VOID", "已作废");
+
+    private static final Map<String, String> CARD_TYPE_CN = Map.of(
+            "TIMES", "次卡",
+            "STORED", "储值卡");
+
+    private static final Map<String, String> CARD_STATUS_CN = Map.of(
+            "NORMAL", "在用",
+            "FROZEN", "退卡中",
+            "DORMANT", "已停用");
+
     private final SettlementService settlementService;
     private final TripartiteReconcileService tripartiteService;
     private final FinanceAggregationService aggregation;
@@ -230,6 +250,56 @@ public class FinanceExportService {
                     r.get("operator"), r.get("reviewer"), ts(r.get("issuedAt")), nz(r.get("remark")));
         }
         return report("发票台账", sb);
+    }
+
+    /**
+     * 单卡流水时间线导出（B24 卡2）：卡快照信息区 + card_ledger 流水明细。
+     * 入参为聚合层已按门店域收敛的视图（金额本就「元」、时间已为上海时区可读串）；
+     * 冻结在台账内表现为 ADJUST 且金额为 0，导出照实展示「调整」，不做文案虚构。
+     */
+    public CsvReport exportCardTimeline(FinanceViewDTO.CardTimeline t) {
+        StringBuilder sb = new StringBuilder();
+        row(sb, "卡号", nz(t.cardNo()));
+        row(sb, "客户号", nz(t.customerId()), "客户姓名", nz(t.customerName()));
+        row(sb, "卡项", nz(t.cardItem()), "产品编码", nz(t.productCode()));
+        row(sb, "卡类型", CARD_TYPE_CN.getOrDefault(t.type(), nz(t.type())),
+                "状态", CARD_STATUS_CN.getOrDefault(t.status(), nz(t.status())));
+        row(sb, "门店编码", nz(t.storeCode()), "门店名称", nz(t.store()));
+        row(sb, "储值余额(元)", yuanObj(t.balance()), "赠送金余额(元)", yuanObj(t.giftBalance()));
+        row(sb, "总次数", t.timesTotal() == null ? "" : t.timesTotal(),
+                "剩余次数", t.timesRemain() == null ? "" : t.timesRemain());
+        row(sb);
+        row(sb, "流水号", "时间", "类型", "变动额(元)", "变动后储值(元)",
+                "赠送金变动(元)", "变动后赠送金(元)", "业务单号", "订单号", "经办人");
+        for (FinanceViewDTO.CardTxn x : t.txns()) {
+            row(sb, x.ledgerId(), nz(x.date()),
+                    LEDGER_TYPE_CN.getOrDefault(x.kind(), nz(x.kind())),
+                    yuanObj(x.amount()), yuanObj(x.balanceAfter()),
+                    yuanObj(x.giftAmount()), yuanObj(x.giftAfter()),
+                    nz(x.refNo()), nz(x.orderNo()), nz(x.operator()));
+        }
+        return report("卡流水-" + nz(t.cardNo()), sb);
+    }
+
+    /**
+     * 核销双签明细导出（B24 卡2）：与 GET /writeoff-details 同源同数据域，
+     * 金额本就「元」。纯扣次核销金额为 0 照实展示；整单核销卡号/客户可空留空列。
+     */
+    public CsvReport exportWriteoffDetails(List<FinanceViewDTO.WriteoffDetail> rows) {
+        StringBuilder sb = new StringBuilder();
+        row(sb, "核销号", "订单号", "卡号", "门店编码", "门店名称", "客户号", "客户姓名",
+                "项目", "扣次", "金额(元)", "状态", "操作人", "操作双签", "复核双签",
+                "异常原因", "日期");
+        for (FinanceViewDTO.WriteoffDetail w : rows) {
+            row(sb, nz(w.writeoffId()), nz(w.orderNo()), nz(w.cardNo()),
+                    nz(w.storeCode()), nz(w.store()), nz(w.customerId()), nz(w.customerName()),
+                    nz(w.project()), w.timesUsed() == null ? "" : w.timesUsed(),
+                    yuanObj(w.amount()),
+                    WRITEOFF_STATUS_CN.getOrDefault(w.status(), nz(w.status())),
+                    nz(w.operator()), nz(w.sign1()), nz(w.sign2()),
+                    nz(w.abnormalReason()), nz(w.date()));
+        }
+        return report("核销双签明细", sb);
     }
 
     // ==================== CSV 工具 ====================

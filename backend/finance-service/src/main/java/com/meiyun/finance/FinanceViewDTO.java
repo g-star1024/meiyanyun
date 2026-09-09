@@ -42,4 +42,37 @@ public final class FinanceViewDTO {
     /** 卡余额聚合汇总（储值 / 赠送 / 疗程估值，单位元；疗程估值单价为前端活规格口径 2000 元/次）。 */
     public record CardBalanceBundle(List<CardBalance> cards, Double storedTotal,
                                     Double giftTotal, Double timesValueTotal) {}
+
+    /**
+     * 单卡流水行（B24 卡2，对齐前端 finReports.CardTxn）。
+     *  kind：RECHARGE 充值 / CONSUME 消费划扣 / REFUND 退款回加 / ADJUST 调整（customer 侧无 FREEZE，
+     *  冻结即 amount=0 的 ADJUST，由前端适配层映射）；金额/赠金单位「元」，纯扣次 amount=0；
+     *  refNo=bizRef（RC/OD/WO/RF/CC 单号前缀），orderNo 为关联订单（可空）。
+     */
+    public record CardTxn(
+            Long ledgerId, String kind, Double amount, Double balanceAfter,
+            Double giftAmount, Double giftAfter, String refNo, String orderNo,
+            String operator, String date) {}
+
+    /**
+     * 单卡时间线（B24 卡2）：卡快照（客户/卡项/类型/产品/本金赠金/次数/中文状态）+ 账龄正序流水。
+     * 数据源 customer-service /internal/cards/{cardNo}/ledger（Long 分 → 元、门店码已解析店名）。
+     */
+    public record CardTimeline(
+            String cardNo, String customerId, String customerName, String cardItem,
+            String storeCode, String store, String cardType, String productCode, String type,
+            Double balance, Double giftBalance, Integer timesTotal, Integer timesRemain,
+            String status, List<CardTxn> txns) {}
+
+    /**
+     * 核销双签明细行（B24 卡2，对齐前端财务核销明细页）。
+     *  数据源 txn-service /internal/writeoff-details（不固化 status，全状态）：
+     *  status DONE 已核销/ABNORMAL 异常/VOID 已作废；cardNo 空为订单整单核销（双签字段可空）；
+     *  sign1 操作人、sign2 复核人（「工号 姓名」）、timesUsed 扣次次数、abnormalReason 异常/作废原因。
+     */
+    public record WriteoffDetail(
+            String writeoffId, String orderNo, String cardNo, String storeCode, String store,
+            String customerId, String customerName, String project,
+            Integer timesUsed, Double amount, String status, String operator,
+            String sign1, String sign2, String abnormalReason, String date) {}
 }

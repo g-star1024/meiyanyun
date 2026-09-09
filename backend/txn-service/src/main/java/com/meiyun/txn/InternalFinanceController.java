@@ -112,7 +112,8 @@ public class InternalFinanceController {
         List<FinanceFlowDTO.WriteoffFlow> writeoffs = writeoffRepo.findAll(writeoffSpec(storeCode, fromTime, toTime)).stream()
                 .map(w -> new FinanceFlowDTO.WriteoffFlow(w.getWriteoffId(), w.getOrderNo(), w.getCardNo(),
                         w.getStoreCode(), w.getProject(), w.getTimesUsed(), w.getAmount(), w.getStatus(),
-                        w.getCreatedAt()))
+                        w.getCreatedAt(), w.getCustomerId(), w.getOperator(), w.getSign1(), w.getSign2(),
+                        w.getAbnormalReason()))
                 .toList();
 
         List<FinanceFlowDTO.CardCancelFlow> cardCancels = cardCancelRepo.findAll(cardCancelSpec(storeCode, fromTime, toTime)).stream()
@@ -122,6 +123,54 @@ public class InternalFinanceController {
                 .toList();
 
         return new FinanceFlowDTO.Bundle(orders, refunds, writeoffs, cardCancels);
+    }
+
+    /**
+     * 核销双签明细投影（B24 卡2，财务核销明细页取数）：
+     * GET /api/txn/internal/writeoff-details?storeCode=&status=&cardNo=&customerId=&keyword=&from=&to=。
+     *
+     * <p>与 {@link #financeFlows} 中固定 status='DONE' 的台账聚合口径不同，本端点不固化状态，
+     * 供财务核销明细页展示全状态核销单（DONE 已核销 / ABNORMAL 异常 / VOID 已作废）及双签留痕：
+     * operator 操作人工号、sign1 操作人、sign2 复核人（「工号 姓名」，整单核销/历史单可空）、
+     * timesUsed 扣次次数、abnormalReason 异常/作废原因。
+     *
+     * <p>过滤均可选：status 精确（非法值 400 中文）、storeCode 精确、cardNo 精确（仅疗程卡扣次路径）、
+     * customerId 精确、keyword 模糊匹配核销号/订单号/卡号/项目名；from/to 按 created_at 半开区间（UTC 日界）。
+     * 结果按 created_at 倒序。不做 DataScope 收敛——由 finance-service 按登录人门店域二次过滤（与 finance-flows 同边界）。
+     */
+    @GetMapping("/writeoff-details")
+    @RequirePerm("internal:finance-flow")
+    public List<FinanceFlowDTO.WriteoffFlow> writeoffDetails(
+            @RequestParam(value = "storeCode", required = false) String storeCode,
+            @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "cardNo", required = false) String cardNo,
+            @RequestParam(value = "customerId", required = false) String customerId,
+            @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "from", required = false) String from,
+            @RequestParam(value = "to", required = false) String to) {
+        String st = (status == null || status.isBlank()) ? null : status.trim().toUpperCase();
+        if (st != null && !st.equals("DONE") && !st.equals("ABNORMAL") && !st.equals("VOID")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "核销状态参数 status 非法，仅支持 DONE（已核销）/ABNORMAL（异常）/VOID（已作废）：" + status);
+        }
+        OffsetDateTime fromTime = from == null || from.isBlank() ? null
+                : LocalDate.parse(from).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime toTime = to == null || to.isBlank() ? null
+                : LocalDate.parse(to).plusDays(1).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        Specification<WriteoffRecord> spec = writeoffDetailSpec(
+                blankToNull(storeCode), st, blankToNull(cardNo), blankToNull(customerId),
+                blankToNull(keyword), fromTime, toTime);
+        return writeoffRepo.findAll(spec, org.springframework.data.domain.Sort
+                        .by(org.springframework.data.domain.Sort.Direction.DESC, "createdAt")).stream()
+                .map(w -> new FinanceFlowDTO.WriteoffFlow(w.getWriteoffId(), w.getOrderNo(), w.getCardNo(),
+                        w.getStoreCode(), w.getProject(), w.getTimesUsed(), w.getAmount(), w.getStatus(),
+                        w.getCreatedAt(), w.getCustomerId(), w.getOperator(), w.getSign1(), w.getSign2(),
+                        w.getAbnormalReason()))
+                .toList();
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.trim();
     }
 
     /**
@@ -512,6 +561,32 @@ public class InternalFinanceController {
             if (storeCode != null && !storeCode.isBlank()) ps.add(cb.equal(root.get("storeCode"), storeCode));
             if (from != null) ps.add(cb.greaterThanOrEqualTo(root.get("createdAt"), from));
             if (to != null) ps.add(cb.lessThan(root.get("createdAt"), to));
+            return cb.and(ps.toArray(new Predicate[0]));
+        };
+    }
+
+    /**
+     * 核销双签明细分页规格（B24 卡2）：不固化 status，支持状态/卡号/客户/关键词/时间区间组合过滤。
+     * keyword 对核销号/订单号/卡号/项目名做 OR 模糊（其余精确条件在 AND 组内）。
+     */
+    private Specification<WriteoffRecord> writeoffDetailSpec(String storeCode, String status, String cardNo,
+                                                             String customerId, String keyword,
+                                                             OffsetDateTime from, OffsetDateTime to) {
+        return (root, q, cb) -> {
+            List<Predicate> ps = new ArrayList<>();
+            if (status != null) ps.add(cb.equal(root.get("status"), status));
+            if (storeCode != null) ps.add(cb.equal(root.get("storeCode"), storeCode));
+            if (cardNo != null) ps.add(cb.equal(root.get("cardNo"), cardNo));
+            if (customerId != null) ps.add(cb.equal(root.get("customerId"), customerId));
+            if (from != null) ps.add(cb.greaterThanOrEqualTo(root.get("createdAt"), from));
+            if (to != null) ps.add(cb.lessThan(root.get("createdAt"), to));
+            if (keyword != null) {
+                String like = "%" + keyword.toUpperCase() + "%";
+                ps.add(cb.or(cb.like(cb.upper(root.get("writeoffId")), like),
+                        cb.like(cb.upper(root.get("orderNo")), like),
+                        cb.like(cb.upper(root.get("cardNo")), like),
+                        cb.like(cb.upper(root.get("project")), like)));
+            }
             return cb.and(ps.toArray(new Predicate[0]));
         };
     }

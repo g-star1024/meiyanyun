@@ -91,6 +91,38 @@ public class FinanceController {
         return aggregation.cardBalances(storeCode);
     }
 
+    /**
+     * 单卡余额变动时间线（B24 卡2）：GET /api/finance/cards/{cardNo}/timeline。
+     * 卡快照 + card_ledger 全量流水（充值/划扣/退款/调整），金额「元」、时间上海时区可读串。
+     * 卡不存在或登录人无该卡门店域权限统一 404（不泄露卡号存在性）；空卡号 400 中文。
+     */
+    @GetMapping("/cards/{cardNo}/timeline")
+    public FinanceViewDTO.CardTimeline cardTimeline(@PathVariable("cardNo") String cardNo) {
+        FinanceViewDTO.CardTimeline timeline = aggregation.cardTimeline(cardNo);
+        if (timeline == null) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND, "卡不存在或无权查看该卡：" + cardNo);
+        }
+        return timeline;
+    }
+
+    /**
+     * 核销双签明细（B24 卡2）：GET /api/finance/writeoff-details。
+     * 全状态核销（DONE/ABNORMAL/VOID）+ 操作人/双签留痕，金额「元」，店名/客户名已解析，
+     * 聚合层按登录人门店域逐行收敛。参数均可选：storeCode/status/cardNo/customerId/keyword/from/to。
+     */
+    @GetMapping("/writeoff-details")
+    public List<FinanceViewDTO.WriteoffDetail> writeoffDetails(
+            @RequestParam(required = false) String storeCode,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String cardNo,
+            @RequestParam(required = false) String customerId,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
+        return aggregation.writeoffDetails(storeCode, status, cardNo, customerId, keyword, from, to);
+    }
+
     /** 预收沉淀池（940万 = 待核销 658 + 可退 188 + 待结转 94）。 */
     @GetMapping("/prepay-pool")
     public PrepayPool prepayPool() {
@@ -329,6 +361,36 @@ public class FinanceController {
             @RequestParam(required = false) String type,
             @RequestParam(required = false) String keyword) {
         return csvResponse(exportService.exportInvoices(storeCode, status, type, keyword));
+    }
+
+    /**
+     * 单卡流水时间线导出 CSV（B24 卡2）：GET /api/finance/export/card-ledger.csv?cardNo=。
+     * 数据与权限同源 GET /cards/{cardNo}/timeline（卡不存在/越权同样 404 中文）。
+     */
+    @GetMapping("/export/card-ledger.csv")
+    public ResponseEntity<byte[]> exportCardLedger(@RequestParam("cardNo") String cardNo) {
+        FinanceViewDTO.CardTimeline timeline = aggregation.cardTimeline(cardNo);
+        if (timeline == null) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.NOT_FOUND, "卡不存在或无权查看该卡：" + cardNo);
+        }
+        return csvResponse(exportService.exportCardTimeline(timeline));
+    }
+
+    /**
+     * 核销双签明细导出 CSV（B24 卡2）：GET /api/finance/export/writeoffs.csv，参数同 GET /writeoff-details。
+     */
+    @GetMapping("/export/writeoffs.csv")
+    public ResponseEntity<byte[]> exportWriteoffs(
+            @RequestParam(required = false) String storeCode,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String cardNo,
+            @RequestParam(required = false) String customerId,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String from,
+            @RequestParam(required = false) String to) {
+        return csvResponse(exportService.exportWriteoffDetails(
+                aggregation.writeoffDetails(storeCode, status, cardNo, customerId, keyword, from, to)));
     }
 
     /** 统一 CSV 附件响应：Content-Disposition 中文文件名走 filename*=UTF-8'' 编码，兼容 BOM 防乱码。 */

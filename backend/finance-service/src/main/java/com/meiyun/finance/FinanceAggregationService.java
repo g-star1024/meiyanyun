@@ -14,14 +14,18 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.net.URI;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * finance-service 读时聚合：跨 txn / customer / store 三域取数，组装财务只读视图。
@@ -55,6 +59,9 @@ public class FinanceAggregationService {
 
     /** 疗程卡单次估值（元）——对齐前端 finReports 活规格（timesRemain * 2000）。 */
     private static final double TIMES_UNIT_VALUE = 2000.0;
+
+    /** 核销状态白名单（与 txn writeoff_record 口径一致），入参校验前置，避免非法值被降级吞成空集。 */
+    private static final Set<String> WRITEOFF_STATUS_WHITELIST = Set.of("DONE", "ABNORMAL", "VOID");
 
     private final RestTemplate restTemplate;
 
@@ -217,20 +224,106 @@ public class FinanceAggregationService {
             int totalTimes = intOf(c.get("totalTimes"));
             int remainTimes = intOf(c.get("remainTimes"));
             double balance = yuan(c.get("balance"));
+            double giftBalance = yuan(c.get("giftBalance"));
             String type = totalTimes > 0 ? "TIMES" : "STORED";
 
             FinanceViewDTO.CardBalance row = new FinanceViewDTO.CardBalance(
                     "C" + (++seq), str(c.get("cardNo")), str(c.get("customerName")), type,
-                    balance, 0.0, totalTimes, remainTimes,
+                    balance, giftBalance, totalTimes, remainTimes,
                     dateOf(c.get("createdAt")), mapCardStatus(str(c.get("status"))),
                     storeNames.getOrDefault(sc, sc));
             rows.add(row);
 
             stored += balance;
+            gift += giftBalance;
             if ("TIMES".equals(type)) timesValue += remainTimes * TIMES_UNIT_VALUE;
         }
         return new FinanceViewDTO.CardBalanceBundle(rows,
                 round2(stored), round2(gift), round2(timesValue));
+    }
+
+    // ==================== 单卡时间线（B24 卡2） ====================
+
+    /**
+     * 单卡余额变动时间线（已按登录人门店域收敛）。
+     * 拉 customer 内部端点（卡快照 + card_ledger 全量流水，Long 分），出口换算元、解析店名；
+     * 卡不存在 / customer 不可用（404/5xx）由调用端点透传/降级——本方法遇异常返回 null，
+     * 控制器据此回 404（不泄露越权卡号是否存在，统一「卡不存在或无权查看」）。
+     */
+    public FinanceViewDTO.CardTimeline cardTimeline(String cardNo) {
+        if (cardNo == null || cardNo.isBlank()) {
+            throw new IllegalArgumentException("卡号不能为空");
+        }
+        Map<String, Object> bundle = fetchCardLedger(cardNo.trim());
+        if (bundle == null || bundle.isEmpty()) return null;
+        String sc = str(bundle.get("storeCode"));
+        if (!DataScope.canReadStore(sc)) return null; // 越权与不存在同响应，防卡号探测
+        Map<String, String> storeNames = resolveStoreNames(List.of(sc));
+
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> ledger = (List<Map<String, Object>>) bundle.getOrDefault("ledger", List.of());
+        List<FinanceViewDTO.CardTxn> txns = new ArrayList<>();
+        for (Map<String, Object> l : ledger) {
+            txns.add(new FinanceViewDTO.CardTxn(
+                    longOf(l.get("ledgerId")), str(l.get("changeType")),
+                    yuan(l.get("amount")), yuan(l.get("balanceAfter")),
+                    yuan(l.get("giftAmount")), yuan(l.get("giftAfter")),
+                    str(l.get("bizRef")), str(l.get("orderNo")),
+                    str(l.get("operator")), dateTimeOf(l.get("createdAt"))));
+        }
+        int totalTimes = intOf(bundle.get("totalTimes"));
+        return new FinanceViewDTO.CardTimeline(
+                str(bundle.get("cardNo")), str(bundle.get("customerId")), str(bundle.get("customerName")),
+                str(bundle.get("cardItem")), nz(sc, ""), storeNames.getOrDefault(sc, nz(sc, "")),
+                str(bundle.get("cardType")), str(bundle.get("productCode")),
+                totalTimes > 0 ? "TIMES" : "STORED",
+                yuan(bundle.get("balance")), yuan(bundle.get("giftBalance")),
+                totalTimes, intOf(bundle.get("remainTimes")),
+                mapCardStatus(str(bundle.get("status"))), txns);
+    }
+
+    // ==================== 核销双签明细（B24 卡2） ====================
+
+    /**
+     * 核销双签明细（已按登录人门店域逐行收敛）。
+     * 拉 txn 内部端点（不固化 status 的全状态核销 + 双签留痕），出口换算元、解析店名与客户名；
+     * 过滤参数透传 txn：status（DONE/ABNORMAL/VOID）/cardNo/customerId/keyword/from/to。
+     * 整单核销（cardNo 空）customerId 可空，客户名仅批量解析非空 id（解析失败回落客户号）。
+     */
+    public List<FinanceViewDTO.WriteoffDetail> writeoffDetails(String storeCode, String status, String cardNo,
+                                                               String customerId, String keyword,
+                                                               String from, String to) {
+        // 非法 status 属于客户端错误，必须在降级取数前快速 400——否则跨域调用的 400 会被「被调不可用降级空集」吞成 200 空列表
+        if (status != null && !status.isBlank()) {
+            String st = status.trim().toUpperCase();
+            if (!WRITEOFF_STATUS_WHITELIST.contains(st)) {
+                throw new org.springframework.web.server.ResponseStatusException(
+                        org.springframework.http.HttpStatus.BAD_REQUEST,
+                        "核销状态参数 status 非法，仅支持 DONE（已核销）/ABNORMAL（异常）/VOID（已作废）：" + status);
+            }
+        }
+        List<Map<String, Object>> rows = fetchWriteoffDetails(storeCode, status, cardNo, customerId, keyword, from, to);
+        List<String> storeCodes = rows.stream().map(r -> str(r.get("storeCode"))).distinct().toList();
+        Map<String, String> storeNames = resolveStoreNames(storeCodes);
+        List<String> customerIds = rows.stream().map(r -> str(r.get("customerId")))
+                .filter(s -> s != null && !s.isBlank()).distinct().toList();
+        Map<String, String> customerNames = resolveCustomerNames(customerIds);
+
+        List<FinanceViewDTO.WriteoffDetail> out = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            String sc = str(r.get("storeCode"));
+            if (!DataScope.canReadStore(sc)) continue; // 数据域二次收敛
+            String cid = str(r.get("customerId"));
+            out.add(new FinanceViewDTO.WriteoffDetail(
+                    str(r.get("writeoffId")), str(r.get("orderNo")), nz(str(r.get("cardNo")), ""),
+                    nz(sc, ""), storeNames.getOrDefault(sc, nz(sc, "")),
+                    nz(cid, ""), cid == null ? "" : customerNames.getOrDefault(cid, cid),
+                    str(r.get("project")), intOf(r.get("timesUsed")) == 0 ? 1 : intOf(r.get("timesUsed")),
+                    yuan(r.get("amount")), str(r.get("status")), str(r.get("operator")),
+                    str(r.get("sign1")), str(r.get("sign2")), str(r.get("abnormalReason")),
+                    dateOf(r.get("createdAt"))));
+        }
+        return out;
     }
 
     // ==================== 跨域取数（降级空集合） ====================
@@ -247,7 +340,7 @@ public class FinanceAggregationService {
             if (from != null && !from.isBlank()) b.queryParam("from", from);
             if (to != null && !to.isBlank()) b.queryParam("to", to);
             ResponseEntity<Map<String, Object>> resp =
-                    restTemplate.exchange(b.toUriString(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
             return resp.getBody() != null ? resp.getBody() : new HashMap<>();
         } catch (Exception e) {
             log.warn("拉取交易域资金流水失败（降级空台账）: {}", e.getMessage());
@@ -267,7 +360,7 @@ public class FinanceAggregationService {
             if (date != null && !date.isBlank()) b.queryParam("date", date);
             if (storeCode != null && !storeCode.isBlank()) b.queryParam("storeCode", storeCode);
             ResponseEntity<Map<String, Object>> resp =
-                    restTemplate.exchange(b.toUriString(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
             return resp.getBody();
         } catch (Exception e) {
             log.warn("拉取交易域现金日结失败（三方对账现金方标记不可用）date={} : {}", date, e.getMessage());
@@ -281,11 +374,80 @@ public class FinanceAggregationService {
                     .fromHttpUrl(customerBaseUrl + "/api/customer/internal/card-balances");
             if (storeCode != null && !storeCode.isBlank()) b.queryParam("storeCode", storeCode);
             ResponseEntity<List<Map<String, Object>>> resp =
-                    restTemplate.exchange(b.toUriString(), HttpMethod.GET, internalEntity(), LIST_MAP_TYPE);
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), LIST_MAP_TYPE);
             return resp.getBody() != null ? resp.getBody() : List.of();
         } catch (Exception e) {
             log.warn("拉取客户域卡余额失败（降级空卡列表）: {}", e.getMessage());
             return List.of();
+        }
+    }
+
+    /**
+     * 拉取客户域单卡时间线（B24 卡2；降级 null——404 卡不存在 / 5xx 不可用均由控制器按 404 诚实返回）。
+     * 路径变量需 URL 编码防注入/特殊字符。
+     */
+    private Map<String, Object> fetchCardLedger(String cardNo) {
+        try {
+            URI url = UriComponentsBuilder.fromHttpUrl(customerBaseUrl)
+                    .pathSegment("api", "customer", "internal", "cards", cardNo, "ledger")
+                    .build().encode().toUri();
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(url, HttpMethod.GET, internalEntity(), MAP_TYPE);
+            return resp.getBody();
+        } catch (Exception e) {
+            log.warn("拉取客户域单卡流水失败（按不存在处理）cardNo={} : {}", cardNo, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 拉取交易域核销双签明细（B24 卡2；降级空列表）。全状态、多过滤，参数均可选。
+     */
+    private List<Map<String, Object>> fetchWriteoffDetails(String storeCode, String status, String cardNo,
+                                                           String customerId, String keyword,
+                                                           String from, String to) {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(txnBaseUrl + "/api/txn/internal/writeoff-details");
+            if (storeCode != null && !storeCode.isBlank()) b.queryParam("storeCode", storeCode);
+            if (status != null && !status.isBlank()) b.queryParam("status", status);
+            if (cardNo != null && !cardNo.isBlank()) b.queryParam("cardNo", cardNo);
+            if (customerId != null && !customerId.isBlank()) b.queryParam("customerId", customerId);
+            if (keyword != null && !keyword.isBlank()) b.queryParam("keyword", keyword);
+            if (from != null && !from.isBlank()) b.queryParam("from", from);
+            if (to != null && !to.isBlank()) b.queryParam("to", to);
+            ResponseEntity<List<Map<String, Object>>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), LIST_MAP_TYPE);
+            return resp.getBody() != null ? resp.getBody() : List.of();
+        } catch (Exception e) {
+            log.warn("拉取交易域核销明细失败（降级空列表）: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * 客户号 → 客户姓名批量解析（customer /api/customer/name-map，internal:name-map；
+     * 服务不可用/超时回落空 Map，调用方保守回落客户号本身）。
+     */
+    private Map<String, String> resolveCustomerNames(List<String> customerIds) {
+        List<String> ids = customerIds.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();
+        if (ids.isEmpty()) return Collections.emptyMap();
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(customerBaseUrl + "/api/customer/name-map");
+            ids.forEach(i -> b.queryParam("ids", i));
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            Map<String, String> out = new LinkedHashMap<>();
+            if (resp.getBody() != null) {
+                resp.getBody().forEach((k, v) -> out.put(k, v == null ? k : v.toString()));
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("客户名解析失败（回落客户号），数量={} : {}", ids.size(), e.getMessage());
+            Map<String, String> fallback = new LinkedHashMap<>();
+            ids.forEach(i -> fallback.put(i, i));
+            return fallback;
         }
     }
 
@@ -298,7 +460,7 @@ public class FinanceAggregationService {
                     .fromHttpUrl(storeBaseUrl + "/api/stores/name-map");
             codes.forEach(c -> b.queryParam("codes", c));
             ResponseEntity<Map<String, Object>> resp =
-                    restTemplate.exchange(b.toUriString(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
             Map<String, String> out = new LinkedHashMap<>();
             if (resp.getBody() != null) {
                 resp.getBody().forEach((k, v) -> out.put(k, v == null ? k : v.toString()));
@@ -326,7 +488,7 @@ public class FinanceAggregationService {
                     .fromHttpUrl(storeBaseUrl + "/api/stores/name-map")
                     .queryParam("codes", code);
             ResponseEntity<Map<String, Object>> resp =
-                    restTemplate.exchange(b.toUriString(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
             return resp.getBody() != null && resp.getBody().containsKey(code);
         } catch (Exception e) {
             log.warn("门店存在性校验失败（保守中止）store={} : {}", code, e.getMessage());
@@ -424,6 +586,12 @@ public class FinanceAggregationService {
         try { return Integer.parseInt(o.toString()); } catch (Exception e) { return 0; }
     }
 
+    private static long longOf(Object o) {
+        if (o == null) return 0L;
+        if (o instanceof Number n) return n.longValue();
+        try { return Long.parseLong(o.toString()); } catch (Exception e) { return 0L; }
+    }
+
     /** 分 → 元（两位小数）。 */
     private static double yuan(Object fen) {
         if (fen == null) return 0.0;
@@ -443,6 +611,18 @@ public class FinanceAggregationService {
         } catch (Exception e) {
             String s = iso.toString();
             return s.length() >= 10 ? s.substring(0, 10) : s;
+        }
+    }
+
+    /** ISO OffsetDateTime → yyyy-MM-dd HH:mm:ss（业务本地时区 Asia/Shanghai，供卡流水时间线展示）。 */
+    private static String dateTimeOf(Object iso) {
+        if (iso == null) return "";
+        try {
+            return OffsetDateTime.parse(iso.toString())
+                    .atZoneSameInstant(ZoneId.of("Asia/Shanghai"))
+                    .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+        } catch (Exception e) {
+            return iso.toString();
         }
     }
 }

@@ -191,6 +191,42 @@ public class InternalCardController {
     }
 
     /**
+     * 单卡余额变动时间线投影（B24 卡2，finance 卡余额详情懒加载）：
+     * GET /api/customer/internal/cards/{cardNo}/ledger。
+     * 返回卡快照（客户/卡项/剩余次数/状态）+ card_ledger 账龄正序全量流水（金额单位分）；
+     * 卡不存在返回 404 中文提示。数据权限收敛（门店/登录人）由 finance-service 二次过滤，
+     * 本端点仅以系统身份（X-Internal-Token）开放，财务域不直读 card_ledger 表。
+     */
+    @GetMapping("/cards/{cardNo}/ledger")
+    @RequirePerm("internal:card-balance")
+    public CardLedgerBundleDTO cardLedger(@org.springframework.web.bind.annotation.PathVariable("cardNo") String cardNo) {
+        if (cardNo == null || cardNo.isBlank()) {
+            throw new CardLedgerService.BadReq("卡号不能为空");
+        }
+        MemberCard card = cardRepo.findById(cardNo)
+                .orElseThrow(() -> new CardLedgerService.NotFound("会员卡不存在: " + cardNo));
+        String customerName = customerRepo.findById(card.getCustomerId())
+                .map(Customer::getName).orElse(card.getCustomerId());
+        List<CardLedgerItemDTO> items = ledgerService.listLedger(cardNo).stream()
+                .map(l -> new CardLedgerItemDTO(l.getLedgerId(), l.getCardNo(), l.getCustomerId(),
+                        l.getChangeType(), l.getAmount(), l.getBalanceAfter(),
+                        l.getGiftAmount() == null ? 0L : l.getGiftAmount(),
+                        l.getGiftAfter() == null ? 0L : l.getGiftAfter(),
+                        l.getBizRef() == null ? "" : l.getBizRef(),
+                        l.getOrderNo() == null ? "" : l.getOrderNo(),
+                        l.getOperator() == null ? "" : l.getOperator(),
+                        l.getStoreCode() == null ? "" : l.getStoreCode(),
+                        l.getCreatedAt() == null ? "" : l.getCreatedAt().toString()))
+                .toList();
+        return new CardLedgerBundleDTO(card.getCardNo(), card.getCustomerId(), customerName,
+                card.getCardItem(), card.getStoreCode() == null ? "" : card.getStoreCode(),
+                card.getCardType() == null ? "" : card.getCardType(),
+                card.getProductCode() == null ? "" : card.getProductCode(),
+                card.getBalance(), card.getGiftBalance() == null ? 0L : card.getGiftBalance(),
+                card.getTotalTimes(), card.getRemainTimes(), card.getStatus(), items);
+    }
+
+    /**
      * 售卡开卡联动（B16，txn 售卡订单收款收齐后回调）：POST /api/customer/internal/cards/issue。
      * 客户域实例化 member_card（product_code/card_type/expires_at/sale_no/gift_balance 溯源落库）并写
      * 首笔 RECHARGE 正额流水（bizRef=orderNo）；以售卡订单号 sale_no 幂等，收款回调重试不重复开卡；
@@ -225,6 +261,19 @@ public class InternalCardController {
     /** 划扣流水投影：ledgerId/cardNo/bizRef（WO 单号）/changeType/amount（负额分，0 为纯扣次）/operator（system-backfill 为回填行）/storeCode。 */
     public record WriteoffLedgerDTO(Long ledgerId, String cardNo, String bizRef, String changeType,
                                     Long amount, String operator, String storeCode) {}
+
+    /** 单卡时间线明细行：card_ledger 全字段投影，金额单位分；gift 两列历史空行回落 0；bizRef/orderNo/operator/storeCode 空串归一。 */
+    public record CardLedgerItemDTO(Long ledgerId, String cardNo, String customerId, String changeType,
+                                    Long amount, Long balanceAfter, Long giftAmount, Long giftAfter,
+                                    String bizRef, String orderNo, String operator, String storeCode,
+                                    String createdAt) {}
+
+    /** 单卡时间线响应：卡快照（客户/卡项/类型/产品/本金赠金/次数/中文状态）+ 账龄正序流水。 */
+    public record CardLedgerBundleDTO(String cardNo, String customerId, String customerName,
+                                      String cardItem, String storeCode, String cardType,
+                                      String productCode, Long balance, Long giftBalance,
+                                      Integer totalTimes, Integer remainTimes, String status,
+                                      List<CardLedgerItemDTO> ledger) {}
 
     /** 疗程划扣入参：cardNo/writeoffId（WO 单号，幂等键）/timesUsed（扣次，≥1）/amount（分，≥0，0 为纯扣次）/storeCode/backfill（存量回填标记）。 */
     public record WriteoffCmd(String cardNo, String writeoffId, Integer timesUsed, Long amount,

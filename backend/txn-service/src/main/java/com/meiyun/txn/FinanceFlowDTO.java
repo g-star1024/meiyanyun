@@ -47,7 +47,12 @@ public final class FinanceFlowDTO {
     ) {
     }
 
-    /** 划扣核销流水（status=DONE）。 */
+    /**
+     * 划扣核销流水（status=DONE）。
+     * B24 卡2 补齐双签明细投影：customerId（整单核销可空）、operator 操作人工号、
+     * sign1 操作人（与 operator 同工号）、sign2 复核人（「工号 姓名」，整单核销/历史单可空）、
+     * abnormalReason 异常原因（DONE 单通常为 null）。新增字段均向后兼容（旧消费端按名反序列化忽略多余字段）。
+     */
     public record WriteoffFlow(
             String writeoffId,
             String orderNo,
@@ -57,7 +62,12 @@ public final class FinanceFlowDTO {
             Integer timesUsed,
             Long amount,
             String status,
-            java.time.OffsetDateTime createdAt
+            java.time.OffsetDateTime createdAt,
+            String customerId,
+            String operator,
+            String sign1,
+            String sign2,
+            String abnormalReason
     ) {
     }
 

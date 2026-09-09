@@ -10,8 +10,11 @@ import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { useFinanceCoreStore } from './financeCore'
 import { useStoreContext } from './storeContext'
-import { getCardsBalance, getTax, getCosts } from '@/api/finance'
-import type { CardBalanceDTO, Tax as TaxDTO, CostAggregate } from '@/api/finance'
+import { getCardsBalance, getTax, getCosts, getCardTimeline, listWriteoffDetails } from '@/api/finance'
+import type {
+  CardBalanceDTO, Tax as TaxDTO, CostAggregate,
+  CardTxnDTO, CardTimelineDTO, WriteoffDetailDTO,
+} from '@/api/finance'
 
 /** 分 → 元（finance 卡余额/税务镜像金额以「分」存储，台账聚合已换算为元） */
 const fen2yuan = (f: number | null | undefined) => (f == null ? 0 : Math.round(f) / 100)
@@ -40,9 +43,36 @@ export type CardStatus = 'NORMAL' | 'DORMANT' | 'FROZEN'
 export interface CardTxn {
   id: string
   date: string
-  type: 'RECHARGE' | 'CONSUME' | 'REFUND' | 'FREEZE' | 'ADJUST'
-  amount: number
+  /** card_ledger 仅 RECHARGE/CONSUME/REFUND/ADJUST；冻结以 ADJUST（amount=0）呈现，无独立 FREEZE */
+  type: 'RECHARGE' | 'CONSUME' | 'REFUND' | 'ADJUST'
+  amount: number       // 带符号变动额（元）：充值/退款正，消费负
   memo: string
+  balanceAfter: number // 变动后储值（元）
+  giftAmount: number   // 赠送金变动（元）
+  giftAfter: number    // 变动后赠送金（元）
+  refNo: string        // 业务单号
+  orderNo: string      // 订单号
+  operator: string     // 经办人
+}
+
+/** card_ledger 流水 DTO → CardTxn（金额已为「元」；memo 由业务单号/订单号/经办人组合） */
+function adaptTxn(dto: CardTxnDTO): CardTxn {
+  const parts = [dto.refNo, dto.orderNo, dto.operator ? `经办：${dto.operator}` : '']
+    .map((s) => (s ?? '').trim())
+    .filter(Boolean)
+  return {
+    id: String(dto.ledgerId),
+    date: dto.date,
+    type: (dto.kind || 'ADJUST') as CardTxn['type'],
+    amount: dto.amount ?? 0,
+    memo: parts.join(' · ') || '—',
+    balanceAfter: dto.balanceAfter ?? 0,
+    giftAmount: dto.giftAmount ?? 0,
+    giftAfter: dto.giftAfter ?? 0,
+    refNo: dto.refNo ?? '',
+    orderNo: dto.orderNo ?? '',
+    operator: dto.operator ?? '',
+  }
 }
 export interface MemberCard {
   id: string
@@ -135,7 +165,7 @@ const CARD_STATUS_PILL: Record<CardStatus, 'success' | 'info' | 'warning' | 'dan
   NORMAL: 'success', DORMANT: 'info', FROZEN: 'danger',
 }
 const CARD_TXN_LABEL: Record<CardTxn['type'], string> = {
-  RECHARGE: '充值', CONSUME: '消费', REFUND: '退款', FREEZE: '冻结', ADJUST: '调整',
+  RECHARGE: '充值', CONSUME: '划扣', REFUND: '退款', ADJUST: '调整',
 }
 
 const ABNORMAL_TYPE_LABEL: Record<AbnormalType, string> = {
@@ -201,34 +231,41 @@ export const useFinCardBalanceStore = defineStore('finCardBalance', () => {
     return true
   }
 
-  /** 演示数据（API 失败/未接通时回落，活规格） */
-  function seedMock() {
-    const d = (day: number) => `2026-08-${String(day).padStart(2, '0')}`
-    const tx = (id: string, date: string, type: CardTxn['type'], amount: number, memo: string): CardTxn => ({ id, date, type, amount, memo })
-    const data: Array<Omit<MemberCard, 'id'>> = [
-      { cardNo: 'MC-8801-0001', customerName: '林微', type: 'STORED', balance: 15734, giftBalance: 500, timesTotal: 0, timesRemain: 0, lastConsumeAt: d(17), status: 'NORMAL',
-        txns: [tx('t1', d(14), 'RECHARGE', 20000, '微信储值充值赠500'), tx('t2', d(15), 'CONSUME', 4266, '水光针疗程划扣'), tx('t3', d(16), 'CONSUME', 500, '产品购买')] },
-      { cardNo: 'MC-8801-0002', customerName: '陈美玲', type: 'TIMES', balance: 0, giftBalance: 0, timesTotal: 6, timesRemain: 5, lastConsumeAt: d(15), status: 'NORMAL',
-        txns: [tx('t1', d(10), 'RECHARGE', 12800, '热玛吉6次卡'), tx('t2', d(15), 'CONSUME', 0, '第1次热玛吉划扣')] },
-      { cardNo: 'MC-8801-0003', customerName: '赵雨晴', type: 'STORED', balance: 29800, giftBalance: 1000, timesTotal: 0, timesRemain: 0, lastConsumeAt: d(16), status: 'NORMAL',
-        txns: [tx('t1', d(16), 'RECHARGE', 30000, '刷卡储值赠1000'), tx('t2', d(16), 'CONSUME', 200, '产品抵扣')] },
-      { cardNo: 'MC-8801-0004', customerName: '王诗涵', type: 'TIMES', balance: 0, giftBalance: 0, timesTotal: 10, timesRemain: 7, lastConsumeAt: d(10), status: 'DORMANT',
-        txns: [tx('t1', d(1), 'RECHARGE', 6800, '水光针10次卡'), tx('t2', d(5), 'CONSUME', 0, '第1次'), tx('t3', d(10), 'CONSUME', 0, '第3次')] },
-      { cardNo: 'MC-8802-0005', customerName: '孙佳宁', type: 'GIFT', balance: 0, giftBalance: 680, timesTotal: 0, timesRemain: 0, lastConsumeAt: d(17), status: 'NORMAL',
-        txns: [tx('t1', d(17), 'ADJUST', 680, '生日赠送金到账')] },
-      { cardNo: 'MC-8802-0006', customerName: '周慧敏', type: 'STORED', balance: 800, giftBalance: 0, timesTotal: 0, timesRemain: 0, lastConsumeAt: d(8), status: 'DORMANT',
-        txns: [tx('t1', d(1), 'RECHARGE', 5000, '现金储值'), tx('t2', d(8), 'CONSUME', 4200, '疗程划扣')] },
-      { cardNo: 'MC-8801-0007', customerName: '吴思琪', type: 'STORED', balance: 0, giftBalance: 0, timesTotal: 0, timesRemain: 0, lastConsumeAt: d(5), status: 'FROZEN',
-        txns: [tx('t1', d(20), 'RECHARGE', 56000, '对公转账储值'), tx('t2', d(25), 'FREEZE', 56000, '争议冻结待核')] },
-      { cardNo: 'MC-8801-0008', customerName: '李晓彤', type: 'TIMES', balance: 0, giftBalance: 0, timesTotal: 5, timesRemain: 2, lastConsumeAt: d(12), status: 'NORMAL',
-        txns: [tx('t1', d(2), 'RECHARGE', 9800, '光子嫩肤5次卡'), tx('t2', d(12), 'CONSUME', 0, '第3次')] },
-    ]
-    data.forEach((row) => cards.value.push({ id: nextId('card'), ...row }))
+  // ----- B24 卡2：选中卡的真实流水时间线（customer card_ledger 经 finance 聚合代理，按卡号懒加载） -----
+  const timelineCardNo = ref<string | null>(null)
+  const timeline = ref<CardTimelineDTO | null>(null)
+  const timelineTxns = ref<CardTxn[]>([])
+  const timelineLoading = ref(false)
+  const timelineError = ref('')
+
+  /** 加载单卡时间线（404=卡不存在/越权，与其他失败一样诚实提示，绝不伪造流水） */
+  async function loadTimeline(cardNo: string) {
+    if (!cardNo) return
+    timelineCardNo.value = cardNo
+    timeline.value = null
+    timelineTxns.value = []
+    timelineError.value = ''
+    timelineLoading.value = true
+    try {
+      const { data } = await getCardTimeline(cardNo)
+      if (timelineCardNo.value !== cardNo) return
+      timeline.value = data
+      timelineTxns.value = (data.txns ?? []).map(adaptTxn)
+    } catch (e: any) {
+      if (timelineCardNo.value !== cardNo) return
+      const status = e?.response?.status
+      timelineError.value = status === 404
+        ? '卡不存在或无权查看该卡'
+        : '卡流水加载失败，请稍后重试'
+      console.error('[finCardBalance] 加载卡时间线失败', cardNo, e)
+    } finally {
+      if (timelineCardNo.value === cardNo) timelineLoading.value = false
+    }
   }
 
   let seeded = false
   let seeding: Promise<void> | null = null
-  /** 从 finance-service 拉取真实会员卡余额（幂等；force 强制刷新）；失败回落演示数据 */
+  /** 从 finance-service 拉取真实会员卡余额（幂等；force 强制刷新）；失败保持诚实空态，不回落假数据 */
   function seed(force = false): Promise<void> {
     if (seeding && !force) return seeding
     if (seeded && !force) return Promise.resolve()
@@ -238,8 +275,7 @@ export const useFinCardBalanceStore = defineStore('finCardBalance', () => {
         cards.value = data.cards.map(adaptCard)
         seeded = true
       } catch (e) {
-        console.error('[finCardBalance] 加载卡余额失败，回落演示数据', e)
-        if (cards.value.length === 0) seedMock()
+        console.error('[finCardBalance] 加载卡余额失败，保持空态', e)
       }
     })()
     return seeding
@@ -248,6 +284,7 @@ export const useFinCardBalanceStore = defineStore('finCardBalance', () => {
   return {
     cards, filterStatus, keyword, totalBalance, activeBalance, dormantBalance, cardCount,
     composition, filtered, get, freeze, seed,
+    timelineCardNo, timeline, timelineTxns, timelineLoading, timelineError, loadTimeline,
     CARD_TYPE_LABEL, CARD_STATUS_LABEL, CARD_STATUS_PILL, CARD_TXN_LABEL,
   }
 })
@@ -557,5 +594,90 @@ export const useFinReportsStore = defineStore('finReports', () => {
     taxRows, taxableRevenue, outputTax, inputDeduct, taxPayable,
     dailyFlows, channelFlows, latestDate, todayIncome, todayExpense, todayNet, endBalance,
     monthlyTrend, storeMonthly, seed,
+  }
+})
+
+// ============================================================
+// Store 4: 核销双签明细（B24 卡2，txn writeoff_record 经 finance 聚合代理）
+// ============================================================
+export type WriteoffStatus = 'DONE' | 'ABNORMAL' | 'VOID'
+
+export const WRITEOFF_STATUS_LABEL: Record<WriteoffStatus, string> = {
+  DONE: '已核销', ABNORMAL: '异常', VOID: '已作废',
+}
+export const WRITEOFF_STATUS_PILL: Record<WriteoffStatus, 'success' | 'danger' | 'info'> = {
+  DONE: 'success', ABNORMAL: 'danger', VOID: 'info',
+}
+
+export const useFinWriteoffStore = defineStore('finWriteoff', () => {
+  const ctx = useStoreContext()
+
+  /** 全量明细（一次拉取，门店/状态/关键词在前端过滤；与导出 CSV 的服务端过滤参数口径一致） */
+  const rows = ref<WriteoffDetailDTO[]>([])
+  const loading = ref(false)
+  const error = ref('')
+
+  const filterStatus = ref<WriteoffStatus | 'ALL'>('ALL')
+  const filterStore = ref<string>('ALL')
+  const keyword = ref('')
+
+  const storeOptions = computed(() => [
+    { value: 'ALL', label: '全部门店' },
+    ...ctx.stores
+      .filter((s) => rows.value.some((r) => r.storeCode === s.storeCode))
+      .map((s) => ({ value: s.storeCode, label: s.storeName })),
+  ])
+
+  const filtered = computed(() => {
+    const kw = keyword.value.trim().toLowerCase()
+    return rows.value.filter((r) => {
+      if (filterStatus.value !== 'ALL' && r.status !== filterStatus.value) return false
+      if (filterStore.value !== 'ALL' && r.storeCode !== filterStore.value) return false
+      if (kw && ![r.writeoffId, r.orderNo, r.cardNo, r.customerName, r.project, r.abnormalReason]
+        .some((v) => (v ?? '').toLowerCase().includes(kw))) return false
+      return true
+    })
+  })
+
+  const doneRows = computed(() => rows.value.filter((r) => r.status === 'DONE'))
+  const abnormalRows = computed(() => rows.value.filter((r) => r.status === 'ABNORMAL'))
+  const voidRows = computed(() => rows.value.filter((r) => r.status === 'VOID'))
+  const sumAmount = (list: WriteoffDetailDTO[]) =>
+    Math.round(list.reduce((s, r) => s + (r.amount ?? 0), 0) * 100) / 100
+  const doneAmount = computed(() => sumAmount(doneRows.value))
+  const abnormalAmount = computed(() => sumAmount(abnormalRows.value))
+
+  async function fetchRows() {
+    loading.value = true
+    error.value = ''
+    try {
+      await ctx.loadStores()
+      const { data } = await listWriteoffDetails()
+      rows.value = data ?? []
+    } catch (e) {
+      console.error('[finWriteoff] 加载核销双签明细失败，保持空态', e)
+      error.value = '核销明细加载失败，请稍后重试'
+    } finally {
+      loading.value = false
+    }
+  }
+
+  let seeded = false
+  let seeding: Promise<void> | null = null
+  /** 拉取全量核销双签明细（幂等；force 强制刷新）；失败诚实空态，不编造双签记录 */
+  function seed(force = false): Promise<void> {
+    if (seeding && !force) return seeding
+    if (seeded && !force) return Promise.resolve()
+    seeding = fetchRows().then(() => { seeded = true })
+    return seeding
+  }
+
+  return {
+    rows, loading, error,
+    filterStatus, filterStore, keyword,
+    storeOptions, filtered,
+    doneRows, abnormalRows, voidRows, doneAmount, abnormalAmount,
+    seed, refresh: fetchRows,
+    WRITEOFF_STATUS_LABEL, WRITEOFF_STATUS_PILL,
   }
 })

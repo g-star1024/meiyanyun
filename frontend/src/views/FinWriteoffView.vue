@@ -1,8 +1,9 @@
 <script setup lang="ts">
-/* M6-09 划扣明细 /m6-writeoff — 财务只读镜像：已双签（台账已对账）划扣=确认收入，未对账不计收入。
- * 数据源：financeCore.entries 中 refType=WRITEOFF 的台账分录（finance-service 读时聚合）。
- * 门店划扣台「当日队列」(writeoff-desk) 仅反映当日待执行/已执行任务，不含历史划扣，
- * 故历史双签划扣以财务台账为准；台账不含客户/卡项/双签人/次数明细，诚实标注待接入，不编造。 */
+/* M6-09 核销双签明细 /m6-writeoff — 财务只读镜像（B24 卡2 切真）。
+ * 数据源：txn writeoff_record 经 finance 聚合代理（/finance/writeoff-details），
+ * 含客户/卡号/项目/扣次/金额/状态/操作人/操作双签/复核双签/异常原因。
+ * 状态：DONE 已核销（双签完成）/ ABNORMAL 异常 / VOID 已作废；纯扣次金额为 0。
+ * 财务域只读，不反向写划扣；收入确认口径仍以财务台账（financeCore）为准。 */
 import { computed, onMounted, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -10,105 +11,50 @@ import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CSelect from '@/components/CSelect.vue'
-import { useFinanceCoreStore } from '@/stores/financeCore'
+import CInput from '@/components/CInput.vue'
+import { useFinWriteoffStore } from '@/stores/finReports'
 import { useAuthStore } from '@/stores/auth'
+import { exportWriteoffCsv } from '@/api/finance'
 
-const fin = useFinanceCoreStore()
+const store = useFinWriteoffStore()
 const auth = useAuthStore()
 const canExport = computed(() => auth.can('finance:export'))
 
-onMounted(() => void fin.seed())
-
-type WoStatus = 'DONE' | 'PENDING'
-const STATUS_LABEL: Record<WoStatus, string> = { DONE: '已双签', PENDING: '待对账' }
-const STATUS_PILL: Record<WoStatus, 'success' | 'warning'> = { DONE: 'success', PENDING: 'warning' }
-
-/** 台账 memo「划扣确认收入 · 项目名」→ 项目名（项目名本身可能含「·」，如 黑卡·抗衰，故只剥第一段） */
-function projectOf(memo: string) {
-  const idx = memo.indexOf('·')
-  return idx >= 0 ? memo.slice(idx + 1).trim() : memo
-}
-
-interface WoRow {
-  id: string
-  no: string
-  date: string
-  amount: number
-  project: string
-  store: string
-  reconciled: boolean
-  status: WoStatus
-  /** 配对的 RF-DEPOSIT OUT（预收转出）金额，用于勾稽展示；无配对分录为 null */
-  depositOut: number | null
-}
-
-/** 划扣列表：取 WRITEOFF 的 RF-REVENUE IN 侧（每笔划扣一行，金额=确认收入，避免与预收转出重复计） */
-const writeoffs = computed<WoRow[]>(() =>
-  fin.entries
-    .filter((e) => e.refType === 'WRITEOFF' && e.subject === 'RF-REVENUE')
-    .map((e) => {
-      const dep = fin.entries.find(
-        (x) => x.refType === 'WRITEOFF' && x.subject === 'RF-DEPOSIT' && x.refNo === e.refNo,
-      )
-      return {
-        id: e.id,
-        no: e.refNo,
-        date: e.date,
-        amount: e.amount,
-        project: projectOf(e.memo),
-        store: e.store,
-        reconciled: e.reconciled,
-        status: (e.reconciled ? 'DONE' : 'PENDING') as WoStatus,
-        depositOut: dep ? dep.amount : null,
-      }
-    })
-    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : a.no < b.no ? 1 : -1)),
-)
-
-const filterStatus = ref<WoStatus | 'ALL'>('ALL')
-const filterStore = ref<string>('ALL')
-const storeOptions = computed(() => [
-  { value: 'ALL', label: '全部门店' },
-  ...[...new Set(writeoffs.value.map((w) => w.store))].map((s) => ({ value: s, label: s })),
-])
-
-const list = computed(() =>
-  writeoffs.value.filter(
-    (w) =>
-      (filterStatus.value === 'ALL' || w.status === filterStatus.value) &&
-      (filterStore.value === 'ALL' || w.store === filterStore.value),
-  ),
-)
-
-const doneCount = computed(() => writeoffs.value.filter((w) => w.reconciled).length)
-const pendingCount = computed(() => writeoffs.value.filter((w) => !w.reconciled).length)
+onMounted(() => void store.seed())
 
 const selectedId = ref<string | null>(null)
 const selected = computed(
-  () => list.value.find((w) => w.id === selectedId.value) ?? list.value[0] ?? null,
+  () => store.filtered.find((w) => w.writeoffId === selectedId.value) ?? store.filtered[0] ?? null,
 )
 
+const statusOf = (s: string) =>
+  (store.WRITEOFF_STATUS_LABEL as Record<string, string>)[s] ?? s
+const pillOf = (s: string) =>
+  (store.WRITEOFF_STATUS_PILL as Record<string, 'success' | 'danger' | 'info'>)[s] ?? 'info'
+
+function money(n: number | null | undefined) {
+  return `¥${(n ?? 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
+}
+
 const kpis = computed(() => [
-  { label: '已双签确认收入', icon: 'check-square', value: `¥${fin.writeoffConfirmed.toLocaleString('zh-CN')}`, tone: 'success' as const, sub: `${doneCount.value} 笔，台账已对账，计入营收` },
-  { label: '待双签划扣', icon: 'check-square', value: `¥${fin.writeoffPending.toLocaleString('zh-CN')}`, tone: 'warning' as const, sub: `${pendingCount.value} 笔未对账，不计收入` },
-  { label: '异常单', icon: 'alert', value: '0 笔', tone: 'text' as const, sub: '划扣异常数据源待接入' },
-  { label: '预收转出（划扣消耗）', icon: 'shield', value: `¥${fin.depositConsume.toLocaleString('zh-CN')}`, tone: 'brand' as const, sub: 'RF-DEPOSIT 流出，与确认收入勾稽' },
+  { label: '已核销金额', icon: 'check-square', value: money(store.doneAmount), tone: 'success' as const, sub: `${store.doneRows.length} 笔，双签完成` },
+  { label: '异常核销', icon: 'alert', value: `${store.abnormalRows.length} 笔`, tone: 'danger' as const, sub: `合计 ${money(store.abnormalAmount)}，需复核处置` },
+  { label: '已作废', icon: 'shield', value: `${store.voidRows.length} 笔`, tone: 'blue' as const, sub: '作废记录不计收入' },
+  { label: '核销总笔数', icon: 'card', value: `${store.rows.length} 笔`, tone: 'text' as const, sub: '划扣双签明细只读镜像' },
 ])
 
-function exportCsv() {
+async function exportCsv() {
   if (!canExport.value) return
-  const head = '划扣号,划扣日期,门店,项目,确认收入金额,预收转出金额,对账状态\n'
-  const rows = list.value
-    .map((w) =>
-      [w.no, w.date, w.store, w.project, w.amount, w.depositOut ?? '', w.reconciled ? '已对账' : '待对账'].join(','),
-    )
-    .join('\n')
-  const blob = new Blob(['﻿' + head + rows], { type: 'text/csv;charset=utf-8' })
-  const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = `划扣明细-${new Date().toISOString().slice(0, 10)}.csv`
-  a.click()
-  URL.revokeObjectURL(a.href)
+  try {
+    const params: Record<string, string> = {}
+    if (store.filterStatus !== 'ALL') params.status = store.filterStatus
+    if (store.filterStore !== 'ALL') params.storeCode = store.filterStore
+    const kw = store.keyword.trim()
+    if (kw) params.keyword = kw
+    await exportWriteoffCsv(Object.keys(params).length ? params : undefined)
+  } catch (e) {
+    console.error('[finWriteoff] 导出核销明细 CSV 失败', e)
+  }
 }
 </script>
 
@@ -121,42 +67,60 @@ function exportCsv() {
     <CCard class="wo__rule" padding="md">
       <div class="rule-line">
         <CIcon name="shield" :size="15" />
-        <span><strong>收入确认口径：</strong>仅「操作人 + 复核人」双签完成（台账已对账）的划扣计入确认收入；待对账划扣不计入营收。本页为财务总账台账的只读镜像（按划扣号取确认收入侧分录），不可修改。</span>
+        <span><strong>双签口径：</strong>每笔核销需「操作双签 + 复核双签」完成方为已核销；异常核销须登记异常原因并复核处置，已作废记录不计收入。本页为 txn 核销记录经财务聚合的只读镜像，财务域不可修改。</span>
       </div>
     </CCard>
 
     <div class="wo__body">
       <CCard class="wo__list" padding="none">
         <div class="list-head">
-          <span class="list-head__title">划扣明细<span class="list-head__hint">{{ list.length }} 笔</span></span>
+          <span class="list-head__title">核销明细<span class="list-head__hint">{{ store.filtered.length }} 笔</span></span>
           <div class="list-head__right">
-            <CSelect v-model="filterStatus" :options="[{ value: 'ALL', label: '全部状态' }, { value: 'DONE', label: '已双签' }, { value: 'PENDING', label: '待对账' }]" />
-            <CSelect v-model="filterStore" :options="storeOptions" />
+            <CSelect
+              v-model="store.filterStatus"
+              :options="[{ value: 'ALL', label: '全部状态' }, { value: 'DONE', label: '已核销' }, { value: 'ABNORMAL', label: '异常' }, { value: 'VOID', label: '已作废' }]"
+            />
+            <CSelect v-model="store.filterStore" :options="store.storeOptions" />
+          </div>
+          <div class="list-head__search">
+            <CIcon name="search" :size="14" class="list-head__search-icon" />
+            <CInput v-model="store.keyword" placeholder="核销号/订单/卡号/项目（页面内可按客户/异常原因再筛）" />
           </div>
         </div>
         <div class="w-list">
           <button
-            v-for="w in list" :key="w.id"
-            class="w-row" :class="{ 'w-row--active': selected?.id === w.id, [`w-row--${w.status.toLowerCase()}`]: true }"
-            @click="selectedId = w.id"
+            v-for="w in store.filtered" :key="w.writeoffId"
+            class="w-row" :class="{ 'w-row--active': selected?.writeoffId === w.writeoffId, [`w-row--${w.status.toLowerCase()}`]: true }"
+            @click="selectedId = w.writeoffId"
           >
             <div class="w-row__top">
-              <span class="w-row__no">{{ w.no }}</span>
-              <CStatusPill :status="STATUS_PILL[w.status]" dot>{{ STATUS_LABEL[w.status] }}</CStatusPill>
+              <span class="w-row__no">{{ w.writeoffId }}</span>
+              <CStatusPill :status="pillOf(w.status)" dot>{{ statusOf(w.status) }}</CStatusPill>
             </div>
             <div class="w-row__mid">
-              <span class="w-row__proj">{{ w.project }}</span>
-              <span class="w-row__amount">¥{{ w.amount.toLocaleString('zh-CN') }}</span>
+              <span class="w-row__proj">{{ w.project || '—' }}</span>
+              <span class="w-row__amount">{{ w.amount ? money(w.amount) : `扣 ${w.timesUsed || 1} 次` }}</span>
             </div>
-            <div class="w-row__sub">{{ w.store }} · {{ w.date }}</div>
+            <div class="w-row__sub">{{ w.store }} · {{ w.customerName || '—' }} · {{ w.date }}</div>
             <div class="w-row__sign">
-              <span class="sign" :class="{ on: w.reconciled }">{{ w.reconciled ? '双签完成 · 台账已对账' : '待对账' }}</span>
+              <span class="sign" :class="{ on: w.status === 'DONE' }">
+                {{ w.status === 'DONE' ? '双签完成' : w.status === 'ABNORMAL' ? '异常待处置' : '已作废' }}
+              </span>
             </div>
           </button>
-          <div v-if="!list.length" class="empty">
+          <div v-if="store.loading" class="empty">
+            <CIcon name="clock" :size="28" class="empty__icon" />
+            <p>核销明细加载中…</p>
+          </div>
+          <div v-else-if="store.error" class="empty">
+            <CIcon name="alert" :size="28" class="empty__icon" />
+            <p>{{ store.error }}</p>
+            <p class="empty__hint">不生成演示核销数据，请稍后重试</p>
+          </div>
+          <div v-else-if="!store.filtered.length" class="empty">
             <CIcon name="check-square" :size="28" class="empty__icon" />
-            <p>台账暂无划扣分录</p>
-            <p class="empty__hint">不生成演示划扣数据；划扣台历史队列接入后此处展示全部双签划扣</p>
+            <p>暂无核销双签明细</p>
+            <p class="empty__hint">不生成演示核销数据；无记录可能是筛选条件不匹配或当前数据范围确无核销</p>
           </div>
         </div>
       </CCard>
@@ -164,51 +128,48 @@ function exportCsv() {
       <CCard v-if="selected" class="wo__detail" padding="lg">
         <div class="det-head">
           <div>
-            <h3 class="det-head__no">{{ selected.no }} · {{ selected.project }}</h3>
-            <div class="det-head__sub">{{ selected.store }} · 划扣日期 {{ selected.date }}</div>
+            <h3 class="det-head__no">{{ selected.writeoffId }} · {{ selected.project || '—' }}</h3>
+            <div class="det-head__sub">{{ selected.store }} · 核销日期 {{ selected.date }}</div>
           </div>
           <div class="det-head__ops">
-            <CStatusPill :status="STATUS_PILL[selected.status]" dot>{{ STATUS_LABEL[selected.status] }}</CStatusPill>
+            <CStatusPill :status="pillOf(selected.status)" dot>{{ statusOf(selected.status) }}</CStatusPill>
             <CButton variant="secondary" size="sm" :disabled="!canExport" @click="exportCsv">
               <CIcon name="export" :size="14" />导出
             </CButton>
           </div>
         </div>
 
-        <div class="det-amount">¥{{ selected.amount.toLocaleString('zh-CN') }}</div>
+        <div class="det-amount">{{ selected.amount ? money(selected.amount) : `纯扣次 ${selected.timesUsed || 1} 次` }}</div>
         <dl class="det-meta">
-          <div><dt>划扣单号</dt><dd>{{ selected.no }}</dd></div>
-          <div><dt>划扣日期</dt><dd>{{ selected.date }}</dd></div>
-          <div><dt>所属门店</dt><dd>{{ selected.store }}</dd></div>
-          <div><dt>服务项目</dt><dd>{{ selected.project }}</dd></div>
-          <div><dt>台账对账状态</dt><dd>{{ selected.reconciled ? '已对账（双签完成）' : '待对账' }}</dd></div>
-          <div><dt>预收转出额</dt><dd>{{ selected.depositOut != null ? `¥${selected.depositOut.toLocaleString('zh-CN')}` : '—' }}</dd></div>
+          <div><dt>核销号</dt><dd>{{ selected.writeoffId }}</dd></div>
+          <div><dt>订单号</dt><dd>{{ selected.orderNo || '—' }}</dd></div>
+          <div><dt>客户姓名</dt><dd>{{ selected.customerName || '—' }}</dd></div>
+          <div><dt>会员卡号</dt><dd>{{ selected.cardNo || '整单核销（无卡号）' }}</dd></div>
+          <div><dt>所属门店</dt><dd>{{ selected.store }}（{{ selected.storeCode }}）</dd></div>
+          <div><dt>本次扣次</dt><dd>{{ selected.timesUsed || 1 }} 次</dd></div>
+          <div><dt>操作人</dt><dd>{{ selected.operator || '—' }}</dd></div>
+          <div><dt>异常原因</dt><dd :class="{ 'det-abn': selected.abnormalReason }">{{ selected.abnormalReason || '—' }}</dd></div>
         </dl>
 
-        <div class="na-box">
-          <CIcon name="alert" :size="15" />
-          <span>台账镜像仅含划扣号、金额、项目、门店与对账标记；<strong>客户姓名、会员卡项、剩余次数、操作人/复核人双签明细</strong>待划扣台历史查询端点接入后展示，本页不编造。</span>
-        </div>
-
-        <div class="tl">
-          <div class="tl__title"><CIcon name="clock" :size="13" />台账勾稽分录（同号配对）</div>
-          <div class="tl__row">
-            <span class="tl__dot"></span>
-            <div class="tl__body">
-              <div class="tl__text">主营业务收入（RF-REVENUE）<strong class="tl-in">+¥{{ selected.amount.toLocaleString('zh-CN') }}</strong> · 划扣确认收入</div>
-              <div class="tl__by">财务总账 · {{ selected.date }}</div>
+        <div class="sign-card" :class="`sign-card--${selected.status.toLowerCase()}`">
+          <div class="sign-card__title"><CIcon name="shield" :size="13" />双签记录</div>
+          <div class="sign-card__row">
+            <span class="sign-card__dot"></span>
+            <div class="sign-card__body">
+              <div class="sign-card__text">操作双签：<strong>{{ selected.sign1 || '—' }}</strong></div>
+              <div class="sign-card__by">核销操作人现场双签</div>
             </div>
           </div>
-          <div class="tl__row">
-            <span class="tl__dot tl__dot--out"></span>
-            <div class="tl__body">
-              <div class="tl__text">预收账款（RF-DEPOSIT）<strong class="tl-out">-¥{{ (selected.depositOut ?? selected.amount).toLocaleString('zh-CN') }}</strong> · 卡划扣预收转出</div>
-              <div class="tl__by">财务总账 · {{ selected.date }} · 与确认收入同号配对，金额相等即勾稽一致</div>
+          <div class="sign-card__row">
+            <span class="sign-card__dot" :class="{ 'sign-card__dot--off': !selected.sign2 }"></span>
+            <div class="sign-card__body">
+              <div class="sign-card__text">复核双签：<strong>{{ selected.sign2 || '待复核' }}</strong></div>
+              <div class="sign-card__by">第二人复核确认</div>
             </div>
           </div>
         </div>
 
-        <div class="mirror-note"><CIcon name="shield" :size="13" />划扣数据单向镜像自财务总账台账（finance-service 读时聚合），财务域只读。</div>
+        <div class="mirror-note"><CIcon name="shield" :size="13" />核销数据单向镜像自 txn 核销记录（finance-service 聚合代理，按登录人数据权限过滤），财务域只读。</div>
       </CCard>
     </div>
   </div>
@@ -229,13 +190,16 @@ function exportCsv() {
 .list-head { display: flex; align-items: center; gap: var(--s-sm); padding: var(--s-md) var(--s-lg); border-bottom: 1px solid var(--c-border-light); flex-wrap: wrap; }
 .list-head__title { font-size: var(--t-sm); font-weight: 700; display: flex; align-items: baseline; gap: var(--s-sm); margin-right: auto; }
 .list-head__hint { font-size: var(--t-xs); color: var(--c-text-3); font-weight: 400; }
-.list-head__right { display: flex; align-items: center; gap: var(--s-sm); flex-shrink: 0; flex-wrap: nowrap; margin-left: auto; }
+.list-head__right { display: flex; align-items: center; gap: var(--s-sm); flex-shrink: 0; flex-wrap: nowrap; }
+.list-head__search { position: relative; flex: 1; min-width: 180px; }
+.list-head__search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--c-text-3); pointer-events: none; z-index: 1; }
+.list-head__search :deep(.cinput) { padding-left: 30px; }
 .w-list { max-height: 620px; overflow-y: auto; }
-.w-row { display: block; width: 100%; text-align: left; padding: var(--s-md) var(--s-lg); background: none; border: none; border-bottom: 1px solid var(--c-border-light); cursor: pointer; border-left: 3px solid transparent; }
+.w-row { display: block; width: 100%; text-align: left; padding: var(--s-md) var(--s-lg); background: none; border: none; border-bottom: 1px solid var(--c-border-light); border-left: 3px solid transparent; cursor: pointer; }
 .w-row:hover { background: var(--c-brand-soft); }
 .w-row--active { background: var(--c-brand-soft); border-left-color: var(--c-brand); }
-.w-row--done { border-left-color: transparent; }
-.w-row--pending { border-left-color: var(--c-warning-fg); }
+.w-row--abnormal { border-left-color: var(--c-danger-fg); }
+.w-row--void { opacity: .7; }
 .w-row__top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
 .w-row__no { font-size: var(--t-xs); color: var(--c-text-3); font-variant-numeric: tabular-nums; }
 .w-row__mid { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-sm); }
@@ -262,17 +226,19 @@ function exportCsv() {
 .det-meta div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .det-meta dt { font-size: var(--t-xs); color: var(--c-text-3); }
 .det-meta dd { margin: 0; font-size: var(--t-sm); font-weight: 600; word-break: break-word; }
-.na-box { display: flex; align-items: flex-start; gap: var(--s-sm); padding: var(--s-sm) var(--s-md); background: var(--c-brand-soft); color: var(--c-text-2); border-radius: var(--r-sm); font-size: var(--t-xs); line-height: 1.7; }
-.na-box strong { color: var(--c-brand); }
-.tl { border-top: 1px solid var(--c-border-light); padding-top: var(--s-md); }
-.tl__title { display: flex; align-items: center; gap: 4px; font-size: var(--t-xs); font-weight: 700; color: var(--c-text-2); margin-bottom: var(--s-sm); }
-.tl__row { display: flex; gap: var(--s-sm); padding: 4px 0; }
-.tl__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c-success-fg); margin-top: 5px; flex-shrink: 0; }
-.tl__dot--out { background: var(--c-warning-fg); }
-.tl__text { font-size: var(--t-xs); color: var(--c-text); }
-.tl-in { color: var(--c-success-fg); font-variant-numeric: tabular-nums; }
-.tl-out { color: var(--c-warning-fg); font-variant-numeric: tabular-nums; }
-.tl__by { font-size: 10px; color: var(--c-text-3); margin-top: 2px; }
+.det-abn { color: var(--c-danger-fg); }
+
+.sign-card { padding: var(--s-md); border-radius: var(--r-md); font-size: var(--t-xs); line-height: 1.7; }
+.sign-card--done { background: var(--c-success-bg, rgba(22,163,110,.06)); }
+.sign-card--abnormal { background: var(--c-danger-bg); }
+.sign-card--void { background: var(--c-disabled-bg); }
+.sign-card__title { display: flex; align-items: center; gap: 4px; font-weight: 700; color: var(--c-text-2); margin-bottom: var(--s-sm); }
+.sign-card__row { display: flex; gap: var(--s-sm); padding: 4px 0; }
+.sign-card__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c-success-fg); margin-top: 5px; flex-shrink: 0; }
+.sign-card__dot--off { background: var(--c-text-4); }
+.sign-card__text { color: var(--c-text); }
+.sign-card__by { font-size: 10px; color: var(--c-text-3); margin-top: 2px; }
+
 .mirror-note { display: flex; align-items: center; gap: 4px; font-size: var(--t-xs); color: var(--c-text-3); }
 
 @media (max-width: 1200px) {

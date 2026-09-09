@@ -102,6 +102,73 @@ export interface CardBalanceBundle {
   timesValueTotal: number // 疗程估值合计（元）
 }
 
+// ============================================================
+// B24 卡2：单卡流水时间线 + 核销双签明细（金额单位「元」）
+// ============================================================
+
+/** 单条卡流水（customer card_ledger 投影；RECHARGE/CONSUME/REFUND/ADJUST，无独立 FREEZE） */
+export interface CardTxnDTO {
+  ledgerId: number
+  kind: 'RECHARGE' | 'CONSUME' | 'REFUND' | 'ADJUST' | string
+  amount: number // 变动额（元，正充值/负消费）
+  balanceAfter: number // 变动后储值（元）
+  giftAmount: number // 赠送金变动（元）
+  giftAfter: number // 变动后赠送金（元）
+  refNo: string // 业务单号（RC/OD/WO/RF/CC 前缀）
+  orderNo: string
+  operator: string
+  date: string // yyyy-MM-dd HH:mm:ss（上海时区）
+}
+
+/** 单卡时间线（卡快照 + 全量流水） */
+export interface CardTimelineDTO {
+  cardNo: string
+  customerId: string
+  customerName: string
+  cardItem: string
+  storeCode: string
+  store: string
+  cardType: string
+  productCode: string
+  type: 'TIMES' | 'STORED'
+  balance: number
+  giftBalance: number
+  timesTotal: number
+  timesRemain: number
+  status: 'NORMAL' | 'DORMANT' | 'FROZEN'
+  txns: CardTxnDTO[]
+}
+
+/** 核销双签明细行（txn writeoff_record 投影） */
+export interface WriteoffDetailDTO {
+  writeoffId: string
+  orderNo: string
+  cardNo: string // 整单核销为空串
+  storeCode: string
+  store: string
+  customerId: string
+  customerName: string
+  project: string
+  timesUsed: number
+  amount: number // 元（纯扣次为 0）
+  status: 'DONE' | 'ABNORMAL' | 'VOID' | string
+  operator: string
+  sign1: string
+  sign2: string
+  abnormalReason: string
+  date: string // yyyy-MM-dd
+}
+
+export interface WriteoffDetailQuery {
+  storeCode?: string
+  status?: string
+  cardNo?: string
+  customerId?: string
+  keyword?: string
+  from?: string
+  to?: string
+}
+
 export const getPrepayPool = () => client.get<PrepayPool>('/finance/prepay-pool')
 export const getTax = () => client.get<Tax[]>('/finance/tax')
 export const getAccounts = () => client.get<AccountMirror[]>('/finance/accounts')
@@ -314,6 +381,29 @@ export const getLedger = (params?: { storeCode?: string; from?: string; to?: str
 /** 会员卡余额包（finance 读时聚合 customer 会员卡，金额「元」） */
 export const getCardsBalance = (storeCode?: string) =>
   client.get<CardBalanceBundle>('/finance/cards/balance', { params: { storeCode } })
+
+/** 单卡流水时间线（卡不存在或越权后端返回 404 中文） */
+export const getCardTimeline = (cardNo: string) =>
+  client.get<CardTimelineDTO>(`/finance/cards/${encodeURIComponent(cardNo)}/timeline`)
+
+/** 核销双签明细列表（参数均可选，后端已按登录人门店域收敛） */
+export const listWriteoffDetails = (params?: WriteoffDetailQuery) =>
+  client.get<WriteoffDetailDTO[]>('/finance/writeoff-details', { params })
+
+/** 单卡流水时间线导出 CSV */
+export const exportCardLedgerCsv = async (cardNo: string) => {
+  const resp = await client.get('/finance/export/card-ledger.csv', {
+    params: { cardNo },
+    responseType: 'blob',
+  })
+  downloadCsv(resp, `卡流水-${cardNo}.csv`)
+}
+
+/** 核销双签明细导出 CSV（过滤条件同列表） */
+export const exportWriteoffCsv = async (params?: WriteoffDetailQuery) => {
+  const resp = await client.get('/finance/export/writeoffs.csv', { params, responseType: 'blob' })
+  downloadCsv(resp, '核销双签明细.csv')
+}
 
 // ============================================================
 // B5 成本域：四类成本汇总 / 手工录入（折旧 DEPRECIATION、人工 LABOR）

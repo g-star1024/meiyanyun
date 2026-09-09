@@ -5,7 +5,7 @@
  * 左：会员卡余额列表；右：选中卡余额变动时间线；上：余额构成环形图
  * 红线：余额只读镜像，不落地资金；冻结仅镜像状态。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
@@ -15,6 +15,7 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CDonutChart from '@/components/CDonutChart.vue'
 import { useFinCardBalanceStore, type CardTxn } from '@/stores/finReports'
+import { exportCardLedgerCsv } from '@/api/finance'
 
 const store = useFinCardBalanceStore()
 onMounted(() => store.seed())
@@ -24,6 +25,22 @@ const selected = computed(() => {
   if (selectedId.value) return store.get(selectedId.value) ?? null
   return store.filtered[0] ?? null
 })
+
+// 选中卡变化时懒加载真实卡流水（customer card_ledger 经 finance 聚合代理）
+watch(
+  () => selected.value?.cardNo ?? null,
+  (cardNo) => { if (cardNo) void store.loadTimeline(cardNo) },
+  { immediate: true },
+)
+
+async function exportLedger() {
+  if (!selected.value) return
+  try {
+    await exportCardLedgerCsv(selected.value.cardNo)
+  } catch (e) {
+    console.error('[finCardBalance] 导出卡流水 CSV 失败', e)
+  }
+}
 
 const kpis = computed(() => [
   { label: '卡余额总额', icon: 'finance', value: money(store.totalBalance), tone: 'brand' as const },
@@ -47,11 +64,17 @@ function timesLabel(c: { type: string; timesTotal: number; timesRemain: number }
   return `${c.timesRemain}/${c.timesTotal} 次`
 }
 
-const txnIcon = {
-  RECHARGE: 'plus', CONSUME: 'scissors', REFUND: 'refund', FREEZE: 'shield', ADJUST: 'edit',
-} as const
+const txnIcon: Record<CardTxn['type'], string> = {
+  RECHARGE: 'plus', CONSUME: 'scissors', REFUND: 'refund', ADJUST: 'edit',
+}
 const txnCls: Record<CardTxn['type'], string> = {
-  RECHARGE: 'in', CONSUME: 'out', REFUND: 'in', FREEZE: 'freeze', ADJUST: 'adj',
+  RECHARGE: 'in', CONSUME: 'out', REFUND: 'in', ADJUST: 'adj',
+}
+
+/** 流水金额展示：带符号金额（源端已带号），0 元为纯扣次/调整（如冻结） */
+function txnAmountText(t: CardTxn) {
+  if (!t.amount) return '¥0.00'
+  return `${t.amount > 0 ? '+' : '−'}${money(Math.abs(t.amount))}`
 }
 </script>
 
@@ -103,13 +126,15 @@ const txnCls: Record<CardTxn['type'], string> = {
               <div class="cb__avatar">{{ selected.customerName.slice(0, 1) }}</div>
               <div>
                 <h3 class="cb__name">{{ selected.customerName }}</h3>
-                <div class="cb__sub">{{ selected.cardNo }} · {{ store.CARD_TYPE_LABEL[selected.type] }}</div>
+                <div class="cb__sub">
+                  {{ selected.cardNo }} · {{ store.timeline?.cardItem || store.CARD_TYPE_LABEL[selected.type] }}<template v-if="store.timeline?.store"> · {{ store.timeline.store }}</template>
+                </div>
               </div>
             </div>
             <div class="cb__detail-ops">
               <CStatusPill :status="store.CARD_STATUS_PILL[selected.status]" dot>{{ store.CARD_STATUS_LABEL[selected.status] }}</CStatusPill>
-              <CButton variant="secondary" size="sm" v-perm.disable="'finance:export'">
-                <CIcon name="export" :size="14" />导出余额
+              <CButton variant="secondary" size="sm" v-perm.disable="'finance:export'" @click="exportLedger">
+                <CIcon name="export" :size="14" />导出卡流水
               </CButton>
             </div>
           </div>
@@ -140,23 +165,32 @@ const txnCls: Record<CardTxn['type'], string> = {
             <div class="stat"><span>最近消费</span><b>{{ selected.lastConsumeAt }}</b></div>
           </div>
 
-          <!-- 时间线 -->
+          <!-- 时间线（真实 card_ledger 流水，按选中卡懒加载） -->
           <div class="block">
             <div class="block__title"><span>余额变动记录</span></div>
-            <div class="tl">
-              <div v-for="t in selected.txns" :key="t.id" class="tl__item">
+            <div v-if="store.timelineLoading" class="tl-state">
+              <CIcon name="clock" :size="16" class="tl-state__spin" />流水加载中…
+            </div>
+            <div v-else-if="store.timelineError" class="tl-state tl-state--err">
+              <CIcon name="alert" :size="16" />{{ store.timelineError }}
+            </div>
+            <div v-else-if="store.timelineTxns.length === 0" class="tl-state">
+              <CIcon name="card" :size="16" />该卡暂无流水记录
+            </div>
+            <div v-else class="tl">
+              <div v-for="t in store.timelineTxns" :key="t.id" class="tl__item">
                 <div class="tl__dot" :class="`tl__dot--${txnCls[t.type]}`">
-                  <CIcon :name="txnIcon[t.type]" :size="12" />
+                  <CIcon :name="txnIcon[t.type] as any" :size="12" />
                 </div>
                 <div class="tl__body">
                   <div class="tl__top">
                     <span class="tl__type">{{ store.CARD_TXN_LABEL[t.type] }}</span>
-                    <span class="tl__amt" :class="`tl__amt--${txnCls[t.type]}`">
-                      {{ t.type === 'CONSUME' || t.type === 'FREEZE' ? '−' : t.type === 'ADJUST' ? '' : '+' }}{{ money(Math.abs(t.amount)) }}
-                    </span>
+                    <span class="tl__amt" :class="`tl__amt--${txnCls[t.type]}`">{{ txnAmountText(t) }}</span>
                   </div>
                   <div class="tl__memo">{{ t.memo }}</div>
-                  <div class="tl__date">{{ t.date }}</div>
+                  <div class="tl__date">
+                    {{ t.date }}<template v-if="t.amount"> · 余额 {{ money(t.balanceAfter) }}</template><template v-if="t.giftAmount"> · 赠送金 {{ money(t.giftAfter) }}</template>
+                  </div>
                 </div>
               </div>
             </div>
@@ -246,6 +280,10 @@ const txnCls: Record<CardTxn['type'], string> = {
 .tl__amt--adj { color: var(--c-warning-fg); }
 .tl__memo { font-size: var(--t-xs); color: var(--c-text-3); margin-top: 2px; }
 .tl__date { font-size: var(--t-xs); color: var(--c-text-4); margin-top: 2px; }
+.tl-state { display: flex; align-items: center; justify-content: center; gap: 6px; padding: var(--s-lg) 0; font-size: var(--t-xs); color: var(--c-text-3); }
+.tl-state--err { color: var(--c-danger-fg); }
+@keyframes tl-spin { to { transform: rotate(360deg); } }
+.tl-state__spin { animation: tl-spin 1s linear infinite; }
 
 .redline { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--c-warning-fg); background: var(--c-warn-soft-bg); padding: var(--s-xs) var(--s-sm); border-radius: var(--r-sm); margin: 0; }
 .detail-empty { display: flex; flex-direction: column; align-items: center; gap: var(--s-md); padding: var(--s-xxl) var(--s-lg); color: var(--c-text-3); }
