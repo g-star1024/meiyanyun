@@ -89,13 +89,15 @@ public class CustomerService {
     private final CustomerTagRelRepository tagRelRepo;
     private final CustomerTagRepository tagRepo;
     private final RefNameResolver nameResolver;
+    private final CustomerSearchEventPublisher searchEventPublisher;
 
     public CustomerService(CustomerRepository customerRepo, MemberLevelRepository levelRepo,
                            LevelRuleConfigRepository levelRuleRepo,
                            MemberCardRepository cardRepo,
                            PointsLedgerRepository ledgerRepo, PointsPoolRepository pointsPoolRepo,
                            CustomerTagRelRepository tagRelRepo, CustomerTagRepository tagRepo,
-                           RefNameResolver nameResolver) {
+                           RefNameResolver nameResolver,
+                           CustomerSearchEventPublisher searchEventPublisher) {
         this.customerRepo = customerRepo;
         this.levelRepo = levelRepo;
         this.levelRuleRepo = levelRuleRepo;
@@ -105,6 +107,7 @@ public class CustomerService {
         this.tagRelRepo = tagRelRepo;
         this.tagRepo = tagRepo;
         this.nameResolver = nameResolver;
+        this.searchEventPublisher = searchEventPublisher;
     }
 
     public List<Customer> listCustomers(String storeCode, String level, String status) {
@@ -385,7 +388,10 @@ public class CustomerService {
         c.setBudget(budget);
         c.setIntentNote(intentNote);
         // points/status/totalSpend/visitCount/createdAt 由 @PrePersist 置默认（0/活跃/0 元/0 次/当前时间）
-        return customerRepo.save(c);
+        Customer saved = customerRepo.save(c);
+        // 同事务登记 ES 同步事件（仅存客户号，中继回查 PG 取权威数据）；ES 故障不阻断建档
+        searchEventPublisher.emitUpsert(saved.getCustomerId());
+        return saved;
     }
 
     /** 可选文本：trim 后空串归一为 null（未填），非空返回去空格值。 */

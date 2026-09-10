@@ -26,4 +26,7 @@ public interface CustomerRepository extends JpaRepository<Customer, String>, Jpa
     /** 等级人数实时统计：按 customer.level 分组计数（派生统计不入库，不读 member_level.cnt 历史聚合假数据）。 */
     @Query("select c.level, count(c) from Customer c group by c.level")
     List<Object[]> countGroupByLevel();
+
+    /** ES 读时合并：最近建档的 200 个客户参与内存匹配，兜 outbox 中继秒级延迟（建档即可搜到）。 */
+    List<Customer> findTop200ByOrderByCreatedAtDesc();
 }
