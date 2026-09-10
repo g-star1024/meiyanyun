@@ -117,6 +117,15 @@ export const useArrivalStore = defineStore('arrival', () => {
       note: t.note ?? '',
       editedBy: t.editedBy ?? undefined,
       editedAt: t.editedAt ?? undefined,
+      reassignHistory: (t.reassignHistory ?? []).map((h) => ({
+        fromStaff: h.fromStaff,
+        fromStaffName: h.fromStaffName,
+        toStaff: h.toStaff,
+        toStaffName: h.toStaffName,
+        operator: h.operator,
+        operatorName: h.operatorName,
+        createdAt: h.createdAt,
+      })),
     }
   }
 

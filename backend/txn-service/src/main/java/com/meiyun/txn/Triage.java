@@ -8,7 +8,8 @@ import lombok.Setter;
 import java.time.OffsetDateTime;
 
 /**
- * 分诊单（与到店登记一对一）：分诊动作 upsert 当前行，改派不新增行（无历史时间线表，见交付 Backlog）。
+ * 分诊单（与到店登记一对一）：分诊动作 upsert 当前行；改派更新本行 forwarded_to，
+ * 每次改派另在 triage_reassign 追加历史行（见 {@link TriageReassign}）。
  *
  * <p>type：CONSULT（咨询）/ MEDICAL（医疗，被分派人须 DOCTOR 资质）/ SERVICE（服务）。
  * 分诊同事务创建 consult_plan 空 PENDING 草稿，plan_id 回挂本行。

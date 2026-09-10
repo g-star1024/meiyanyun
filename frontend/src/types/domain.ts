@@ -126,6 +126,17 @@ export interface Arrival {
 /** 分诊（可改派） */
 export type TriageType = 'CONSULT' | 'MEDICAL' | 'SERVICE'
 
+/** 分诊改派历史（时间正序：最早一次改派在前） */
+export interface ReassignHistory {
+  fromStaff: string
+  fromStaffName?: string | null
+  toStaff: string
+  toStaffName?: string | null
+  operator: string
+  operatorName?: string | null
+  createdAt: string
+}
+
 export interface Triage {
   id: string
   arrivalId: string
@@ -136,6 +147,7 @@ export interface Triage {
   note: string
   editedBy?: string
   editedAt?: string
+  reassignHistory: ReassignHistory[]
 }
 
 /**

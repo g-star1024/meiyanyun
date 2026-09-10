@@ -48,6 +48,7 @@ public class ArrivalService {
 
     private final ArrivalRepository arrivalRepo;
     private final TriageRepository triageRepo;
+    private final TriageReassignRepository reassignRepo;
     private final ArrivalNoGenerator noGen;
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
@@ -55,10 +56,12 @@ public class ArrivalService {
     private final ConsultPlanService consultPlanService;
 
     public ArrivalService(ArrivalRepository arrivalRepo, TriageRepository triageRepo,
+                          TriageReassignRepository reassignRepo,
                           ArrivalNoGenerator noGen, AuditRecorder audit, ApptRefNameResolver names,
                           OrgStaffClient orgStaffClient, ConsultPlanService consultPlanService) {
         this.arrivalRepo = arrivalRepo;
         this.triageRepo = triageRepo;
+        this.reassignRepo = reassignRepo;
         this.noGen = noGen;
         this.audit = audit;
         this.names = names;
@@ -199,7 +202,8 @@ public class ArrivalService {
 
     /**
      * 改派：仅校验新负责人在职（MEDICAL 资质不重复卡——跨店策略由前端 config 门控，
-     * 设置中心后端化见 Backlog）；只更新 triage.forwarded_to，不动方案草稿归属（对齐 mock）。
+     * 设置中心后端化见 Backlog）；更新 triage.forwarded_to 并同事务在 triage_reassign
+     * 追加一行历史，不动方案草稿归属（对齐 mock）。
      */
     @Transactional
     public Arrival reassign(String ahNo, String newAssignedTo) {
@@ -213,13 +217,28 @@ public class ArrivalService {
         if (!ST_TRIAGED.equals(a.getStatus()) && !ST_CALLED.equals(a.getStatus())) {
             throw badRequest("仅已分诊/已叫号的登记可改派，当前状态: " + a.getStatus());
         }
+        String actor = DataScope.currentActor();
+        String from = currentOwner(t);
+        if (who.equals(from)) {
+            throw badRequest("改派目标与当前负责人相同，无需改派");
+        }
         OrgStaffClient.StaffProfile staff = fetchEmployed(who);
+
+        TriageReassign history = new TriageReassign();
+        history.setTrNo(t.getTrNo());
+        history.setArrivalId(ahNo);
+        history.setStoreCode(a.getStoreCode());
+        history.setFromStaff(from);
+        history.setToStaff(staff.staffId());
+        history.setOperator(actor);
+        reassignRepo.save(history);
+
         t.setForwardedTo(staff.staffId());
-        t.setEditedBy(DataScope.currentActor());
+        t.setEditedBy(actor);
         t.setEditedAt(OffsetDateTime.now());
         triageRepo.save(t);
-        audit.record("ARRIVAL", ahNo, DataScope.currentActor(), "REASSIGN",
-                "{\"from\":\"" + esc(currentOwner(t)) + "\",\"to\":\"" + esc(staff.staffId()) + "\"}");
+        audit.record("ARRIVAL", ahNo, actor, "REASSIGN",
+                "{\"from\":\"" + esc(from) + "\",\"to\":\"" + esc(staff.staffId()) + "\"}");
         return a;
     }
 

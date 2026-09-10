@@ -25,11 +25,14 @@ public class ArrivalController {
     private final ArrivalService service;
     private final ApptRefNameResolver names;
     private final TriageRepository triageRepo;
+    private final TriageReassignRepository reassignRepo;
 
-    public ArrivalController(ArrivalService service, ApptRefNameResolver names, TriageRepository triageRepo) {
+    public ArrivalController(ArrivalService service, ApptRefNameResolver names,
+                             TriageRepository triageRepo, TriageReassignRepository reassignRepo) {
         this.service = service;
         this.names = names;
         this.triageRepo = triageRepo;
+        this.reassignRepo = reassignRepo;
     }
 
     /** 今日队列：默认今日，支持日期/门店/状态过滤；数据域强制注入。接待台与候诊看板共用一次拉全。 */
@@ -58,7 +61,7 @@ public class ArrivalController {
         return toViews(List.of(a)).get(0);
     }
 
-    /** 改派：仅更新当前分诊单 forwardedTo，不动方案草稿归属。 */
+    /** 改派：更新当前分诊单 forwardedTo 并追加改派历史（triage.reassignHistory 正序返回）。 */
     @PostMapping("/{ahNo}/reassign")
     @RequirePerm("reception:edit")
     public ArrivalView reassign(@PathVariable String ahNo, @RequestBody @Valid ReassignCmd cmd) {
@@ -91,12 +94,20 @@ public class ArrivalController {
         for (Triage t : triageRepo.findByArrivalIdIn(ahNos)) {
             triageMap.put(t.getArrivalId(), t);
         }
+        List<TriageReassign> histories = reassignRepo.findByArrivalIdInOrderByIdAsc(ahNos);
+        Map<String, List<TriageReassign>> historyMap = new LinkedHashMap<>();
+        for (TriageReassign h : histories) {
+            historyMap.computeIfAbsent(h.getArrivalId(), k -> new ArrayList<>()).add(h);
+        }
         Map<String, String> custNames = names.customerNames(
                 list.stream().map(Arrival::getCustomerId).toList());
         Map<String, String> phones = names.customerPhones(
                 list.stream().map(Arrival::getCustomerId).toList());
-        List<String> staffIds = triageMap.values().stream()
-                .flatMap(t -> java.util.stream.Stream.of(t.getAssignedTo(), t.getForwardedTo()))
+        List<String> staffIds = java.util.stream.Stream.concat(
+                triageMap.values().stream()
+                        .flatMap(t -> java.util.stream.Stream.of(t.getAssignedTo(), t.getForwardedTo())),
+                histories.stream()
+                        .flatMap(h -> java.util.stream.Stream.of(h.getFromStaff(), h.getToStaff(), h.getOperator())))
                 .filter(s -> s != null && !s.isBlank()).distinct().toList();
         Map<String, String> staffNames = names.staffNames(staffIds);
 
@@ -110,23 +121,31 @@ public class ArrivalController {
                     phones.getOrDefault(a.getCustomerId(), ""),
                     a.getChannel(), a.getQueueNo(), a.getStatus(), a.getNote(), a.getApptNo(),
                     a.getArrivedAt(), a.getCalledAt(), a.getDoneAt(),
-                    toTriageView(t, staffNames)));
+                    toTriageView(t, historyMap.getOrDefault(a.getAhNo(), List.of()), staffNames)));
         }
         return out;
     }
 
-    private TriageView toTriageView(Triage t, Map<String, String> staffNames) {
+    private TriageView toTriageView(Triage t, List<TriageReassign> histories, Map<String, String> staffNames) {
         if (t == null) {
             return null;
         }
         String owner = t.getForwardedTo() != null && !t.getForwardedTo().isBlank()
                 ? t.getForwardedTo() : t.getAssignedTo();
+        List<ReassignView> historyViews = histories.stream()
+                .map(h -> new ReassignView(
+                        h.getFromStaff(), nameOf(staffNames, h.getFromStaff()),
+                        h.getToStaff(), nameOf(staffNames, h.getToStaff()),
+                        h.getOperator(), nameOf(staffNames, h.getOperator()),
+                        h.getCreatedAt()))
+                .toList();
         return new TriageView(
                 t.getTrNo(), t.getArrivalId(), t.getCustomerId(), t.getType(),
                 t.getAssignedTo(), nameOf(staffNames, t.getAssignedTo()),
                 t.getForwardedTo(), nameOf(staffNames, t.getForwardedTo()),
                 staffNames.getOrDefault(owner, owner),
-                t.getNote(), t.getPlanId(), t.getEditedBy(), t.getEditedAt());
+                t.getNote(), t.getPlanId(), t.getEditedBy(), t.getEditedAt(),
+                historyViews);
     }
 
     private static String nameOf(Map<String, String> map, String id) {
@@ -150,7 +169,15 @@ public class ArrivalController {
             String id, String arrivalId, String customerId, String type,
             String assignedTo, String assignedToName,
             String forwardedTo, String forwardedToName, String ownerName,
-            String note, String planId, String editedBy, OffsetDateTime editedAt) {}
+            String note, String planId, String editedBy, OffsetDateTime editedAt,
+            List<ReassignView> reassignHistory) {}
+
+    /** 改派历史读模型：时间正序（最早一次改派在前），from/to/operator 均富化中文名。 */
+    public record ReassignView(
+            String fromStaff, String fromStaffName,
+            String toStaff, String toStaffName,
+            String operator, String operatorName,
+            OffsetDateTime createdAt) {}
 
     public record CheckInCmd(@NotBlank String customerId, String channel, String note) {}
 

@@ -192,6 +192,41 @@ async function confirmTriage() {
   })
   if (t) triageTarget.value = ''
 }
+
+// ---- 改派：右栏已分诊卡内联展开，候选与当前分诊类型同资质池，剔除当前负责人 ----
+const reassignTarget = ref('')
+const reassignAssign = ref('')
+function reassignOptions(t?: { type: TriageType; assignedTo: string; forwardedTo?: string }) {
+  const pool = t?.type === 'MEDICAL' ? doctorStaff.value : advisorStaff.value
+  const current = t?.forwardedTo || t?.assignedTo || ''
+  return pool
+    .filter((s) => s.staffId !== current)
+    .map((s) => ({ label: staffLabel(s), value: s.staffId }))
+}
+function openReassign(arrivalId: string, t: NonNullable<ReturnType<typeof arrival.triageOf>>) {
+  reassignTarget.value = arrivalId
+  reassignAssign.value = reassignOptions(t)[0]?.value ?? ''
+}
+async function confirmReassign(t: NonNullable<ReturnType<typeof arrival.triageOf>>) {
+  if (!reassignAssign.value) return
+  const ok = await arrival.reassign(t.id, reassignAssign.value, false)
+  if (ok) reassignTarget.value = ''
+}
+// 时间线/历史时间：ISO → 上海时区 MM-DD HH:MM（非法回退原文截取）
+function tlTime(s?: string | null): string {
+  if (!s) return '—'
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return s.slice(5, 16).replace('T', ' ')
+  try {
+    const p = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(d)
+    const get = (t: string) => p.find((x) => x.type === t)?.value ?? ''
+    return `${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`
+  } catch {
+    return s.slice(5, 16).replace('T', ' ')
+  }
+}
 </script>
 
 <template>
@@ -328,8 +363,51 @@ async function confirmTriage() {
               </div>
               <div class="tl__row2">
                 <CIcon name="user" :size="12" />
-                {{ staffName(t?.assignedTo) }}
+                {{ staffName(t?.forwardedTo || t?.assignedTo) }}
+                <span v-if="t?.forwardedTo" class="tl__reassigned">已改派</span>
                 <span class="tl__time">· {{ a.arrivedAt }}</span>
+              </div>
+
+              <!-- 改派入口（仅此页破例的最小 UI） -->
+              <div v-if="t" class="reassign">
+                <div v-if="reassignTarget !== a.id" class="reassign__head">
+                  <span v-if="t.reassignHistory.length" class="reassign__count">{{ t.reassignHistory.length }} 次改派</span>
+                  <CButton
+                    v-perm.disable="'reception:edit'"
+                    variant="ghost"
+                    size="sm"
+                    class="reassign__btn"
+                    @click="openReassign(a.id, t)"
+                  >
+                    <CIcon name="refresh" :size="12" />改派
+                  </CButton>
+                </div>
+                <div v-else class="reassign-form">
+                  <CSelect
+                    v-model="reassignAssign"
+                    :options="reassignOptions(t)"
+                    width="180px"
+                  />
+                  <div class="reassign-form__actions">
+                    <CButton variant="ghost" size="sm" @click="reassignTarget = ''">取消</CButton>
+                    <CButton
+                      variant="primary"
+                      size="sm"
+                      :disabled="!reassignAssign"
+                      @click="confirmReassign(t)"
+                    >确认改派</CButton>
+                  </div>
+                </div>
+                <ul v-if="t.reassignHistory.length" class="reassign__list">
+                  <li v-for="(h, i) in t.reassignHistory" :key="i" class="reassign__row">
+                    <span class="reassign__flow">
+                      {{ h.fromStaffName || staffName(h.fromStaff) }}
+                      <CIcon name="chevron-right" :size="11" />
+                      {{ h.toStaffName || staffName(h.toStaff) }}
+                    </span>
+                    <span class="reassign__meta">{{ tlTime(h.createdAt) }} · {{ h.operatorName || staffName(h.operator) }}</span>
+                  </li>
+                </ul>
               </div>
             </div>
           </div>
@@ -440,6 +518,20 @@ async function confirmTriage() {
 .type-chip--service { background: var(--c-teal-bg); color: var(--c-teal-fg); }
 .tl__row2 { display: flex; align-items: center; gap: 3px; font-size: var(--t-xs); color: var(--c-text-3); margin-top: 2px; }
 .tl__time { font-variant-numeric: tabular-nums; }
+.tl__reassigned { margin-left: 2px; padding: 0 6px; border-radius: var(--r-pill); background: var(--c-purple-soft); color: var(--c-purple); font-size: var(--t-xs); font-weight: 600; line-height: 16px; }
+
+/* 改派入口 + 历史（右栏最小增补） */
+.reassign { margin-top: 4px; }
+.reassign__head { display: flex; align-items: center; gap: var(--s-xs); }
+.reassign__count { font-size: var(--t-xs); color: var(--c-purple); font-weight: 600; }
+.reassign__btn { margin-left: auto; height: 26px; padding: 0 var(--s-sm); font-size: var(--t-xs); }
+.reassign-form { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; padding: var(--s-xs); border: 1px dashed var(--c-border); border-radius: var(--r-sm); }
+.reassign-form__actions { display: flex; gap: var(--s-xs); justify-content: flex-end; }
+.reassign-form :deep(.cbtn) { height: 26px; padding: 0 var(--s-sm); font-size: var(--t-xs); }
+.reassign__list { list-style: none; margin: 6px 0 0; padding: 6px 0 0; border-top: 1px dashed var(--c-border-light); display: flex; flex-direction: column; gap: 3px; }
+.reassign__row { display: flex; flex-direction: column; gap: 1px; }
+.reassign__flow { display: inline-flex; align-items: center; gap: 3px; font-size: var(--t-xs); color: var(--c-text-2); }
+.reassign__meta { font-size: 11px; color: var(--c-text-3); font-variant-numeric: tabular-nums; }
 
 /* 活动流水 */
 .rec__feed { margin-top: var(--s-sm); border-top: 1px solid var(--c-border); padding-top: var(--s-sm); max-height: 300px; overflow-y: auto; }

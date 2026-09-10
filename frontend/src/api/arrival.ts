@@ -11,6 +11,17 @@ export type ArrivalStatus = 'WAITING' | 'TRIAGED' | 'CALLED' | 'DONE' | 'LEFT'
 export type TriageType = 'CONSULT' | 'MEDICAL' | 'SERVICE'
 export type ArrivalChannel = 'WALK_IN' | 'REFERRAL' | 'MARKETING' | 'APPOINTMENT'
 
+/** 分诊改派历史读模型：时间正序（最早一次改派在前），from/to/operator 均富化中文名。 */
+export interface ReassignHistoryDTO {
+  fromStaff: string
+  fromStaffName: string | null
+  toStaff: string
+  toStaffName: string | null
+  operator: string
+  operatorName: string | null
+  createdAt: string
+}
+
 /** 内联分诊单读模型：assignedToName 为首诊负责人名，ownerName 为改派后当前负责人名。 */
 export interface TriageViewDTO {
   id: string
@@ -26,6 +37,7 @@ export interface TriageViewDTO {
   planId: string | null
   editedBy: string | null
   editedAt: string | null
+  reassignHistory: ReassignHistoryDTO[]
 }
 
 /** 到店记录读模型（后端富化客户名/掩码手机号 + 内联当前分诊单）。 */
