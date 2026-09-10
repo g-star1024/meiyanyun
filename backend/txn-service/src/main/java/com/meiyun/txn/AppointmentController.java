@@ -43,13 +43,15 @@ public class AppointmentController {
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
     private final WriteoffDeskService writeoffDeskService;
+    private final ArrivalService arrivalService;
 
     public AppointmentController(AppointmentRepository repo, AuditRecorder audit, ApptRefNameResolver names,
-                                 WriteoffDeskService writeoffDeskService) {
+                                 WriteoffDeskService writeoffDeskService, ArrivalService arrivalService) {
         this.repo = repo;
         this.audit = audit;
         this.names = names;
         this.writeoffDeskService = writeoffDeskService;
+        this.arrivalService = arrivalService;
     }
 
     /** 创建预约（含外键/枚举/幂等校验）。 */
@@ -140,6 +142,7 @@ public class AppointmentController {
         Appointment saved = repo.save(a);
         audit.record("APPT", no, DataScope.currentActor(), "CHECK_IN", "{}");
         writeoffDeskService.createFromAppointment(saved);
+        arrivalService.createFromAppointment(saved);
         return toView(saved);
     }
 

@@ -46,13 +46,14 @@ public class ConsultPlanService {
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
     private final StoreCatalogClient catalogClient;
+    private final EmrService emrService;
     private final ObjectMapper json = new ObjectMapper();
 
     public ConsultPlanService(PlanRepository planRepo, PlanItemRepository itemRepo,
                               PlanRevisionRepository revRepo, TxnOrderRepository orderRepo,
                               OrderItemRepository orderItemRepo, OrderNoGenerator orderNoGen,
                               AuditRecorder audit, ApptRefNameResolver names,
-                              StoreCatalogClient catalogClient) {
+                              StoreCatalogClient catalogClient, EmrService emrService) {
         this.planRepo = planRepo;
         this.itemRepo = itemRepo;
         this.revRepo = revRepo;
@@ -62,6 +63,7 @@ public class ConsultPlanService {
         this.audit = audit;
         this.names = names;
         this.catalogClient = catalogClient;
+        this.emrService = emrService;
     }
 
     // ==================== DTO ====================
@@ -493,8 +495,22 @@ public class ConsultPlanService {
         }
 
         p.setOrderNo(order.getOrderNo());
-        p.setEmrId(nextEmrNo());
-        p.setEmrSignedAt(OffsetDateTime.now());
+        OffsetDateTime emrSignedAt = OffsetDateTime.now();
+        // 首程病历同事务独立落库 emr_record（FIRST_VISIT/SIGNED），consult_id+type 幂等防双写，
+        // EM 号回挂 consult_plan.emr_id（号码池统一走查库序号）。
+        String treatmentFromItems = items.stream()
+                .map(pi -> pi.getItemName() + "×" + pi.getQty()).reduce((a, b) -> a + "、" + b).orElse(null);
+        EmrRecord emr = emrService.recordSignedFromPlan(p, new EmrService.PlanEmrInput(
+                "FIRST_VISIT", p.getDoctorId(), diagnosis,
+                cmd != null && !blank(cmd.treatment()) ? cmd.treatment().trim() : treatmentFromItems,
+                cmd == null ? null : cmd.chiefComplaint(),
+                cmd == null ? null : cmd.presentIllness(),
+                cmd == null ? null : cmd.pastHistory(),
+                contraDetail(p),
+                cmd == null ? null : cmd.prescription(),
+                order.getOrderNo(), emrSignedAt));
+        p.setEmrId(emr.getEmrNo());
+        p.setEmrSignedAt(emrSignedAt);
         p.setStatus("READY_PAY");
         planRepo.save(p);
 
@@ -707,8 +723,14 @@ public class ConsultPlanService {
         }
         String note = cmd.treatmentNote().trim();
         String prescription = cmd.prescription() == null ? null : cmd.prescription().trim();
-        String emrNo = nextEmrNo();
         OffsetDateTime now = OffsetDateTime.now();
+        // 治疗记录同事务独立落库 emr_record（TREATMENT/SIGNED），consult_id+type 幂等防双写，
+        // EM 号回挂 consult_plan.treat_emr_id。
+        EmrRecord treatEmr = emrService.recordSignedFromPlan(p, new EmrService.PlanEmrInput(
+                "TREATMENT", null, null, note,
+                null, null, null, contraDetail(p), prescription,
+                p.getOrderNo(), now));
+        String emrNo = treatEmr.getEmrNo();
         p.setTreatNote(note);
         p.setTreatPrescription(prescription);
         p.setTreatEmrId(emrNo);
@@ -910,12 +932,6 @@ public class ConsultPlanService {
         String day = LocalDate.now().toString().replace("-", "");
         long seq = planRepo.maxSeqOfDay("CP" + day + "-%") + 1;
         return "CP" + day + "-" + String.format("%06d", seq);
-    }
-
-    private synchronized String nextEmrNo() {
-        String day = LocalDate.now().toString().replace("-", "");
-        return "EM" + day + "-" + String.format("%06d",
-                new java.util.concurrent.atomic.AtomicLong(System.nanoTime() % 1_000_000).incrementAndGet() % 1_000_000);
     }
 
     private String toJson(Object o) {
