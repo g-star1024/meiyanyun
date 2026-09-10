@@ -56,6 +56,7 @@ export interface ArrivalViewDTO {
   arrivedAt: string
   calledAt: string | null
   doneAt: string | null
+  leftAt: string | null
   triage: TriageViewDTO | null
 }
 
@@ -98,3 +99,7 @@ export const callArrival = (ahNo: string) =>
 /** 完成接诊：TRIAGED/CALLED → DONE（幂等）。 */
 export const doneArrival = (ahNo: string) =>
   client.post<ArrivalViewDTO>(`/txn/arrivals/${ahNo}/done`, {})
+
+/** 手工释放号源：WAITING → LEFT（leftAt 落库），后端同事务触发本店候补首位递补。 */
+export const releaseArrival = (ahNo: string) =>
+  client.post<ArrivalViewDTO>(`/txn/arrivals/${ahNo}/release`, {})

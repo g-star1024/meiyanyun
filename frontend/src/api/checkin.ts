@@ -32,6 +32,10 @@ export interface CheckinRecordDTO {
   checkedAt: string | null
   operator: string
   note: string | null
+  /** 预约到店自动勾连的预约单号（未命中为 null） */
+  apptNo: string | null
+  /** 勾连同事务生成的待划扣任务号（未生成/未命中为 null） */
+  wdNo: string | null
   timeline: CheckinTimelineDTO[]
 }
 

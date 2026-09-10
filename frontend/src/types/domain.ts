@@ -121,6 +121,8 @@ export interface Arrival {
   channel: Customer['channel']
   queueNo: number
   status: ArrivalStatus
+  /** 号源释放时间（status=LEFT，上海时区 HH:MM） */
+  leftAt?: string
 }
 
 /** 分诊（可改派） */

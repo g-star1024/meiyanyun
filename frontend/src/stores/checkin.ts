@@ -41,6 +41,9 @@ export interface CheckinRecord {
   checkedAt?: string
   operator: string
   note?: string
+  /** 自动勾连的预约单号 / 待划扣任务号（散客或未命中预约时为空） */
+  apptNo?: string
+  wdNo?: string
   timeline: CheckinTimeline[]
 }
 
@@ -77,6 +80,8 @@ function adapt(d: CheckinRecordDTO): CheckinRecord {
     checkedAt: d.checkedAt ?? undefined,
     operator: d.operator,
     note: d.note ?? undefined,
+    apptNo: d.apptNo ?? undefined,
+    wdNo: d.wdNo ?? undefined,
     timeline: (d.timeline ?? []).slice().reverse(),
   }
 }

@@ -184,6 +184,10 @@ async function doReset() {
           <div class="field"><span class="field__label">预约/核销项目</span><span class="field__val">{{ selected.project }}</span></div>
           <div class="field"><span class="field__label">到店时间</span><span class="field__val">{{ fmtTime(selected.arrivedAt) }}</span></div>
           <div class="field"><span class="field__label">核销时间</span><span class="field__val">{{ fmtTime(selected.checkedAt) }}</span></div>
+          <div v-if="selected.apptNo" class="field">
+            <span class="field__label">勾连预约单</span>
+            <span class="field__val">{{ selected.apptNo }}<template v-if="selected.wdNo"> · 划扣任务 {{ selected.wdNo }}</template></span>
+          </div>
           <div v-if="selected.status === 'EXCEPTION'" class="field">
             <span class="field__label">异常原因</span>
             <span class="field__val is-danger">{{ store.EXCEPTION_LABEL[selected.exceptionReason] }}</span>

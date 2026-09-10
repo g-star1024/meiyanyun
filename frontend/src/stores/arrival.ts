@@ -18,7 +18,7 @@ import { useToast } from '@/composables/useToast'
 import { errMsg } from './m5Coupon'
 import {
   listArrivals, checkInArrival, triageArrival, reassignArrival,
-  callArrival, doneArrival,
+  callArrival, doneArrival, releaseArrival,
   type ArrivalViewDTO,
 } from '@/api/arrival'
 
@@ -85,6 +85,8 @@ export const useArrivalStore = defineStore('arrival', () => {
   const waiting = computed(() => arrivals.value.filter((a) => a.status === 'WAITING'))
   const triaged = computed(() => arrivals.value.filter((a) => a.status === 'TRIAGED' || a.status === 'CALLED'))
   const done = computed(() => arrivals.value.filter((a) => a.status === 'DONE'))
+  /** 已释放（手工/超时自动）：WAITING → LEFT，号源已交回并触发候补递补 */
+  const left = computed(() => arrivals.value.filter((a) => a.status === 'LEFT'))
 
   function get(id: string) {
     return arrivals.value.find((a) => a.id === id)
@@ -102,6 +104,7 @@ export const useArrivalStore = defineStore('arrival', () => {
       channel: CHANNEL_TO_DOMAIN[d.channel] ?? 'ONLINE_APPT',
       queueNo: d.queueNo,
       status: d.status as ArrivalStatus,
+      leftAt: d.leftAt ? hhmm(d.leftAt) : undefined,
     }
   }
   function adaptTriage(d: ArrivalViewDTO): Triage | null {
@@ -247,6 +250,19 @@ export const useArrivalStore = defineStore('arrival', () => {
     }
   }
 
+  /** 手工释放号源：WAITING → LEFT，后端同事务递补本店候补首位；页面已二次确认。 */
+  async function release(arrivalId: string): Promise<boolean> {
+    try {
+      await releaseArrival(arrivalId)
+      activity.log(auth.user.name, '手工释放号源，已触发候补递补', arrivalId)
+      await load(auth.user.storeId)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '释放号源失败'))
+      return false
+    }
+  }
+
   /** 候诊超时检查（按设置中心 waitingTimeoutMin；返回超时到店记录） */
   function overdue() {
     const limit = settings.system.queue.waitingTimeoutMin
@@ -261,7 +277,7 @@ export const useArrivalStore = defineStore('arrival', () => {
   }
 
   return {
-    arrivals, triages, waiting, triaged, done,
-    get, triageOf, load, checkIn, triage, reassign, call, markDone, overdue, seed,
+    arrivals, triages, waiting, triaged, done, left,
+    get, triageOf, load, checkIn, triage, reassign, call, markDone, release, overdue, seed,
   }
 })
