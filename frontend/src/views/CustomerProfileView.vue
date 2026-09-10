@@ -131,6 +131,24 @@ const avatarLetter = computed(() => customer.value?.name?.charAt(0) ?? '客')
 const ownerText = computed(() => customer.value?.ownerStaffName || '未分配')
 const storeText = computed(() => customer.value?.storeName || customer.value?.storeCode || '—')
 
+// 客情登记扩展信息（建档页写入）：有值才显示，老客户/未填字段不占位
+const profileExtraRows = computed<{ label: string; value: string }[]>(() => {
+  const c = customer.value
+  if (!c) return []
+  const rows: { label: string; value: string }[] = []
+  if (c.age != null) rows.push({ label: '年龄', value: `${c.age} 岁` })
+  if (c.skinType) rows.push({ label: '肤质', value: c.skinType })
+  if (c.concerns?.length) rows.push({ label: '主要诉求', value: c.concerns.join('、') })
+  if (c.allergyNone) rows.push({ label: '过敏史', value: '无过敏史' })
+  else if (c.allergies?.length) rows.push({ label: '过敏史', value: c.allergies.join('、') })
+  if (c.allergyNote) rows.push({ label: '过敏备注', value: c.allergyNote })
+  if (c.intentProjects?.length) rows.push({ label: '意向项目', value: c.intentProjects.join('、') })
+  if (c.intentLevel) rows.push({ label: '意向程度', value: c.intentLevel })
+  if (c.budget) rows.push({ label: '预算范围', value: c.budget })
+  if (c.intentNote) rows.push({ label: '沟通要点', value: c.intentNote })
+  return rows
+})
+
 function fmtDate(s?: string) {
   if (!s) return '—'
   const d = new Date(s)
@@ -649,6 +667,7 @@ const compliance = [
               <div class="kv"><span>归属咨询师</span><strong>{{ ownerText }}</strong></div>
               <div class="kv"><span>所属门店</span><strong>{{ storeText }}</strong></div>
               <div class="kv"><span>注册时间</span><strong>{{ registerDate }}</strong></div>
+              <div v-for="r in profileExtraRows" :key="r.label" class="kv"><span>{{ r.label }}</span><strong>{{ r.value }}</strong></div>
             </div>
 
             <div class="cp__sub-title">会员卡（{{ cards.length }}）</div>

@@ -35,6 +35,17 @@ export interface CustomerDTO {
   birthDate?: string | null
   /** 注册时间 ISO-8601 UTC（详情接口返回） */
   createdAt?: string | null
+  /** 客情登记扩展字段（建档页写入，详情回显；老客户为空） */
+  age?: number | null
+  skinType?: string | null
+  concerns?: string[]
+  allergyNone?: boolean | null
+  allergies?: string[]
+  allergyNote?: string | null
+  intentProjects?: string[]
+  intentLevel?: string | null
+  budget?: string | null
+  intentNote?: string | null
 }
 
 /** Spring Data Page 序列化结构（仅取列表所需字段） */

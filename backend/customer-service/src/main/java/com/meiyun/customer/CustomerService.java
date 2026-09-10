@@ -35,6 +35,24 @@ public class CustomerService {
     private static final Pattern PHONE_RE = Pattern.compile("^1[3-9]\\d{9}$");
     /** 标签分类白名单（对齐 customer_tag.category CHECK 五分类）。 */
     private static final Set<String> TAG_CATEGORIES = Set.of("消费", "肤质", "行为", "价值", "医疗");
+    /** 客情登记扩展：肤质类型白名单（对齐 GuestRegView 选项）。 */
+    private static final Set<String> SKIN_TYPES = Set.of("干性", "油性", "混合性", "敏感性", "中性");
+    /** 客情登记扩展：主要诉求白名单。 */
+    private static final Set<String> CONCERNS =
+            Set.of("痤疮", "色斑", "抗衰", "敏感泛红", "毛孔粗大", "补水", "除皱", "形体");
+    /** 客情登记扩展：过敏史阳性项白名单。 */
+    private static final Set<String> ALLERGIES = Set.of("药物", "麻醉药", "食物", "金属", "乳胶", "其他");
+    /** 客情登记扩展：意向项目白名单。 */
+    private static final Set<String> INTENT_PROJECTS =
+            Set.of("光子嫩肤", "热玛吉", "水光针", "玻尿酸", "瘦脸针", "果酸焕肤", "双眼皮", "皮肤检测");
+    /** 客情登记扩展：意向程度白名单。 */
+    private static final Set<String> INTENT_LEVELS = Set.of("高", "中", "低");
+    /** 客情登记扩展：预算区间白名单。 */
+    private static final Set<String> BUDGETS = Set.of("3千以下", "3千-1万", "1万-3万", "3万以上");
+    /** 客情登记扩展：多选清单元素/自由文本长度上限。 */
+    private static final int LIST_ITEM_MAX = 32;
+    private static final int LIST_SIZE_MAX = 16;
+    private static final int NOTE_MAX = 512;
 
     /** 等级序：五级中文短名主键 → sortNo（member_level.sort_no 回填前的兜底口径）。 */
     private static final Map<String, Integer> LEVEL_ORDER = Map.of(
@@ -181,7 +199,10 @@ public class CustomerService {
                 c.getLevel(), c.getStoreCode(), storeNames.get(c.getStoreCode()),
                 c.getChannel(), c.getTotalSpend(), c.getVisitCount(),
                 c.getOwnerStaffId(), staffNames.get(c.getOwnerStaffId()),
-                c.getStatus(), c.getPoints(), c.getCreatedAt());
+                c.getStatus(), c.getPoints(), c.getCreatedAt(),
+                c.getAge(), c.getSkinType(), c.getConcerns(), c.getAllergyNone(),
+                c.getAllergies(), c.getAllergyNote(), c.getIntentProjects(),
+                c.getIntentLevel(), c.getBudget(), c.getIntentNote());
     }
 
     /**
@@ -301,6 +322,34 @@ public class CustomerService {
         if (channel.isEmpty()) channel = "WALK_IN";
         if (!CHANNELS.contains(channel)) throw new BadReq("获客渠道取值非法：" + channel);
 
+        // ---- 客情登记扩展字段（全部选填；给值即白名单/长度校验；医疗安全基线：无过敏史与阳性项互斥） ----
+        Integer age = input.getAge();
+        if (age != null && (age < 1 || age > 150)) throw new BadReq("年龄取值非法（1~150）");
+        String skinType = trimOpt(input.getSkinType());
+        if (skinType != null && !SKIN_TYPES.contains(skinType)) throw new BadReq("肤质类型取值非法：" + skinType);
+        List<String> concerns = normalizeList(input.getConcerns(), CONCERNS, "主要诉求");
+        List<String> allergies = normalizeList(input.getAllergies(), ALLERGIES, "过敏史");
+        boolean allergyNone = Boolean.TRUE.equals(input.getAllergyNone());
+        if (allergyNone && !allergies.isEmpty()) {
+            throw new BadReq("已确认无过敏史时不能同时勾选过敏史阳性项");
+        }
+        String allergyNote = trimOpt(input.getAllergyNote());
+        if (allergyNote != null && allergyNote.length() > NOTE_MAX) {
+            throw new BadReq("过敏/病史补充不能超过 " + NOTE_MAX + " 字");
+        }
+        List<String> intentProjects =
+                normalizeList(input.getIntentProjects(), INTENT_PROJECTS, "意向项目");
+        String intentLevel = trimOpt(input.getIntentLevel());
+        if (intentLevel != null && !INTENT_LEVELS.contains(intentLevel)) {
+            throw new BadReq("意向程度取值非法：" + intentLevel);
+        }
+        String budget = trimOpt(input.getBudget());
+        if (budget != null && !BUDGETS.contains(budget)) throw new BadReq("预算区间取值非法：" + budget);
+        String intentNote = trimOpt(input.getIntentNote());
+        if (intentNote != null && intentNote.length() > NOTE_MAX) {
+            throw new BadReq("沟通要点不能超过 " + NOTE_MAX + " 字");
+        }
+
         // 归属门店/归属人由登录上下文权威注入（SELF/STORE 有门店；GROUP/REGION 无门店则进公海）
         String storeCode = DataScope.current() != null ? trim(DataScope.current().storeCode()) : "";
         if (storeCode.isEmpty()) storeCode = null;
@@ -325,8 +374,45 @@ public class CustomerService {
         c.setBirthDate(input.getBirthDate());
         c.setStoreCode(storeCode);
         c.setOwnerStaffId(ownerStaffId);
+        c.setAge(age);
+        c.setSkinType(skinType);
+        c.setConcerns(concerns);
+        c.setAllergyNone(allergyNone);
+        c.setAllergies(allergies);
+        c.setAllergyNote(allergyNote);
+        c.setIntentProjects(intentProjects);
+        c.setIntentLevel(intentLevel);
+        c.setBudget(budget);
+        c.setIntentNote(intentNote);
         // points/status/totalSpend/visitCount/createdAt 由 @PrePersist 置默认（0/活跃/0 元/0 次/当前时间）
         return customerRepo.save(c);
+    }
+
+    /** 可选文本：trim 后空串归一为 null（未填），非空返回去空格值。 */
+    private static String trimOpt(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
+    }
+
+    /**
+     * 多选清单归一：null/空 → 空数组（老客户列读出同样为空数组）；逐项 trim 去空、去重保序；
+     * 元素长度 ≤32、项数 ≤16、取值必须在白名单，否则中文 400（防伪造标签落库）。
+     */
+    private static List<String> normalizeList(List<String> raw, Set<String> whitelist, String label) {
+        if (raw == null || raw.isEmpty()) return List.of();
+        List<String> out = new ArrayList<>();
+        for (String item : raw) {
+            String t = item == null ? "" : item.trim();
+            if (t.isEmpty() || out.contains(t)) continue;
+            if (t.length() > LIST_ITEM_MAX) throw new BadReq(label + "选项最长 " + LIST_ITEM_MAX + " 字：" + t);
+            if (!whitelist.contains(t)) throw new BadReq(label + "取值非法：" + t);
+            out.add(t);
+        }
+        if (out.size() > LIST_SIZE_MAX) {
+            throw new BadReq(label + "最多选择 " + LIST_SIZE_MAX + " 项");
+        }
+        return List.copyOf(out);
     }
 
     /** 生成下一个客户编号：M+3 位序号，基于库内最大号递增（synchronized 防并发重号）。 */

@@ -4,7 +4,7 @@
  * 新客建档：基础信息 + 来源渠道 + 皮肤/过敏史 + 咨询意向。
  * 输入手机号时实时撞单提示（远程 /customer/search 同号 + 本地缓存），不自动合并；
  * 建档走 POST /customer 真实链路（门店由后端按 JWT 注入，等级默认普通；
- * 标签/肤质/过敏史等扩展写字段后端尚缺，暂仅在本页预览，见 Backlog），
+ * 肤质/诉求/过敏史/咨询意向等扩展字段同链路入库，客户档案 tab 回显），
  * 成功后自动到店登记（arrival.checkIn），跳转接待台候诊队列。
  * 权限：customer:create（路由守卫 + 提交按钮 v-perm 双保险）。
  * ============================================================ */
@@ -177,6 +177,16 @@ async function submit() {
       level: '普通',
       channel: CUSTOMER_CHANNEL_MAP[channel.value] ?? 'OTHER',
       storeCode: null,
+      age: age.value.trim() ? Number(age.value.trim()) : null,
+      skinType: skinType.value || null,
+      concerns: concerns.value,
+      allergyNone: allergyNone.value,
+      allergies: allergies.value,
+      allergyNote: allergyNote.value.trim() || null,
+      intentProjects: intentProjects.value,
+      intentLevel: intentLevel.value || null,
+      budget: budget.value || null,
+      intentNote: intentNote.value.trim() || null,
     })
     customerId = res.data.customerId
     // 回填本地缓存：姓名/掩码手机号立即用于撞单提示与各页下拉，无需等待重新拉取

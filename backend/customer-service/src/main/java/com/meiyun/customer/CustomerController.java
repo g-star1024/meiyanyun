@@ -81,7 +81,14 @@ public class CustomerController {
         return "{\"customerId\":\"" + esc(c.getCustomerId()) + "\",\"name\":\"" + esc(c.getName())
                 + "\",\"gender\":\"" + esc(c.getGender()) + "\",\"level\":\"" + esc(c.getLevel())
                 + "\",\"channel\":\"" + esc(c.getChannel()) + "\",\"storeCode\":\"" + esc(c.getStoreCode())
-                + "\",\"ownerStaffId\":\"" + esc(c.getOwnerStaffId()) + "\"}";
+                + "\",\"ownerStaffId\":\"" + esc(c.getOwnerStaffId())
+                + "\",\"skinType\":\"" + esc(c.getSkinType())
+                + "\",\"concerns\":" + jsonList(c.getConcerns())
+                + ",\"allergyNone\":" + Boolean.TRUE.equals(c.getAllergyNone())
+                + ",\"allergies\":" + jsonList(c.getAllergies())
+                + ",\"intentProjects\":" + jsonList(c.getIntentProjects())
+                + ",\"intentLevel\":\"" + esc(c.getIntentLevel())
+                + "\",\"budget\":\"" + esc(c.getBudget()) + "\"}";
     }
 
     private String esc(String s) {
