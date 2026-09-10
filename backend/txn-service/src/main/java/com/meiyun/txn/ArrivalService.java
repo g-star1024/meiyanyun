@@ -3,6 +3,7 @@ package com.meiyun.txn;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.LoginUser;
 import com.meiyun.txn.audit.AuditRecorder;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
@@ -54,11 +55,13 @@ public class ArrivalService {
     private final ApptRefNameResolver names;
     private final OrgStaffClient orgStaffClient;
     private final ConsultPlanService consultPlanService;
+    private final WaitlistService waitlistService;
 
     public ArrivalService(ArrivalRepository arrivalRepo, TriageRepository triageRepo,
                           TriageReassignRepository reassignRepo,
                           ArrivalNoGenerator noGen, AuditRecorder audit, ApptRefNameResolver names,
-                          OrgStaffClient orgStaffClient, ConsultPlanService consultPlanService) {
+                          OrgStaffClient orgStaffClient, ConsultPlanService consultPlanService,
+                          @Lazy WaitlistService waitlistService) {
         this.arrivalRepo = arrivalRepo;
         this.triageRepo = triageRepo;
         this.reassignRepo = reassignRepo;
@@ -67,6 +70,7 @@ public class ArrivalService {
         this.names = names;
         this.orgStaffClient = orgStaffClient;
         this.consultPlanService = consultPlanService;
+        this.waitlistService = waitlistService;
     }
 
     // ==================== 到店登记 ====================
@@ -273,6 +277,58 @@ public class ArrivalService {
         a.setDoneAt(OffsetDateTime.now());
         arrivalRepo.save(a);
         audit.record("ARRIVAL", ahNo, DataScope.currentActor(), "DONE", "{}");
+        return a;
+    }
+
+    // ==================== 号源释放（手工 / 超时自动） ====================
+
+    /**
+     * 前台手工释放号源：WAITING → LEFT（leftAt 落库），并在同事务触发本店候补递补（无候补则仅释放）。
+     * 越权统一 404（requireArrival 已断言门店数据域）；非 WAITING 中文 400。
+     */
+    @Transactional
+    public Arrival release(String ahNo) {
+        Arrival a = requireArrival(ahNo);
+        if (!ST_WAITING.equals(a.getStatus())) {
+            throw badRequest("仅候诊中的登记可释放号源，当前状态: " + a.getStatus());
+        }
+        return releaseInternal(a, DataScope.currentActor(), "MANUAL", true);
+    }
+
+    /**
+     * 超时自动释放（Job 无登录上下文调用）：按 ahNo 在本事务内重新加载，WAITING → LEFT（leftAt 落库）
+     * + 同事务候补递补通知。不做数据域断言（系统线程 DataScope 为空本就全量可见，ahNo 由 Job 扫描得出）；
+     * 候补通知无可用目标（org 不可用/全免打扰/无候补）不阻断释放——号源释放本身必须生效。
+     * 记录已不存在/已非 WAITING（崩溃重入、手工抢先处理）返回 null，由 Job 计为跳过。
+     */
+    @Transactional
+    public Arrival releaseTimeoutBySystem(String ahNo) {
+        Arrival a = arrivalRepo.findById(ahNo).orElse(null);
+        if (a == null || !ST_WAITING.equals(a.getStatus())) {
+            return null;
+        }
+        return releaseInternal(a, "system", "TIMEOUT", true);
+    }
+
+    /**
+     * 释放内核：幂等（非 WAITING 直接返回当前态，供 Job 崩溃重入）；promoteWaitlist=false 时不递补
+     * （保留给纯释放场景）。调用方须经本类 Spring 代理的事务方法进入（手工 release / Job releaseTimeoutBySystem）。
+     */
+    private Arrival releaseInternal(Arrival a, String actor, String reason, boolean promoteWaitlist) {
+        if (!ST_WAITING.equals(a.getStatus())) {
+            return a;
+        }
+        OffsetDateTime now = OffsetDateTime.now();
+        a.setStatus(ST_LEFT);
+        a.setLeftAt(now);
+        arrivalRepo.save(a);
+        boolean promoted = false;
+        if (promoteWaitlist) {
+            promoted = waitlistService.promoteNext(a.getStoreCode());
+        }
+        audit.record("ARRIVAL", a.getAhNo(), actor, "RELEASE",
+                "{\"reason\":\"" + reason + "\",\"queueNo\":" + a.getQueueNo()
+                        + ",\"waitlistPromoted\":" + promoted + "}");
         return a;
     }
 

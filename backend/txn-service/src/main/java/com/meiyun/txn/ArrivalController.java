@@ -83,6 +83,13 @@ public class ArrivalController {
         return toViews(List.of(service.done(ahNo))).get(0);
     }
 
+    /** 手工释放号源：WAITING → LEFT（leftAt 落库），同事务触发本店候补首位递补通知。 */
+    @PostMapping("/{ahNo}/release")
+    @RequirePerm("queue:edit")
+    public ArrivalView release(@PathVariable String ahNo) {
+        return toViews(List.of(service.release(ahNo))).get(0);
+    }
+
     // ---- 读模型富化 ----
 
     private List<ArrivalView> toViews(List<Arrival> list) {
@@ -120,7 +127,7 @@ public class ArrivalController {
                     custNames.getOrDefault(a.getCustomerId(), a.getCustomerId()),
                     phones.getOrDefault(a.getCustomerId(), ""),
                     a.getChannel(), a.getQueueNo(), a.getStatus(), a.getNote(), a.getApptNo(),
-                    a.getArrivedAt(), a.getCalledAt(), a.getDoneAt(),
+                    a.getArrivedAt(), a.getCalledAt(), a.getDoneAt(), a.getLeftAt(),
                     toTriageView(t, historyMap.getOrDefault(a.getAhNo(), List.of()), staffNames)));
         }
         return out;
@@ -162,6 +169,7 @@ public class ArrivalController {
             String customerName, String phoneMask,
             String channel, int queueNo, String status, String note, String apptNo,
             OffsetDateTime arrivedAt, OffsetDateTime calledAt, OffsetDateTime doneAt,
+            OffsetDateTime leftAt,
             TriageView triage) {}
 
     /** 内联分诊单读模型：assignedToName 为首诊负责人名，ownerName 为改派后当前负责人名。 */

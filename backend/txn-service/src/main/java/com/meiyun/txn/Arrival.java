@@ -65,6 +65,10 @@ public class Arrival {
     @Column(name = "done_at")
     private OffsetDateTime doneAt;
 
+    /** 离开/号源释放时间（WAITING → LEFT；手工释放与超时自动释放同列，原因见审计 payload）。 */
+    @Column(name = "left_at")
+    private OffsetDateTime leftAt;
+
     /** 登记/操作人工号（JWT 登录人，不信入参）。 */
     @Column(nullable = false, length = 32)
     private String operator;

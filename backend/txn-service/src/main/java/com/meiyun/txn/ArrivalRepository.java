@@ -25,4 +25,11 @@ public interface ArrivalRepository
     int maxQueueNo(@Param("storeCode") String storeCode,
                    @Param("start") OffsetDateTime start,
                    @Param("end") OffsetDateTime end);
+
+    /**
+     * 超时自动释放扫描：WAITING 且到店时间早于截止点（= 超时阈值 + 宽限）的最早 50 条，FIFO。
+     * 仅 WAITING 参与（已分诊/已叫号说明已被接待，不得自动释放）。
+     */
+    List<Arrival> findFirst50ByStatusAndArrivedAtBeforeOrderByArrivedAtAsc(
+            String status, OffsetDateTime cutoff);
 }
