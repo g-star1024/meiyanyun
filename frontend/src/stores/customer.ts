@@ -209,15 +209,55 @@ export const useCustomerStore = defineStore('customer', () => {
   const links = ref<CustomerLink[]>([])
   const merges = ref<CustomerMerge[]>([])
 
+  // 远程客户轻量缓存（真实接待/分诊/病历链路回填；与本地 mock 种子分离，远程优先、未命中回落 mock）
+  const remoteCustomers = ref<Customer[]>([])
+
+  function maskPhone(phone?: string | null): string {
+    if (!phone) return ''
+    return phone.replace(/(\d{3})\d{4}(\d{4})/, '$1****$2')
+  }
+
+  /** 远程读模型回填（searchCustomers / ArrivalView 富化客户名等） */
+  function hydrate(list: Array<{
+    customerId: string
+    customerName?: string | null
+    name?: string | null
+    phoneMask?: string | null
+    phone?: string | null
+    storeCode?: string | null
+  }>) {
+    for (const item of list || []) {
+      if (!item?.customerId) continue
+      const idx = remoteCustomers.value.findIndex((c) => c.id === item.customerId)
+      const c: Customer = {
+        id: item.customerId,
+        name: item.customerName || item.name || item.customerId,
+        avatarLetter: (item.customerName || item.name || '客').charAt(0),
+        phoneMask: item.phoneMask || maskPhone(item.phone),
+        phone: item.phone || undefined,
+        channel: 'WALK_IN',
+        level: 'NEW',
+        tags: [],
+        storeId: item.storeCode || STORE_ID,
+      }
+      if (idx >= 0) remoteCustomers.value.splice(idx, 1, c)
+      else remoteCustomers.value.push(c)
+    }
+  }
+
+  function remoteGet(id: string) {
+    return remoteCustomers.value.find((c) => c.id === id && !c.masterId)
+  }
+
   function nameOf(id: string) {
     if (id === 'WALKIN') return '散客'
-    return customers.value.find((c) => c.id === id)?.name || id
+    return remoteGet(id)?.name || customers.value.find((c) => c.id === id)?.name || id
   }
   function phoneOf(id: string) {
-    return customers.value.find((c) => c.id === id)?.phone || ''
+    return remoteGet(id)?.phone || customers.value.find((c) => c.id === id)?.phone || ''
   }
   function get(id: string) {
-    return customers.value.find((c) => c.id === id && !c.masterId)
+    return remoteGet(id) || customers.value.find((c) => c.id === id && !c.masterId)
   }
 
   /** SELF 数据域：本人客户 = ownerStaffId 命中，或在有效期内经审核的转介绍客户 */
@@ -262,10 +302,14 @@ export const useCustomerStore = defineStore('customer', () => {
 
   function search(keyword: string) {
     const k = keyword.trim()
-    if (!k) return customers.value.filter((c) => !c.masterId)
-    return customers.value.filter(
-      (c) => !c.masterId && (c.name.includes(k) || c.phone?.includes(k) || c.phoneMask.includes(k)),
+    const match = (c: Customer) =>
+      !c.masterId && (c.name.includes(k) || c.phone?.includes(k) || c.phoneMask.includes(k))
+    if (!k) return [...remoteCustomers.value, ...customers.value].filter((c) => !c.masterId)
+    const remoteHits = remoteCustomers.value.filter(match)
+    const localHits = customers.value.filter(
+      (c) => match(c) && !remoteHits.some((r) => r.id === c.id),
     )
+    return [...remoteHits, ...localHits]
   }
 
   /** 确认转介绍归属：被介绍客户在有效期内归介绍人咨询师 */
@@ -444,7 +488,7 @@ export const useCustomerStore = defineStore('customer', () => {
   return {
     customers, links, merges, mine,
     transactions, serviceTrack, cards, photos, skinReports,
-    get, nameOf, phoneOf, search, create,
+    get, nameOf, phoneOf, search, hydrate, create,
     confirmReferral, proposeMerge, seedGraph, seedProfile,
     txOf, trackOf, cardsOf, photosOf, skinReportsOf, addPhoto, addSkinReport, dismissLink,
   }

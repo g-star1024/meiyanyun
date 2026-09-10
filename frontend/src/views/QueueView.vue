@@ -8,6 +8,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useArrivalStore } from '@/stores/arrival'
 import { useCustomerStore } from '@/stores/customer'
 import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/auth'
 import CKpi from '@/components/CKpi.vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -18,8 +19,9 @@ import type { Arrival } from '@/types/domain'
 const arrival = useArrivalStore()
 const customer = useCustomerStore()
 const settings = useSettingsStore()
+const auth = useAuthStore()
 
-onMounted(() => arrival.seed())
+onMounted(() => arrival.load(auth.user.storeId))
 
 // 每 30 秒刷新当前时间，驱动等候时长重算
 const now = ref(Date.now())
@@ -78,11 +80,11 @@ const kpis = computed(() => [
   { label: '今日已完成', icon: 'calendar', value: String(arrival.done.length), tone: 'success' as const },
 ])
 
-function callRow(a: Arrival) {
-  if (a.status === 'TRIAGED') arrival.call(a.id)
+async function callRow(a: Arrival) {
+  if (a.status === 'TRIAGED') await arrival.call(a.id)
 }
-function markDone(a: Arrival) {
-  arrival.markDone(a.id)
+async function markDone(a: Arrival) {
+  await arrival.markDone(a.id)
 }
 </script>
 

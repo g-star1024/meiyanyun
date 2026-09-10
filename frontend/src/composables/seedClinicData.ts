@@ -1,21 +1,7 @@
-// 开发期种子数据：用独立领域 store 重建闭环样板初始状态。
-// 真实环境由后端 API 提供，本文件仅用于 /closed-loop 演示与本地开发。
-import { useCustomerStore } from '@/stores/customer'
-import { useArrivalStore } from '@/stores/arrival'
-
-let seeded = false
-
+// 开发期种子数据占位。
+// 到店/分诊域已切换为后端真实 API（arrival store），旧的本地 C-201/202 假客户
+// 调真实 checkIn 必然 400，故种子写入口停用；/closed-loop 样板页仅保留离线状态机演示，
+// 候诊列为真实空态。真实联调数据请走客情登记（/guest-reg）或接待台手工登记。
 export function seedClinicData() {
-  if (seeded) return
-  seeded = true
-
-  const customer = useCustomerStore()
-  const arrival = useArrivalStore()
-
-  // customer store 已内置 3 个种子客户（C-201/202/203）
-  const c201 = customer.get('C-201')!
-  const c202 = customer.get('C-202')!
-
-  arrival.checkIn({ customerId: c201.id, channel: 'WALK_IN' })
-  arrival.checkIn({ customerId: c202.id, channel: 'REFERRAL' })
+  // no-op：真实环境由后端 API 提供初始数据
 }

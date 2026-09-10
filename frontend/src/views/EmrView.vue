@@ -22,41 +22,89 @@ import {
 import { EMR_STATUS, dictPill } from '@/config/dictionary'
 import { useConsultationStore } from '@/stores/consultation'
 import { useCustomerStore } from '@/stores/customer'
+import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { getPlan, type PlanViewDTO } from '@/api/consultPlan'
+import { searchCustomers } from '@/api/customer'
 
 const route = useRoute()
 const router = useRouter()
 const emr = useEmrStore()
 const consultation = useConsultationStore()
 const customer = useCustomerStore()
+const auth = useAuthStore()
 const toast = useToast()
+
+// 据方案单写病历的预填来源（真实 /txn/consult-plan/{id}；getPlan 失败回落 consultation mock）
+interface PlanBrief {
+  id: string
+  customerId: string
+  customerName: string
+  conclusion: string
+  items: Array<{ name: string; qty: number }>
+  allergyNote?: string
+}
+const planInfo = ref<PlanBrief | null>(null)
+function adaptPlan(d: PlanViewDTO): PlanBrief {
+  const contra = d.contraindications as { allergy?: boolean; note?: string } | null
+  return {
+    id: d.planId,
+    customerId: d.customerId,
+    customerName: d.customerName ?? '',
+    conclusion: d.conclusion ?? '',
+    items: d.items.map((i) => ({ name: i.itemName, qty: i.qty })),
+    allergyNote: contra?.allergy
+      ? `过敏史阳性${contra.note ? `；面诊备注：${contra.note}` : ''}`
+      : undefined,
+  }
+}
 
 // 从咨询工作台"写病历/治疗"跳入时携带的方案单（据审核通过方案写病历）
 const fromConsultId = ref('')
-onMounted(() => {
-  emr.seed()
+onMounted(async () => {
   consultation.seed()
-  const cid = route.query.fromConsult
-  if (typeof cid === 'string' && consultation.get(cid)) {
-    const c = consultation.get(cid)!
-    fromConsultId.value = cid
-    // ① 该方案单已有病历 → 直接定位到最新一条（医师台「查看电子病历」）
-    const exist = emr.byConsult(cid)[0]
-    if (exist) {
-      tab.value = exist.status === 'DRAFT' ? 'draft' : exist.status === 'SIGNED' ? 'signed' : 'archived'
-      selectedId.value = exist.id
+  await emr.load(auth.user.storeId)
+  const cid = typeof route.query.fromConsult === 'string' ? route.query.fromConsult : ''
+  if (!cid) return
+  fromConsultId.value = cid
+  // ① 该方案单已有病历 → 直接定位到最新一条（医师台「查看电子病历」）
+  const exist = emr.byConsult(cid)[0]
+  if (exist) {
+    tab.value = exist.status === 'DRAFT' ? 'draft' : exist.status === 'SIGNED' ? 'signed' : 'archived'
+    selectedId.value = exist.id
+    return
+  }
+  // ② 尚无病历 → 拉真实方案单预填并打开新建表单；getPlan 失败回落 consultation mock
+  let brief: PlanBrief | null = null
+  try {
+    const res = await getPlan(cid)
+    brief = adaptPlan(res.data)
+    customer.hydrate([{ customerId: brief.customerId, name: brief.customerName }])
+  } catch (e) {
+    const c = consultation.get(cid)
+    if (c) {
+      brief = {
+        id: cid, customerId: c.customerId,
+        customerName: customer.get(c.customerId)?.name || customer.nameOf(c.customerId),
+        conclusion: c.conclusion,
+        items: (c.planItems ?? []).map((i) => ({ name: i.name, qty: i.qty })),
+      }
+      toast.info('方案单详情接口不可用，已使用本地缓存预填')
     } else {
-      // ② 尚无病历 → 预填并打开新建表单（据审核通过方案写病历）
-      const cust = customer.get(c.customerId)
-      showForm.value = true
-      newRec.value.customerId = c.customerId
-      newRec.value.customerName = cust?.name || customer.nameOf(c.customerId)
-      newRec.value.type = 'TREATMENT'
-      newRec.value.chiefComplaint = `按方案单 ${cid} 来院治疗`
-      newRec.value.diagnosis = c.conclusion
-      newRec.value.treatment = (c.planItems ?? []).map((i) => `${i.name}×${i.qty}`).join('、')
+      toast.error(errMsg(e, '方案单详情加载失败'))
     }
   }
+  if (!brief) return
+  planInfo.value = brief
+  showForm.value = true
+  newRec.value.customerId = brief.customerId
+  newRec.value.customerName = brief.customerName || customer.nameOf(brief.customerId)
+  newRec.value.type = 'TREATMENT'
+  newRec.value.chiefComplaint = `按方案单 ${cid} 来院治疗`
+  newRec.value.diagnosis = brief.conclusion
+  newRec.value.treatment = brief.items.map((i) => `${i.name}×${i.qty}`).join('、')
+  if (brief.allergyNote) newRec.value.allergy = brief.allergyNote
 })
 
 type Tab = 'draft' | 'signed' | 'archived'
@@ -123,24 +171,28 @@ watch(
 )
 const canSign = computed(() => form.value.diagnosis.trim() && form.value.treatment.trim())
 
-function saveDraft() {
+async function saveDraft() {
   if (!selected.value) return
   selectedId.value = selected.value.id
-  emr.updateDraft(selected.value.id, { ...form.value })
-  toast.success('草稿已保存')
+  const ok = await emr.updateDraft(selected.value.id, { ...form.value })
+  if (ok) toast.success('草稿已保存')
 }
-function doSign() {
+async function doSign() {
   if (!selected.value || !canSign.value) return
   selectedId.value = selected.value.id
   // 签名前先保存
-  emr.updateDraft(selected.value.id, { ...form.value })
-  emr.sign(selected.value.id)
-  toast.success('病历已电子签名并锁定')
+  const saved = await emr.updateDraft(selected.value.id, { ...form.value })
+  if (!saved) return
+  if (await emr.sign(selected.value.id)) toast.success('病历已电子签名并锁定')
 }
-function doArchive() { if (selected.value) { selectedId.value = selected.value.id; emr.archive(selected.value.id); toast.success('病历已归档') } }
-function doRevise() {
+async function doArchive() {
   if (!selected.value) return
-  const r = emr.revise(selected.value.id)
+  selectedId.value = selected.value.id
+  if (await emr.archive(selected.value.id)) toast.success('病历已归档')
+}
+async function doRevise() {
+  if (!selected.value) return
+  const r = await emr.revise(selected.value.id)
   if (r) {
     selectedId.value = r.id
     tab.value = 'draft'
@@ -149,25 +201,48 @@ function doRevise() {
 }
 
 // 新建病历
+function todayLocal(): string {
+  const d = new Date()
+  const m = `${d.getMonth() + 1}`.padStart(2, '0')
+  const day = `${d.getDate()}`.padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
 const emptyNewRec = () => ({
   customerId: '', customerName: '', type: 'FIRST_VISIT' as EmrType,
-  visitDate: new Date().toISOString().slice(0, 10),
+  visitDate: todayLocal(),
   relatedOrderNo: '',
   chiefComplaint: '', presentIllness: '', pastHistory: '', allergy: '',
   diagnosis: '', treatment: '', prescription: '',
 })
 const showForm = ref(false)
 const newRec = ref(emptyNewRec())
-const fromConsult = computed(() => (fromConsultId.value ? consultation.get(fromConsultId.value) : null))
+// 模板「据审核通过方案单」提示条：真实方案单优先，回落本地 consultation mock
+const fromConsult = computed(() => {
+  if (!fromConsultId.value) return null
+  if (planInfo.value) return { id: planInfo.value.id }
+  return consultation.get(fromConsultId.value)
+})
 const canCreate = computed(() => newRec.value.customerName.trim() && newRec.value.chiefComplaint.trim())
-function createRecord() {
+async function createRecord() {
   if (!canCreate.value) return
   const n = newRec.value
-  const r = emr.create({
-    customerId: n.customerId || 'C-NEW',
+  // customerId：方案单带入优先；否则按姓名远程唯一匹配（零/多匹配交由后端 400 中文提示）
+  let customerId = n.customerId.trim()
+  if (!customerId) {
+    try {
+      const res = await searchCustomers(n.customerName.trim())
+      const exact = res.data.filter((c) => c.name === n.customerName.trim())
+      if (exact.length === 1) customerId = exact[0].customerId
+    } catch (e) {
+      toast.error(errMsg(e, '客户查询失败'))
+      return
+    }
+  }
+  const r = await emr.create({
+    customerId,
     customerName: n.customerName.trim(),
     type: n.type,
-    visitDate: new Date(n.visitDate).toISOString(),
+    visitDate: n.visitDate,
     relatedOrderNo: n.relatedOrderNo.trim() || undefined,
     chiefComplaint: n.chiefComplaint,
     presentIllness: n.presentIllness,
@@ -176,12 +251,13 @@ function createRecord() {
     diagnosis: n.diagnosis,
     treatment: n.treatment,
     prescription: n.prescription,
-    // 据咨询方案单写病历：emr store 校验 APPROVED 且客户一致，并自动带入方案/禁忌
+    // 据咨询方案单写病历：后端校验方案状态并回写 emr 关联
     consultId: fromConsultId.value || undefined,
   })
   if (r) {
     showForm.value = false
     fromConsultId.value = ''
+    planInfo.value = null
     newRec.value = emptyNewRec()
     selectedId.value = r.id
     tab.value = 'draft'

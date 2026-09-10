@@ -239,7 +239,7 @@ async function approveWithEmr() {
     }
     return
   }
-  const r = consultation.approveAndSignEmr(selectedId.value, {
+  const r = await consultation.approveAndSignEmr(selectedId.value, {
     customerName: customer.nameOf(sel.value.customerId),
     chiefComplaint: emrChief.value,
     presentIllness: emrPresent.value,
@@ -380,7 +380,7 @@ async function completeTreatment() {
     }
     return
   }
-  const r = consultation.completeTreatment(selectedId.value, {
+  const r = await consultation.completeTreatment(selectedId.value, {
     customerName: customer.nameOf(sel.value.customerId),
     treatmentNote: treatNote.value,
     prescription: treatPrescription.value,

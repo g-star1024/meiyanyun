@@ -10,7 +10,12 @@ import { useArrivalStore } from '@/stores/arrival'
 import { useCustomerStore } from '@/stores/customer'
 import { useActivityStore } from '@/stores/activity'
 import { useSettingsStore } from '@/stores/settings'
-import { ADVISORS, DOCTORS, staffName } from '@/config/staff'
+import { useAuthStore } from '@/stores/auth'
+import { staffName as seedStaffName } from '@/config/staff'
+import { listStaff, type Staff } from '@/api/org'
+import { searchCustomers } from '@/api/customer'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
 import CKpi from '@/components/CKpi.vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -24,9 +29,14 @@ const arrival = useArrivalStore()
 const customer = useCustomerStore()
 const activity = useActivityStore()
 const settings = useSettingsStore()
+const auth = useAuthStore()
+const toast = useToast()
 const route = useRoute()
 
-onMounted(() => arrival.seed())
+onMounted(() => {
+  arrival.load(auth.user.storeId)
+  loadAssignableStaff()
+})
 
 // 客情登记「完成建档」跳转带回的新客户 id，候诊卡高亮定位
 const newCustomerId = ref(typeof route.query.newId === 'string' ? route.query.newId : '')
@@ -80,25 +90,41 @@ const triagedList = computed(() =>
   triaged.value.map((a) => ({ a, t: arrival.triageOf(a.id) })),
 )
 
-// ---- 到店登记 ----
+// ---- 到店登记（客户搜索走 customer-service，结果 hydrate 进 customer store）----
 const checkInQuery = ref('')
 const customerOptions = computed(() =>
   customer.search(checkInQuery.value).map((c) => ({ label: `${c.name} ${c.phoneMask}`, value: c.id })),
 )
 const selectedCustomer = ref('')
+let searchTimer: number | undefined
+watch(checkInQuery, (q) => {
+  if (searchTimer) window.clearTimeout(searchTimer)
+  const kw = q.trim()
+  if (selectedCustomer.value) {
+    const sel = customerOptions.value.find((c) => c.value === selectedCustomer.value)
+    if (sel && q !== sel.label) selectedCustomer.value = ''
+  }
+  if (!kw || selectedCustomer.value) return
+  searchTimer = window.setTimeout(async () => {
+    try {
+      const res = await searchCustomers(kw)
+      customer.hydrate(res.data.map((r) => ({
+        customerId: r.customerId, name: r.name, phone: r.phone,
+      })))
+    } catch (e) {
+      toast.error(errMsg(e, '客户搜索失败'))
+    }
+  }, 300)
+})
+onUnmounted(() => { if (searchTimer) window.clearTimeout(searchTimer) })
 function pickCustomer(c: { label: string; value: string }) {
   selectedCustomer.value = c.value
   checkInQuery.value = c.label
 }
-// 选中后再改搜索词，视为重新搜索，清掉旧选中
-watch(checkInQuery, (q) => {
+async function doCheckIn() {
   if (!selectedCustomer.value) return
-  const sel = customerOptions.value.find((c) => c.value === selectedCustomer.value)
-  if (sel && q !== sel.label) selectedCustomer.value = ''
-})
-function doCheckIn() {
-  if (!selectedCustomer.value) return
-  arrival.checkIn({ customerId: selectedCustomer.value, channel: 'WALK_IN' })
+  const a = await arrival.checkIn({ customerId: selectedCustomer.value, channel: 'WALK_IN' })
+  if (!a) return
   selectedCustomer.value = ''
   checkInQuery.value = ''
 }
@@ -108,29 +134,63 @@ const triageTarget = ref('')
 const triageType = ref<TriageType>('CONSULT')
 const triageAssign = ref('')
 const triageNote = ref('')
+
+// ---- 分诊负责人：真实花名册（GET /org/staff，锁当前门店）----
+// CONSULT/SERVICE → 咨询顾问；MEDICAL → 执业医生（roleCode=DOCTOR 且 medicalLicensed）
+const advisorStaff = ref<Staff[]>([])
+const doctorStaff = ref<Staff[]>([])
+const staffMap = computed(() => {
+  const m = new Map<string, Staff>()
+  for (const s of [...advisorStaff.value, ...doctorStaff.value]) m.set(s.staffId, s)
+  return m
+})
+async function loadAssignableStaff() {
+  try {
+    const [adv, doc] = await Promise.all([
+      listStaff({ storeCode: auth.user.storeId, roleCode: 'CONSULTANT' }),
+      listStaff({ storeCode: auth.user.storeId, roleCode: 'DOCTOR' }),
+    ])
+    advisorStaff.value = (adv.data ?? []).filter((s) => s.status === '在职')
+    doctorStaff.value = (doc.data ?? []).filter(
+      (s) => s.status === '在职' && s.medicalLicensed,
+    )
+  } catch (e) {
+    toast.error(errMsg(e, '可分派员工加载失败'))
+  }
+}
+function staffLabel(s: Staff): string {
+  return `${s.staffName}（${s.role?.roleName ?? (s.roleCode === 'CONSULTANT' ? '咨询师' : s.medicalLicensed ? '医生' : '治疗师')}）`
+}
+// 时间线员工名：远程花名册优先，回落离线种子/工号
+function staffName(id?: string): string {
+  if (!id) return '—'
+  return staffMap.value.get(id)?.staffName || seedStaffName(id)
+}
 const assignOptions = computed(() =>
-  (triageType.value === 'MEDICAL' ? DOCTORS : ADVISORS).map((s) => ({
-    label: `${s.name}（${s.title}）`,
-    value: s.id,
+  (triageType.value === 'MEDICAL' ? doctorStaff.value : advisorStaff.value).map((s) => ({
+    label: staffLabel(s),
+    value: s.staffId,
   })),
 )
 function openTriage(id: string) {
   triageTarget.value = id
   triageType.value = 'CONSULT'
-  triageAssign.value = ADVISORS[0].id
+  triageAssign.value = advisorStaff.value[0]?.staffId ?? ''
   triageNote.value = ''
 }
 function onTypeChange() {
-  triageAssign.value = triageType.value === 'MEDICAL' ? DOCTORS[0].id : ADVISORS[0].id
+  triageAssign.value = triageType.value === 'MEDICAL'
+    ? (doctorStaff.value[0]?.staffId ?? '')
+    : (advisorStaff.value[0]?.staffId ?? '')
 }
-function confirmTriage() {
+async function confirmTriage() {
   if (!triageTarget.value || !triageAssign.value) return
-  arrival.triage(triageTarget.value, {
+  const t = await arrival.triage(triageTarget.value, {
     type: triageType.value,
     assignedTo: triageAssign.value,
     note: triageNote.value,
   })
-  triageTarget.value = ''
+  if (t) triageTarget.value = ''
 }
 </script>
 

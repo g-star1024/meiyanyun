@@ -2,13 +2,18 @@
 /* ============================================================
  * M4-06 客情登记（/guest-reg）
  * 新客建档：基础信息 + 来源渠道 + 皮肤/过敏史 + 咨询意向。
- * 输入手机号时实时撞单提示（customer.search 同号），不自动合并。
+ * 输入手机号时实时撞单提示（远程 /customer/search 同号 + 本地缓存），不自动合并；
+ * 建档走 POST /customer 真实链路（门店由后端按 JWT 注入，等级默认普通；
+ * 标签/肤质/过敏史等扩展写字段后端尚缺，暂仅在本页预览，见 Backlog），
+ * 成功后自动到店登记（arrival.checkIn），跳转接待台候诊队列。
  * 权限：customer:create（路由守卫 + 提交按钮 v-perm 双保险）。
  * ============================================================ */
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useCustomerStore } from '@/stores/customer'
 import { useArrivalStore } from '@/stores/arrival'
+import { createCustomer, searchCustomers } from '@/api/customer'
+import { errMsg } from '@/stores/m5Coupon'
 import { useToast } from '@/composables/useToast'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -109,11 +114,33 @@ function toggleIntent(label: string) {
   intentProjects.value = Array.from(set)
 }
 
-/* ---------- 撞单实时提示（同手机号） ---------- */
+/* ---------- 撞单实时提示（远程同号 + 本地缓存；远程失败由建档 400 兜底） ---------- */
+let dupTimer: number | undefined
+watch(phone, (v) => {
+  if (dupTimer) window.clearTimeout(dupTimer)
+  const p = v.trim()
+  if (p.length < 7) return
+  dupTimer = window.setTimeout(async () => {
+    try {
+      const res = await searchCustomers(p)
+      customer.hydrate(res.data.map((r) => ({
+        customerId: r.customerId,
+        name: r.name,
+        phone: r.phone,
+        storeCode: r.storeCode,
+      })))
+    } catch {
+      // 撞单检索失败不阻断录入；提交时后端同号唯一约束仍会 400 拦截
+    }
+  }, 300)
+})
+onUnmounted(() => {
+  if (dupTimer) window.clearTimeout(dupTimer)
+})
 const duplicate = computed<Customer | undefined>(() => {
   const p = phone.value.trim()
   if (p.length < 7) return undefined
-  return customer.customers.find((c) => !c.masterId && c.phone === p)
+  return customer.search(p).find((c) => !c.masterId && c.phone === p)
 })
 const showDupWarning = computed(() => !!duplicate.value)
 
@@ -129,29 +156,53 @@ const canSubmit = computed(
   () => name.value.trim() && /^1\d{10}$/.test(phone.value.trim()) && !duplicate.value,
 )
 
-/** 过敏史落库为结构化字符串，开方/开单禁忌初筛读取 */
-const allergyRecords = computed(() => {
-  if (allergyNone.value) return []
-  const list = allergies.value.map((a) => `${a}过敏史`)
-  if (allergyNote.value.trim()) list.push(allergyNote.value.trim())
-  return list
-})
+// 页面旧渠道码（ONLINE_APPT/MARKETING）在客户渠道白名单无对应项，统一落 OTHER；WALK_IN/REFERRAL 直通
+const CUSTOMER_CHANNEL_MAP: Record<string, string> = {
+  WALK_IN: 'WALK_IN',
+  REFERRAL: 'REFERRAL',
+  ONLINE_APPT: 'OTHER',
+  MARKETING: 'OTHER',
+}
 
-function submit() {
+async function submit() {
   if (!canSubmit.value) return
-  const c = customer.create({
-    name: name.value.trim(),
-    phone: phone.value.trim(),
-    phoneMask: phone.value.trim().replace(/(\d{3})\d{4}(\d{4})/, '$1****$2'),
+  const realName = name.value.trim()
+  const realPhone = phone.value.trim()
+  let customerId: string
+  try {
+    const res = await createCustomer({
+      name: realName,
+      phone: realPhone,
+      gender: gender.value,
+      level: '普通',
+      channel: CUSTOMER_CHANNEL_MAP[channel.value] ?? 'OTHER',
+      storeCode: null,
+    })
+    customerId = res.data.customerId
+    // 回填本地缓存：姓名/掩码手机号立即用于撞单提示与各页下拉，无需等待重新拉取
+    customer.hydrate([{
+      customerId,
+      name: res.data.name,
+      phone: realPhone,
+      storeCode: res.data.storeCode,
+    }])
+  } catch (e) {
+    toast.error(errMsg(e, '客户建档失败'))
+    return
+  }
+  // 建档即到店登记：自动写入接待台候诊队列（arrival store 内部映射 ONLINE_APPT→APPOINTMENT）
+  const a = await arrival.checkIn({
+    customerId,
     channel: channel.value,
-    level: intentLevel.value === '高' ? 'A' : intentLevel.value === '中' ? 'B' : 'NEW',
-    tags: tags.value,
-    allergies: allergyRecords.value,
+    note: '客情登记建档后自动到店',
   })
-  // 建档即到店登记：直接写入接待台候诊队列（分诊列表数据源），跳转后无需再手工登记
-  arrival.checkIn({ customerId: c.id, channel: channel.value, note: '客情登记建档后自动到店' })
-  toast.success(`已为「${c.name}」完成建档并登记到店，可在接待台候诊队列直接分诊`)
-  router.push({ path: '/reception', query: { newId: c.id } })
+  if (!a) {
+    toast.success(`客户「${realName}」建档成功；自动到店登记失败，请在接待台手工登记`)
+    router.push({ path: '/reception', query: { newId: customerId } })
+    return
+  }
+  toast.success(`已为「${realName}」完成建档并登记到店，可在接待台候诊队列直接分诊`)
+  router.push({ path: '/reception', query: { newId: customerId } })
 }
 
 function goDup() {

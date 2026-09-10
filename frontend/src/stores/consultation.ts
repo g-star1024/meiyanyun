@@ -489,7 +489,7 @@ export const useConsultationStore = defineStore('consultation', () => {
    * 可从 PENDING_REVIEW（边审边写，一步到位）或 APPROVED（已通过、面诊后补病历）进入。
    * 病历字段留空时由方案单自动带入（诊断=咨询结论、治疗方案=项目明细、过敏=面诊禁忌）。
    */
-  function approveAndSignEmr(id: string, payload: QuickEmrPayload): { ok: boolean; error?: string; orderNo?: string } {
+  async function approveAndSignEmr(id: string, payload: QuickEmrPayload): Promise<{ ok: boolean; error?: string; orderNo?: string }> {
     if (!auth.can('consult:review')) return { ok: false, error: '无 consult:review 权限（仅医生/店长）' }
     const c = consultations.value.find((x) => x.id === id)
     if (!c) return { ok: false, error: '咨询单不存在' }
@@ -516,7 +516,7 @@ export const useConsultationStore = defineStore('consultation', () => {
     }
 
     // 2. 创建首程病历并电子签名（方案明细/禁忌自动带入）
-    const rec = emr.create({
+    const rec = await emr.create({
       customerId: c.customerId,
       customerName: payload.customerName,
       type: 'FIRST_VISIT',
@@ -530,7 +530,7 @@ export const useConsultationStore = defineStore('consultation', () => {
       prescription: payload.prescription,
     })
     if (!rec) return { ok: false, error: '首程病历创建失败（检查 emr:create 权限或方案状态）' }
-    if (!emr.sign(rec.id)) {
+    if (!(await emr.sign(rec.id))) {
       return { ok: false, error: '病历电子签名失败：诊断与治疗方案为必填项' }
     }
     c.emrId = rec.id
@@ -601,10 +601,10 @@ export const useConsultationStore = defineStore('consultation', () => {
    * 完成治疗：TREATING → DONE。
    * 写治疗记录病历（TREATMENT，电子签名）+ 自动生成术后随访计划（术后第 3 天电话回访）。
    */
-  function completeTreatment(
+  async function completeTreatment(
     id: string,
     payload: { customerName: string; treatmentNote?: string; prescription?: string },
-  ): { ok: boolean; error?: string } {
+  ): Promise<{ ok: boolean; error?: string }> {
     if (!auth.can('consult:review') && !auth.can('emr:edit')) {
       return { ok: false, error: '无治疗记录权限' }
     }
@@ -615,7 +615,7 @@ export const useConsultationStore = defineStore('consultation', () => {
     const followup = useFollowupStore()
 
     // 治疗记录病历
-    const rec = emr.create({
+    const rec = await emr.create({
       customerId: c.customerId,
       customerName: payload.customerName,
       type: 'TREATMENT',
@@ -625,7 +625,7 @@ export const useConsultationStore = defineStore('consultation', () => {
       prescription: payload.prescription,
     })
     if (!rec) return { ok: false, error: '治疗记录创建失败' }
-    emr.sign(rec.id)
+    await emr.sign(rec.id)
     c.treatmentEmrId = rec.id
 
     // 术后 SOP 自动化：按模板生成多节点随访（24h关怀/第3天回访/第7天恢复/第30天复诊）

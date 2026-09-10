@@ -90,7 +90,8 @@ function onTypeChange() {
 }
 function confirmTriage() {
   if (!triageTarget.value || !triageAssign.value) return
-  arrival.triage(triageTarget.value, { type: triageType.value, assignedTo: triageAssign.value, note: triageNote.value })
+  // 到店/分诊域已真实化：本样板页使用离线员工/假客户，真实 triage 必然 400 且会弹错误 toast，
+  // 故此处不触发写动作；真实分诊请在接待台 /reception 操作。
   triageTarget.value = ''
 }
 

@@ -3,8 +3,9 @@
  * 我的工作台 /my-workbench（角色待办首页）
  * 一线个人首页：我的待办（行内计数 → 点击直达对应作业页）+ 高频操作 + 今日概览。
  * 待办项用「权限 + 实时计数」驱动，天然按当前角色/权限过滤，无需硬编码角色分支。
- * 真实计数：审批待办 / 待收款订单 / 今日预约（看板剔除已取消）/ 方案单五态队列（listPlans totalElements）。
- * 演示计数：候诊接待 / 病历草稿 / 术后 SOP / 复诊提醒（所属域暂无后端，文案带「演示」后缀、不计入真实总数）。
+ * 真实计数：审批待办 / 待收款订单 / 今日预约（看板剔除已取消）/ 方案单五态队列（listPlans totalElements）
+ *           / 候诊待接待（今日 WAITING）/ 病历草稿待签（DRAFT）。
+ * 演示计数：术后 SOP / 复诊提醒（所属域暂无后端，文案带「演示」后缀、不计入真实总数）。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -12,8 +13,6 @@ import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useArrivalStore } from '@/stores/arrival'
-import { useEmrStore } from '@/stores/emr'
 import { useFollowupStore } from '@/stores/followup'
 import { useRecallStore } from '@/stores/recall'
 import { useStoreContext } from '@/stores/storeContext'
@@ -21,12 +20,12 @@ import { listApprovals, type ApprovalTodoDTO } from '@/api/approval'
 import { listOrders } from '@/api/order'
 import { listPlans } from '@/api/consultPlan'
 import { appointmentBoard } from '@/api/appointment'
+import { listArrivals } from '@/api/arrival'
+import { listEmr } from '@/api/emr'
 import { staffName } from '@/config/staff'
 
 const router = useRouter()
 const auth = useAuthStore()
-const arrival = useArrivalStore()
-const emr = useEmrStore()
 const followup = useFollowupStore()
 const recall = useRecallStore()
 const storeCtx = useStoreContext()
@@ -39,6 +38,8 @@ const planQueueCount = ref(0)
 const planReviewCount = ref(0)
 const planPaidCount = ref(0)
 const planTreatingCount = ref(0)
+const waitingCount = ref(0)
+const emrDraftCount = ref(0)
 
 function todayLocal(): string {
   const d = new Date()
@@ -134,12 +135,30 @@ async function loadTxnCounts() {
       planTreatingCount.value = 0
     }
   }
+
+  // 候诊待接待（真实）：今日当前门店 WAITING 队列长度
+  if (auth.can('reception:view')) {
+    try {
+      const arrRes = await listArrivals({ date: todayLocal(), storeCode: store, status: 'WAITING' })
+      waitingCount.value = (arrRes.data ?? []).length
+    } catch {
+      waitingCount.value = 0
+    }
+  }
+
+  // 病历草稿待签（真实）：当前门店 DRAFT 病历数
+  if (auth.can('emr:view')) {
+    try {
+      const emrRes = await listEmr({ storeCode: store, status: 'DRAFT' })
+      emrDraftCount.value = (emrRes.data ?? []).length
+    } catch {
+      emrDraftCount.value = 0
+    }
+  }
 }
 
 onMounted(() => {
-  // 以下域暂无后端（候诊接待 / 病历独立域 / 术后 SOP / 复诊提醒），计数为演示数据
-  arrival.seed()
-  emr.seed()
+  // 以下域暂无后端（术后 SOP / 复诊提醒），计数为演示数据；候诊与病历计数已在 loadTxnCounts 真实拉取
   followup.seed()
   recall.seed()
   loadTxnCounts()
@@ -164,12 +183,10 @@ const todos = computed<Todo[]>(() => {
   const all: Todo[] = [
     // 临床诊疗（真实计数）
     { key: 'appt', label: '今日预约', count: todayApptCount.value, to: '/appointment', icon: 'calendar', tone: 'brand', perm: 'appointment:view', group: '临床诊疗' },
-    // 候诊接待域暂无后端 → 演示数据
-    { key: 'waiting', label: '候诊待接待（演示）', count: arrival.waiting.length, to: '/reception', icon: 'home', tone: 'brand', perm: 'reception:view', demo: true, group: '临床诊疗' },
+    { key: 'waiting', label: '候诊待接待', count: waitingCount.value, to: '/reception', icon: 'home', tone: 'brand', perm: 'reception:view', group: '临床诊疗' },
     { key: 'consult', label: '待咨询 / 面诊', count: planQueueCount.value, to: '/consultation', icon: 'chat', tone: 'brand', perm: 'consult:view', group: '临床诊疗' },
     { key: 'review', label: '待医生审核方案', count: planReviewCount.value, to: '/doctor', icon: 'shield', tone: 'warning', perm: 'consult:review', group: '临床诊疗' },
-    // 病历为独立域（Backlog）→ 演示数据
-    { key: 'emr-draft', label: '病历草稿待签（演示）', count: emr.drafts.length, to: '/emr', icon: 'edit', tone: 'warning', perm: 'emr:view', demo: true, group: '临床诊疗' },
+    { key: 'emr-draft', label: '病历草稿待签', count: emrDraftCount.value, to: '/emr', icon: 'edit', tone: 'warning', perm: 'emr:view', group: '临床诊疗' },
     { key: 'paid', label: '待治疗 / 术前核对', count: planPaidCount.value, to: '/doctor', icon: 'check-square', tone: 'brand', perm: 'consult:review', group: '临床诊疗' },
     { key: 'treating', label: '治疗中待归档', count: planTreatingCount.value, to: '/doctor', icon: 'tool', tone: 'brand', perm: 'consult:review', group: '临床诊疗' },
     // 收银履约：订单口径（含方案单自动生成的缴费单 + 零售/药妆应收单），不遗漏非诊疗单
