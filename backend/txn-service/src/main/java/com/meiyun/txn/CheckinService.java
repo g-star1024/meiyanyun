@@ -54,15 +54,21 @@ public class CheckinService {
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
     private final CustomerDirectoryClient customerDirectoryClient;
+    private final AppointmentRepository apptRepo;
+    private final AppointmentArrivalService appointmentArrivalService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public CheckinService(CheckinRecordRepository ciRepo, CheckinNoGenerator noGen, AuditRecorder audit,
-                          ApptRefNameResolver names, CustomerDirectoryClient customerDirectoryClient) {
+                          ApptRefNameResolver names, CustomerDirectoryClient customerDirectoryClient,
+                          AppointmentRepository apptRepo,
+                          AppointmentArrivalService appointmentArrivalService) {
         this.ciRepo = ciRepo;
         this.noGen = noGen;
         this.audit = audit;
         this.names = names;
         this.customerDirectoryClient = customerDirectoryClient;
+        this.apptRepo = apptRepo;
+        this.appointmentArrivalService = appointmentArrivalService;
     }
 
     // ==================== 到店登记 ====================
@@ -110,6 +116,24 @@ public class CheckinService {
         Optional<CustomerDirectoryClient.Directory> dir = customerDirectoryClient.findByPhone(mobile, storeCode);
         String customerId = dir.map(CustomerDirectoryClient.Directory::customerId).orElse(null);
 
+        // 卡③ 预约勾连：仅「预约到店」且手机号已锚定客户时，匹配本店当日最早一单「已预约」自动完成到店编排
+        // （置到店+建划扣任务+建接待队列，与预约看板签到同事务同口径）。未命中不阻断真实到店，按纯到店登记落单。
+        String linkedApptNo = null;
+        String linkedWdNo = null;
+        if ("APPOINTMENT".equals(method) && customerId != null) {
+            List<Appointment> todays = apptRepo
+                    .findByStoreCodeAndApptDateOrderByApptTimeAsc(storeCode, LocalDate.now());
+            Appointment hit = todays.stream()
+                    .filter(a -> customerId.equals(a.getCustomerId())
+                            && "已预约".equals(a.getStatus()))
+                    .findFirst().orElse(null);
+            if (hit != null) {
+                AppointmentArrivalService.ArrivalResult r = appointmentArrivalService.checkIn(hit);
+                linkedApptNo = r.appointment().getApptNo();
+                linkedWdNo = r.wdNo();
+            }
+        }
+
         OffsetDateTime now = OffsetDateTime.now();
         CheckinRecord t = new CheckinRecord();
         t.setCiNo(noGen.nextCiNo());
@@ -121,16 +145,25 @@ public class CheckinService {
         t.setMethod(method);
         t.setStatus(ST_PENDING);
         t.setExceptionReason("NONE");
+        t.setApptNo(linkedApptNo);
+        t.setWdNo(linkedWdNo);
         t.setArrivedAt(now);
         t.setOperator(actor);
         t.setTimeline("[]");
         appendTimeline(t, actor, METHOD_TEXT.get(method) + "登记到店，待确认");
+        if (linkedApptNo != null) {
+            appendTimeline(t, "系统", "已自动勾连预约 " + linkedApptNo
+                    + (linkedWdNo != null ? "，并生成待划扣任务 " + linkedWdNo : "") + "（预约置已到店）");
+        }
         CheckinRecord saved = ciRepo.save(t);
         audit.record("CHECKIN", saved.getCiNo(), actor, "REGISTER",
                 "{\"method\":\"" + method + "\",\"store\":\"" + storeCode
                         + "\",\"customer\":" + (customerId == null ? "\"SNAPSHOT\"" : "\"" + customerId + "\"")
                         + ",\"customerName\":\"" + esc(name) + "\",\"project\":\"" + esc(proj)
-                        + "\",\"anchored\":" + (customerId != null) + "}");
+                        + "\",\"anchored\":" + (customerId != null)
+                        + (linkedApptNo == null ? "" : ",\"apptNo\":\"" + linkedApptNo + "\""
+                                + (linkedWdNo == null ? "" : ",\"wdNo\":\"" + linkedWdNo + "\""))
+                        + "}");
         return saved;
     }
 

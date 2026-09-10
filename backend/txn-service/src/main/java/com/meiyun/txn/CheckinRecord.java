@@ -60,6 +60,14 @@ public class CheckinRecord {
     @Column(length = 256)
     private String note;
 
+    /** 勾连预约号：method=APPOINTMENT 且手机号锚定客户命中本店当日「已预约」单时回填（否则为空）。 */
+    @Column(name = "appt_no", length = 24)
+    private String apptNo;
+
+    /** 勾连待划扣任务号：预约到店同事务生成 M2 划扣台任务后回填（否则为空）。 */
+    @Column(name = "wd_no", length = 24)
+    private String wdNo;
+
     /** 到店时间（列表排序与展示用）。 */
     @Column(name = "arrived_at", nullable = false)
     private OffsetDateTime arrivedAt;

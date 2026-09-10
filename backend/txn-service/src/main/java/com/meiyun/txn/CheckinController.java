@@ -97,7 +97,7 @@ public class CheckinController {
                     t.getProject(), t.getMethod(), t.getStatus(), t.getExceptionReason(),
                     t.getArrivedAt(), t.getCheckedAt(),
                     staffNames.getOrDefault(t.getOperator(), t.getOperator()),
-                    t.getNote(),
+                    t.getNote(), t.getApptNo(), t.getWdNo(),
                     service.readTimeline(t.getTimeline())));
         }
         return out;
@@ -110,7 +110,7 @@ public class CheckinController {
             String customerName, String phone,
             String project, String method, String status, String exceptionReason,
             OffsetDateTime arrivedAt, OffsetDateTime checkedAt,
-            String operator, String note,
+            String operator, String note, String apptNo, String wdNo,
             List<Map<String, String>> timeline) {}
 
     public record RegisterCmd(
