@@ -68,9 +68,91 @@ export interface DraftEmrCmd {
   prescription?: string
 }
 
-/** 病历列表（本店全量，不分页；三 tab 由前端按 status 分组）。 */
-export const listEmr = (params?: { storeCode?: string; status?: string; customerId?: string; consultId?: string }) =>
-  client.get<EmrViewDTO[]>('/txn/emr', { params })
+/** Spring Data 分页响应（page 0 起）。 */
+export interface EmrPage {
+  content: EmrViewDTO[]
+  totalElements: number
+  totalPages: number
+  number: number
+  size: number
+}
+
+/** 本店病历计数（tab 角标 / KPI，替代前端全量 .length）。 */
+export interface EmrStats {
+  draft: number
+  signed: number
+  archived: number
+  signedThisMonth: number
+}
+
+/** 病历模板读模型（emr_template；storeCode=null 集团通用）。 */
+export interface EmrTemplateDTO {
+  templateNo: string
+  name: string
+  type: EmrType | string | null
+  chiefComplaint: string | null
+  presentIllness: string | null
+  pastHistory: string | null
+  allergy: string | null
+  diagnosis: string | null
+  treatment: string | null
+  prescription: string | null
+  storeCode: string | null
+  enabled: boolean
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface EmrTemplatePage {
+  content: EmrTemplateDTO[]
+  totalElements: number
+  totalPages: number
+  number: number
+  size: number
+}
+
+export interface CreateEmrTemplateCmd {
+  name: string
+  type?: string | null
+  chiefComplaint?: string
+  presentIllness?: string
+  pastHistory?: string
+  allergy?: string
+  diagnosis?: string
+  treatment?: string
+  prescription?: string
+}
+
+export interface ListEmrParams {
+  storeCode?: string
+  status?: string
+  customerId?: string
+  consultId?: string
+  q?: string
+  page?: number
+  size?: number
+}
+
+/** 病历分页列表：q 模糊客户名/病历号/诊断/主诉；排序后端固定（visitDate,createdAt 倒序）。 */
+export const listEmr = (params?: ListEmrParams) =>
+  client.get<EmrPage>('/txn/emr', { params })
+
+/** 本店病历计数聚合。 */
+export const statsEmr = (storeCode?: string) =>
+  client.get<EmrStats>('/txn/emr/stats', { params: { storeCode } })
+
+/** 套用候选模板（集团通用 + 本店自建；type 可选）。 */
+export const listEmrTemplates = (params?: { type?: string; page?: number; size?: number }) =>
+  client.get<EmrTemplatePage>('/txn/emr/templates', { params })
+
+/** 门店自建模板（复用 emr:create 权限）。 */
+export const createEmrTemplate = (cmd: CreateEmrTemplateCmd) =>
+  client.post<EmrTemplateDTO>('/txn/emr/templates', cmd)
+
+/** 停用本店自建模板（集团模板只读 → 404）。 */
+export const disableEmrTemplate = (templateNo: string) =>
+  client.post<EmrTemplateDTO>(`/txn/emr/templates/${templateNo}/disable`, {})
 
 /** 病历详情（越权跨店统一 404）。 */
 export const getEmr = (emrNo: string) =>

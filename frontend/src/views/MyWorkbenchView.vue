@@ -21,7 +21,7 @@ import { listOrders } from '@/api/order'
 import { listPlans } from '@/api/consultPlan'
 import { appointmentBoard } from '@/api/appointment'
 import { listArrivals } from '@/api/arrival'
-import { listEmr } from '@/api/emr'
+import { statsEmr } from '@/api/emr'
 import { staffName } from '@/config/staff'
 
 const router = useRouter()
@@ -149,8 +149,8 @@ async function loadTxnCounts() {
   // 病历草稿待签（真实）：当前门店 DRAFT 病历数
   if (auth.can('emr:view')) {
     try {
-      const emrRes = await listEmr({ storeCode: store, status: 'DRAFT' })
-      emrDraftCount.value = (emrRes.data ?? []).length
+      const emrRes = await statsEmr(store)
+      emrDraftCount.value = emrRes.data.draft ?? 0
     } catch {
       emrDraftCount.value = 0
     }

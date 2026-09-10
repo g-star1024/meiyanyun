@@ -3,6 +3,9 @@ package com.meiyun.txn;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.web.PageableDefault;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -13,32 +16,44 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.util.List;
+import java.util.Map;
 
 /**
- * EMR 病历端点（P5-B27）：/api/txn/emr。全部经网关既有 txn 路由，免改网关。
+ * EMR 病历端点（P5-B27 / P5-B30）：/api/txn/emr。全部经网关既有 txn 路由，免改网关。
  *
  * <p>读 emr:view、建 emr:create、写 emr:edit；数据域门店全见（EmrService 统一 storeSpec）。
+ * P5-B30：列表真分页（后端固定排序，不信入参 sort）+ /stats 状态计数聚合 + /templates 模板库。
  */
 @RestController
 @RequestMapping("/api/txn/emr")
 public class EmrController {
 
     private final EmrService emrService;
+    private final EmrTemplateService templateService;
 
-    public EmrController(EmrService emrService) {
+    public EmrController(EmrService emrService, EmrTemplateService templateService) {
         this.emrService = emrService;
+        this.templateService = templateService;
     }
 
-    /** 病历列表（本店全量，演示数据量可接受，不分页；三 tab 由前端按 status 分组）。 */
+    /** 病历分页列表：status/customerId/consultId 精确过滤，q 模糊客户名/病历号/诊断/主诉；排序后端固定。 */
     @GetMapping
     @RequirePerm("emr:view")
-    public List<EmrView> list(@RequestParam(required = false) String storeCode,
+    public Page<EmrView> list(@RequestParam(required = false) String storeCode,
                               @RequestParam(required = false) String status,
                               @RequestParam(required = false) String customerId,
-                              @RequestParam(required = false) String consultId) {
-        return emrService.list(storeCode, status, customerId, consultId).stream()
-                .map(EmrController::toView).toList();
+                              @RequestParam(required = false) String consultId,
+                              @RequestParam(required = false) String q,
+                              @PageableDefault(size = 20) Pageable pageable) {
+        return emrService.page(storeCode, status, customerId, consultId, q, pageable)
+                .map(EmrController::toView);
+    }
+
+    /** 本店病历计数：draft/signed/archived/signedThisMonth，供 tab 角标与 KPI（替代前端全量 .length）。 */
+    @GetMapping("/stats")
+    @RequirePerm("emr:view")
+    public Map<String, Long> stats(@RequestParam(required = false) String storeCode) {
+        return emrService.stats(storeCode);
     }
 
     @GetMapping("/{emrNo}")
@@ -83,6 +98,33 @@ public class EmrController {
         return toView(emrService.revise(emrNo));
     }
 
+    // ==================== 病历模板库（P5-B30） ====================
+
+    /** 套用候选：集团通用 + 本店自建；type 可选下推数据库过滤。 */
+    @GetMapping("/templates")
+    @RequirePerm("emr:view")
+    public Page<EmrTemplate> templates(@RequestParam(required = false) String type,
+                                       @PageableDefault(size = 50) Pageable pageable) {
+        return templateService.listActive(type, pageable);
+    }
+
+    /** 门店自建模板（自动盖本店码；复用 emr:create，不新增权限码）。 */
+    @PostMapping("/templates")
+    @RequirePerm("emr:create")
+    public EmrTemplate createTemplate(@RequestBody @Valid TemplateReq req) {
+        return templateService.create(new EmrTemplateService.CreateCmd(
+                req.name(), req.type(), req.chiefComplaint(), req.presentIllness(),
+                req.pastHistory(), req.allergy(), req.diagnosis(), req.treatment(),
+                req.prescription()));
+    }
+
+    /** 停用本店自建模板（集团模板只读，停用返回 404）。 */
+    @PostMapping("/templates/{templateNo}/disable")
+    @RequirePerm("emr:create")
+    public EmrTemplate disableTemplate(@PathVariable String templateNo) {
+        return templateService.disable(templateNo);
+    }
+
     private static EmrView toView(EmrRecord r) {
         return new EmrView(
                 r.getEmrNo(), r.getEmrNo(), r.getCustomerId(), r.getCustomerName(),
@@ -118,4 +160,10 @@ public class EmrController {
     public record DraftReq(String chiefComplaint, String presentIllness, String pastHistory,
                            String allergy, String diagnosis, String treatment,
                            String prescription) {}
+
+    public record TemplateReq(
+            @NotBlank(message = "模板名称不能为空") String name,
+            String type,
+            String chiefComplaint, String presentIllness, String pastHistory,
+            String allergy, String diagnosis, String treatment, String prescription) {}
 }

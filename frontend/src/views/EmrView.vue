@@ -3,6 +3,7 @@
  * 电子病历管理 /emr（Desktop 优先 · 平板堆叠）
  * 状态机：草稿 → 已签名（锁定）→ 已归档。
  * 合规：已签名/归档病历只读，更正只能"新建修订"（复制为新草稿，version+1，parentId 溯源）。
+ * P5-B30：列表真分页（CPagination 1 起页码）+ 后端 stats 计数 + emr_template 模板套用/维护。
  * ============================================================ */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -15,9 +16,10 @@ import CSelect from '@/components/CSelect.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CKpi from '@/components/CKpi.vue'
 import CIcon from '@/components/CIcon.vue'
+import CPagination from '@/components/CPagination.vue'
 import {
   useEmrStore, EMR_TYPE_LABEL,
-  type EmrRecord, type EmrType,
+  type EmrTemplate, type EmrType,
 } from '@/stores/emr'
 import { EMR_STATUS, dictPill } from '@/config/dictionary'
 import { useConsultationStore } from '@/stores/consultation'
@@ -60,19 +62,57 @@ function adaptPlan(d: PlanViewDTO): PlanBrief {
   }
 }
 
+type Tab = 'draft' | 'signed' | 'archived'
+const TAB_STATUS: Record<Tab, string> = { draft: 'DRAFT', signed: 'SIGNED', archived: 'ARCHIVED' }
+const tab = ref<Tab>('draft')
+const selectedId = ref<string | null>(null)
+const keyword = ref('')
+
+// 当前 tab/status + q 下刷新分页（页码 1 起；写动作后末条迁出导致空页时自动回退）
+async function reloadList(opts?: { page?: number }) {
+  const targetPage = opts?.page ?? emr.page
+  await emr.refresh(
+    auth.user.storeId,
+    { status: TAB_STATUS[tab.value], q: keyword.value.trim() || undefined },
+    { page: targetPage },
+  )
+  if (emr.records.length === 0 && emr.total > 0 && emr.page > 1) {
+    await reloadList({ page: Math.max(1, emr.totalPages) })
+  }
+}
+async function selectTab(t: Tab) {
+  if (tab.value === t) return
+  tab.value = t
+  selectedId.value = null
+  await reloadList({ page: 1 })
+}
+async function onPage(p: number) {
+  await reloadList({ page: p })
+}
+// 关键字防抖下推后端 q（四字段模糊），350ms 静默期后拉第一页
+let kwTimer: ReturnType<typeof setTimeout> | undefined
+watch(keyword, () => {
+  clearTimeout(kwTimer)
+  kwTimer = setTimeout(() => {
+    selectedId.value = null
+    void reloadList({ page: 1 })
+  }, 350)
+})
+
 // 从咨询工作台"写病历/治疗"跳入时携带的方案单（据审核通过方案写病历）
 const fromConsultId = ref('')
 onMounted(async () => {
   consultation.seed()
-  await emr.load(auth.user.storeId)
+  await emr.refresh(auth.user.storeId, { status: 'DRAFT' }, { page: 1 })
   const cid = typeof route.query.fromConsult === 'string' ? route.query.fromConsult : ''
   if (!cid) return
   fromConsultId.value = cid
-  // ① 该方案单已有病历 → 直接定位到最新一条（医师台「查看电子病历」）
-  const exist = emr.byConsult(cid)[0]
+  // ① 该方案单已有病历 → 切到其所在 tab 并定位（医师台「查看电子病历」）
+  const exist = (await emr.byConsult(cid))[0]
   if (exist) {
     tab.value = exist.status === 'DRAFT' ? 'draft' : exist.status === 'SIGNED' ? 'signed' : 'archived'
     selectedId.value = exist.id
+    await reloadList({ page: 1 })
     return
   }
   // ② 尚无病历 → 拉真实方案单预填并打开新建表单；getPlan 失败回落 consultation mock
@@ -107,41 +147,25 @@ onMounted(async () => {
   if (brief.allergyNote) newRec.value.allergy = brief.allergyNote
 })
 
-type Tab = 'draft' | 'signed' | 'archived'
-const tab = ref<Tab>('draft')
-const selectedId = ref<string | null>(null)
-const keyword = ref('')
-
 const tabs = computed(() => [
-  { k: 'draft' as Tab, label: `草稿 (${emr.drafts.length})` },
-  { k: 'signed' as Tab, label: `已签名 (${emr.signed.length})` },
-  { k: 'archived' as Tab, label: `已归档 (${emr.archived.length})` },
+  { k: 'draft' as Tab, label: `草稿 (${emr.drafts})` },
+  { k: 'signed' as Tab, label: `已签名 (${emr.signed})` },
+  { k: 'archived' as Tab, label: `已归档 (${emr.archived})` },
 ])
 
-const baseList = computed<EmrRecord[]>(() => {
-  if (tab.value === 'draft') return [...emr.drafts].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-  if (tab.value === 'signed') return [...emr.signed].sort((a, b) => (b.signedAt ?? '').localeCompare(a.signedAt ?? ''))
-  return [...emr.archived].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-})
-const list = computed<EmrRecord[]>(() => {
-  const kw = keyword.value.trim()
-  if (!kw) return baseList.value
-  return baseList.value.filter(
-    (r) => r.customerName.includes(kw) || r.emrNo.includes(kw) || r.diagnosis.includes(kw) || r.chiefComplaint.includes(kw),
-  )
-})
+// 服务端已按 tab status + q 过滤，当前页直接渲染
+const list = computed(() => emr.records)
 
 const selected = computed(() => {
   if (selectedId.value) return emr.get(selectedId.value) ?? null
   return list.value[0] ?? null
 })
-function selectTab(t: Tab) { tab.value = t; selectedId.value = null }
 
 const kpis = computed(() => [
-  { label: '草稿病历', value: String(emr.drafts.length), tone: 'warning' as const, icon: 'edit' },
-  { label: '本月已签名', value: String(emr.signed.length), tone: 'brand' as const, icon: 'sign' },
-  { label: '已归档', value: String(emr.archived.length), tone: 'success' as const, icon: 'box' },
-  { label: '锁定病历', value: String(emr.locked.length), tone: 'purple' as const, icon: 'shield' },
+  { label: '草稿病历', value: String(emr.stats.draft), tone: 'warning' as const, icon: 'edit' },
+  { label: '本月已签名', value: String(emr.stats.signedThisMonth), tone: 'brand' as const, icon: 'sign' },
+  { label: '已归档', value: String(emr.stats.archived), tone: 'success' as const, icon: 'box' },
+  { label: '锁定病历', value: String(emr.stats.signed + emr.stats.archived), tone: 'purple' as const, icon: 'shield' },
 ])
 
 
@@ -183,19 +207,28 @@ async function doSign() {
   // 签名前先保存
   const saved = await emr.updateDraft(selected.value.id, { ...form.value })
   if (!saved) return
-  if (await emr.sign(selected.value.id)) toast.success('病历已电子签名并锁定')
+  const r = await emr.sign(selected.value.id)
+  if (r) {
+    toast.success('病历已电子签名并锁定')
+    await reloadList({ page: emr.page })
+  }
 }
 async function doArchive() {
   if (!selected.value) return
   selectedId.value = selected.value.id
-  if (await emr.archive(selected.value.id)) toast.success('病历已归档')
+  const r = await emr.archive(selected.value.id)
+  if (r) {
+    toast.success('病历已归档')
+    await reloadList({ page: emr.page })
+  }
 }
 async function doRevise() {
   if (!selected.value) return
   const r = await emr.revise(selected.value.id)
   if (r) {
-    selectedId.value = r.id
     tab.value = 'draft'
+    await reloadList({ page: 1 })
+    selectedId.value = r.id
     toast.info('已基于原病历创建修订草稿（v' + r.version + '），原病历留痕保留')
   }
 }
@@ -216,6 +249,39 @@ const emptyNewRec = () => ({
 })
 const showForm = ref(false)
 const newRec = ref(emptyNewRec())
+
+// ---- 模板套用（弹层打开/类型变化时拉「集团通用 + 本店自建 + 类型通用」候选） ----
+const templates = ref<EmrTemplate[]>([])
+const tplNo = ref('')
+const tplOptions = computed(() => templates.value.map((t) => ({
+  value: t.templateNo,
+  label: `${t.storeCode ? '本店' : '集团'} · ${t.type ? EMR_TYPE_LABEL[t.type] : '通用'} · ${t.name}`,
+})))
+watch(
+  [showForm, () => newRec.value.type],
+  async ([open]) => {
+    if (open) {
+      tplNo.value = ''
+      templates.value = await emr.loadTemplates(newRec.value.type)
+    } else {
+      tplNo.value = ''
+    }
+  },
+)
+watch(tplNo, (no) => {
+  const t = templates.value.find((x) => x.templateNo === no)
+  if (!t) return
+  const n = newRec.value
+  n.chiefComplaint = t.chiefComplaint
+  n.presentIllness = t.presentIllness
+  n.pastHistory = t.pastHistory
+  n.allergy = t.allergy
+  n.diagnosis = t.diagnosis
+  n.treatment = t.treatment
+  n.prescription = t.prescription
+  toast.info(`已套用模板「${t.name}」，可继续修改`)
+})
+
 // 模板「据审核通过方案单」提示条：真实方案单优先，回落本地 consultation mock
 const fromConsult = computed(() => {
   if (!fromConsultId.value) return null
@@ -259,8 +325,55 @@ async function createRecord() {
     fromConsultId.value = ''
     planInfo.value = null
     newRec.value = emptyNewRec()
-    selectedId.value = r.id
     tab.value = 'draft'
+    await reloadList({ page: 1 })
+    selectedId.value = r.id
+  }
+}
+
+// ---- 模板库维护（门店自建/停用；集团模板只读。读 emr:view，维护 emr:create，不新增权限码） ----
+const showTplLib = ref(false)
+const tplList = ref<EmrTemplate[]>([])
+const tplSaving = ref(false)
+const emptyTplForm = () => ({
+  name: '', type: '',
+  chiefComplaint: '', presentIllness: '', pastHistory: '', allergy: '',
+  diagnosis: '', treatment: '', prescription: '',
+})
+const tplForm = ref(emptyTplForm())
+const canSaveTpl = computed(() => tplForm.value.name.trim().length > 0)
+async function openTplLib() {
+  showTplLib.value = true
+  tplList.value = await emr.loadTemplates()
+}
+async function saveTpl() {
+  if (!canSaveTpl.value) return
+  tplSaving.value = true
+  const f = tplForm.value
+  const t = await emr.createTemplate({
+    name: f.name,
+    type: f.type || null,
+    chiefComplaint: f.chiefComplaint,
+    presentIllness: f.presentIllness,
+    pastHistory: f.pastHistory,
+    allergy: f.allergy,
+    diagnosis: f.diagnosis,
+    treatment: f.treatment,
+    prescription: f.prescription,
+  })
+  tplSaving.value = false
+  if (t) {
+    toast.success(`门店模板「${t.name}」已保存`)
+    tplForm.value = emptyTplForm()
+    tplList.value = await emr.loadTemplates()
+    if (showForm.value) templates.value = await emr.loadTemplates(newRec.value.type)
+  }
+}
+async function disableTpl(t: EmrTemplate) {
+  if (await emr.disableTemplate(t.templateNo)) {
+    toast.success(`模板「${t.name}」已停用`)
+    tplList.value = await emr.loadTemplates()
+    if (showForm.value) templates.value = await emr.loadTemplates(newRec.value.type)
   }
 }
 </script>
@@ -280,6 +393,9 @@ async function createRecord() {
 
       <template #toolbar>
         <CInput v-model="keyword" placeholder="搜索客户 / 病历号 / 诊断" />
+        <CButton variant="ghost" v-perm.disable="'emr:view'" @click="openTplLib">
+          <CIcon name="layers" :size="16" />模板库
+        </CButton>
         <CButton variant="primary" v-perm.disable="'emr:create'" @click="showForm = true">
           <CIcon name="plus" :size="16" />新建病历
         </CButton>
@@ -296,7 +412,7 @@ async function createRecord() {
         <div class="list">
           <div v-if="list.length === 0" class="empty">
             <CIcon name="profile" :size="28" class="empty__icon" />
-            <div>暂无病历</div>
+            <div>{{ emr.loading ? '加载中…' : '暂无病历' }}</div>
           </div>
           <button
             v-for="r in list" :key="r.id"
@@ -319,6 +435,13 @@ async function createRecord() {
             </div>
           </button>
         </div>
+        <CPagination
+          v-if="emr.total > 0"
+          :page="emr.page"
+          :page-size="emr.pageSize"
+          :total="emr.total"
+          @update:page="onPage"
+        />
       </template>
 
       <!-- 右列详情 -->
@@ -495,6 +618,16 @@ async function createRecord() {
               <CInput v-model="newRec.relatedOrderNo" placeholder="如：SO20260825001" />
             </div>
           </div>
+          <div class="nform__row">
+            <label class="nform__label">套用模板</label>
+            <CSelect
+              v-model="tplNo"
+              width="100%"
+              :disabled="tplOptions.length === 0"
+              :options="tplOptions"
+              :placeholder="tplOptions.length ? '选择模板一键填入七段内容（可再修改）' : '暂无可用模板'"
+            />
+          </div>
           <div class="nform__group-title">病史采集</div>
           <div class="nform__row">
             <label class="nform__label">主诉 <span class="req">*</span></label>
@@ -532,6 +665,91 @@ async function createRecord() {
         <template #footer>
           <CButton variant="ghost" @click="showForm = false">取消</CButton>
           <CButton variant="primary" :disabled="!canCreate" @click="createRecord">创建草稿</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- 病历模板库（集团模板只读；门店可自建/停用，复用 emr:create） -->
+    <div v-if="showTplLib" class="modal-mask" @click.self="showTplLib = false">
+      <CCard class="modal" title="病历模板库" padding="lg">
+        <div class="nform">
+          <div class="nform__group-title">可用模板（{{ tplList.length }}）</div>
+          <div v-if="tplList.length === 0" class="empty">
+            <CIcon name="layers" :size="28" class="empty__icon" />
+            <div>暂无可用模板</div>
+          </div>
+          <div v-for="t in tplList" :key="t.templateNo" class="tpl-row">
+            <div class="tpl-row__main">
+              <div class="tpl-row__name">
+                {{ t.name }}
+                <span class="tpl-tag" :class="t.storeCode ? 'tpl-tag--store' : 'tpl-tag--group'">{{ t.storeCode ? '本店' : '集团' }}</span>
+                <span class="tpl-tag">{{ t.type ? EMR_TYPE_LABEL[t.type] : '全类型通用' }}</span>
+              </div>
+              <div class="tpl-row__no">{{ t.templateNo }}</div>
+            </div>
+            <CButton
+              v-if="t.storeCode"
+              variant="ghost"
+              v-perm.disable="'emr:create'"
+              @click="disableTpl(t)"
+            >
+              <CIcon name="close" :size="14" />停用
+            </CButton>
+          </div>
+
+          <div class="nform__group-title">新建本店模板</div>
+          <div class="nform__row nform__row--2">
+            <div>
+              <label class="nform__label">模板名称 <span class="req">*</span></label>
+              <CInput v-model="tplForm.name" placeholder="如：光子嫩肤初诊标准病历" />
+            </div>
+            <div>
+              <label class="nform__label">适用类型</label>
+              <CSelect v-model="tplForm.type" width="100%" :options="[
+                { value: '', label: '全类型通用' },
+                { value: 'FIRST_VISIT', label: '初诊' },
+                { value: 'FOLLOW_UP', label: '复诊' },
+                { value: 'TREATMENT', label: '治疗记录' },
+                { value: 'PROCEDURE', label: '操作记录' },
+              ]" />
+            </div>
+          </div>
+          <div class="nform__row">
+            <label class="nform__label">主诉</label>
+            <CTextarea v-model="tplForm.chiefComplaint" placeholder="新建病历时一键填入的主诉范文" />
+          </div>
+          <div class="nform__row">
+            <label class="nform__label">现病史</label>
+            <CTextarea v-model="tplForm.presentIllness" placeholder="发病/求美经过、既往同类治疗史" />
+          </div>
+          <div class="nform__row nform__row--2">
+            <div>
+              <label class="nform__label">既往史</label>
+              <CTextarea v-model="tplForm.pastHistory" placeholder="基础疾病、瘢痕体质、植入物等" />
+            </div>
+            <div>
+              <label class="nform__label">过敏史</label>
+              <CTextarea v-model="tplForm.allergy" placeholder="药物/化妆品/食物过敏史" />
+            </div>
+          </div>
+          <div class="nform__row">
+            <label class="nform__label">诊断 / 皮肤评估</label>
+            <CTextarea v-model="tplForm.diagnosis" placeholder="诊断结论范文" />
+          </div>
+          <div class="nform__row">
+            <label class="nform__label">治疗方案 / 操作记录</label>
+            <CTextarea v-model="tplForm.treatment" placeholder="项目、部位、能量/剂量范文" />
+          </div>
+          <div class="nform__row">
+            <label class="nform__label">医嘱 / 术后注意事项</label>
+            <CTextarea v-model="tplForm.prescription" placeholder="术后护理、用药、复诊安排范文" />
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showTplLib = false">关闭</CButton>
+          <CButton variant="primary" :disabled="!canSaveTpl || tplSaving" v-perm.disable="'emr:create'" @click="saveTpl">
+            <CIcon name="plus" :size="16" />保存为本店模板
+          </CButton>
         </template>
       </CCard>
     </div>
@@ -574,6 +792,14 @@ async function createRecord() {
 .rec__diag { font-size: var(--t-xs); color: var(--c-text-2); margin-bottom: var(--s-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rec__meta { display: flex; justify-content: space-between; font-size: var(--t-xs); color: var(--c-text-3); }
 .rec__meta span { display: inline-flex; align-items: center; gap: 3px; }
+
+.tpl-row { display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm); padding: var(--s-sm) 0; border-bottom: 1px solid var(--c-border-light); }
+.tpl-row__main { min-width: 0; }
+.tpl-row__name { display: flex; align-items: center; gap: var(--s-xs); font-size: var(--t-sm); font-weight: 600; color: var(--c-text); }
+.tpl-row__no { margin-top: 2px; font-size: var(--t-xs); color: var(--c-text-3); }
+.tpl-tag { font-size: var(--t-xs); font-weight: 400; padding: 1px 8px; background: var(--c-brand-soft); color: var(--c-brand); border-radius: var(--r-pill); }
+.tpl-tag--group { background: var(--c-warning-bg); color: var(--c-warning-fg); }
+.tpl-tag--store { background: var(--c-success-bg, #f0fff4); color: var(--c-success-fg, #389e0d); }
 
 .lockbar {
   display: flex; gap: var(--s-sm); align-items: flex-start;

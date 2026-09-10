@@ -3,6 +3,9 @@ package com.meiyun.txn;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.LoginUser;
 import com.meiyun.txn.audit.AuditRecorder;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
@@ -13,6 +16,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -259,11 +263,49 @@ public class EmrService {
         return saved;
     }
 
-    // ==================== 查询 ====================
+    // ==================== 查询（真分页 / 状态聚合） ====================
 
-    /** 病历列表：storeSpec 门店全见；显式他店码 404；可按状态/客户/方案单叠加过滤。 */
+    /**
+     * 病历分页列表：storeSpec 门店全见；显式他店码 404；可按状态/客户/方案单/关键字叠加过滤。
+     * 排序固定 visitDate、createdAt 双倒序（不信入参排序，防任意字段排序）。
+     */
     @Transactional(readOnly = true)
-    public List<EmrRecord> list(String storeCode, String status, String customerId, String consultId) {
+    public Page<EmrRecord> page(String storeCode, String status, String customerId, String consultId,
+                                String keyword, Pageable pageable) {
+        Specification<EmrRecord> spec = listSpec(storeCode, status, customerId, consultId, keyword);
+        PageRequest page = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(),
+                Sort.by(Sort.Order.desc("visitDate"), Sort.Order.desc("createdAt")));
+        return emrRepo.findAll(spec, page);
+    }
+
+    /**
+     * 本店病历计数聚合（工作台 KPI / 三 tab 角标，前端不再全量拉取后 .length）：
+     * draft/signed/archived 三态计数 + signedThisMonth 本月新签名数；locked=signed+archived 由前端相加。
+     */
+    @Transactional(readOnly = true)
+    public Map<String, Long> stats(String storeCode) {
+        if (!blank(storeCode) && !DataScope.canReadStore(storeCode)) {
+            throw notFound("数据不存在或无权查看");
+        }
+        Specification<EmrRecord> base = DataScope.storeSpec("storeCode");
+        if (!blank(storeCode)) {
+            base = base.and((root, q, cb) -> cb.equal(root.get("storeCode"), storeCode));
+        }
+        Map<String, Long> out = new LinkedHashMap<>();
+        out.put("draft", emrRepo.count(base.and(eqStatus(ST_DRAFT))));
+        out.put("signed", emrRepo.count(base.and(eqStatus(ST_SIGNED))));
+        out.put("archived", emrRepo.count(base.and(eqStatus(ST_ARCHIVED))));
+        OffsetDateTime monthStart = LocalDate.now(BIZ_TZ).withDayOfMonth(1).atStartOfDay(BIZ_TZ).toOffsetDateTime();
+        Specification<EmrRecord> monthSigned = base
+                .and(eqStatus(ST_SIGNED))
+                .and((root, q, cb) -> cb.greaterThanOrEqualTo(root.get("signedAt"), monthStart));
+        out.put("signedThisMonth", emrRepo.count(monthSigned));
+        return out;
+    }
+
+    /** 列表/计数共用过滤规格：状态/客户/方案单精确匹配，关键字对姓名/病历号/诊断/主诉 OR LIKE。 */
+    private Specification<EmrRecord> listSpec(String storeCode, String status, String customerId,
+                                              String consultId, String keyword) {
         if (!blank(storeCode) && !DataScope.canReadStore(storeCode)) {
             throw notFound("数据不存在或无权查看");
         }
@@ -272,7 +314,7 @@ public class EmrService {
             spec = spec.and((root, q, cb) -> cb.equal(root.get("storeCode"), storeCode));
         }
         if (!blank(status)) {
-            spec = spec.and((root, q, cb) -> cb.equal(root.get("status"), status));
+            spec = spec.and(eqStatus(status.trim()));
         }
         if (!blank(customerId)) {
             spec = spec.and((root, q, cb) -> cb.equal(root.get("customerId"), customerId.trim()));
@@ -280,8 +322,19 @@ public class EmrService {
         if (!blank(consultId)) {
             spec = spec.and((root, q, cb) -> cb.equal(root.get("consultId"), consultId.trim()));
         }
-        return emrRepo.findAll(spec, Sort.by(
-                Sort.Order.desc("visitDate"), Sort.Order.desc("createdAt")));
+        if (!blank(keyword)) {
+            String like = "%" + keyword.trim().toLowerCase() + "%";
+            spec = spec.and((root, q, cb) -> cb.or(
+                    cb.like(cb.lower(root.get("customerName")), like),
+                    cb.like(cb.lower(root.get("emrNo")), like),
+                    cb.like(cb.lower(root.get("diagnosis")), like),
+                    cb.like(cb.lower(root.get("chiefComplaint")), like)));
+        }
+        return spec;
+    }
+
+    private static Specification<EmrRecord> eqStatus(String status) {
+        return (root, q, cb) -> cb.equal(root.get("status"), status);
     }
 
     @Transactional(readOnly = true)
