@@ -112,6 +112,7 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/followup', label: '术后回访与满意度', icon: 'phone', permission: 'followup:view' },
       { to: '/sop', label: '术后 SOP 编排', icon: 'layers', permission: 'followup:view' },
+      { to: '/repurchase', label: '复购与资产转移', icon: 'sign', permission: 'followup:view' },
       { to: '/recall', label: '复诊提醒管理', icon: 'bell', permission: 'recall:view' },
     ],
   },
@@ -417,6 +418,7 @@ export const PAGE_TITLES: Record<string, PageTitle> = {
   '/prescription': { breadcrumb: '工作台 / 项目开方开单', title: '项目开方开单', hideTopbar: true },
   '/followup': { breadcrumb: '术后管理 / 术后回访与满意度', title: '术后回访与满意度', hideTopbar: true },
   '/sop': { breadcrumb: '术后管理 / 术后 SOP 编排', title: '术后 SOP 编排与执行', subtitle: '随访节点模板 · 批次执行看板 · 超期升级' },
+  '/repurchase': { breadcrumb: '术后管理 / 复购与资产转移', title: '复购与资产转移单据', subtitle: '知情同意 · 三方双签 · 卡余额/次数账实一致', hideTopbar: true },
   '/conversion-funnel': { breadcrumb: '工作台 / 转化漏斗分析', title: '转化漏斗分析', subtitle: '线索 → 到院 → 咨询 → 成交 → 复购 全链路转化' },
   '/complaint': { breadcrumb: '术后管理 / 投诉与医疗风险处理', title: '投诉与医疗风险处理', hideTopbar: true },
   '/refund': { breadcrumb: '交易管理 / 退款管理', title: '退款管理', hideTopbar: true },

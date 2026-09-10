@@ -37,6 +37,7 @@ const router = createRouter({
     { path: '/complaint', name: 'complaint', component: () => import('@/views/ComplaintView.vue') },
     { path: '/followup', name: 'followup', component: () => import('@/views/FollowupView.vue') },
     { path: '/sop', name: 'sop', component: () => import('@/views/SopManagementView.vue') },
+    { path: '/repurchase', name: 'repurchase', component: () => import('@/views/RepurchaseView.vue') },
 
     // ===== 交易流程 =====
     { path: '/consultation', name: 'consultation', component: () => import('@/views/ConsultationView.vue') },
