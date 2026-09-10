@@ -1,11 +1,22 @@
 // ============================================================
-// 会员到店核销 store（M2-09）
+// 会员到店核销 store（M2-09）—— 已接真实 txn-service（/api/txn/checkin）
 // 扫码核销 / 预约到店 / 直接到店，异常标记（非本人、已核销）。
+// 适配层（铁律：模板/样式零改动，只换数据源）：
+//  - id/no、客户名/掩码手机/项目、方式/状态/异常原因、时间均取后端读模型
+//  - 后端 timeline 时间正序，模板按 mock 口径最新在前展示，适配层统一 reverse
+//  - 写动作经网关，400/403 中文错误经 errMsg() 外露 toast，失败返回 null/false
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from './m5Coupon'
+import {
+  listCheckins, registerCheckin, confirmCheckin,
+  markCheckinException, resetCheckin,
+  type CheckinRecordDTO,
+} from '@/api/checkin'
 
 export type CheckinMethod = 'SCAN' | 'APPOINTMENT' | 'WALKIN'
 export type CheckinStatus = 'DONE' | 'EXCEPTION' | 'PENDING'
@@ -51,9 +62,29 @@ const EXCEPTION_LABEL: Record<CheckinExceptionReason, string> = {
   INFO_MISMATCH: '信息不符',
 }
 
+/** 后端读模型 → 模板既有 CheckinRecord 形状；timeline 反转为最新在前（对齐 mock 展示口径）。 */
+function adapt(d: CheckinRecordDTO): CheckinRecord {
+  return {
+    id: d.no || d.id,
+    no: d.no || d.id,
+    customerName: d.customerName,
+    phone: d.phone,
+    project: d.project,
+    method: d.method as CheckinMethod,
+    status: d.status as CheckinStatus,
+    exceptionReason: d.exceptionReason as CheckinExceptionReason,
+    arrivedAt: d.arrivedAt,
+    checkedAt: d.checkedAt ?? undefined,
+    operator: d.operator,
+    note: d.note ?? undefined,
+    timeline: (d.timeline ?? []).slice().reverse(),
+  }
+}
+
 export const useCheckinStore = defineStore('checkin', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const toast = useToast()
 
   const records = ref<CheckinRecord[]>([])
   const filterMethod = ref<CheckinMethod | 'ALL'>('ALL')
@@ -68,116 +99,84 @@ export const useCheckinStore = defineStore('checkin', () => {
     let list = records.value
     if (filterMethod.value !== 'ALL') list = list.filter((r) => r.method === filterMethod.value)
     if (filterStatus.value !== 'ALL') list = list.filter((r) => r.status === filterStatus.value)
-    return list.sort((a, b) => new Date(b.arrivedAt).getTime() - new Date(a.arrivedAt).getTime())
+    return list.slice().sort((a, b) => new Date(b.arrivedAt).getTime() - new Date(a.arrivedAt).getTime())
   })
 
   function get(id: string) {
     return records.value.find((r) => r.id === id)
   }
 
-  function register(input: { customerName: string; phone: string; project: string; method: CheckinMethod }): CheckinRecord | null {
-    if (!auth.can('checkin:create')) {
-      console.warn('[checkin] 无 checkin:create 权限')
+  /** 写动作返回的最新单 upsert 入本地列表（按 no 去重替换）。 */
+  function upsert(r: CheckinRecord) {
+    const idx = records.value.findIndex((x) => x.id === r.id)
+    if (idx >= 0) records.value.splice(idx, 1, r)
+    else records.value.unshift(r)
+  }
+
+  /** 拉取今日到店核销队列（后端默认今日 + 数据域强制当前门店）。页面 onMounted 调用。 */
+  async function seed(): Promise<boolean> {
+    try {
+      const res = await listCheckins()
+      records.value = (res.data ?? []).map(adapt)
+      return true
+    } catch (e) {
+      records.value = []
+      toast.error(errMsg(e, '到店核销队列加载失败'))
+      return false
+    }
+  }
+
+  async function register(input: { customerName: string; phone: string; project: string; method: CheckinMethod }): Promise<CheckinRecord | null> {
+    try {
+      const res = await registerCheckin({
+        customerName: input.customerName.trim(),
+        phone: input.phone.trim(),
+        project: input.project.trim(),
+        method: input.method,
+      })
+      const r = adapt(res.data)
+      upsert(r)
+      activity.log(auth.user.name, `登记到店 ${r.customerName}：${r.project}`, r.id)
+      return r
+    } catch (e) {
+      toast.error(errMsg(e, '登记到店失败'))
       return null
     }
-    const now = new Date()
-    const r: CheckinRecord = {
-      id: nextId('ci'),
-      no: `CI-${now.toISOString().slice(0, 10).replace(/-/g, '')}-${String(records.value.length + 1).padStart(3, '0')}`,
-      customerName: input.customerName.trim(),
-      phone: input.phone.trim(),
-      project: input.project.trim(),
-      method: input.method,
-      status: 'PENDING',
-      exceptionReason: 'NONE',
-      arrivedAt: now.toISOString(),
-      operator: auth.user.name,
-      timeline: [{ by: auth.user.name, text: `${METHOD_LABEL[input.method]}登记到店，待确认`, at: now.toISOString() }],
+  }
+
+  async function confirm(id: string): Promise<boolean> {
+    try {
+      const res = await confirmCheckin(id)
+      upsert(adapt(res.data))
+      activity.log(auth.user.name, `到店核销确认 ${res.data.no}：${res.data.customerName}`, id)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '核销确认失败'))
+      return false
     }
-    records.value.unshift(r)
-    activity.log(auth.user.name, `登记到店 ${r.customerName}：${r.project}`, r.id)
-    return r
   }
 
-  function confirm(id: string): boolean {
-    const r = records.value.find((x) => x.id === id)
-    if (!r || r.status !== 'PENDING' || !auth.can('checkin:create')) return false
-    const now = new Date().toISOString()
-    r.status = 'DONE'
-    r.checkedAt = now
-    r.timeline.unshift({ by: auth.user.name, text: '核销确认完成', at: now })
-    activity.log(auth.user.name, `到店核销确认 ${r.no}：${r.customerName}`, r.id)
-    return true
-  }
-
-  function markException(id: string, reason: CheckinExceptionReason, note?: string): boolean {
-    const r = records.value.find((x) => x.id === id)
-    if (!r || r.status === 'DONE' || !auth.can('checkin:create')) return false
-    const now = new Date().toISOString()
-    r.status = 'EXCEPTION'
-    r.exceptionReason = reason
-    if (note) r.note = note
-    r.timeline.unshift({ by: auth.user.name, text: `标记异常：${EXCEPTION_LABEL[reason]}${note ? `（${note}）` : ''}`, at: now })
-    activity.log(auth.user.name, `到店异常 ${r.no}：${EXCEPTION_LABEL[reason]}`, r.id)
-    return true
-  }
-
-  function resetToPending(id: string): boolean {
-    const r = records.value.find((x) => x.id === id)
-    if (!r || r.status !== 'EXCEPTION' || !auth.can('checkin:create')) return false
-    const now = new Date().toISOString()
-    r.status = 'PENDING'
-    r.exceptionReason = 'NONE'
-    r.note = undefined
-    r.timeline.unshift({ by: auth.user.name, text: '异常已解除，重新待确认', at: now })
-    return true
-  }
-
-  // ===== 种子数据 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const now = new Date()
-    const today = (h: number, m = 0) => {
-      const d = new Date(now)
-      d.setHours(h, m, 0, 0)
-      return d.toISOString()
+  async function markException(id: string, reason: CheckinExceptionReason, note?: string): Promise<boolean> {
+    try {
+      const res = await markCheckinException(id, { reason, note })
+      upsert(adapt(res.data))
+      activity.log(auth.user.name, `到店异常 ${res.data.no}：${EXCEPTION_LABEL[reason]}`, id)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '标记异常失败'))
+      return false
     }
-    const ago = (h: number) => new Date(now.getTime() - h * 3600_000).toISOString()
-    const base: Array<{ customerName: string; phone: string; project: string; method: CheckinMethod; status: CheckinStatus; arrivedAt: string; exReason?: CheckinExceptionReason }> = [
-      { customerName: '林晓彤', phone: '138****2046', project: '水光针基础款', method: 'SCAN', status: 'DONE', arrivedAt: today(9, 15) },
-      { customerName: '王诗涵', phone: '139****8821', project: '射频紧肤下颌缘', method: 'APPOINTMENT', status: 'DONE', arrivedAt: today(9, 40) },
-      { customerName: '陈美玲', phone: '137****5512', project: '超声炮全脸提拉', method: 'APPOINTMENT', status: 'PENDING', arrivedAt: today(10, 20) },
-      { customerName: '赵雨晴', phone: '135****3390', project: '热玛吉四代面部', method: 'SCAN', status: 'PENDING', arrivedAt: today(10, 45) },
-      { customerName: '周慧敏', phone: '133****1188', project: '皮秒祛斑全脸', method: 'WALKIN', status: 'EXCEPTION', arrivedAt: today(10, 5), exReason: 'NOT_SELF' },
-      { customerName: '吴思琪', phone: '188****4409', project: '玻尿酸填充（太阳穴）', method: 'APPOINTMENT', status: 'DONE', arrivedAt: today(11, 10) },
-      { customerName: '孙佳宁', phone: '136****7766', project: '光子嫩肤全模式', method: 'SCAN', status: 'EXCEPTION', arrivedAt: today(11, 30), exReason: 'ALREADY_DONE' },
-    ]
-    base.forEach((s, i) => {
-      const isDone = s.status === 'DONE'
-      const isEx = s.status === 'EXCEPTION'
-      const id = nextId('ci')
-      records.value.push({
-        id,
-        no: `CI-${s.arrivedAt.slice(0, 10).replace(/-/g, '')}-${String(i + 1).padStart(3, '0')}`,
-        customerName: s.customerName,
-        phone: s.phone,
-        project: s.project,
-        method: s.method,
-        status: s.status,
-        exceptionReason: s.exReason || 'NONE',
-        arrivedAt: s.arrivedAt,
-        checkedAt: isDone ? ago(2 - i * 0.2) : undefined,
-        operator: ['夏沫（前台）', '李娜（护士）', '陈雅琳（店长）'][i % 3],
-        note: isEx && s.exReason === 'NOT_SELF' ? '到店人与预约信息不一致，已电话核实' : undefined,
-        timeline: [
-          { by: '系统', text: `${METHOD_LABEL[s.method]}登记到店`, at: s.arrivedAt },
-          ...(isDone ? [{ by: '夏沫（前台）', text: '核销确认完成', at: ago(2 - i * 0.2) }] : []),
-          ...(isEx ? [{ by: '夏沫（前台）', text: `标记异常：${EXCEPTION_LABEL[s.exReason!]}`, at: ago(1) }] : []),
-        ],
-      })
-    })
+  }
+
+  async function resetToPending(id: string): Promise<boolean> {
+    try {
+      const res = await resetCheckin(id)
+      upsert(adapt(res.data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '解除异常失败'))
+      return false
+    }
   }
 
   return {

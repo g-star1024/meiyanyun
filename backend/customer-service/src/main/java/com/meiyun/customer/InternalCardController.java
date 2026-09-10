@@ -87,6 +87,36 @@ public class InternalCardController {
     }
 
     /**
+     * 按手机号反查客户目录（M2-09 到店核销登记锚定客户用）：
+     * GET /api/customer/internal/customers/by-phone?phone=138xxxxxxxx&amp;storeCode=SST01。
+     * 命中顺序：本店客户（store_code=入参门店）优先，其次公海客户（store_code 为空）；均不命中 → 404，
+     * 由 txn 侧捕获后允许以「快照散客」建登记单。不跨店命中（A 店前台不能凭手机号锚定 B 店客户）。
+     * 仅回 customerId/姓名/归属门店/状态（不回手机号），仅系统身份（internal:customer-directory）可调。
+     */
+    @GetMapping("/customers/by-phone")
+    @RequirePerm("internal:customer-directory")
+    public CustomerDirectoryDTO customerByPhone(@RequestParam("phone") String phone,
+                                                @RequestParam(value = "storeCode", required = false) String storeCode) {
+        if (phone == null || phone.isBlank()) {
+            throw new CardLedgerService.BadReq("手机号不能为空");
+        }
+        String p = phone.trim();
+        Customer c = null;
+        if (storeCode != null && !storeCode.isBlank()) {
+            c = customerRepo.findFirstByStoreCodeAndPhone(storeCode.trim(), p).orElse(null);
+        }
+        if (c == null) {
+            c = customerRepo.findFirstByStoreCodeIsNullAndPhone(p).orElse(null);
+        }
+        if (c == null) {
+            throw new CardLedgerService.NotFound("手机号未匹配到客户: " + CustomerService.maskPhone(p, false));
+        }
+        return new CustomerDirectoryDTO(c.getCustomerId(), c.getName(),
+                c.getStoreCode() == null ? "" : c.getStoreCode(),
+                c.getStatus() == null ? "" : c.getStatus());
+    }
+
+    /**
      * 储值余额消费扣款（txn balance 支付实扣）：POST /api/customer/internal/cards/consume。
      * 行锁扣 member_card.balance 并写 card_ledger（CONSUME 负额，bizRef=订单号）；
      * 余额不足 422 中文拦截；同订单号重放幂等返回既有流水（网络重试不双扣）。

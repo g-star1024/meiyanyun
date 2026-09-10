@@ -70,9 +70,9 @@ function fmtTime(iso?: string) {
 const showForm = ref(false)
 const form = ref({ customerName: '', phone: '', project: '', method: 'SCAN' as CheckinMethod })
 const canSubmit = computed(() => form.value.customerName.trim() && form.value.phone.trim() && form.value.project.trim())
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
-  const r = store.register({ ...form.value })
+  const r = await store.register({ ...form.value })
   if (r) {
     showForm.value = false
     form.value = { customerName: '', phone: '', project: '', method: 'SCAN' }
@@ -81,10 +81,11 @@ function submitForm() {
   }
 }
 
-function doConfirm() {
+async function doConfirm() {
   if (!selected.value) return
-  store.confirm(selected.value.id)
-  toast.success('核销完成，客户可进入咨询/诊疗')
+  if (await store.confirm(selected.value.id)) {
+    toast.success('核销完成，客户可进入咨询/诊疗')
+  }
 }
 
 // 异常标记弹层
@@ -95,16 +96,18 @@ function openEx() {
   exForm.value = { reason: 'NOT_SELF', note: '' }
   showEx.value = true
 }
-function submitEx() {
+async function submitEx() {
   if (!selected.value) return
-  store.markException(selected.value.id, exForm.value.reason, exForm.value.note || undefined)
-  showEx.value = false
-  toast.error('已标记异常，待核实处理')
+  if (await store.markException(selected.value.id, exForm.value.reason, exForm.value.note || undefined)) {
+    showEx.value = false
+    toast.error('已标记异常，待核实处理')
+  }
 }
-function doReset() {
+async function doReset() {
   if (!selected.value) return
-  store.resetToPending(selected.value.id)
-  toast.info('已解除异常，恢复待确认')
+  if (await store.resetToPending(selected.value.id)) {
+    toast.info('已解除异常，恢复待确认')
+  }
 }
 </script>
 
