@@ -306,13 +306,28 @@ public class OrgController {
 
     // ==================== 内部方法 ====================
 
+    /** 中文组织类型 → 英文编码（前端枚举 GROUP/REGION/STORE/DEPT）。 */
+    private static final Map<String, String> ORG_TYPE_CODE = Map.of(
+            "集团", "GROUP", "区域", "REGION", "门店", "STORE", "部门", "DEPT");
+
     private Map<String, Object> node(OrgUnit u) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("orgCode", u.getOrgCode());
         m.put("orgName", u.getOrgName());
         m.put("orgType", u.getOrgType());
+        m.put("orgTypeCode", ORG_TYPE_CODE.getOrDefault(u.getOrgType(), "STORE"));
+        if (u.getParentCode() != null) m.put("parentCode", u.getParentCode());
         if (u.getStoreCode() != null) m.put("storeCode", u.getStoreCode());
         if (u.getRegion() != null) m.put("region", u.getRegion());
+        m.put("leaderName", u.getLeaderName());
+        m.put("headcount", u.getHeadcount());
+        boolean inactive = "停用".equals(u.getStatus());
+        m.put("status", u.getStatus() == null ? "启用" : u.getStatus());
+        m.put("statusCode", inactive ? "INACTIVE" : "ACTIVE");
+        if (u.getInactiveReason() != null) m.put("inactiveReason", u.getInactiveReason());
+        if (u.getRemark() != null) m.put("remark", u.getRemark());
+        m.put("sortNo", u.getSortNo());
+        m.put("createdAt", u.getCreatedAt());
         return m;
     }
 

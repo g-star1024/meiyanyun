@@ -5,7 +5,9 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
-/** 组织单元：集团 → 六大区 → 23 门店 三级树。 */
+import java.time.OffsetDateTime;
+
+/** 组织单元：集团 → 区域 → 门店 → 部门 四级树（部门为门店下的可写扩展层，B33）。 */
 @Entity
 @Table(name = "org_unit")
 @Getter @Setter @NoArgsConstructor
@@ -19,7 +21,7 @@ public class OrgUnit {
     private String orgName;
 
     @Column(name = "org_type", nullable = false, length = 8)
-    private String orgType;      // 集团 | 区域 | 门店
+    private String orgType;      // 集团 | 区域 | 门店 | 部门
 
     @Column(name = "parent_code", length = 16)
     private String parentCode;
@@ -32,4 +34,23 @@ public class OrgUnit {
 
     @Column(name = "sort_no", nullable = false)
     private Integer sortNo;
+
+    @Column(name = "leader_name", length = 32)
+    private String leaderName;
+
+    @Column
+    private Integer headcount;
+
+    /** 启用 | 停用；存量三级节点由应用侧归一为启用。 */
+    @Column(length = 8)
+    private String status;
+
+    @Column(name = "inactive_reason", length = 255)
+    private String inactiveReason;
+
+    @Column(length = 255)
+    private String remark;
+
+    @Column(name = "created_at")
+    private OffsetDateTime createdAt;
 }
