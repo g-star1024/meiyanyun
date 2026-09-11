@@ -43,11 +43,14 @@ public class MarketingCfgService {
 
     private final MarketingCfgRepository cfgRepo;
     private final AuditRecorder audit;
+    private final StoreNameResolver storeNameResolver;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public MarketingCfgService(MarketingCfgRepository cfgRepo, AuditRecorder audit) {
+    public MarketingCfgService(MarketingCfgRepository cfgRepo, AuditRecorder audit,
+                               StoreNameResolver storeNameResolver) {
         this.cfgRepo = cfgRepo;
         this.audit = audit;
+        this.storeNameResolver = storeNameResolver;
     }
 
     // ==================== 查询 ====================
@@ -78,6 +81,7 @@ public class MarketingCfgService {
 
         List<String> pushChannels = cmd.defaultPushChannels() == null ? List.of() : cmd.defaultPushChannels();
         List<String> adChannels = cmd.defaultAdChannels() == null ? List.of() : cmd.defaultAdChannels();
+        String fallbackStore = normalizeStoreCode(cmd.writeoffFallbackStoreCode());
 
         boolean changed = !eq(cfg.getWeeklyPushLimit(), cmd.weeklyLimit())
                 || !eq(cfg.getQuietHoursEnabled(), cmd.quietHoursEnabled())
@@ -88,7 +92,8 @@ public class MarketingCfgService {
                 || !eq(cfg.getPushRequiresApproval(), cmd.pushRequiresApproval())
                 || !eq(cfg.getApprovalLevel(), cmd.approvalLevel())
                 || !channelsEqual(cfg.getDefaultPushChannels(), pushChannels)
-                || !channelsEqual(cfg.getDefaultAdChannels(), adChannels);
+                || !channelsEqual(cfg.getDefaultAdChannels(), adChannels)
+                || !eq(normalizeStoreCode(cfg.getWriteoffFallbackStoreCode()), fallbackStore);
 
         Map<String, Object> result = new LinkedHashMap<>();
         if (!changed) {
@@ -106,6 +111,7 @@ public class MarketingCfgService {
         cfg.setApprovalLevel(cmd.approvalLevel());
         cfg.setDefaultPushChannels(toJson(pushChannels));
         cfg.setDefaultAdChannels(toJson(adChannels));
+        cfg.setWriteoffFallbackStoreCode(fallbackStore);
         cfgRepo.save(cfg);
 
         Map<String, Object> payload = new LinkedHashMap<>();
@@ -119,6 +125,7 @@ public class MarketingCfgService {
         payload.put("approvalLevel", cmd.approvalLevel());
         payload.put("defaultPushChannels", pushChannels);
         payload.put("defaultAdChannels", adChannels);
+        payload.put("writeoffFallbackStoreCode", fallbackStore);
         audit("MARKETING_CFG", "SAVE", "CFG-1", payload);
 
         result.put("changed", true);
@@ -172,6 +179,27 @@ public class MarketingCfgService {
                         "投放渠道不合法：仅支持 " + String.join("、", AD_CHANNELS));
             }
         }
+        validateFallbackStore(normalizeStoreCode(cmd.writeoffFallbackStoreCode()));
+    }
+
+    /**
+     * 兜底门店校验：留空合法（运行时取门店表首家）；填写则必须在门店主数据中真实存在，
+     * 避免把不存在的编码写进核销流水（core 库无 SST01 这类 seed 编码）。
+     */
+    private void validateFallbackStore(String code) {
+        if (code == null) {
+            return;
+        }
+        String name = storeNameResolver.resolveNames(List.of(code)).get(code);
+        if (name == null || name.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "兜底门店不存在：" + code + "，请从门店列表中选择");
+        }
+    }
+
+    /** 门店编码归一：null/空白统一为 null（表示未配置），其余去空格。 */
+    private String normalizeStoreCode(String code) {
+        return (code == null || code.isBlank()) ? null : code.trim();
     }
 
     // ==================== 内部方法 ====================
@@ -227,6 +255,7 @@ public class MarketingCfgService {
     /**
      * 营销设置保存命令。
      * 金额口径：largeCouponThresholdFen bigint 存「分」（前端元 ×100）。
+     * writeoffFallbackStoreCode 留空表示不指定（运行时取门店表首家）。
      */
     public record ConfigCmd(
             Integer weeklyLimit,
@@ -238,5 +267,6 @@ public class MarketingCfgService {
             Boolean pushRequiresApproval,
             Integer approvalLevel,
             List<String> defaultPushChannels,
-            List<String> defaultAdChannels) {}
+            List<String> defaultAdChannels,
+            String writeoffFallbackStoreCode) {}
 }

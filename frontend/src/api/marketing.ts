@@ -503,6 +503,8 @@ export interface MarketingCfgDTO {
   approvalLevel?: number | null
   defaultPushChannels?: string | null
   defaultAdChannels?: string | null
+  /** 券核销兜底门店编码（B34）：集团账号核销时流水记到哪家门店；null=未配置，运行时取门店表首家。 */
+  writeoffFallbackStoreCode?: string | null
 }
 
 export interface MarketingCfgCmd {
@@ -517,6 +519,8 @@ export interface MarketingCfgCmd {
   approvalLevel: number
   defaultPushChannels: string[]
   defaultAdChannels: string[]
+  /** 券核销兜底门店编码；空串/省略表示不指定，后端归一为 null。 */
+  writeoffFallbackStoreCode?: string | null
 }
 
 export const getMarketingConfig = () => client.get<MarketingCfgDTO>('/marketing/config')

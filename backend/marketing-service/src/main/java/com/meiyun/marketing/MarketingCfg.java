@@ -67,4 +67,13 @@ public class MarketingCfg {
     /** 默认投放渠道（JSON 数组文本，元素 ∈ 六渠道白名单）。 */
     @Column(name = "default_ad_channels", length = 256)
     private String defaultAdChannels;
+
+    // ==================== B34 券核销兜底门店 ====================
+
+    /**
+     * 券核销兜底门店编码：集团/大区账号（无所属门店）核销时，流水记到哪家门店。
+     * 留空则运行时取门店表首家；配置后以此为准，避免写入硬编码的幽灵门店码。
+     */
+    @Column(name = "writeoff_fallback_store_code", length = 32)
+    private String writeoffFallbackStoreCode;
 }

@@ -37,6 +37,8 @@ export interface M5Settings {
   // 默认渠道
   defaultPushChannels: PushChannel[]
   defaultAdChannels: string[]
+  // 券核销兜底门店（B34）：集团/大区账号无所属门店时，核销流水记到哪家店；'' = 未配置（取门店表首家）
+  writeoffFallbackStoreCode: string
 }
 
 export interface AuditLog {
@@ -66,6 +68,7 @@ const DEFAULT_SETTINGS: M5Settings = {
   approvalLevel: 2,
   defaultPushChannels: ['WECOM'],
   defaultAdChannels: ['抖音', '微信私域'],
+  writeoffFallbackStoreCode: '',
 }
 
 // -------------------- 适配层（后端 DTO ↔ 页面活规格） --------------------
@@ -99,6 +102,8 @@ function adapt(dto: MarketingCfgDTO | null | undefined): M5Settings {
     approvalLevel: (dto.approvalLevel === 1 ? 1 : 2) as ApprovalLevel,
     defaultPushChannels: parseChannels(dto.defaultPushChannels, DEFAULT_SETTINGS.defaultPushChannels) as PushChannel[],
     defaultAdChannels: parseChannels(dto.defaultAdChannels, DEFAULT_SETTINGS.defaultAdChannels),
+    // 兜底门店不套默认值：后端 null 即「未配置」的合法态，页面显示为「自动取首家门店」
+    writeoffFallbackStoreCode: dto.writeoffFallbackStoreCode ?? '',
   }
 }
 
@@ -146,9 +151,11 @@ export const useM5SettingsStore = defineStore('m5Settings', () => {
     approvalLevel: '审批层级',
     defaultPushChannels: '默认推送渠道',
     defaultAdChannels: '默认投放渠道',
+    writeoffFallbackStoreCode: '核销兜底门店',
   }
 
   const fmtVal = (v: unknown): string => {
+    if (v == null || v === '') return '未配置'
     if (typeof v === 'boolean') return v ? '开' : '关'
     if (Array.isArray(v)) {
       if (!v.length) return '无'
@@ -195,6 +202,7 @@ export const useM5SettingsStore = defineStore('m5Settings', () => {
         approvalLevel: clamped.approvalLevel,
         defaultPushChannels: clamped.defaultPushChannels,
         defaultAdChannels: clamped.defaultAdChannels,
+        writeoffFallbackStoreCode: clamped.writeoffFallbackStoreCode || null,
       })
     } catch (e) {
       return { ok: false, reason: errText(e) }
@@ -285,6 +293,7 @@ export const useM5SettingsStore = defineStore('m5Settings', () => {
       approvalLevel: 'approvalLevel',
       defaultPushChannels: 'defaultPushChannels',
       defaultAdChannels: 'defaultAdChannels',
+      writeoffFallbackStoreCode: 'writeoffFallbackStoreCode',
     }
     Object.entries(map).forEach(([jsonKey, settingKey]) => {
       if (!(jsonKey in snap)) return

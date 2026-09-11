@@ -20,6 +20,7 @@ import {
   type PushChannel,
 } from '@/stores/m5Settings'
 import { useAuthStore } from '@/stores/auth'
+import { useStoreContext } from '@/stores/storeContext'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
 import {
@@ -33,8 +34,10 @@ import {
 
 const store = useM5SettingsStore()
 const auth = useAuthStore()
+const storeCtx = useStoreContext()
 const toast = useToast()
 onMounted(() => store.seed())
+onMounted(() => storeCtx.loadStores())
 
 type GroupKey = 'FREQ' | 'WORDS' | 'APPROVAL' | 'CHANNEL'
 const activeGroup = ref<GroupKey>('FREQ')
@@ -42,7 +45,7 @@ const activeGroup = ref<GroupKey>('FREQ')
 const groups: { key: GroupKey; label: string; icon: 'volume' | 'shield' | 'check-square' | 'marketing'; desc: string }[] = [
   { key: 'FREQ', label: '触达频率', icon: 'volume', desc: '周频≤3 / 免打扰时段' },
   { key: 'WORDS', label: '合规词库', icon: 'shield', desc: '违禁词维护与拦截' },
-  { key: 'APPROVAL', label: '审批流', icon: 'check-square', desc: '大额券/推送审批' },
+  { key: 'APPROVAL', label: '审批流', icon: 'check-square', desc: '大额券/推送审批·核销兜底门店' },
   { key: 'CHANNEL', label: '默认渠道', icon: 'marketing', desc: '推送与投放默认渠道' },
 ]
 const activeGroupLabel = computed(() => groups.find((g) => g.key === activeGroup.value)?.label ?? '')
@@ -90,6 +93,12 @@ const levelOptions = [
   { value: '1', label: '1 级审批（店长）' },
   { value: '2', label: '2 级审批（店长 + 区域）' },
 ]
+
+// 兜底门店候选：真实门店列表（/api/stores），首项留空即「未配置」，运行时由后端取门店表首家
+const fallbackStoreOptions = computed(() => [
+  { value: '', label: '未配置（自动取门店表首家）' },
+  ...storeCtx.stores.map((s) => ({ value: s.storeCode, label: `${s.storeName}（${s.storeCode}）` })),
+])
 
 // 词库（A1-04：DB + Redis 缓存，管理端维护即时生效）
 async function loadWords() {
@@ -346,6 +355,12 @@ const pushEntries = Object.entries(PUSH_CHANNEL_LABEL) as [PushChannel, string][
               <CSelect :model-value="String(draft.approvalLevel)" :options="levelOptions" width="100%"
                 :disabled="!canEdit"
                 @update:model-value="draft.approvalLevel = (Number($event) === 1 ? 1 : 2)" />
+            </div>
+            <div class="fld">
+              <label class="fld__label">券核销兜底门店（集团账号核销时流水归属门店）</label>
+              <CSelect :model-value="draft.writeoffFallbackStoreCode" :options="fallbackStoreOptions" width="100%"
+                :disabled="!canEdit"
+                @update:model-value="draft.writeoffFallbackStoreCode = $event" />
             </div>
           </div>
 

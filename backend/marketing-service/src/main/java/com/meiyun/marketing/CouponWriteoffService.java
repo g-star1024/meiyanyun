@@ -28,8 +28,6 @@ import java.util.regex.Pattern;
 @Service
 public class CouponWriteoffService {
 
-    /** 最终降级门店编码：远程门店服务不可达时回显（正常兜底走 store-service 首家真实门店）。 */
-    private static final String FALLBACK_STORE_CODE = "SST01";
     private static final String CHANNEL = "门店核销";
     private static final Pattern PHONE = Pattern.compile("^1[3-9]\\d{9}$");
 
@@ -38,17 +36,20 @@ public class CouponWriteoffService {
     private final BizNoGenerator noGen;
     private final AuditRecorder audit;
     private final StoreNameResolver storeNameResolver;
+    private final MarketingCfgService cfgService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public CouponWriteoffService(CouponWriteoffRecordRepository writeoffRepo,
                                  CouponTemplateRepository couponRepo,
                                  BizNoGenerator noGen, AuditRecorder audit,
-                                 StoreNameResolver storeNameResolver) {
+                                 StoreNameResolver storeNameResolver,
+                                 MarketingCfgService cfgService) {
         this.writeoffRepo = writeoffRepo;
         this.couponRepo = couponRepo;
         this.noGen = noGen;
         this.audit = audit;
         this.storeNameResolver = storeNameResolver;
+        this.cfgService = cfgService;
     }
 
     public List<CouponWriteoffRecord> list() {
@@ -194,9 +195,11 @@ public class CouponWriteoffService {
     }
 
     /**
-     * 当前核销门店 [编码, 名称]：门店角色取登录账号所属门店并远程解析名称；
-     * 集团/大区账号（storeCode 为空，如超管）远程取门店表首家真实门店兜底；
-     * 远程调用均失败时最终降级为固定编码（名称回显编码）。
+     * 当前核销门店 [编码, 名称]，三级取值（B34 起不再硬编码门店码）：
+     * ① 门店角色取登录账号所属门店并远程解析名称；
+     * ② 集团/大区账号（storeCode 为空，如超管）取营销设置里配置的兜底门店（保存时已校验真实存在）；
+     * ③ 未配置则远程取门店表首家真实门店。
+     * 三级均落空时拒绝核销而非写入臆造编码——流水门店编码必须能在门店主数据中对上。
      */
     private String[] currentStore() {
         var user = SecurityContext.get();
@@ -205,13 +208,19 @@ public class CouponWriteoffService {
             String c = code.trim();
             return new String[]{c, resolveStoreName(c)};
         }
+        String configured = cfgService.get().getWriteoffFallbackStoreCode();
+        if (configured != null && !configured.isBlank()) {
+            String c = configured.trim();
+            return new String[]{c, resolveStoreName(c)};
+        }
         Map<String, String> first = storeNameResolver.resolveFirstStore();
         if (first != null) {
             String c = first.get("code");
             String n = first.get("name");
             return new String[]{c, (n == null || n.isBlank()) ? c : n};
         }
-        return new String[]{FALLBACK_STORE_CODE, FALLBACK_STORE_CODE};
+        throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                "无法确定核销门店：请在「营销设置」中配置券核销兜底门店，或稍后重试");
     }
 
     private void audit(String action, String txnNo, Map<String, Object> payload) {
