@@ -1,8 +1,13 @@
 // 组织架构聚合（M1 集团管控）。
-// 树形结构：集团 → 大区 → 门店 → 部门。承载组织单元、负责人、人数、状态。
+// 树形结构：集团 → 大区 → 门店 → 部门。权威源 org-service /org/tree（B33 去 mock）。
+// 写边界（后端强制）：仅可在门店下新建部门；编码/类型不可改；仅部门可跨门店移动；
+// 停用必填原因。前端只做交互收口，任何越权/校验以网关返回的中文 message 为准。
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import {
+  getOrgTree, createOrgUnit, updateOrgUnit, toggleOrgUnitStatus,
+  type OrgTreeNode, type OrgUnitCreatePayload, type OrgUnitUpdatePayload,
+} from '@/api/org'
 import { useAuthStore } from './auth'
 
 export type OrgType = 'GROUP' | 'REGION' | 'STORE' | 'DEPT'
@@ -19,7 +24,7 @@ export interface OrgNode {
   status: OrgStatus
   sort: number
   remark?: string
-  /** 停用时必填的原因（本地演示数据，记入本地活动日志；后端组织写接口落地后随写接口持久化） */
+  /** 停用时必填的原因（随启停接口持久化并记入审计） */
   inactiveReason?: string
   createdAt: string
 }
@@ -31,11 +36,59 @@ const ORG_STATUS_LABEL: Record<OrgStatus, string> = {
   ACTIVE: '正常', INACTIVE: '已停用',
 }
 
+function mapNode(n: OrgTreeNode): OrgNode {
+  const code = n.orgCode
+  const type = (n.orgTypeCode || 'STORE') as OrgType
+  return {
+    id: code,
+    code,
+    name: n.orgName,
+    type,
+    parentId: n.parentCode ?? null,
+    leaderName: n.leaderName ?? '',
+    headcount: n.headcount ?? 0,
+    status: n.statusCode === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
+    sort: n.sortNo ?? 0,
+    remark: n.remark ?? undefined,
+    inactiveReason: n.inactiveReason ?? undefined,
+    createdAt: n.createdAt ?? '',
+  }
+}
+
 export const useM1OrgStore = defineStore('m1Org', () => {
-  const activity = useActivityStore()
   const auth = useAuthStore()
   const nodes = ref<OrgNode[]>([])
   const loaded = ref(false)
+  const loading = ref(false)
+  const loadError = ref('')
+
+  /** 单根树递归展平为节点数组（DataScope 已在树内过滤：只含可见层级） */
+  function flatten(root: OrgTreeNode | null): OrgNode[] {
+    const out: OrgNode[] = []
+    const walk = (n: OrgTreeNode | null | undefined) => {
+      if (!n) return
+      out.push(mapNode(n))
+      for (const c of n.children ?? []) walk(c)
+    }
+    walk(root)
+    return out
+  }
+
+  async function load(force = false): Promise<void> {
+    if (loaded.value && !force) return
+    loading.value = true
+    loadError.value = ''
+    try {
+      const resp = await getOrgTree()
+      nodes.value = flatten(resp.data)
+      loaded.value = true
+    } catch (e: any) {
+      loadError.value = e?.response?.data?.message || e?.message || '组织树加载失败'
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
 
   // ---- 查询 ----
   const roots = computed(() => nodes.value.filter((n) => n.parentId === null).sort((a, b) => a.sort - b.sort))
@@ -78,108 +131,74 @@ export const useM1OrgStore = defineStore('m1Org', () => {
 
   function canEdit() { return auth.can('org:edit') }
 
-  // ---- 命令 ----
-  function create(input: Omit<OrgNode, 'id' | 'createdAt'>): OrgNode {
+  // ---- 命令（真实 API；失败向上抛出，由视图展示后端中文 message） ----
+  async function create(input: {
+    code: string
+    name: string
+    parentId: string
+    leaderName: string
+    headcount: number
+    sort: number
+    remark: string
+  }): Promise<void> {
     if (!auth.can('org:edit')) throw new Error('无组织架构编辑权限')
-    const n: OrgNode = { ...input, id: nextId('org'), createdAt: new Date().toISOString() }
-    nodes.value.push(n)
-    activity.log(auth.user.name, `新建组织单元「${n.name}」（${ORG_TYPE_LABEL[n.type]}）`, n.id)
-    return n
+    const payload: OrgUnitCreatePayload = {
+      orgCode: input.code,
+      orgName: input.name,
+      parentCode: input.parentId,
+      leaderName: input.leaderName || null,
+      headcount: input.headcount,
+      sortNo: input.sort,
+      remark: input.remark || null,
+    }
+    await createOrgUnit(payload)
+    await load(true)
   }
 
-  function update(id: string, patch: Partial<OrgNode>) {
+  /**
+   * 编辑节点。parentId 仅部门且发生变化时下发（跨门店移动）；
+   * 可空文本始终随表单提交（空串由后端清空）。
+   */
+  async function update(id: string, patch: {
+    name: string
+    parentId?: string | null
+    leaderName: string
+    headcount: number
+    sort: number
+    remark: string
+  }): Promise<void> {
     if (!auth.can('org:edit')) throw new Error('无组织架构编辑权限')
-    const n = get(id)
-    if (!n) return
-    Object.assign(n, patch)
-    activity.log(auth.user.name, `更新组织「${n.name}」信息`, id)
+    const payload: OrgUnitUpdatePayload = {
+      orgName: patch.name,
+      leaderName: patch.leaderName,
+      headcount: patch.headcount,
+      sortNo: patch.sort,
+      remark: patch.remark,
+    }
+    const cur = get(id)
+    if (cur && cur.type === 'DEPT' && patch.parentId != null && patch.parentId !== cur.parentId) {
+      payload.parentCode = patch.parentId
+    }
+    await updateOrgUnit(id, payload)
+    await load(true)
   }
 
-  function setStatus(id: string, status: OrgStatus, reason?: string) {
+  async function setStatus(id: string, status: OrgStatus, reason?: string): Promise<void> {
     if (!auth.can('org:edit')) throw new Error('无组织架构编辑权限')
-    const n = get(id)
-    if (!n) return
     if (status === 'INACTIVE' && (!reason || !reason.trim())) {
       throw new Error('停用组织单元必须填写原因')
     }
-    n.status = status
-    n.inactiveReason = status === 'INACTIVE' ? reason!.trim() : undefined
-    activity.log(auth.user.name, `组织「${n.name}」${status === 'ACTIVE' ? '启用' : '停用'}${reason ? `：${reason}` : ''}`, id)
-  }
-
-  // ---- 种子 ----
-  function seed() {
-    if (loaded.value) return
-    loaded.value = true
-    const now = Date.now()
-    // 集团
-    const groupId = nextId('org')
-    nodes.value.push({
-      id: groupId, code: 'G001', name: '美研云医疗集团', type: 'GROUP', parentId: null,
-      leaderName: '周岚', headcount: 0, status: 'ACTIVE', sort: 0, remark: '集团总部',
-      createdAt: new Date(now - 365 * 86400000).toISOString(),
+    await toggleOrgUnitStatus(id, {
+      enable: status === 'ACTIVE',
+      reason: status === 'INACTIVE' ? reason!.trim() : undefined,
     })
-
-    // 大区
-    const regions = [
-      { code: 'R-EAST', name: '华东大区', leaderName: '陈野', headcount: 0, cities: 4 },
-      { code: 'R-NORTH', name: '华北大区', leaderName: '周岚', headcount: 0, cities: 3 },
-      { code: 'R-SOUTH', name: '华南大区', leaderName: '林哲', headcount: 0, cities: 3 },
-      { code: 'R-WEST', name: '华西大区', leaderName: '待任命', headcount: 0, cities: 3, status: 'INACTIVE' as OrgStatus, remark: '新拓展区域' },
-    ]
-    const regionIds: Record<string, string> = {}
-    regions.forEach((r, i) => {
-      const id = nextId('org')
-      regionIds[r.code] = id
-      nodes.value.push({
-        id, code: r.code, name: r.name, type: 'REGION', parentId: groupId,
-        leaderName: r.leaderName, headcount: r.headcount, status: r.status ?? 'ACTIVE',
-        sort: i, remark: r.remark,
-        createdAt: new Date(now - (365 - i * 30) * 86400000).toISOString(),
-      })
-    })
-
-    // 门店（华东）
-    const stores = [
-      { parent: 'R-EAST', code: 'M001', name: '静安旗舰店', leaderName: '苏晴', headcount: 28 },
-      { parent: 'R-EAST', code: 'M002', name: '徐汇标准店', leaderName: '陈昊', headcount: 16 },
-      { parent: 'R-NORTH', code: 'M003', name: '朝阳旗舰店', leaderName: '周岚', headcount: 32 },
-      { parent: 'R-SOUTH', code: 'M004', name: '天河标准店', leaderName: '林哲', headcount: 14 },
-      { parent: 'R-SOUTH', code: 'M006', name: '南山标准店', leaderName: '黄晟', headcount: 12, status: 'INACTIVE' as OrgStatus },
-    ]
-    const storeIds: string[] = []
-    stores.forEach((s) => {
-      const id = nextId('org')
-      storeIds.push(id)
-      nodes.value.push({
-        id, code: s.code, name: s.name, type: 'STORE', parentId: regionIds[s.parent],
-        leaderName: s.leaderName, headcount: s.headcount, status: s.status ?? 'ACTIVE',
-        sort: 0,
-        createdAt: new Date(now - 180 * 86400000).toISOString(),
-      })
-    })
-
-    // 部门（挂在静安旗舰店下）
-    const depts = [
-      { name: '咨询部', leaderName: '林微', headcount: 8 },
-      { name: '医疗部', leaderName: '顾屿', headcount: 6 },
-      { name: '运营部', leaderName: '白桥', headcount: 5 },
-      { name: '前台收银', leaderName: '夏沫', headcount: 4 },
-      { name: '后勤保障', leaderName: '待任命', headcount: 5 },
-    ]
-    depts.forEach((d, i) => {
-      nodes.value.push({
-        id: nextId('org'), code: `D${String(i + 1).padStart(3, '0')}`, name: d.name,
-        type: 'DEPT', parentId: storeIds[0], leaderName: d.leaderName, headcount: d.headcount,
-        status: 'ACTIVE', sort: i,
-        createdAt: new Date(now - 90 * 86400000).toISOString(),
-      })
-    })
+    await load(true)
   }
 
   return {
     nodes, roots, children, get, descendantIds, totalHeadcount, childTypeCount, canEdit,
-    create, update, setStatus, seed,
+    loading, loaded, loadError, load,
+    create, update, setStatus,
     ORG_TYPE_LABEL, ORG_STATUS_LABEL,
   }
 })

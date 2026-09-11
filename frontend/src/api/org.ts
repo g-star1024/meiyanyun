@@ -14,14 +14,59 @@ export interface Tenant {
 export interface OrgUnit {
   orgCode: string
   orgName: string
-  orgType: string // 集团 | 品牌 | 区域 | 门店
+  /** 中文落库：集团 | 区域 | 门店 | 部门 */
+  orgType: string
+  /** 英文枚举：GROUP | REGION | STORE | DEPT */
+  orgTypeCode?: string
+  parentCode?: string
   storeCode?: string
   region?: string
   brandId?: string
+  /** 中文落库：启用 | 停用 */
+  status?: string
+  /** ACTIVE | INACTIVE */
+  statusCode?: string
+  leaderName?: string | null
+  headcount?: number | null
+  inactiveReason?: string | null
+  remark?: string | null
+  sortNo?: number
+  createdAt?: string | null
   children?: OrgTreeNode[]
 }
 
 export interface OrgTreeNode extends OrgUnit {}
+
+/** 新建组织单元（B33：后端仅允许在门店下新建部门） */
+export interface OrgUnitCreatePayload {
+  orgCode: string
+  orgName: string
+  parentCode: string
+  leaderName?: string | null
+  headcount?: number | null
+  sortNo?: number | null
+  remark?: string | null
+}
+
+/**
+ * 编辑组织单元。可空文本字段语义与后端对齐：
+ * 字段缺省（undefined）= 保持原值；空串 = 显式清空；非空 = 更新。
+ * parentCode 仅部门可传（跨门店移动），其他类型传入即 400。
+ */
+export interface OrgUnitUpdatePayload {
+  orgName?: string
+  parentCode?: string
+  leaderName?: string | null
+  headcount?: number | null
+  sortNo?: number | null
+  remark?: string | null
+}
+
+export interface ToggleStatusPayload {
+  enable: boolean
+  /** 停用时必填（后端校验，留痕审计） */
+  reason?: string
+}
 
 export interface RoleDef {
   roleCode: string
@@ -121,6 +166,20 @@ export const listStaff = (params?: string | { storeCode?: string; roleCode?: str
   return client.get<Staff[]>('/org/staff', { params: normalized })
 }
 export const listStores = () => client.get<Store[]>('/stores')
+
+// -------------------- 组织树写（B33） --------------------
+
+/** 新建部门（唯一可新建的组织层级，父必须是门店） */
+export const createOrgUnit = (payload: OrgUnitCreatePayload) =>
+  client.post<OrgUnit>('/org/admin/org-units', payload)
+
+/** 编辑节点 / 部门跨门店移动；返回原始实体，调用方需重载树 */
+export const updateOrgUnit = (orgCode: string, payload: OrgUnitUpdatePayload) =>
+  client.put<OrgUnit>(`/org/admin/org-units/${orgCode}`, payload)
+
+/** 启用/停用节点；停用 reason 必填 */
+export const toggleOrgUnitStatus = (orgCode: string, payload: ToggleStatusPayload) =>
+  client.post<OrgUnit>(`/org/admin/org-units/${orgCode}/toggle-status`, payload)
 
 // -------------------- RBAC 管理：员工 --------------------
 

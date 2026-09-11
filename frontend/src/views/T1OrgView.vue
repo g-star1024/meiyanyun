@@ -15,7 +15,14 @@ import { useAuthStore } from '@/stores/auth'
 
 const org = useM1OrgStore()
 const auth = useAuthStore()
-onMounted(() => org.seed())
+const pageErr = ref('')
+onMounted(async () => {
+  try {
+    await org.load()
+  } catch {
+    pageErr.value = org.loadError || '组织树加载失败'
+  }
+})
 
 // ---------- KPI ----------
 const kpiTotal = computed(() => org.nodes.length)
@@ -65,60 +72,49 @@ const TYPE_ICON: Record<OrgType, 'org' | 'box' | 'store' | 'user'> = {
   DEPT: 'user',
 }
 const typeOptions = [
-  { label: '集团 (GROUP)', value: 'GROUP' },
-  { label: '大区 (REGION)', value: 'REGION' },
-  { label: '门店 (STORE)', value: 'STORE' },
   { label: '部门 (DEPT)', value: 'DEPT' },
 ]
 
-const parentOptions = computed(() => {
-  const opts = [{ label: '无（顶级节点）', value: '' }]
-  for (const n of org.nodes) {
-    if (editingId.value && n.id === editingId.value) continue
-    // 不能选自己的后代作为父节点（简单实现：排除自己的后代）
-    if (editingId.value && org.descendantIds(editingId.value).includes(n.id)) continue
-    opts.push({
-      label: `${org.ORG_TYPE_LABEL[n.type]} · ${n.name}（${n.code}）`,
-      value: n.id,
-    })
-  }
-  return opts
-})
+/** 新建部门的上级只能选门店（后端强制；树已按数据域过滤，仅列可见门店） */
+const storeOptions = computed(() =>
+  org.nodes
+    .filter((n) => n.type === 'STORE')
+    .map((n) => ({ label: `${n.name}（${n.code}）`, value: n.id })),
+)
 
 // ---------- 抽屉表单 ----------
 const drawerOpen = ref(false)
 const editingId = ref<string | null>(null)
 const formErr = ref('')
+const saving = ref(false)
 const form = reactive({
   name: '',
   code: '',
-  type: 'STORE' as OrgType,
+  type: 'DEPT' as OrgType,
   parentId: '' as string | '',
   leaderName: '',
   headcount: 0,
   sort: 0,
   remark: '',
-  status: 'ACTIVE' as OrgStatus,
 })
 
 function resetForm() {
   form.name = ''
   form.code = ''
-  form.type = 'STORE'
+  form.type = 'DEPT'
   form.parentId = ''
   form.leaderName = ''
   form.headcount = 0
   form.sort = 0
   form.remark = ''
-  form.status = 'ACTIVE'
   formErr.value = ''
 }
 
 function openCreate() {
   editingId.value = null
   resetForm()
-  // 默认父节点为当前选中节点
-  if (selected.value) form.parentId = selected.value.id
+  // 默认上级为当前选中的门店（选中非门店时留空，强制手选）
+  if (selected.value?.type === 'STORE') form.parentId = selected.value.id
   drawerOpen.value = true
 }
 
@@ -132,7 +128,6 @@ function openEdit(n: OrgNode) {
   form.headcount = n.headcount
   form.sort = n.sort
   form.remark = n.remark ?? ''
-  form.status = n.status
   formErr.value = ''
   drawerOpen.value = true
 }
@@ -146,43 +141,59 @@ function onSortInput(e: Event) {
   form.sort = Number.isFinite(v) ? Math.floor(v) : 0
 }
 
-function submitForm() {
-  if (!form.name.trim()) { formErr.value = '请填写组织单元名称'; return }
-  if (!form.code.trim()) { formErr.value = '请填写编码'; return }
-  if (!/^[A-Z0-9][A-Z0-9-_]*$/.test(form.code.trim().toUpperCase())) {
-    formErr.value = '编码仅支持大写字母/数字/下划线/连字符'
+function errMsg(e: any, fallback: string) {
+  return e?.response?.data?.message || e?.message || fallback
+}
+
+async function submitForm() {
+  if (saving.value) return
+  if (!form.name.trim()) { formErr.value = '请填写部门名称'; return }
+  if (editingId.value) {
+    saving.value = true
+    formErr.value = ''
+    try {
+      const target = org.get(editingId.value)
+      await org.update(editingId.value, {
+        name: form.name.trim(),
+        parentId: target?.type === 'DEPT' ? (form.parentId || '') : undefined,
+        leaderName: form.leaderName.trim(),
+        headcount: form.headcount,
+        sort: form.sort,
+        remark: form.remark.trim(),
+      })
+      drawerOpen.value = false
+    } catch (e: any) {
+      formErr.value = errMsg(e, '保存失败')
+    } finally {
+      saving.value = false
+    }
     return
   }
-  const code = form.code.trim().toUpperCase()
-  const dup = org.nodes.some((n) => n.code === code && n.id !== editingId.value)
-  if (dup) { formErr.value = '编码已存在'; return }
 
-  if (editingId.value) {
-    org.update(editingId.value, {
-      name: form.name.trim(),
-      code,
-      type: form.type,
-      parentId: form.parentId || null,
-      leaderName: form.leaderName.trim(),
-      headcount: form.headcount,
-      sort: form.sort,
-      remark: form.remark.trim(),
-      status: form.status,
-    })
-  } else {
-    org.create({
-      name: form.name.trim(),
-      code,
-      type: form.type,
-      parentId: form.parentId || null,
-      leaderName: form.leaderName.trim(),
-      headcount: form.headcount,
-      sort: form.sort,
-      remark: form.remark.trim(),
-      status: form.status,
-    })
+  if (!form.code.trim()) { formErr.value = '请填写编码'; return }
+  if (!/^[A-Z0-9][A-Z0-9-_]{0,15}$/.test(form.code.trim().toUpperCase())) {
+    formErr.value = '编码为 1-16 位大写字母/数字/中划线/下划线，且以字母或数字开头'
+    return
   }
-  drawerOpen.value = false
+  if (!form.parentId) { formErr.value = '请选择上级门店'; return }
+  saving.value = true
+  formErr.value = ''
+  try {
+    await org.create({
+      code: form.code.trim().toUpperCase(),
+      name: form.name.trim(),
+      parentId: form.parentId,
+      leaderName: form.leaderName.trim(),
+      headcount: form.headcount,
+      sort: form.sort,
+      remark: form.remark.trim(),
+    })
+    drawerOpen.value = false
+  } catch (e: any) {
+    formErr.value = errMsg(e, '创建失败')
+  } finally {
+    saving.value = false
+  }
 }
 
 // ---------- 停用/启用确认 ----------
@@ -191,6 +202,7 @@ const confirmTarget = ref<OrgNode | null>(null)
 const confirmTo = ref<OrgStatus>('ACTIVE')
 const confirmReason = ref('')
 const confirmErr = ref('')
+const confirmSaving = ref(false)
 
 function onToggleStatus(n: OrgNode) {
   const to: OrgStatus = n.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE'
@@ -201,24 +213,30 @@ function onToggleStatus(n: OrgNode) {
   statusConfirmOpen.value = true
 }
 
-function confirmStatus() {
-  if (!confirmTarget.value) return
+async function confirmStatus() {
+  if (!confirmTarget.value || confirmSaving.value) return
   const reason = confirmReason.value.trim()
   if (confirmTo.value === 'INACTIVE' && !reason) {
     confirmErr.value = '请填写停用原因'
     return
   }
+  confirmSaving.value = true
+  confirmErr.value = ''
   try {
-    org.setStatus(confirmTarget.value.id, confirmTo.value, reason || undefined)
+    await org.setStatus(confirmTarget.value.id, confirmTo.value, reason || undefined)
     statusConfirmOpen.value = false
-  } catch (e) {
-    confirmErr.value = e instanceof Error ? e.message : '操作失败'
+  } catch (e: any) {
+    confirmErr.value = errMsg(e, '操作失败')
+  } finally {
+    confirmSaving.value = false
   }
 }
 
 // ---------- 工具 ----------
 function fmtDate(iso: string) {
+  if (!iso) return '—'
   const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 function typeLabel(t: OrgType) {
@@ -328,6 +346,10 @@ const OrgTreeNode = defineComponent({
       </div>
     </div>
 
+    <div v-if="pageErr" class="form-err">
+      <CIcon name="alert" :size="14" /> {{ pageErr }}
+    </div>
+
     <div class="t1-org__layout">
       <!-- 左：组织树 -->
       <CCard class="tree-card" padding="none">
@@ -336,26 +358,30 @@ const OrgTreeNode = defineComponent({
           <CButton
             v-if="auth.can('org:edit')"
             variant="primary" size="sm"
+            :disabled="org.loading"
             @click="openCreate"
           >
-            <CIcon name="plus" :size="14" /> 新建组织单元
+            <CIcon name="plus" :size="14" /> 新建部门
           </CButton>
         </div>
         <div class="tree-body">
-          <OrgTreeNode
-            v-for="r in org.roots"
-            :key="r.id"
-            :node="r"
-            :level="0"
-            :selected-id="selectedId"
-            :expanded-set="expanded"
-            :get-children="(id: string) => org.children(id)"
-            :type-icon="TYPE_ICON"
-            :type-label="typeLabel"
-            @toggle="toggleExpand"
-            @select="selectNode"
-          />
-          <div v-if="!org.roots.length" class="tree-empty">暂无组织数据</div>
+          <div v-if="org.loading" class="tree-empty">组织树加载中…</div>
+          <template v-else>
+            <OrgTreeNode
+              v-for="r in org.roots"
+              :key="r.id"
+              :node="r"
+              :level="0"
+              :selected-id="selectedId"
+              :expanded-set="expanded"
+              :get-children="(id: string) => org.children(id)"
+              :type-icon="TYPE_ICON"
+              :type-label="typeLabel"
+              @toggle="toggleExpand"
+              @select="selectNode"
+            />
+            <div v-if="!org.roots.length" class="tree-empty">暂无组织数据</div>
+          </template>
         </div>
       </CCard>
 
@@ -540,33 +566,37 @@ const OrgTreeNode = defineComponent({
       </CCard>
     </div>
 
-    <!-- 抽屉：新建/编辑组织单元 -->
+    <!-- 抽屉：新建部门 / 编辑组织单元 -->
     <CDrawer
       v-model:show="drawerOpen"
-      :title="editingId ? '编辑组织单元' : '新建组织单元'"
+      :title="editingId ? '编辑组织单元' : '新建部门'"
       size="md"
     >
       <div class="form">
         <div class="form-grid">
           <label class="field field--full">
             <span class="field__label">名称 <i>*</i></span>
-            <CInput v-model="form.name" placeholder="如 静安旗舰店" />
+            <CInput v-model="form.name" placeholder="如 咨询部" />
           </label>
           <label class="field">
             <span class="field__label">编码 <i>*</i></span>
-            <CInput v-model="form.code" placeholder="如 M001" />
+            <CInput
+              v-model="form.code"
+              placeholder="如 D-CONS"
+              :disabled="!!editingId"
+            />
           </label>
           <label class="field">
             <span class="field__label">类型</span>
-            <CSelect v-model="form.type" :options="typeOptions" width="100%" />
+            <CSelect v-model="form.type" :options="typeOptions" width="100%" disabled />
           </label>
-          <label class="field field--full">
-            <span class="field__label">上级节点</span>
-            <CSelect v-model="form.parentId" :options="parentOptions" width="100%" />
+          <label v-if="!editingId || form.type === 'DEPT'" class="field field--full">
+            <span class="field__label">上级门店 <i>*</i></span>
+            <CSelect v-model="form.parentId" :options="storeOptions" width="100%" :disabled="!!editingId && form.type !== 'DEPT'" />
           </label>
           <label class="field">
             <span class="field__label">负责人</span>
-            <CInput v-model="form.leaderName" placeholder="如 苏晴" />
+            <CInput v-model="form.leaderName" placeholder="如 林微" />
           </label>
           <label class="field">
             <span class="field__label">编制人数</span>
@@ -587,17 +617,6 @@ const OrgTreeNode = defineComponent({
               @input="onSortInput"
             />
           </label>
-          <label class="field">
-            <span class="field__label">状态</span>
-            <CSelect
-              v-model="form.status"
-              :options="[
-                { label: '正常 (ACTIVE)', value: 'ACTIVE' },
-                { label: '停用 (INACTIVE)', value: 'INACTIVE' },
-              ]"
-              width="100%"
-            />
-          </label>
           <label class="field field--full">
             <span class="field__label">备注</span>
             <CTextarea v-model="form.remark" :rows="3" placeholder="可选备注信息" />
@@ -608,13 +627,13 @@ const OrgTreeNode = defineComponent({
         </div>
       </div>
       <template #footer>
-        <CButton variant="secondary" @click="drawerOpen = false">取消</CButton>
+        <CButton variant="secondary" :disabled="saving" @click="drawerOpen = false">取消</CButton>
         <CButton
           variant="primary"
-          :disabled="!auth.can('org:edit')"
+          :disabled="!auth.can('org:edit') || saving"
           @click="submitForm"
         >
-          {{ editingId ? '保存修改' : '创建' }}
+          {{ saving ? '提交中…' : (editingId ? '保存修改' : '创建') }}
         </CButton>
       </template>
     </CDrawer>
@@ -640,13 +659,13 @@ const OrgTreeNode = defineComponent({
           </div>
         </div>
         <div class="modal__foot">
-          <CButton variant="secondary" @click="statusConfirmOpen = false">取消</CButton>
+          <CButton variant="secondary" :disabled="confirmSaving" @click="statusConfirmOpen = false">取消</CButton>
           <CButton
             variant="primary"
-            :disabled="confirmTo === 'INACTIVE' && !confirmReason.trim()"
+            :disabled="confirmSaving || (confirmTo === 'INACTIVE' && !confirmReason.trim())"
             @click="confirmStatus"
           >
-            确认{{ confirmTo === 'INACTIVE' ? '停用' : '启用' }}
+            {{ confirmSaving ? '提交中…' : `确认${confirmTo === 'INACTIVE' ? '停用' : '启用'}` }}
           </CButton>
         </div>
       </div>
