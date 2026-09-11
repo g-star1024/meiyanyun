@@ -14,10 +14,12 @@ public interface EmrTemplateRepository extends JpaRepository<EmrTemplate, String
     /**
      * 套用候选：启用模板 +（集团通用 store_code IS NULL 或本店自建）；type 为空时不过滤，
      * 传值时匹配「类型通用 NULL + 指定类型」。集团模板排前、组内按更新时间倒序。
+     * 入参显式 CAST 为 string：null 直传时 PostgreSQL 无法推断裸参数类型（42P18），
+     * 必须由 JPQL 侧给定参数类型。
      */
     @Query("select t from EmrTemplate t where t.enabled = true "
             + "and (t.storeCode is null or t.storeCode = :storeCode) "
-            + "and (:type is null or t.type is null or t.type = :type) "
+            + "and (cast(:type as string) is null or t.type is null or t.type = :type) "
             + "order by t.storeCode desc, t.updatedAt desc")
     Page<EmrTemplate> searchActive(@Param("storeCode") String storeCode,
                                    @Param("type") String type, Pageable pageable);
