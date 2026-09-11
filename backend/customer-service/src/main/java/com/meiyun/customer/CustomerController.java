@@ -1,6 +1,7 @@
 package com.meiyun.customer;
 
 import com.meiyun.customer.audit.AuditRecorder;
+import com.meiyun.customer.search.CustomerSearchEventAdminService;
 import com.meiyun.customer.search.CustomerSearchService;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
@@ -27,6 +28,7 @@ public class CustomerController {
     private final CustomerTagRepository tagRepo;
     private final CustomerTagRelRepository tagRelRepo;
     private final CustomerSearchService searchService;
+    private final CustomerSearchEventAdminService searchEventAdmin;
 
     @Autowired
     private AuditRecorder audit;
@@ -35,7 +37,8 @@ public class CustomerController {
                               MemberCardRepository cardRepo,
                               PointsLedgerRepository ledgerRepo, PointsPoolRepository poolRepo,
                               CustomerTagRepository tagRepo, CustomerTagRelRepository tagRelRepo,
-                              CustomerSearchService searchService) {
+                              CustomerSearchService searchService,
+                              CustomerSearchEventAdminService searchEventAdmin) {
         this.service = service;
         this.customerRepo = customerRepo;
         this.cardRepo = cardRepo;
@@ -44,6 +47,7 @@ public class CustomerController {
         this.tagRepo = tagRepo;
         this.tagRelRepo = tagRelRepo;
         this.searchService = searchService;
+        this.searchEventAdmin = searchEventAdmin;
     }
 
     // ---- 客户主数据（分页 + 过滤 + 标签） ----
@@ -393,11 +397,15 @@ public class CustomerController {
         return c;
     }
 
-    /** 全量重建 ES 客户索引（运维/初始化用）。 */
+    /**
+     * 全量重建 ES 客户索引（运维/初始化用）。B32 起权限由 aiAdmin:edit 收口为
+     * customer:search:admin（检索域专属运维码），并补 CUSTOMER_SEARCH_EVENT/REINDEX 审计。
+     */
     @PostMapping("/search/reindex")
-    @RequirePerm("aiAdmin:edit")
+    @RequirePerm("customer:search:admin")
     public Map<String, Object> reindex() {
         int n = searchService.reindexAll();
+        searchEventAdmin.auditReindex(n, DataScope.currentActor());
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("indexed", n);
         m.put("index", "meiyun-customer");

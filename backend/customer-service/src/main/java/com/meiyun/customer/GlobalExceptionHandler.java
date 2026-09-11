@@ -7,6 +7,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Map;
 
@@ -99,6 +100,15 @@ public class GlobalExceptionHandler {
         }
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
                 .body(Map.of("code", "VALIDATION_FAILED", "message", sb.toString()));
+    }
+
+    /** 显式 ResponseStatusException（400/404 等）：按原状态码与中文原因返回，避免被兜底成 500。 */
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> responseStatus(ResponseStatusException ex) {
+        String msg = ex.getReason() == null ? "请求处理失败" : ex.getReason();
+        String code = ex.getStatusCode().value() == 404 ? "NOT_FOUND" : "BAD_REQUEST";
+        return ResponseEntity.status(ex.getStatusCode())
+                .body(Map.of("code", code, "message", msg));
     }
 
     @ExceptionHandler(Exception.class)

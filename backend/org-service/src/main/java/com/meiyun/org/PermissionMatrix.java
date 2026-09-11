@@ -289,6 +289,7 @@ public final class PermissionMatrix {
             "monitor:rule:create",
             "monitor:rule:edit",
             "aiAdmin:edit",
+            "customer:search:admin",
             "complaint:create",
             "writeoff:create",
             "cashier:sign",
@@ -590,7 +591,8 @@ public final class PermissionMatrix {
                 "feature:publish",
                 "monitor:rule:create",
                 "monitor:rule:edit",
-                "aiAdmin:edit"
+                "aiAdmin:edit",
+                "customer:search:admin"
         ));
         m.put("STORE_MGR", List.of(
                 "appointment:view",

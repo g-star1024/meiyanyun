@@ -1,13 +1,19 @@
 package com.meiyun.customer;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 
 import java.util.List;
 
-@Repository
-public interface CustomerSearchEventRepository extends JpaRepository<CustomerSearchEvent, Long> {
+public interface CustomerSearchEventRepository extends JpaRepository<CustomerSearchEvent, Long>,
+        JpaSpecificationExecutor<CustomerSearchEvent> {
 
-    /** 近线中继扫描：最早的待同步事件优先（FIFO，限批 50 条防长任务）。 */
+    /** 中继任务：FIFO 扫描最早 50 条待投递事件（处置台不动本方法）。 */
     List<CustomerSearchEvent> findFirst50ByStatusOrderByEventIdAsc(String status);
+
+    Page<CustomerSearchEvent> findByStatus(String status, Pageable pageable);
+
+    long countByStatus(String status);
 }

@@ -22,7 +22,9 @@ import java.time.OffsetDateTime;
  * ES 不可用不影响建档主流程：投递失败仅重试/告警。
  *
  * <p>状态机：PENDING（待投递）→ SENT（ES 已受理）；DEAD（ES 4xx 确定性拒绝，如 mapping 冲突，
- * 不再重试，留待人工排查）。
+ * 不再重试，留待人工排查）；DISCARDED（人工确认丢弃的终态，如客户已物理删除/永久毒消息，
+ * 不再自动投递也不再重试）。DEAD 事件在「检索事件处置台」可人工重试（回 PENDING 交中继）、
+ * 立即重放（同步 upsert 出结果）或丢弃（置 DISCARDED 并留原因/操作人/时间）。
  */
 @Entity
 @Table(name = "customer_search_event")
@@ -44,7 +46,7 @@ public class CustomerSearchEvent {
     @Column(name = "customer_id", nullable = false, length = 16)
     private String customerId;
 
-    /** PENDING / SENT / DEAD。 */
+    /** PENDING / SENT / DEAD / DISCARDED。 */
     @Column(nullable = false, length = 16)
     private String status = "PENDING";
 
@@ -60,6 +62,18 @@ public class CustomerSearchEvent {
 
     @Column(name = "sent_at")
     private OffsetDateTime sentAt;
+
+    /** 人工处置时间（重试成功/重放成功/丢弃均写），与中继自动投递相区分。 */
+    @Column(name = "resolved_at")
+    private OffsetDateTime resolvedAt;
+
+    /** 人工处置人工号（DataScope.currentActor()，不取请求体）。 */
+    @Column(name = "resolved_by", length = 32)
+    private String resolvedBy;
+
+    /** 丢弃原因（DISCARDED 必填，截断 256 字）；重试/重放成功时记录处置说明可空。 */
+    @Column(name = "resolve_note", length = 256)
+    private String resolveNote;
 
     @PrePersist
     void prePersist() {
