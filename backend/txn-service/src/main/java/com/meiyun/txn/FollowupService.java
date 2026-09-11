@@ -1,7 +1,13 @@
 package com.meiyun.txn;
 
 import com.meiyun.security.DataScope;
+import com.meiyun.security.LoginUser;
 import com.meiyun.txn.audit.AuditRecorder;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
+import jakarta.persistence.criteria.CriteriaQuery;
+import jakarta.persistence.criteria.Predicate;
+import jakarta.persistence.criteria.Root;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -12,6 +18,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -40,11 +48,17 @@ public class FollowupService {
     private static final ZoneOffset BIZ_TZ = ZoneOffset.ofHours(8);
 
     private final FollowupRepository followupRepo;
+    private final FollowupNoGenerator noGen;
     private final ApptRefNameResolver names;
     private final AuditRecorder audit;
 
-    public FollowupService(FollowupRepository followupRepo, ApptRefNameResolver names, AuditRecorder audit) {
+    @PersistenceContext
+    private EntityManager em;
+
+    public FollowupService(FollowupRepository followupRepo, FollowupNoGenerator noGen,
+                           ApptRefNameResolver names, AuditRecorder audit) {
         this.followupRepo = followupRepo;
+        this.noGen = noGen;
         this.names = names;
         this.audit = audit;
     }
@@ -53,33 +67,69 @@ public class FollowupService {
     public record CompleteCmd(Integer satisfaction, String recovery, Boolean adverseReaction,
                               String adverseNote, Boolean needRevisit, String note, String method) {}
 
+    /**
+     * 手工建普通随访入参（followup:create）：客户号/项目/服务日期/计划回访日期必填；
+     * 关联订单号仅透传截断不反查订单；方式可空（默认电话）。
+     */
+    public record CreateCmd(String customerId, String project, String relatedOrderNo,
+                            LocalDate serviceDate, LocalDate planDate, String method) {}
+
     // ==================== 计数（工作台两卡 / 随访台账角标） ====================
 
     /**
-     * 本店术后 SOP 计数：sopPending=PENDING 且属 SOP 批次；sopOverdue=再叠加 planDate 早于今日（+8 按天）。
-     * 口径 1:1 对齐前端 followup store 的 sopPending/sopOverdue，前端不再拉全量后 .length。
+     * 本店随访计数（工作台卡片 / 随访台账 KPI 与三 tab 角标）：
+     * 旧两键 sopPending=PENDING 且属 SOP 批次、sopOverdue=再叠加 planDate 早于今日（+8 按天），语义不动；
+     * 新增七键：pending/todayPending/overdue/done/skipped（五计数）、avgSatisfaction（DONE 平均星，保留一位小数）、
+     * adverseCount（不良反应条数）。返回值含 Long 与 BigDecimal，故值类型为 Object。
      */
     @Transactional(readOnly = true)
-    public Map<String, Long> stats(String storeCode) {
+    public Map<String, Object> stats(String storeCode) {
         Specification<Followup> base = scoped(storeCode);
         LocalDate today = LocalDate.now(BIZ_TZ);
-        Specification<Followup> pendingSop = base
-                .and(eqStatus(ST_PENDING))
+        Specification<Followup> pending = base.and(eqStatus(ST_PENDING));
+        Specification<Followup> pendingSop = pending
                 .and((root, q, cb) -> cb.isNotNull(root.get("sopBatchId")));
-        Map<String, Long> out = new LinkedHashMap<>();
+        Map<String, Object> out = new LinkedHashMap<>();
         out.put("sopPending", followupRepo.count(pendingSop));
         out.put("sopOverdue", followupRepo.count(pendingSop
                 .and((root, q, cb) -> cb.lessThan(root.get("planDate"), today))));
+        out.put("pending", followupRepo.count(pending));
+        out.put("todayPending", followupRepo.count(pending
+                .and((root, q, cb) -> cb.equal(root.get("planDate"), today))));
+        out.put("overdue", followupRepo.count(pending
+                .and((root, q, cb) -> cb.lessThan(root.get("planDate"), today))));
+        out.put("done", followupRepo.count(base.and(eqStatus(ST_DONE))));
+        out.put("skipped", followupRepo.count(base.and(eqStatus(ST_SKIPPED))));
+        out.put("avgSatisfaction", avgSatisfaction(base));
+        out.put("adverseCount", followupRepo.count(base
+                .and((root, q, cb) -> cb.isTrue(root.get("adverseReaction")))));
         return out;
     }
 
+    /** DONE 且有满意度记录的平均星（数据域内），四舍五入保留一位小数；无记录返回 0。 */
+    private BigDecimal avgSatisfaction(Specification<Followup> base) {
+        var cb = em.getCriteriaBuilder();
+        CriteriaQuery<Double> cq = cb.createQuery(Double.class);
+        Root<Followup> root = cq.from(Followup.class);
+        cq.select(cb.avg(root.get("satisfaction").as(Double.class)));
+        Predicate scope = base.toPredicate(root, cq, cb);
+        Predicate p = cb.and(cb.equal(root.get("status"), ST_DONE), root.get("satisfaction").isNotNull());
+        cq.where(scope == null ? p : cb.and(scope, p));
+        Double avg = em.createQuery(cq).getResultStream().findFirst().orElse(null);
+        if (avg == null || avg.isNaN()) {
+            return BigDecimal.ZERO;
+        }
+        return BigDecimal.valueOf(avg).setScale(1, RoundingMode.HALF_UP);
+    }
+
     /**
-     * 随访分页列表：storeSpec 门店全见；可按状态/客户/批次/只看 SOP 节点叠加过滤。
-     * 排序固定 planDate 升序、id 升序（最早待回访在前；不信入参排序，防任意字段排序）。
+     * 随访分页列表：storeSpec 门店全见；可按状态/客户/批次/只看 SOP 节点叠加过滤；
+     * keyword 对客户名/项目/关联订单号做小写包含模糊（OR LIKE，排序后端固定防任意字段排序）。
+     * 排序固定 planDate 升序、id 升序（最早待回访在前）。
      */
     @Transactional(readOnly = true)
     public Page<Followup> page(String storeCode, String status, String customerId,
-                               String sopBatchId, Boolean sopOnly, Pageable pageable) {
+                               String sopBatchId, Boolean sopOnly, String keyword, Pageable pageable) {
         Specification<Followup> spec = scoped(storeCode);
         if (!blank(status)) {
             spec = spec.and(eqStatus(status.trim()));
@@ -93,6 +143,14 @@ public class FollowupService {
         if (Boolean.TRUE.equals(sopOnly)) {
             spec = spec.and((root, q, cb) -> cb.isNotNull(root.get("sopBatchId")));
         }
+        String kw = trimToNull(keyword);
+        if (kw != null) {
+            String like = "%" + kw.toLowerCase() + "%";
+            spec = spec.and((root, q, cb) -> cb.or(
+                    cb.like(cb.lower(root.get("customerName")), like),
+                    cb.like(cb.lower(root.get("project")), like),
+                    cb.like(cb.lower(cb.coalesce(root.get("relatedOrderNo"), cb.literal(""))), like)));
+        }
         PageRequest page = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(),
                 Sort.by(Sort.Order.asc("planDate"), Sort.Order.asc("id")));
         return followupRepo.findAll(spec, page);
@@ -101,6 +159,73 @@ public class FollowupService {
     @Transactional(readOnly = true)
     public Followup get(Long id) {
         return requireFollowup(id);
+    }
+
+    // ==================== 手工建普通随访（随访工作台「新建回访计划」） ====================
+
+    /**
+     * 手工建普通随访（sopStage=MANUAL、PENDING）。1:1 对齐 EmrService.create 范式：
+     * 门店取 JWT 本店（不信入参，空 400）；customerId 必填且经客户域解析（失败引导建档），姓名以解析为准；
+     * project/serviceDate/planDate 必填；planDate 不得早于服务日期；method 白名单默认电话；
+     * 关联订单号仅透传截断 32 不反查订单；全动作审计（CREATE）。
+     */
+    @Transactional
+    public Followup create(CreateCmd cmd) {
+        String actor = DataScope.currentActor();
+        LoginUser user = DataScope.current();
+        String storeCode = user == null ? null : user.storeCode();
+        if (blank(storeCode)) {
+            throw badRequest("当前登录人未归属门店，无法新建回访计划");
+        }
+        if (blank(cmd.customerId())) {
+            throw badRequest("请先检索并选择客户后再新建回访计划（不接收未落客户号的自由姓名单）");
+        }
+        String customerId = cmd.customerId().trim();
+        String customerName = names.customerNames(List.of(customerId)).get(customerId);
+        if (customerName == null) {
+            throw badRequest("客户不存在: " + customerId + "（请先到客情建档）");
+        }
+        String project = trimToNull(cmd.project());
+        if (project == null) {
+            throw badRequest("请填写回访项目（如：水光针术后关怀）");
+        }
+        LocalDate serviceDate = cmd.serviceDate();
+        if (serviceDate == null) {
+            throw badRequest("请选择服务日期");
+        }
+        LocalDate planDate = cmd.planDate();
+        if (planDate == null) {
+            throw badRequest("请选择计划回访日期");
+        }
+        if (planDate.isBefore(serviceDate)) {
+            throw badRequest("计划回访日期不能早于服务日期");
+        }
+        String method = defaultIfBlank(cmd.method(), "PHONE");
+        if (!METHODS.contains(method)) {
+            throw badRequest("非法回访方式: " + method);
+        }
+
+        Followup f = new Followup();
+        f.setFollowupNo(noGen.nextFollowupNo());
+        f.setCustomerId(customerId);
+        f.setCustomerName(customerName);
+        f.setProject(truncate(project, 128));
+        f.setRelatedOrderNo(truncate(trimToNull(cmd.relatedOrderNo()), 32));
+        f.setStoreCode(storeCode);
+        f.setServiceDate(serviceDate);
+        f.setPlanDate(planDate);
+        f.setMethod(method);
+        f.setStatus(ST_PENDING);
+        f.setSopStage("MANUAL");
+        f.setEscalated(false);
+        f.setAdverseReaction(false);
+        f.setNeedRevisit(false);
+        Followup saved = followupRepo.save(f);
+        audit.record("FOLLOWUP", f.getFollowupNo(), actor, "CREATE",
+                "{\"customer\":\"" + esc(customerId) + "\",\"project\":\"" + esc(f.getProject())
+                        + "\",\"serviceDate\":\"" + serviceDate + "\",\"planDate\":\"" + planDate
+                        + "\",\"method\":\"" + method + "\"}");
+        return saved;
     }
 
     // ==================== 核销（登记回访 / 无需回访） ====================
@@ -207,6 +332,11 @@ public class FollowupService {
         if (s == null) return null;
         String t = s.trim();
         return t.isEmpty() ? null : t;
+    }
+
+    private static String defaultIfBlank(String s, String fallback) {
+        String t = trimToNull(s);
+        return t == null ? fallback : t;
     }
 
     private static String truncate(String s, int max) {

@@ -3,6 +3,7 @@ package com.meiyun.txn;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
@@ -19,11 +20,11 @@ import java.time.OffsetDateTime;
 import java.util.Map;
 
 /**
- * 随访端点（P5-B30 术后随访 SOP 引擎）：/api/txn/followup。全部经网关既有 txn 路由，免改网关。
+ * 随访端点（P5-B30 术后随访 SOP 引擎 / B31 随访工作台接真）：/api/txn/followup。全部经网关既有 txn 路由，免改网关。
  *
- * <p>读 followup:view、核销 followup:edit；数据域门店全见（FollowupService 统一 storeSpec）。
- * SOP 节点由治疗完成自动排程，本控制器不提供手工建随访端点（普通随访后续按需补 followup:create）。
- * /stats 供工作台两卡（待回访/超期）计数，替代前端全量拉取后 .length。</p>
+ * <p>读 followup:view、手工建随访 followup:create、核销 followup:edit；数据域门店全见（FollowupService 统一 storeSpec）。
+ * SOP 节点由治疗完成自动排程；POST 根路径供随访工作台手工建普通随访（MANUAL）。
+ * /stats 返回工作台两卡 + 台账 KPI/角标计数（九键），替代前端全量拉取后 .length。</p>
  */
 @RestController
 @RequestMapping("/api/txn/followup")
@@ -35,7 +36,7 @@ public class FollowupController {
         this.followupService = followupService;
     }
 
-    /** 随访分页列表：status/customerId/sopBatchId 精确过滤，sopOnly=true 只看术后 SOP 节点；排序后端固定。 */
+    /** 随访分页列表：status/customerId/sopBatchId 精确过滤，sopOnly=true 只看术后 SOP 节点，keyword 模糊；排序后端固定。 */
     @GetMapping
     @RequirePerm("followup:view")
     public Page<FollowupView> list(@RequestParam(required = false) String storeCode,
@@ -43,16 +44,26 @@ public class FollowupController {
                                    @RequestParam(required = false) String customerId,
                                    @RequestParam(required = false) String sopBatchId,
                                    @RequestParam(required = false) Boolean sopOnly,
+                                   @RequestParam(required = false) String keyword,
                                    @PageableDefault(size = 20) Pageable pageable) {
-        return followupService.page(storeCode, status, customerId, sopBatchId, sopOnly, pageable)
+        return followupService.page(storeCode, status, customerId, sopBatchId, sopOnly, keyword, pageable)
                 .map(FollowupController::toView);
     }
 
-    /** 本店术后 SOP 计数：sopPending/sopOverdue，供工作台待回访与超期两卡。 */
+    /** 本店随访计数九键：sopPending/sopOverdue 工作台卡片 + pending/todayPending/overdue/done/skipped/avgSatisfaction/adverseCount 台账 KPI。 */
     @GetMapping("/stats")
     @RequirePerm("followup:view")
-    public Map<String, Long> stats(@RequestParam(required = false) String storeCode) {
+    public Map<String, Object> stats(@RequestParam(required = false) String storeCode) {
         return followupService.stats(storeCode);
+    }
+
+    /** 手工建普通随访（工作台「新建回访计划」）：门店取 JWT，客户须已建档；sopStage=MANUAL。 */
+    @PostMapping
+    @RequirePerm("followup:create")
+    public FollowupView create(@RequestBody @Valid CreateReq req) {
+        return toView(followupService.create(new FollowupService.CreateCmd(
+                req.customerId(), req.project(), req.relatedOrderNo(),
+                req.serviceDate(), req.planDate(), req.method())));
     }
 
     @GetMapping("/{id}")
@@ -96,6 +107,15 @@ public class FollowupController {
             Integer satisfaction, String recovery, boolean adverseReaction, String adverseNote,
             boolean needRevisit, String note, String followupByName,
             OffsetDateTime doneAt, OffsetDateTime createdAt) {}
+
+    /** 手工建普通随访请求：客户号/项目/服务日期/计划回访日期必填；关联订单号、方式可空（方式后端默认电话）。 */
+    public record CreateReq(
+            @NotBlank(message = "请选择客户") String customerId,
+            @NotBlank(message = "请填写回访项目") String project,
+            String relatedOrderNo,
+            @NotNull(message = "请选择服务日期") LocalDate serviceDate,
+            @NotNull(message = "请选择计划回访日期") LocalDate planDate,
+            String method) {}
 
     public record CompleteReq(
             Integer satisfaction, String recovery, Boolean adverseReaction,
