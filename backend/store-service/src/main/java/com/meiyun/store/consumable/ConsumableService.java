@@ -170,10 +170,14 @@ public class ConsumableService {
                 continue;
             }
             ConsumableStock stock = stockRepo.lockByConsumableId(c.getId())
-                    .orElseThrow(() -> unprocessable("耗材「" + c.getName() + "」无库存记录，无法出库"));
+                    .orElseThrow(() -> new InsufficientStockException(
+                            "耗材「" + c.getName() + "」无库存记录，无法出库",
+                            collectShortages(storeCode, lines)));
             if (stock.getQty() < line.qty()) {
-                throw unprocessable("耗材「" + c.getName() + "」库存不足：当前" + stock.getQty()
-                        + c.getUnit() + "，申请" + line.qty() + c.getUnit());
+                throw new InsufficientStockException(
+                        "耗材「" + c.getName() + "」库存不足：当前" + stock.getQty()
+                                + c.getUnit() + "，申请" + line.qty() + c.getUnit(),
+                        collectShortages(storeCode, lines));
             }
             long unitCost = c.getCostPrice();
             stock.setQty(stock.getQty() - line.qty());
@@ -257,6 +261,34 @@ public class ConsumableService {
     }
 
     // ---- 内部辅助 ----
+
+    /**
+     * 汇总本批出库中所有库存不足的行（B34：供 BOM 内部端点回传结构化缺料明细）。
+     *
+     * <p>走非锁的 {@code findByConsumableId}：本方法只在异常路径调用，事务即将回滚，
+     * 不能再对已加过 {@code FOR UPDATE} 的行二次加锁。无库存记录记 0，未建档行跳过。
+     */
+    private List<InsufficientStockException.Shortage> collectShortages(String storeCode, List<DeductLine> lines) {
+        List<InsufficientStockException.Shortage> out = new ArrayList<>();
+        if (lines == null) {
+            return out;
+        }
+        for (DeductLine l : lines) {
+            if (l == null || isBlank(l.skuCode()) || l.qty() == null || l.qty() <= 0) {
+                continue;
+            }
+            Consumable c = consumableRepo.findByStoreCodeAndSkuCode(storeCode, l.skuCode().trim()).orElse(null);
+            if (c == null) {
+                continue;
+            }
+            int stockQty = stockRepo.findByConsumableId(c.getId()).map(ConsumableStock::getQty).orElse(0);
+            if (stockQty < l.qty()) {
+                out.add(new InsufficientStockException.Shortage(
+                        c.getSkuCode(), c.getName(), l.qty(), stockQty, c.getUnit()));
+            }
+        }
+        return out;
+    }
 
     private Consumable mustFind(String storeCode, String skuCode) {
         return consumableRepo.findByStoreCodeAndSkuCode(storeCode, skuCode)

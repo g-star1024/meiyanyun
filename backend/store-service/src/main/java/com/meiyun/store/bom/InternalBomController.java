@@ -2,12 +2,18 @@ package com.meiyun.store.bom;
 
 import com.meiyun.security.RequirePerm;
 import com.meiyun.store.consumable.ConsumableService;
+import com.meiyun.store.consumable.InsufficientStockException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -63,4 +69,29 @@ public class InternalBomController {
 
     /** 自动扣料入参：bizRef=BOM:{writeoffId}（幂等键）/storeCode/projectName 勾兑键/operator 划扣操作人 */
     public record BomDeductCmd(String bizRef, String storeCode, String projectName, String operator) {}
+
+    /**
+     * 库存不足 422（B34）：<b>仅本控制器局部生效</b>，在原中文 message 之外追加结构化 shortages 数组，
+     * 供 txn 落 {@code bom_deduct_exception.detail_json}（缺哪个 SKU、需多少、还剩多少）。
+     *
+     * <p>store-service 无全局异常处理器，故不改全局错误体、不影响其它端点（含领用/报损终审
+     * {@code /internal/consumables/deduct}）的既有 {@code {"message":...}} 契约。
+     */
+    @ExceptionHandler(InsufficientStockException.class)
+    public ResponseEntity<Map<String, Object>> onInsufficientStock(InsufficientStockException ex) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("message", ex.getReason());
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (InsufficientStockException.Shortage s : ex.shortages()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("skuCode", s.skuCode());
+            row.put("skuName", s.skuName());
+            row.put("needQty", s.needQty());
+            row.put("stockQty", s.stockQty());
+            row.put("unit", s.unit());
+            rows.add(row);
+        }
+        body.put("shortages", rows);
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(body);
+    }
 }

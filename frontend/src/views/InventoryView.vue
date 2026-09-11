@@ -463,7 +463,12 @@ async function doResolve(excId: string) {
                 <div class="sku__name">{{ e.storeName || e.storeCode }}</div>
                 <div class="sku__code">{{ e.projectName || '—' }}</div>
               </td>
-              <td><span class="bom__reason">{{ e.reason }}</span></td>
+              <td>
+                <span class="bom__reason">{{ e.reason }}</span>
+                <div v-for="s in (e.shortages || [])" :key="s.skuCode" class="sku__code">
+                  {{ s.skuName }}（{{ s.skuCode }}）需 {{ s.needQty }}{{ s.unit }} · 现存 {{ s.stockQty }}{{ s.unit }} · 缺 {{ s.needQty - s.stockQty }}{{ s.unit }}
+                </div>
+              </td>
               <td class="num">{{ e.failCount }}</td>
               <td>
                 <CStatusPill :status="e.status === 'PENDING' ? 'danger' : 'success'" dot>

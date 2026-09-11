@@ -104,6 +104,7 @@ public class BomDeductService {
                         e.setStatus(BomDeductException.ST_RESOLVED);
                         e.setResolvedAt(OffsetDateTime.now());
                         e.setResolvedBy(operator);
+                        e.setDetailJson(null);
                         excRepo.save(e);
                     }
                 });
@@ -117,7 +118,7 @@ public class BomDeductService {
         } catch (Exception ex) {
             log.warn("BOM 自动扣料失败，登记异常单（不影响划扣）writeoffId={}: {}", writeoffId, ex.getMessage());
             try {
-                registerFailure(writeoffId, storeCode, projectName, reasonOf(ex), operator);
+                registerFailure(writeoffId, storeCode, projectName, reasonOf(ex), detailOf(ex), operator);
             } catch (Exception saveEx) {
                 log.error("BOM 异常单登记失败 writeoffId={}: {}", writeoffId, saveEx.getMessage());
             }
@@ -150,6 +151,7 @@ public class BomDeductService {
         e.setStatus(BomDeductException.ST_RESOLVED);
         e.setResolvedAt(OffsetDateTime.now());
         e.setResolvedBy(operator);
+        e.setDetailJson(null);
         BomDeductException saved = excRepo.save(e);
         audit("BOM", e.getExcId(), operator, "RETRY_SUCCESS",
                 "{\"writeoffId\":\"" + e.getWriteoffId() + "\",\"project\":\"" + esc(e.getProjectName())
@@ -198,7 +200,7 @@ public class BomDeductService {
      * 审计为远程调用，放事务外执行。
      */
     private void registerFailure(String writeoffId, String storeCode, String projectName,
-                                 String reason, String operator) {
+                                 String reason, String detailJson, String operator) {
         final String safeReason = truncate(reason, 256);
         BomDeductException saved = txNew.execute(status -> {
             BomDeductException e = excRepo.findByWriteoffId(writeoffId).orElseGet(() -> {
@@ -211,6 +213,7 @@ public class BomDeductService {
                 return n;
             });
             e.setReason(safeReason);
+            e.setDetailJson(detailJson);
             e.setStatus(BomDeductException.ST_PENDING);
             e.setFailCount(e.getFailCount() + 1);
             return excRepo.save(e);
@@ -218,7 +221,24 @@ public class BomDeductService {
         audit("BOM", saved.getExcId(), operator, "FAIL",
                 "{\"writeoffId\":\"" + writeoffId + "\",\"store\":\"" + esc(storeCode)
                         + "\",\"project\":\"" + esc(projectName) + "\",\"reason\":\"" + esc(safeReason)
-                        + "\",\"failCount\":" + saved.getFailCount() + "}");
+                        + "\",\"shortageLines\":" + shortageCount(detailJson)
+                        + ",\"failCount\":" + saved.getFailCount() + "}");
+    }
+
+    /** 提取缺料明细 JSON（仅 BOM 业务拒绝路径有；服务不可用/未建档等为 null）。 */
+    private static String detailOf(Exception ex) {
+        return ex instanceof BomShortageException bse ? bse.detailJson() : null;
+    }
+
+    /** 审计 payload 用：缺料行数（明细为空记 0），保持 payload 为合法 JSON。 */
+    private static int shortageCount(String detailJson) {
+        if (detailJson == null || detailJson.isBlank()) return 0;
+        try {
+            var node = MAPPER.readTree(detailJson);
+            return node.isArray() ? node.size() : 0;
+        } catch (Exception ignored) {
+            return 0;
+        }
     }
 
     private BomDeductException requireException(String excId) {

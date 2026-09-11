@@ -28,8 +28,13 @@ public interface ProjectBomRepository extends JpaRepository<ProjectBom, String> 
     Optional<ProjectBom> findByProjectNameAndStoreCodeAndSkuCode(String projectName,
                                                                  String storeCode, String skuCode);
 
-    /** 当日配方行号最大序号（bom_id 形如 BOM20260906-000007，序号从第 12 位起 6 位）。 */
-    @Query(value = "select coalesce(max(cast(substring(bom_id from 12) as bigint)), 0) "
+    /**
+     * 当日配方行号最大序号（bom_id 形如 BOM20260906-000007）。
+     *
+     * <p>BOM 为 <b>3 字母</b>前缀，连字符落在第 12 位，序号须从第 <b>13</b> 位起 6 位——
+     * 与 BEX 同源修正，避免取到 {@code "-000007"} 后 cast 成负数导致序号回退撞键。
+     */
+    @Query(value = "select coalesce(max(cast(substring(bom_id from 13) as bigint)), 0) "
             + "from project_bom where bom_id like :prefix", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);
 }

@@ -57,6 +57,8 @@ export const useBomStore = defineStore('bom', () => {
 
   async function loadBoms(force = false): Promise<void> {
     if (bomsLoaded.value && !force) return
+    // B34：门店上下文未就绪时 currentStoreCode 还是初始常量，会带着不存在的门店码请求 → 先等列表回填
+    await ctx.loadStores()
     const resp = await listProjectBoms({ storeCode: scopeStoreCode() })
     boms.value = resp.data ?? []
     bomsLoaded.value = true
@@ -92,9 +94,12 @@ export const useBomStore = defineStore('bom', () => {
 
   async function loadExceptions(force = false): Promise<void> {
     if (excLoaded.value && !force) return
+    // B34：同 loadBoms，门店角色必须拿到真实门店码再查，否则被后端数据域判为越权
+    await ctx.loadStores()
     const resp = await listBomExceptions({
       status: excStatus.value || undefined,
-      storeCode: ctx.currentStoreCode,
+      // B34：集团/品牌/超管不锁本店（后端 DataScope 已按可见域收口），门店角色仍传本店码
+      storeCode: canViewGroup.value ? undefined : ctx.currentStoreCode,
     })
     exceptions.value = resp.data ?? []
     excLoaded.value = true

@@ -1,5 +1,7 @@
 package com.meiyun.txn;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import org.springframework.web.bind.annotation.*;
@@ -19,6 +21,8 @@ import java.util.Map;
 @RestController
 @RequestMapping("/api/txn/bom-exceptions")
 public class BomExceptionController {
+
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final BomDeductService service;
     private final ApptRefNameResolver names;
@@ -67,9 +71,25 @@ public class BomExceptionController {
                     e.getExcId(), e.getWriteoffId(),
                     e.getStoreCode(), storeNames.getOrDefault(e.getStoreCode(), e.getStoreCode()),
                     e.getProjectName(), e.getReason(), e.getStatus(),
-                    e.getFailCount(), e.getCreatedAt(), e.getResolvedAt(), e.getResolvedBy()));
+                    e.getFailCount(), e.getCreatedAt(), e.getResolvedAt(), e.getResolvedBy(),
+                    parseShortages(e.getDetailJson())));
         }
         return out;
+    }
+
+    /**
+     * 缺料明细反序列化（B34）：detail_json 由 store 侧结构化 422 回传，可能为空
+     * （SKU 未建档 / 库存服务不可用 / B34 之前登记的历史单）→ 返回空数组，前端只需判空。
+     */
+    private static List<ShortageView> parseShortages(String detailJson) {
+        if (detailJson == null || detailJson.isBlank()) {
+            return List.of();
+        }
+        try {
+            return MAPPER.readValue(detailJson, new TypeReference<List<ShortageView>>() {});
+        } catch (Exception ignored) {
+            return List.of();
+        }
     }
 
     /** 异常单读模型（金额/库存明细在 store 侧台账查，本模型聚焦追溯处理）。 */
@@ -80,5 +100,10 @@ public class BomExceptionController {
             int failCount,
             java.time.OffsetDateTime createdAt,
             java.time.OffsetDateTime resolvedAt,
-            String resolvedBy) {}
+            String resolvedBy,
+            List<ShortageView> shortages) {}
+
+    /** 缺料行：需求量 needQty &gt; 现存量 stockQty（无库存记录记 0）。 */
+    @com.fasterxml.jackson.annotation.JsonIgnoreProperties(ignoreUnknown = true)
+    public record ShortageView(String skuCode, String skuName, int needQty, int stockQty, String unit) {}
 }

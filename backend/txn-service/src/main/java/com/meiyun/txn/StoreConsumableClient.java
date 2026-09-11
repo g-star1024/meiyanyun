@@ -165,13 +165,14 @@ public class StoreConsumableClient {
             return new BomDeductResult(skipped, total, resultLines);
         } catch (HttpStatusCodeException e) {
             int status = e.getStatusCode().value();
-            String msg = extractMessage(e.getResponseBodyAsString());
+            String rawBody = e.getResponseBodyAsString();
+            String msg = extractMessage(rawBody);
             if (status >= 400 && status < 500) {
                 // 业务拒绝（库存不足 / SKU 未建档）：中文透传，调用方登记异常单
                 log.info("BOM 自动扣料被 store 拒绝 status={} bizRef={} msg={}", status, bizRef, msg);
-                throw new ResponseStatusException(HttpStatus.valueOf(status), msg);
+                throw new BomShortageException(HttpStatus.valueOf(status), msg, extractShortages(rawBody));
             }
-            log.error("BOM 自动扣料 store 服务端错误 status={} bizRef={} body={}", status, bizRef, e.getResponseBodyAsString());
+            log.error("BOM 自动扣料 store 服务端错误 status={} bizRef={} body={}", status, bizRef, rawBody);
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
                     "BOM 自动扣料失败：库存服务暂不可用，划扣已完成，请在扣料异常清单重试");
         } catch (ResponseStatusException e) {
@@ -194,6 +195,26 @@ public class StoreConsumableClient {
             }
         }
         return "库存服务拒绝了本次出库，请核对耗材档案与库存后重试";
+    }
+
+    /**
+     * 从 BOM 内部端点 422 错误体提取结构化缺料明细（B34）：
+     * {@code {"message":"...","shortages":[{skuCode,skuName,needQty,stockQty,unit}]}} → 紧凑 JSON 字符串。
+     *
+     * <p>返回 null 表示本次失败无行明细（如 404 SKU 未建档、旧版 store 无该字段），
+     * 调用方据此保持 {@code detail_json} 为空，与既有行为一致。
+     */
+    private static String extractShortages(String body) {
+        if (body == null || !body.contains("\"shortages\"")) return null;
+        try {
+            var node = MAPPER.readTree(body).path("shortages");
+            if (!node.isArray() || node.isEmpty()) return null;
+            String json = MAPPER.writeValueAsString(node);
+            // 与 bom_deduct_exception.detail_json 列宽（2048）对齐，超长丢弃而非截断出非法 JSON
+            return json.length() > 2048 ? null : json;
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static String str(Object o) {

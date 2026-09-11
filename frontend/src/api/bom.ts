@@ -31,6 +31,15 @@ export interface BomUpsertCmd {
   enabled?: boolean
 }
 
+/** 缺料行（B34）：BOM 自动扣料失败时后端登记的结构化明细，缺哪个 SKU、需多少、还剩多少。 */
+export interface BomShortageDTO {
+  skuCode: string
+  skuName: string
+  needQty: number
+  stockQty: number
+  unit: string
+}
+
 /** 扣料异常行（GET /txn/bom-exceptions）。一个划扣单最多一条，成功补扣后自动/人工置 RESOLVED。 */
 export interface BomExceptionDTO {
   excId: string
@@ -45,6 +54,8 @@ export interface BomExceptionDTO {
   createdAt: string
   resolvedAt: string | null
   resolvedBy: string | null
+  /** 缺料明细（B34）：SKU 未建档 / 库存服务不可用 / B34 前的历史单为空数组 */
+  shortages: BomShortageDTO[]
 }
 
 /** 配方列表：projectName 按项目过滤；storeCode 传 GROUP/空查集团模板，传门店码查门店配方，不传查全部可见域。 */
