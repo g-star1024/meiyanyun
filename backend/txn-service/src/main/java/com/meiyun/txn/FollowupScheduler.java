@@ -4,7 +4,9 @@ import com.meiyun.security.DataScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -48,12 +50,17 @@ public class FollowupScheduler {
     private final PlanRepository planRepo;
     private final PlanItemRepository itemRepo;
     private final ApptRefNameResolver names;
+    /**
+     * afterCommit 回调里事务同步仍处于 active 状态，REQUIRED 传播会加入「已提交的治疗事务」，
+     * 导致批次/随访 save 静默丢弃。这里显式开 REQUIRES_NEW 物理事务，保证排程数据真正落库。
+     */
+    private final TransactionTemplate txNew;
 
     public FollowupScheduler(FollowupSopBatchRepository batchRepo, FollowupRepository followupRepo,
                              FollowupSopTemplateRepository templateRepo,
                              FollowupSopTemplateNodeRepository nodeRepo, FollowupNoGenerator noGen,
                              PlanRepository planRepo, PlanItemRepository itemRepo,
-                             ApptRefNameResolver names) {
+                             ApptRefNameResolver names, PlatformTransactionManager txManager) {
         this.batchRepo = batchRepo;
         this.followupRepo = followupRepo;
         this.templateRepo = templateRepo;
@@ -62,34 +69,47 @@ public class FollowupScheduler {
         this.planRepo = planRepo;
         this.itemRepo = itemRepo;
         this.names = names;
+        this.txNew = new TransactionTemplate(txManager);
+        this.txNew.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     record NodeDef(String stage, String label, int dayOffset, String method) {}
 
     /**
-     * 治疗完成后排程（AFTER_COMMIT 调用，独立事务回查方案单）。
-     * 幂等：source_plan_id 已存在批次直接返回；方案单不存在/非 DONE/无治疗时间则跳过。
+     * 治疗完成后排程（AFTER_COMMIT 调用）。
+     * afterCommit 回调里旧治疗事务虽已提交、但事务同步资源仍处于 active，@Transactional(REQUIRED)
+     * 会复用那个不会再提交的事务，导致批次/随访 save 静默丢弃；故整体写库体显式包进
+     * REQUIRES_NEW 物理事务。幂等：source_plan_id 唯一约束 + exists 查库（置于新事务内可见已提交数据）。
+     * 方案单不存在/无治疗完成时间/无启用节点时跳过；并发重入由唯一约束兜底，异常交调用方记录。
      */
-    @Transactional
     public void scheduleForPlan(String planId) {
         if (planId == null || planId.isBlank()) return;
+        ScheduleOutcome outcome = txNew.execute(status -> doSchedule(planId));
+        if (outcome != null) {
+            log.info("术后 SOP 排程完成 planId={} batch={} customer={} 节点{}个",
+                    planId, outcome.batchNo(), outcome.customerId(), outcome.nodeCount());
+        }
+    }
+
+    /** 排程写库体（运行在 REQUIRES_NEW 事务内）：幂等检查 + 建批次 + 建节点；无需写入时返回 null。 */
+    private ScheduleOutcome doSchedule(String planId) {
         if (batchRepo.existsBySourcePlanId(planId)) {
             log.info("术后 SOP 已排程，跳过重复触发 planId={}", planId);
-            return;
+            return null;
         }
         ConsultPlan p = planRepo.findById(planId).orElse(null);
         if (p == null) {
             log.warn("术后 SOP 排程找不到方案单 planId={}", planId);
-            return;
+            return null;
         }
         if (p.getTreatedAt() == null) {
             log.warn("术后 SOP 排程方案单无治疗完成时间，跳过 planId={}", planId);
-            return;
+            return null;
         }
         List<NodeDef> nodes = resolveNodes();
         if (nodes.isEmpty()) {
             log.warn("术后 SOP 无启用节点且默认回退为空，跳过 planId={}", planId);
-            return;
+            return null;
         }
 
         String customerId = p.getCustomerId();
@@ -130,9 +150,10 @@ public class FollowupScheduler {
             f.setEscalated(false);
             followupRepo.save(f);
         }
-        log.info("术后 SOP 排程完成 planId={} batch={} customer={} 节点{}个",
-                planId, batch.getBatchNo(), customerId, nodes.size());
+        return new ScheduleOutcome(batch.getBatchNo(), customerId, nodes.size());
     }
+
+    private record ScheduleOutcome(String batchNo, String customerId, int nodeCount) {}
 
     /** 取启用模板的启用节点（按行号升序）；无则回退内置默认四节点。 */
     private List<NodeDef> resolveNodes() {
