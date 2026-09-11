@@ -115,7 +115,9 @@ public class FollowupService {
         Predicate scope = base.toPredicate(root, cq, cb);
         Predicate p = cb.and(cb.equal(root.get("status"), ST_DONE), root.get("satisfaction").isNotNull());
         cq.where(scope == null ? p : cb.and(scope, p));
-        Double avg = em.createQuery(cq).getResultStream().findFirst().orElse(null);
+        // 聚合保证单行：AVG 无匹配返回 null，getSingleResult 正常得 null；
+        // 不能用 getResultStream().findFirst()（含 null 单元素时其内部 requireNonNull 直接 NPE）。
+        Double avg = em.createQuery(cq).getSingleResult();
         if (avg == null || avg.isNaN()) {
             return BigDecimal.ZERO;
         }
