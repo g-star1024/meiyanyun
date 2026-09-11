@@ -3,6 +3,8 @@
  * 术后回访与满意度 /followup（Desktop 优先 · 平板堆叠）
  * 状态机：待回访 → 已回访 / 无需回访。
  * 超期未回访高亮预警；满意度统计；不良反应提示转投诉跟进。
+ * P5-B31：列表真分页（CPagination 1 起页码）+ 后端 stats 九键计数 +
+ *         关键字 350ms 防抖下推；新建/完成/免回访均写真库。
  * ============================================================ */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -15,6 +17,7 @@ import CTextarea from '@/components/CTextarea.vue'
 import CSelect from '@/components/CSelect.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import CPagination from '@/components/CPagination.vue'
 import {
   useFollowupStore,
   type Followup,
@@ -22,53 +25,90 @@ import {
   SOP_STAGE_LABEL,
 } from '@/stores/followup'
 import { FOLLOWUP_STATUS, FOLLOWUP_METHOD, RECOVERY_STATUS, dictPill, type FollowupMethod } from '@/config/dictionary'
+import { useAuthStore } from '@/stores/auth'
+import { useCustomerStore } from '@/stores/customer'
 import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { searchCustomers, type CustomerDTO } from '@/api/customer'
 
 const followup = useFollowupStore()
+const customer = useCustomerStore()
+const auth = useAuthStore()
 const router = useRouter()
 const toast = useToast()
-onMounted(() => followup.seed())
 
 type Tab = 'pending' | 'done' | 'skipped'
+const TAB_STATUS: Record<Tab, string> = { pending: 'PENDING', done: 'DONE', skipped: 'SKIPPED' }
 const tab = ref<Tab>('pending')
 const selectedId = ref<string | null>(null)
 const keyword = ref('')
 
+// 当前 tab/status + keyword 下刷新分页（页码 1 起；写动作后末条迁出导致空页时自动回退）
+async function reloadList(opts?: { page?: number }) {
+  const targetPage = opts?.page ?? followup.page
+  await followup.refresh(
+    auth.user.storeId,
+    { status: TAB_STATUS[tab.value], keyword: keyword.value.trim() || undefined },
+    { page: targetPage },
+  )
+  if (followup.records.length === 0 && followup.total > 0 && followup.page > 1) {
+    await reloadList({ page: Math.max(1, followup.totalPages) })
+  }
+}
+async function selectTab(t: Tab) {
+  if (tab.value === t) return
+  tab.value = t
+  selectedId.value = null
+  await reloadList({ page: 1 })
+}
+async function onPage(p: number) {
+  await reloadList({ page: p })
+}
+// 关键字防抖下推后端（客户/项目/订单三字段模糊），350ms 静默期后拉第一页
+let kwTimer: ReturnType<typeof setTimeout> | undefined
+watch(keyword, () => {
+  clearTimeout(kwTimer)
+  kwTimer = setTimeout(() => {
+    selectedId.value = null
+    void reloadList({ page: 1 })
+  }, 350)
+})
+
+onMounted(() => {
+  void reloadList({ page: 1 })
+})
+
 const tabs = computed(() => [
-  { k: 'pending' as Tab, label: `待回访 (${followup.pending.length})` },
-  { k: 'done' as Tab, label: `已回访 (${followup.done.length})` },
-  { k: 'skipped' as Tab, label: `无需回访 (${followup.skipped.length})` },
+  { k: 'pending' as Tab, label: `待回访 (${followup.stats.pending})` },
+  { k: 'done' as Tab, label: `已回访 (${followup.stats.done})` },
+  { k: 'skipped' as Tab, label: `无需回访 (${followup.stats.skipped})` },
 ])
 
-const baseList = computed<Followup[]>(() => {
-  if (tab.value === 'pending') {
-    // 待回访按计划日期升序，超期排最前
-    return [...followup.pending].sort((a, b) => a.planDate.localeCompare(b.planDate))
-  }
-  if (tab.value === 'done') return followup.done
-  return followup.skipped
-})
-const list = computed<Followup[]>(() => {
-  const kw = keyword.value.trim()
-  if (!kw) return baseList.value
-  return baseList.value.filter(
-    (f) => f.customerName.includes(kw) || f.project.includes(kw) || (f.relatedOrderNo ?? '').includes(kw),
-  )
-})
+// 列表以后端分页 records 为准（后端固定 planDate,id 升序，超期自然排前）
+const list = computed<Followup[]>(() => followup.records)
 
 const selected = computed(() => {
   if (selectedId.value) return followup.get(selectedId.value) ?? null
   return list.value[0] ?? null
 })
-function selectTab(t: Tab) { tab.value = t; selectedId.value = null }
+// 跨页/写动作后定位：当前页与缓存均未命中时拉单条详情
+watch(selectedId, async (id) => {
+  if (id && !followup.get(id)) await followup.fetchDetail(id)
+})
 
 const kpis = computed(() => [
-  { label: '待回访', value: String(followup.pending.length), tone: 'warning' as const, icon: 'phone' as const },
-  { label: '今日待回访', value: String(followup.todayPending.length), tone: 'brand' as const, icon: 'clock' as const },
-  { label: '平均满意度', value: followup.avgSatisfaction ? followup.avgSatisfaction.toFixed(1) + '★' : '—', tone: 'brand' as const, icon: 'trend-up' as const },
-  { label: '不良反应跟进', value: String(followup.adverseCount), tone: 'danger' as const, icon: 'alert' as const },
+  { label: '待回访', value: String(followup.stats.pending), tone: 'warning' as const, icon: 'phone' as const },
+  { label: '今日待回访', value: String(followup.stats.todayPending), tone: 'brand' as const, icon: 'clock' as const },
+  { label: '平均满意度', value: followup.stats.avgSatisfaction ? followup.stats.avgSatisfaction.toFixed(1) + '★' : '—', tone: 'brand' as const, icon: 'trend-up' as const },
+  { label: '不良反应跟进', value: String(followup.stats.adverseCount), tone: 'danger' as const, icon: 'alert' as const },
 ])
 
+// 超期预警条：计数取 stats；最早超期文案取待回访首页首条（planDate 升序）
+const earliestOverdueLabel = computed(() => {
+  if (tab.value !== 'pending') return ''
+  const f = list.value[0]
+  return f && isOverdue(f) ? planLabel(f) : ''
+})
 
 function isOverdue(f: Followup) {
   if (f.status !== 'PENDING') return false
@@ -123,45 +163,82 @@ watch(
 function stars(n: number) { return '★'.repeat(n) + '☆'.repeat(5 - n) }
 const canComplete = computed(() => !form.value.adverseReaction || form.value.adverseNote.trim().length > 0)
 
-function doComplete() {
+async function doComplete() {
   if (!selected.value || !canComplete.value) return
-  followup.complete(selected.value.id, { ...form.value })
-  toast.success('回访结果已提交归档')
+  const ok = await followup.complete(selected.value.id, { ...form.value })
+  if (ok) {
+    toast.success('回访结果已提交归档')
+    await reloadList()
+  }
 }
 const skipReason = ref('')
 const showSkip = ref(false)
-function doSkip() {
+async function doSkip() {
   if (!selected.value || !skipReason.value.trim()) return
-  followup.skip(selected.value.id, skipReason.value.trim())
-  showSkip.value = false; skipReason.value = ''
-  toast.info('已标记为无需回访')
+  const ok = await followup.skip(selected.value.id, skipReason.value.trim())
+  if (ok) {
+    showSkip.value = false; skipReason.value = ''
+    toast.info('已标记为无需回访')
+    await reloadList()
+  }
 }
 
-// 新建回访计划
+// 新建回访计划（客户须先建档：姓名/手机号/客户编号检索后点选）
 const showForm = ref(false)
+const searching = ref(false)
+const customerHits = ref<CustomerDTO[]>([])
+const pickedCustomer = ref<CustomerDTO | null>(null)
 const newPlan = ref({
-  customerName: '', project: '', relatedOrderNo: '',
+  customerKeyword: '', project: '', relatedOrderNo: '',
   serviceDate: '', planDate: '', method: 'PHONE' as FollowupMethod,
 })
 const canSubmitPlan = computed(
-  () => newPlan.value.customerName.trim() && newPlan.value.project.trim() && newPlan.value.serviceDate && newPlan.value.planDate,
+  () => !!pickedCustomer.value && newPlan.value.project.trim() && newPlan.value.serviceDate && newPlan.value.planDate,
 )
-function submitPlan() {
-  if (!canSubmitPlan.value) return
-  const f = followup.schedule({
-    customerId: 'C-NEW',
-    customerName: newPlan.value.customerName.trim(),
+async function searchCustomer() {
+  const kw = newPlan.value.customerKeyword.trim()
+  if (!kw) { customerHits.value = []; return }
+  searching.value = true
+  try {
+    const res = await searchCustomers(kw)
+    customerHits.value = res.data ?? []
+    if (!customerHits.value.length) toast.info('未检索到客户，请先建档或更换关键字')
+  } catch (e) {
+    toast.error(errMsg(e, '客户检索失败'))
+  } finally {
+    searching.value = false
+  }
+}
+function pickCustomer(c: CustomerDTO) {
+  pickedCustomer.value = c
+  newPlan.value.customerKeyword = `${c.name}（${c.customerId}）`
+  customerHits.value = []
+  customer.hydrate([{ customerId: c.customerId, customerName: c.name }])
+}
+function resetPlanForm() {
+  newPlan.value = {
+    customerKeyword: '', project: '', relatedOrderNo: '',
+    serviceDate: '', planDate: '', method: 'PHONE',
+  }
+  pickedCustomer.value = null
+  customerHits.value = []
+}
+function closeForm() { showForm.value = false; resetPlanForm() }
+async function submitPlan() {
+  if (!canSubmitPlan.value || !pickedCustomer.value) return
+  const f = await followup.create({
+    customerId: pickedCustomer.value.customerId,
     project: newPlan.value.project.trim(),
     relatedOrderNo: newPlan.value.relatedOrderNo.trim() || undefined,
-    serviceDate: new Date(newPlan.value.serviceDate).toISOString(),
-    planDate: new Date(newPlan.value.planDate).toISOString(),
+    serviceDate: newPlan.value.serviceDate,
+    planDate: newPlan.value.planDate,
     method: newPlan.value.method,
   })
   if (f) {
-    showForm.value = false
-    newPlan.value = { customerName: '', project: '', relatedOrderNo: '', serviceDate: '', planDate: '', method: 'PHONE' }
+    closeForm()
     selectedId.value = f.id
     tab.value = 'pending'
+    await reloadList({ page: 1 })
   }
 }
 </script>
@@ -169,9 +246,11 @@ function submitPlan() {
 <template>
   <div class="fu">
     <!-- 超期预警条 -->
-    <div v-if="followup.overdue.length > 0" class="warnbar">
+    <div v-if="followup.stats.overdue > 0" class="warnbar">
       <CIcon name="alert" :size="16" />
-      <span>有 <strong>{{ followup.overdue.length }}</strong> 位客户回访已超期，请优先联系（最早超期 {{ planLabel(followup.overdue[0]) }}）。</span>
+      <span>
+        有 <strong>{{ followup.stats.overdue }}</strong> 位客户回访已超期，请优先联系<template v-if="earliestOverdueLabel">（最早超期 {{ earliestOverdueLabel }}）</template>。
+      </span>
     </div>
 
     <CWorkbenchShell
@@ -234,6 +313,13 @@ function submitPlan() {
             </div>
           </button>
         </div>
+        <CPagination
+          v-if="followup.total > 0"
+          :page="followup.page"
+          :page-size="followup.pageSize"
+          :total="followup.total"
+          @update:page="onPage"
+        />
       </template>
 
       <!-- 右列详情 -->
@@ -388,13 +474,28 @@ function submitPlan() {
     </CWorkbenchShell>
 
     <!-- 新建回访计划弹层 -->
-    <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
+    <div v-if="showForm" class="modal-mask" @click.self="closeForm">
       <CCard class="modal" title="新建回访计划" padding="lg">
         <div class="form">
           <div class="form__row form__row--2">
             <div>
-              <label class="form__label">客户姓名</label>
-              <CInput v-model="newPlan.customerName" placeholder="如：王美丽" />
+              <label class="form__label">客户</label>
+              <div class="pick">
+                <CInput v-model="newPlan.customerKeyword" placeholder="姓名 / 手机号 / 客户编号" />
+                <CButton variant="secondary" :disabled="searching" @click="searchCustomer">
+                  <CIcon name="customer" :size="16" />检索
+                </CButton>
+              </div>
+              <div v-if="customerHits.length" class="pick__panel">
+                <button
+                  v-for="c in customerHits" :key="c.customerId"
+                  type="button" class="pick__opt"
+                  @click="pickCustomer(c)"
+                >
+                  <span class="pick__name">{{ c.name }}</span>
+                  <span class="pick__sub">{{ c.customerId }} · {{ c.phone || '无手机号' }} · {{ c.level }}</span>
+                </button>
+              </div>
             </div>
             <div>
               <label class="form__label">关联订单号（选填）</label>
@@ -425,7 +526,7 @@ function submitPlan() {
           </div>
         </div>
         <template #footer>
-          <CButton variant="ghost" @click="showForm = false">取消</CButton>
+          <CButton variant="ghost" @click="closeForm">取消</CButton>
           <CButton variant="primary" :disabled="!canSubmitPlan" @click="submitPlan">创建计划</CButton>
         </template>
       </CCard>
@@ -526,6 +627,17 @@ function submitPlan() {
   font-size: var(--t-sm); color: var(--c-text); background: #fff; font-family: inherit;
 }
 .date-input:focus { outline: none; border-color: var(--c-brand); }
+
+.pick { display: flex; gap: var(--s-sm); align-items: center; }
+.pick :deep(.cinput) { flex: 1; }
+.pick__panel {
+  margin-top: var(--s-xs); border: 1px solid var(--c-border); border-radius: var(--r-md);
+  overflow: hidden; background: var(--c-surface); box-shadow: var(--shadow-card); max-height: 220px; overflow-y: auto;
+}
+.pick__opt { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: var(--s-sm) var(--s-md); background: none; border: none; border-bottom: 1px solid var(--c-border-light); cursor: pointer; }
+.pick__opt:hover { background: var(--c-brand-soft); }
+.pick__name { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); }
+.pick__sub { font-size: var(--t-xs); color: var(--c-text-3); }
 
 .modal-mask { position: fixed; inset: 0; background: rgba(20,21,43,.45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: var(--s-lg); }
 .modal { width: 560px; max-width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-pop); }

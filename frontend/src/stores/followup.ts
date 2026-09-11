@@ -3,13 +3,27 @@
 // 状态机：PENDING（待回访）→ DONE（已回访）/ SKIPPED（无需回访）。
 // - planDate 早于当前且仍 PENDING 的视为"超期未回访"，页面高亮预警。
 // - 满意度 1-5 星；标记不良反应 (adverseReaction) 自动提示转投诉/医疗风险。
-// 回访计划可由核销/治疗完成时自动生成（complete()），也可手动新建。
-// 权限：followup:create 建计划 / followup:edit 回访登记。
+// P5-B31：随访工作台接真——列表真分页（后端固定 planDate,id 升序）+ stats 九键聚合 +
+// 手工建/登记/无需回访走 txn-service；BoardView 待回访列由 sopTodos 真 SOP 待办驱动。
+// 适配层（铁律：模板/样式零改动，只换数据源）：
+//  - id 取数据库主键字符串（路径端点吃 Long id，与 emr 取 emrNo 相反）；followupNo 仅展示
+//  - serviceDate/planDate 直传后端 LocalDate（yyyy-MM-dd，禁止 toISOString 时区错位）
+//  - 可空文本 null → undefined；权限与状态机校验由后端兜底，400/403 中文经 errMsg 外露
+// 过渡保留（卡B 接真前不白屏）：SOP 模板/批次编排 mock 服务 /sop；followups 演示种子服务 C 端 /m/followup。
+//  SOP 节点已由后端 FollowupScheduler 在治疗完成 AFTER_COMMIT 自动排程，schedulePostOpSop 降为空 shim 防重复。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useCustomerStore } from './customer'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from './m5Coupon'
+import {
+  listFollowup, statsFollowup, getFollowup, createFollowup,
+  completeFollowup, skipFollowup,
+  type FollowupViewDTO, type FollowupStats,
+} from '@/api/followup'
 
 export type FollowupMethod = 'PHONE' | 'WECHAT' | 'IN_STORE'
 export type FollowupStatus = 'PENDING' | 'DONE' | 'SKIPPED'
@@ -94,9 +108,34 @@ export const SOP_STAGE_LABEL: Record<SopStage, string> = {
   MANUAL: '普通随访',
 }
 
+const EMPTY_STATS: FollowupStats = {
+  sopPending: 0, sopOverdue: 0, pending: 0, todayPending: 0, overdue: 0,
+  done: 0, skipped: 0, avgSatisfaction: 0, adverseCount: 0,
+}
+
 export const useFollowupStore = defineStore('followup', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const customer = useCustomerStore()
+  const toast = useToast()
+
+  // ==================== 真实数据层（随访工作台 / BoardView） ====================
+
+  /** 当前 tab 当前页记录（分页后不再全量驻留）。 */
+  const records = ref<Followup[]>([])
+  const page = ref(1)
+  const pageSize = ref(20)
+  const total = ref(0)
+  const totalPages = ref(1)
+  const loading = ref(false)
+  /** 本店随访计数九键（tab 角标 / KPI 取后端聚合）。 */
+  const stats = ref<FollowupStats>({ ...EMPTY_STATS })
+  /** 详情缓存：跨页选中后详情不丢。 */
+  const detailCache = ref<Record<string, Followup>>({})
+  /** 工作台待回访列真 SOP 待办（sopOnly+PENDING，loadSopTodos 填充）。 */
+  const sopTodos = ref<Followup[]>([])
+
+  // ==================== 过渡演示层（/sop 编排 mock + C 端 /m/followup 演示种子） ====================
 
   const followups = ref<Followup[]>([])
   let seq = 0
@@ -159,6 +198,7 @@ export const useFollowupStore = defineStore('followup', () => {
     activity.log(auth.user.name, '术后 SOP 模板已恢复默认（24h关怀/3天回访/7天评估/30天复诊）', 'sop-template')
   }
 
+  // ---- /sop 批次看板与角标（mock，卡B 批次端点接真前保留） ----
   const pending = computed(() => followups.value.filter((f) => f.status === 'PENDING'))
   const done = computed(() => followups.value.filter((f) => f.status === 'DONE'))
   const skipped = computed(() => followups.value.filter((f) => f.status === 'SKIPPED'))
@@ -184,101 +224,231 @@ export const useFollowupStore = defineStore('followup', () => {
   /** 不良反应数（已回访中） */
   const adverseCount = computed(() => done.value.filter((f) => f.adverseReaction).length)
 
-  function get(id: string) {
-    return followups.value.find((f) => f.id === id)
+  function cacheRecord(r: Followup) {
+    detailCache.value[r.id] = r
   }
 
-  /** 生成回访计划（核销/治疗完成调用，或手动新建） */
-  function schedule(input: {
+  /** 工作台/跨页选中：当前页 → 详情缓存 → 演示种子（C 端兜底） */
+  function get(id: string) {
+    return records.value.find((f) => f.id === id)
+      ?? detailCache.value[id]
+      ?? followups.value.find((f) => f.id === id)
+  }
+
+  /** 拉取单条随访详情并入缓存（跨页选中/直接链接）。 */
+  async function fetchDetail(id: string): Promise<Followup | null> {
+    const cached = detailCache.value[id]
+    if (cached && records.value.some((r) => r.id === id)) return cached
+    try {
+      const res = await getFollowup(id)
+      const r = adaptFollowup(res.data)
+      cacheRecord(r)
+      return r
+    } catch (e) {
+      toast.error(errMsg(e, '随访详情加载失败'))
+      return null
+    }
+  }
+
+  function adaptFollowup(d: FollowupViewDTO): Followup {
+    return {
+      id: d.id,
+      followupNo: d.followupNo,
+      customerId: d.customerId,
+      customerName: d.customerName,
+      project: d.project,
+      relatedOrderNo: d.relatedOrderNo ?? undefined,
+      serviceDate: d.serviceDate,
+      planDate: d.planDate,
+      method: (d.method as FollowupMethod) || 'PHONE',
+      status: d.status as FollowupStatus,
+      sopStage: (d.sopStage as SopStage | null) ?? undefined,
+      sopLabel: d.sopLabel ?? undefined,
+      sopBatchId: d.sopBatchId ?? undefined,
+      escalated: d.escalated,
+      satisfaction: d.satisfaction ?? undefined,
+      recovery: (d.recovery as RecoveryStatus | null) ?? undefined,
+      adverseReaction: d.adverseReaction,
+      adverseNote: d.adverseNote ?? undefined,
+      needRevisit: d.needRevisit,
+      note: d.note ?? undefined,
+      followupByName: d.followupByName ?? undefined,
+      doneAt: d.doneAt ?? undefined,
+      createdAt: d.createdAt,
+    }
+  }
+
+  /**
+   * 拉取随访分页（锁当前门店；后端固定 planDate,id 升序，不信入参 sort）。
+   * @param storeCode 门店码（省略取 JWT 本店）
+   * @param filters status/customerId/sopBatchId/sopOnly 精确 + keyword 三字段模糊
+   * @param opts.page 1 起页码
+   */
+  async function load(
+    storeCode?: string,
+    filters?: { status?: string; customerId?: string; sopBatchId?: string; sopOnly?: boolean; keyword?: string },
+    opts?: { page?: number; size?: number; silent?: boolean },
+  ): Promise<boolean> {
+    const targetPage = Math.max(1, opts?.page ?? page.value)
+    const size = opts?.size ?? pageSize.value
+    loading.value = true
+    try {
+      const res = await listFollowup({
+        storeCode,
+        status: filters?.status,
+        customerId: filters?.customerId,
+        sopBatchId: filters?.sopBatchId,
+        sopOnly: filters?.sopOnly,
+        keyword: filters?.keyword?.trim() || undefined,
+        page: targetPage - 1,
+        size,
+      })
+      const data = res.data
+      const list = (data.content ?? []).map(adaptFollowup)
+      records.value = list
+      list.forEach(cacheRecord)
+      total.value = data.totalElements ?? 0
+      totalPages.value = Math.max(1, data.totalPages ?? 1)
+      page.value = targetPage
+      pageSize.value = size
+      customer.hydrate(list.map((d) => ({ customerId: d.customerId, customerName: d.customerName })))
+      return true
+    } catch (e) {
+      records.value = []
+      total.value = 0
+      if (!opts?.silent) toast.error(errMsg(e, '随访列表加载失败'))
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /** 拉取本店计数九键（tab 角标/KPI；写动作后静默刷新）。 */
+  async function loadStats(storeCode?: string): Promise<void> {
+    try {
+      stats.value = (await statsFollowup(storeCode)).data
+    } catch {
+      // 计数失败不阻断主流程，保留上次计数
+    }
+  }
+
+  /** 列表 + 计数一并刷新（页面初始化/写动作后）。 */
+  async function refresh(
+    storeCode?: string,
+    filters?: { status?: string; customerId?: string; sopBatchId?: string; sopOnly?: boolean; keyword?: string },
+    opts?: { page?: number; size?: number; silent?: boolean },
+  ): Promise<boolean> {
+    const ok = await load(storeCode, filters, opts)
+    await loadStats(storeCode)
+    return ok
+  }
+
+  /** 工作台待回访列：本店 PENDING 的术后 SOP 节点（最多 100 条）。 */
+  async function loadSopTodos(storeCode?: string): Promise<void> {
+    try {
+      const res = await listFollowup({
+        storeCode, status: 'PENDING', sopOnly: true, page: 0, size: 100,
+      })
+      sopTodos.value = (res.data.content ?? []).map(adaptFollowup)
+    } catch {
+      sopTodos.value = []
+    }
+  }
+
+  /** 手工建普通随访（MANUAL；日期传 yyyy-MM-dd；客户须已建档，否则后端 400 中文引导）。 */
+  async function create(input: {
     customerId: string
-    customerName: string
     project: string
     relatedOrderNo?: string
     serviceDate: string
     planDate: string
     method?: FollowupMethod
-  }): Followup | null {
-    if (!auth.can('followup:create')) {
-      console.warn('[followup] 无 followup:create 权限')
+  }): Promise<Followup | null> {
+    try {
+      const res = await createFollowup({
+        customerId: input.customerId,
+        project: input.project.trim(),
+        relatedOrderNo: input.relatedOrderNo?.trim() || undefined,
+        serviceDate: input.serviceDate,
+        planDate: input.planDate,
+        method: input.method,
+      })
+      const r = adaptFollowup(res.data)
+      cacheRecord(r)
+      customer.hydrate([{ customerId: r.customerId, customerName: r.customerName }])
+      activity.log(auth.user.name, `生成回访计划 ${r.followupNo}（${r.customerName}·${r.project}）`, r.id)
+      return r
+    } catch (e) {
+      toast.error(errMsg(e, '新建回访计划失败'))
       return null
     }
-    seq += 1
-    const now = new Date().toISOString()
-    const f: Followup = {
-      id: nextId('fu'),
-      followupNo: `HF${Date.now().toString().slice(-8)}${seq}`,
-      customerId: input.customerId,
-      customerName: input.customerName,
-      project: input.project,
-      relatedOrderNo: input.relatedOrderNo,
-      serviceDate: input.serviceDate,
-      planDate: input.planDate,
-      method: input.method ?? 'PHONE',
-      status: 'PENDING',
-      adverseReaction: false,
-      needRevisit: false,
-      createdAt: now,
+  }
+
+  /** 登记回访结果（PENDING → DONE；满意度/恢复情况/不良反应说明校验由后端兜底）。 */
+  async function complete(
+    id: string,
+    result: {
+      satisfaction: number
+      recovery: RecoveryStatus
+      adverseReaction: boolean
+      adverseNote?: string
+      needRevisit: boolean
+      note?: string
+      method?: FollowupMethod
+    },
+  ): Promise<boolean> {
+    try {
+      const res = await completeFollowup(id, {
+        satisfaction: result.satisfaction,
+        recovery: result.recovery,
+        adverseReaction: result.adverseReaction,
+        adverseNote: result.adverseReaction ? result.adverseNote?.trim() || undefined : undefined,
+        needRevisit: result.needRevisit,
+        note: result.note?.trim() || undefined,
+        method: result.method,
+      })
+      cacheRecord(adaptFollowup(res.data))
+      activity.log(
+        auth.user.name,
+        `完成回访 ${res.data.followupNo}，满意度 ${result.satisfaction} 星${result.adverseReaction ? '（有不良反应，建议转投诉跟进）' : ''}`,
+        id,
+      )
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '回访结果提交失败'))
+      return false
     }
-    followups.value.unshift(f)
-    activity.log(auth.user.name, `生成回访计划 ${f.followupNo}（${f.customerName}·${f.project}）`, f.id)
-    return f
+  }
+
+  /** 标记无需回访（如客户明确拒绝、失联等；原因必填留痕）。 */
+  async function skip(id: string, reason: string): Promise<boolean> {
+    try {
+      const res = await skipFollowup(id, reason.trim())
+      cacheRecord(adaptFollowup(res.data))
+      activity.log(auth.user.name, `回访 ${res.data.followupNo} 标记无需回访：${reason.trim()}`, id)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '标记无需回访失败'))
+      return false
+    }
   }
 
   /**
-   * 术后 SOP 自动化：治疗完成时按模板一次性生成多节点随访计划
-   * （24h 关怀 / 第3天回访 / 第7天恢复 / 第30天复诊），共享一个 batchId。
-   * 返回生成的随访列表。
+   * 术后 SOP 自动排程 shim：节点已由后端 FollowupScheduler 在治疗完成 AFTER_COMMIT 排程，
+   * 前端不再造假节点（防重复）。保留签名形状供咨询动线调用，恒返空数组。
    */
-  function schedulePostOpSop(input: {
+  async function schedulePostOpSop(_input?: {
     customerId: string
     customerName: string
     project: string
     relatedOrderNo?: string
     serviceDate?: string
     nodes?: SopNodeDef[]
-  }): Followup[] {
-    if (!auth.can('followup:create')) {
-      console.warn('[followup] 无 followup:create 权限')
-      return []
-    }
-    const nodes = (input.nodes ?? enabledSopNodes.value).filter((n) => n.enabled !== false)
-    if (nodes.length === 0) return []
-    const serviceDate = input.serviceDate ? new Date(input.serviceDate) : new Date()
-    const batchId = `SOP${Date.now().toString().slice(-8)}`
-    const created: Followup[] = []
-    nodes.forEach((n, idx) => {
-      seq += 1
-      const plan = new Date(serviceDate.getTime() + n.dayOffset * 86400000)
-      const f: Followup = {
-        id: nextId('fu'),
-        followupNo: `HF${batchId.slice(-6)}${idx + 1}`,
-        customerId: input.customerId,
-        customerName: input.customerName,
-        project: input.project,
-        relatedOrderNo: input.relatedOrderNo,
-        serviceDate: serviceDate.toISOString(),
-        planDate: plan.toISOString(),
-        method: n.method,
-        status: 'PENDING',
-        adverseReaction: false,
-        needRevisit: false,
-        sopStage: n.stage,
-        sopLabel: n.label,
-        sopBatchId: batchId,
-        createdAt: new Date().toISOString(),
-      }
-      followups.value.unshift(f)
-      created.push(f)
-    })
-    activity.log(
-      auth.user.name,
-      `术后 SOP 自动生成 ${created.length} 个随访节点（${input.customerName}·${input.project}，批次 ${batchId}）`,
-      batchId,
-    )
-    return created
+  }): Promise<Followup[]> {
+    return []
   }
 
-  /** 某客户/某批次的 SOP 节点（按计划时间升序） */
+  /** 某客户/某批次的 SOP 节点（按计划时间升序；mock 演示数据，卡B 接真后替换） */
   function sopOfBatch(batchId: string) {
     return followups.value
       .filter((f) => f.sopBatchId === batchId)
@@ -290,7 +460,7 @@ export const useFollowupStore = defineStore('followup', () => {
       .sort((a, b) => new Date(a.planDate).getTime() - new Date(b.planDate).getTime())
   }
 
-  /** SOP 待办（术后节点，未完成）——以 sopBatchId 判定，含自定义节点 */
+  /** SOP 待办（术后节点，未完成）——以 sopBatchId 判定，含自定义节点（mock 角标，/sop 卡B 接真前保留） */
   const sopPending = computed(() => pending.value.filter((f) => f.sopBatchId))
   /** SOP 超期未回访节点（含已升级，用于看板统计） */
   const sopOverdue = computed(() => overdue.value.filter((f) => f.sopBatchId))
@@ -360,75 +530,16 @@ export const useFollowupStore = defineStore('followup', () => {
     return true
   }
 
-  /** 登记回访结果 */
-  function complete(
-    id: string,
-    result: {
-      satisfaction: number
-      recovery: RecoveryStatus
-      adverseReaction: boolean
-      adverseNote?: string
-      needRevisit: boolean
-      note?: string
-      method?: FollowupMethod
-    },
-  ): boolean {
-    const f = followups.value.find((x) => x.id === id)
-    if (!f || f.status !== 'PENDING') return false
-    if (!auth.can('followup:edit')) {
-      console.warn('[followup] 无 followup:edit 权限')
-      return false
-    }
-    const now = new Date().toISOString()
-    f.status = 'DONE'
-    f.satisfaction = result.satisfaction
-    f.recovery = result.recovery
-    f.adverseReaction = result.adverseReaction
-    f.adverseNote = result.adverseReaction ? result.adverseNote?.trim() || undefined : undefined
-    f.needRevisit = result.needRevisit
-    f.note = result.note?.trim() || undefined
-    if (result.method) f.method = result.method
-    f.followupByName = auth.user.name
-    f.doneAt = now
-    activity.log(
-      auth.user.name,
-      `完成回访 ${f.followupNo}，满意度 ${result.satisfaction} 星${result.adverseReaction ? '（有不良反应，建议转投诉跟进）' : ''}`,
-      f.id,
-    )
-    return true
-  }
-
-  /** 标记无需回访（如客户明确拒绝、失联等） */
-  function skip(id: string, reason: string): boolean {
-    const f = followups.value.find((x) => x.id === id)
-    if (!f || f.status !== 'PENDING') return false
-    if (!auth.can('followup:edit')) {
-      console.warn('[followup] 无 followup:edit 权限')
-      return false
-    }
-    const now = new Date().toISOString()
-    f.status = 'SKIPPED'
-    f.note = reason.trim()
-    f.followupByName = auth.user.name
-    f.doneAt = now
-    activity.log(auth.user.name, `回访 ${f.followupNo} 标记无需回访：${reason}`, f.id)
-    return true
-  }
-
-  /** 重新安排回访日期（改期） */
+  /** 重新安排回访日期（改期；mock 演示动作，后端端点卡B 后补） */
   function reschedule(id: string, planDate: string): boolean {
     const f = followups.value.find((x) => x.id === id)
     if (!f || f.status !== 'PENDING') return false
-    if (!auth.can('followup:edit')) {
-      console.warn('[followup] 无 followup:edit 权限')
-      return false
-    }
     f.planDate = planDate
     activity.log(auth.user.name, `回访 ${f.followupNo} 改期至 ${planDate.slice(0, 10)}`, f.id)
     return true
   }
 
-  /** 开发期种子 */
+  /** 开发期演示种子（/sop 批次看板 + C 端 /m/followup；真实工作台走 load/refresh） */
   let seeded = false
   function seed() {
     if (seeded) return
@@ -564,7 +675,7 @@ export const useFollowupStore = defineStore('followup', () => {
     ])
   }
 
-  /** C 端消费者自助提交回访（联动 5：C 端 → M4-11，不需要 followup:edit 权限） */
+  /** C 端消费者自助提交回访（联动 5：C 端 → M4-11，不需要 followup:edit 权限；演示种子动作） */
   function submitByCustomer(
     id: string,
     result: { satisfaction: number; note?: string; adverseReaction?: boolean; adverseNote?: string },
@@ -591,11 +702,15 @@ export const useFollowupStore = defineStore('followup', () => {
   }
 
   return {
+    // 真实数据层
+    records, page, pageSize, total, totalPages, loading, stats, sopTodos,
+    get, fetchDetail, load, loadStats, refresh, loadSopTodos, create, complete, skip,
+    // 过渡演示层（/sop + C 端）
     followups, pending, done, skipped, overdue, todayPending, avgSatisfaction, adverseCount,
     sopPending, sopOverdue, sopOverdueNeedEscalation, sopBatches,
     sopTemplate, enabledSopNodes,
-    get, schedule, schedulePostOpSop, sopOfBatch, sopOfCustomer, escalate, escalateAllOverdue,
+    schedulePostOpSop, sopOfBatch, sopOfCustomer, escalate, escalateAllOverdue,
     toggleSopNode, updateSopNode, addSopNode, removeSopNode, resetSopTemplate,
-    complete, skip, reschedule, submitByCustomer, seed,
+    reschedule, submitByCustomer, seed,
   }
 })

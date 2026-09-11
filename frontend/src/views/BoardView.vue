@@ -14,6 +14,7 @@ import { useConsultationStore } from '@/stores/consultation'
 import { useFollowupStore } from '@/stores/followup'
 import { useCustomerStore } from '@/stores/customer'
 import { useOrderStore } from '@/stores/order'
+import { useAuthStore } from '@/stores/auth'
 
 const router = useRouter()
 const arrival = useArrivalStore()
@@ -21,13 +22,15 @@ const consultation = useConsultationStore()
 const followup = useFollowupStore()
 const customer = useCustomerStore()
 const order = useOrderStore()
+const auth = useAuthStore()
 
 onMounted(() => {
   arrival.seed()
   consultation.seed()
-  followup.seed()
   customer.seedProfile()
   order.seed()
+  // 待回访列走真库：本店 PENDING 的术后 SOP 节点（演示种子不再上水牌）
+  void followup.loadSopTodos(auth.user.storeId)
 })
 
 type IconName = 'home' | 'chat' | 'shield' | 'pos' | 'check-square' | 'tool' | 'phone' | 'dashboard' | 'chevron-right'
@@ -167,7 +170,7 @@ const columns = computed<BoardCol[]>(() => [
     hint: '术后 SOP 随访 / 满意度',
     actionTo: '/followup',
     actionLabel: '术后回访',
-    cards: followup.sopPending.map((f) => ({
+    cards: followup.sopTodos.map((f) => ({
       key: f.id,
       customerId: f.customerId,
       name: f.customerName || nameOf(f.customerId),

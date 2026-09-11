@@ -628,22 +628,21 @@ export const useConsultationStore = defineStore('consultation', () => {
     await emr.sign(rec.id)
     c.treatmentEmrId = rec.id
 
-    // 术后 SOP 自动化：按模板生成多节点随访（24h关怀/第3天回访/第7天恢复/第30天复诊）
-    const serviceDate = new Date()
-    const sopNodes = followup.schedulePostOpSop({
+    // 术后 SOP 自动化：随访节点（24h关怀/第3天回访/第7天恢复/第30天复诊）
+    // 由后端 FollowupScheduler 在治疗完成事务提交后按门店模板自动排程，前端不再造假节点。
+    await followup.schedulePostOpSop({
       customerId: c.customerId,
       customerName: payload.customerName,
       project: (c.planItems ?? []).map((i) => i.name).join('、') || '医美治疗',
-      serviceDate: serviceDate.toISOString(),
+      serviceDate: new Date().toISOString(),
     })
-    if (sopNodes.length) c.followupId = sopNodes[0].id
 
     c.status = 'DONE'
     c.treatedAt = new Date().toISOString()
-    pushRevision(c, { kind: 'TREAT_DONE', reason: `治疗记录 ${rec.emrNo} 已签署，术后 SOP 已生成 ${sopNodes.length} 个随访节点` })
+    pushRevision(c, { kind: 'TREAT_DONE', reason: `治疗记录 ${rec.emrNo} 已签署，术后随访 SOP 由后端按门店模板自动排程` })
     activity.log(
       auth.user.name,
-      `方案单 ${c.id} 治疗完成归档：治疗记录 ${rec.emrNo}，术后随访 SOP ${sopNodes.length} 节点已排程`,
+      `方案单 ${c.id} 治疗完成归档：治疗记录 ${rec.emrNo}，术后随访 SOP 已由后端按模板自动排程`,
       c.id,
     )
     return { ok: true }
