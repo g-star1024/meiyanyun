@@ -34,6 +34,7 @@ const router = createRouter({
 
     // ===== 客情洞察 =====
     { path: '/customer-graph', name: 'customer-graph', component: () => import('@/views/CustomerGraphView.vue') },
+    { path: '/search-events', name: 'search-events', component: () => import('@/views/SearchEventConsoleView.vue') },
     { path: '/complaint', name: 'complaint', component: () => import('@/views/ComplaintView.vue') },
     { path: '/followup', name: 'followup', component: () => import('@/views/FollowupView.vue') },
     { path: '/sop', name: 'sop', component: () => import('@/views/SopManagementView.vue') },
