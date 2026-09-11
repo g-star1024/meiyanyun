@@ -1,13 +1,15 @@
 package com.meiyun.txn;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 /**
- * 术后 SOP 批次仓储（followup_sop_batch）。
+ * 术后 SOP 排程批次仓储（followup_sop_batch）。
  */
-public interface FollowupSopBatchRepository extends JpaRepository<FollowupSopBatch, String> {
+public interface FollowupSopBatchRepository extends JpaRepository<FollowupSopBatch, String>,
+        JpaSpecificationExecutor<FollowupSopBatch> {
 
     /** 方案单维度幂等：一张方案单只排一次术后 SOP。 */
     boolean existsBySourcePlanId(String sourcePlanId);

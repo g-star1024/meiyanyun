@@ -46,29 +46,25 @@ public class FollowupSopTemplateDataInitializer implements ApplicationRunner {
             return;
         }
         FollowupSopTemplate t = new FollowupSopTemplate();
-        t.setTemplateNo("SPT-SEED-001");
-        t.setName("术后通用随访 SOP");
+        t.setTemplateNo(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
+        t.setName(FollowupSopDefaults.DEFAULT_TEMPLATE_NAME);
         t.setStoreCode(null);
         t.setEnabled(true);
         t.setCreatedBy("system");
         templateRepo.save(t);
 
-        node("SPT-SEED-001", 1, "CARE_24H", "术后 24h 关怀", 1, "WECHAT");
-        node("SPT-SEED-001", 2, "FOLLOWUP_3D", "第 3 天回访", 3, "PHONE");
-        node("SPT-SEED-001", 3, "RECOVERY_7D", "第 7 天恢复评估", 7, "WECHAT");
-        node("SPT-SEED-001", 4, "REVISIT_30D", "第 30 天复诊提醒", 30, "PHONE");
+        int lineNo = 1;
+        for (FollowupSopDefaults.NodeDef d : FollowupSopDefaults.NODES) {
+            FollowupSopTemplateNode n = new FollowupSopTemplateNode();
+            n.setTemplateNo(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
+            n.setLineNo(lineNo++);
+            n.setStage(d.stage());
+            n.setLabel(d.label());
+            n.setDayOffset(d.dayOffset());
+            n.setMethod(d.method());
+            n.setEnabled(true);
+            nodeRepo.save(n);
+        }
         log.info("[FollowupSopSeed] 已播种 1 个集团通用术后随访 SOP 模板（4 节点：1/3/7/30 天）。");
-    }
-
-    private void node(String templateNo, int lineNo, String stage, String label, int dayOffset, String method) {
-        FollowupSopTemplateNode n = new FollowupSopTemplateNode();
-        n.setTemplateNo(templateNo);
-        n.setLineNo(lineNo);
-        n.setStage(stage);
-        n.setLabel(label);
-        n.setDayOffset(dayOffset);
-        n.setMethod(method);
-        n.setEnabled(true);
-        nodeRepo.save(n);
     }
 }

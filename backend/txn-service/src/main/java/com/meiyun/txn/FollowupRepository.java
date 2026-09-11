@@ -25,6 +25,9 @@ public interface FollowupRepository extends JpaRepository<Followup, Long>, JpaSp
 
     Page<Followup> findBySopBatchIdOrderByPlanDateAsc(String sopBatchId, Pageable pageable);
 
+    /** 多个批次的全部节点（批次看板批量装配，避免 N+1），按计划日期升序。 */
+    List<Followup> findBySopBatchIdInOrderByPlanDateAsc(java.util.Collection<String> sopBatchIds);
+
     /**
      * 生成当日不重随访号：HF + yyyyMMdd + - + 6 位序号（序号从第 12 位起，char_length=17）。
      */

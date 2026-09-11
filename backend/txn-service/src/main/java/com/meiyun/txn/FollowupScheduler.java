@@ -34,14 +34,6 @@ public class FollowupScheduler {
     private static final Logger log = LoggerFactory.getLogger(FollowupScheduler.class);
     private static final ZoneOffset BIZ_TZ = ZoneOffset.ofHours(8);
 
-    /** 内置默认节点（与前端 DEFAULT_POST_OP_SOP 一致）：模板无启用节点时回退。 */
-    private static final NodeDef[] DEFAULT_NODES = {
-            new NodeDef("CARE_24H", "术后 24h 关怀", 1, "WECHAT"),
-            new NodeDef("FOLLOWUP_3D", "第 3 天回访", 3, "PHONE"),
-            new NodeDef("RECOVERY_7D", "第 7 天恢复评估", 7, "WECHAT"),
-            new NodeDef("REVISIT_30D", "第 30 天复诊提醒", 30, "PHONE"),
-    };
-
     private final FollowupSopBatchRepository batchRepo;
     private final FollowupRepository followupRepo;
     private final FollowupSopTemplateRepository templateRepo;
@@ -169,7 +161,9 @@ public class FollowupScheduler {
         } catch (Exception e) {
             log.warn("术后 SOP 读取模板节点异常，回退默认节点: {}", e.getMessage());
         }
-        return List.of(DEFAULT_NODES);
+        return FollowupSopDefaults.NODES.stream()
+                .map(d -> new NodeDef(d.stage(), d.label(), d.dayOffset(), d.method()))
+                .toList();
     }
 
     /** 项目名：方案单子项 itemName 去重拼接（/ 分隔），超长截断到 128。 */

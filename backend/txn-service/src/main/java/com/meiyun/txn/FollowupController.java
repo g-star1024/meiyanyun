@@ -88,7 +88,8 @@ public class FollowupController {
         return toView(followupService.skip(id, req.reason()));
     }
 
-    private static FollowupView toView(Followup f) {
+    /** 实体 → 24 字段读模型（B31 SOP 批次节点聚合复用，id 字符串对齐前端契约）。 */
+    public static FollowupView toView(Followup f) {
         return new FollowupView(
                 String.valueOf(f.getId()), f.getFollowupNo(), f.getCustomerId(), f.getCustomerName(),
                 f.getStoreCode(), f.getProject(), f.getRelatedOrderNo(),
