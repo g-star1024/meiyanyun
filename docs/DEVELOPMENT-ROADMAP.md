@@ -5,11 +5,11 @@
 > 旧 `DEVELOPMENT_PLAN.md`（2026-09-01）仅作历史参考，不再回写。
 >
 > **基线**：P5-B24 已交付（2026-09-09，财务边角两卡 + 诊疗主轴三卡：财务四页去 mock/发票 CSV、卡余额时间线/核销双签、咨询草稿接诊、treat-start/treat-done 治疗全链路、我的工作台计数真实化）。
-> **最近更新**：2026-09-10（B29 交付：预约接待尾工批三卡——① 排队智能候补（arrival_waitlist 新域：WL 单号/手机号锚定会员·散客快照两态、WAITING→NOTIFIED→FULFILLED/CANCELLED 状态机、号源释放同事务 FIFO 递补首位+店长站内信幂等、/queue 第三卡+候补登记弹层+智能候补 KPI）；② 候诊超时自动释放号源（ArrivalAutoReleaseJob 60s 扫描「30min 阈值+10min 宽限」、系统释放 LEFT 同事务递补、手工释放按钮接真、重载状态防重入）；③ 到店核销↔预约/划扣自动勾连（APPOINTMENT 手机号命中当日预约，同事务回写 appt_no/wd_no+预约置已到店+自动建到店号+生成 writeoff_desk_task PENDING，核销详情透出勾连单号）。整体进度 63→**64/166=39%**（排队候补为唯一 ⬜→✅ 新模块；超时释放、核销勾连为既有模块纵深增强，沿 B28 口径不重复计模块），预约与接待域 6✅2⬜→**7✅0🔧1⬜**（转化漏斗依赖数据分析，仍 ⬜）。网关 curl 五阶段 24 项全绿（含 Job 自动释放实证）+ 浏览器两页双轨取证（audit id 314–331，哈希链 17/17 连续、payload 无手机明文），console 零错；冒烟改库单事务全量还原（删除计数 2/2/1/1/4/3/1，审计 append-only 保留 18 行），详见 DELIVERY-P5-B29）。
-> 上一批 B28：预约接待收口批三卡——① 会员到店核销 /m2-checkin 真实闭环（checkin_record 新域：CI 单号/三方式 SCAN·APPOINTMENT·WALKIN/三态 PENDING·DONE·EXCEPTION + 四异常码 + timeline JSON 流水 + 手机号掩码 + by-phone 内部目录端点本店→公海锚定散客快照）；② 客情登记十类扩展字段后端化（customer 加 9 列、白名单校验+过敏互斥、客户 360 档案 tab「有值才显示」kv 回显）；③ triage 改派历史时间线（triage_reassign 新表、同事务追加、正序富化读模型、接待台最小内联改派 UI）。整体 62→63/166=38%（网关 curl + 浏览器三页双轨取证，audit id 301–313，冒烟全量还原，详见 DELIVERY-P5-B28）。
-> 上一批 B27：主轴「接待台/候诊分诊 + EMR 电子病历独立域」链路+完整页面交互——arrival/triage/emr_record 三新表、到店五态队列（AH 单号/queue_no 连号/四渠道）、分诊同事务建 consult_plan 草稿并双向回挂、预约签到同事务自动到店、EMR 全状态机 DRAFT→SIGNED→ARCHIVED→修订（-R{n}）+signEmr/treatDone 病历联动；客情登记真实建档+自动到店；工作台「候诊待接待」「病历草稿」两演示项摘除（audit id 257–300，附修 2 项运行态缺陷，详见 DELIVERY-P5-B27 §5）。
-> 再上一批 B26：域⑦ 通知多渠道（Inbox/SMS/企微/邮件适配层 + 60s 扇出 Job 指数退避/死信 + SSE 实时推送 + 全局免打扰）+ 域⑤ 赠金高级规则（GrantRule 满赠阶梯/GrantService 幂等账本/GrantExpireJob 每日过期/报表）+ 外部渠道回传骨架（HMAC 签名/时间戳窗口/限流/去重/客户硬校验），57→60/166=36%，详见 DELIVERY-P5-B26 §4。
-> 再上一批 B25：域①客户域自动化三件套（TA### 标签规则引擎/TagAutoRuleJob 5 类条件、消费自动积分 AUTOPOINTS 幂等发分回退、LevelMonthlyJob 等级批处理），双栈五项冒烟+3 缺陷修复，详见 DELIVERY-P5-B25 §4。B24 基线见上。
+> **最近更新**：2026-09-11（B30 交付：近线收口四卡——③ 复购提醒前端接线（RepurchaseView 全链路：客户真实检索/目标项目必填+知情同意硬勾选/待签核统计实时/客户·经办·店长三方签核，🔧→✅）；④ EMR 模板库（emr_template 新域+集团 4 种子 EMT-SEED-001..004+本店建/停用+模板库弹层）+框架异常中文 400+列表真分页/统计后端聚合；② 建档实时写 ES（customer_search_event outbox+10s 中继 Job SENT/RETRY/DEAD+连续失败 3 次熔断 30s 降级 DB+读时合并+显式 mapping）；① 术后随访 SOP 引擎（followup_sop_template/node/batch/followup 四表+treat-done AFTER_COMMIT 幂等排程 1/3/7/30 天节点+60s 超期升级 Job 店长幂等通知免打扰+/followup 端点+工作台两演示项切真摘除）。整体 64→**68/166=41%**（复购为 🔧→✅，SOP/实时写 ES/EMR 模板库为 Backlog 闭合 ⬜→✅）。验证中附修 **2 项运行态真实缺陷**：fa549d5（afterCommit 无活动事务致 SOP 排程静默丢写→REQUIRES_NEW 物理事务）、fc97d00（模板库裸 null 参数致 PG 42P18 查询 500→JPQL cast string）。网关 curl 全路径（含事件 SENT/7 次 RETRY 自愈）+浏览器复购 RP20260911-003194 创建→三方签核与模板库 UI 双轨取证（SE002 咨询师 SELF 数据域隔离正向实证），console 零错；audit id 81–93 共 13 行 append-only 保留；冒烟全量还原（PG 当日造数零残留、customer 基线 100、ES 113→110 三漂移槽位如实记录），详见 DELIVERY-P5-B30）。
+> 上一批 B29：预约接待尾工批三卡——① 排队智能候补（arrival_waitlist 新域：WL 单号/手机号锚定会员·散客快照两态、WAITING→NOTIFIED→FULFILLED/CANCELLED 状态机、号源释放同事务 FIFO 递补首位+店长站内信幂等、/queue 第三卡+候补登记弹层+智能候补 KPI）；② 候诊超时自动释放号源（ArrivalAutoReleaseJob 60s 扫描「30min 阈值+10min 宽限」、系统释放 LEFT 同事务递补、手工释放按钮接真、重载状态防重入）；③ 到店核销↔预约/划扣自动勾连（APPOINTMENT 手机号命中当日预约，同事务回写 appt_no/wd_no+预约置已到店+自动建到店号+writeoff_desk_task PENDING，核销详情透出勾连单号）。整体 63→64/166=39%，网关 curl 24 项全绿+浏览器两页取证（audit 314–331），冒烟全量还原，详见 DELIVERY-P5-B29。
+> 上一批 B28：预约接待收口批三卡——会员到店核销 /m2-checkin（checkin_record 新域、CI 单号、三方式/三态/四异常码、timeline、手机号掩码）、客情登记十类扩展字段后端化（customer 加 9 列、白名单+过敏互斥、360 有值才显示）、triage 改派时间线（triage_reassign 新表）。62→63/166=38%，详见 DELIVERY-P5-B28。
+> 上一批 B27：主轴「接待台/候诊分诊 + EMR 电子病历独立域」——arrival/triage/emr_record 三新表、到店五态队列、分诊建 CP 草稿双向回挂、预约签到自动到店、EMR DRAFT→SIGNED→ARCHIVED→修订全状态机+signEmr/treatDone 联动；工作台两演示项摘除（附修 2 项运行态缺陷），详见 DELIVERY-P5-B27。
+> 再上一批 B26：通知多渠道（Inbox/SMS/企微/邮件+60s 扇出退避/死信+SSE+免打扰）+赠金高级规则+外部渠道回传骨架，57→60/166=36%，详见 DELIVERY-P5-B26。
 
 ---
 
@@ -19,18 +19,18 @@
 
 | 状态 | 数量 | 占比 | 说明 |
 |---|---|---|---|
-| ✅ 已完成 | **64** | 39% | 三者齐备，真实闭环 |
-| 🔧 半成品 | **6** | 4% | 后端有端点/前后端均实但缺验证或前端 mock |
-| ⬜ 未开始 | **96** | 58% | mock/占位，含大量远期独立阶段页面 |
+| ✅ 已完成 | **68** | 41% | 三者齐备，真实闭环 |
+| 🔧 半成品 | **5** | 3% | 后端有端点/前后端均实但缺验证或前端 mock |
+| ⬜ 未开始 | **93** | 56% | mock/占位，含大量远期独立阶段页面 |
 | **合计** | **166** | 100% | |
 
 > 注：P5-B24「两线合并全收」5 卡收口（财务四页去 mock/发票 CSV、卡余额时间线/核销双签投影、咨询草稿/接诊、treat-start/treat-done 治疗全链路、我的工作台计数真实化），页面口径 47→**54/166=33%**。工作台 7 项计数切真（审批/待收款/今日预约/方案单四态），5 项无后端域（候诊接待/病历草稿/术后回访/SOP 超期/复诊提醒）保留演示数据并显式标注「（演示）」、不计入真实总数；方案单状态机 PENDING→ACTIVE→PENDING_REVIEW→APPROVED→READY_PAY→PAID→TREATING→DONE 全链路双栈真实打通。EMR 独立域、术后随访 SOP、沉睡唤醒、通用异常中心、异常账务登记、预收合规监控、进项税抵扣、M4Repurchase 三方双签列 Backlog。详见 DELIVERY-P5-B24。
-> 口径备注：大表逐行加总与仪表盘合计存在 2 项历史计数差（域④ 大表 ✅ 行粒度多计 1、财务/咨询行合并粒度不同），不影响真实交付结论，后续盘点统一校准。
+> 口径备注：大表逐行加总与仪表盘合计存在历史计数差（域④ 大表 ✅ 行粒度多计 1、财务/咨询行合并粒度不同），不影响真实交付结论，后续盘点统一校准。B30 仪表盘净增 4 项：复购提醒 🔧→✅，术后随访 SOP/建档实时写 ES/EMR 模板库三项 Backlog ⬜→✅；大表仅术后随访 SOP 新增 1 行（域③ 4✅1🔧1⬜→6✅0🔧1⬜），实时写 ES 与 EMR 模板库/分页/400 作为既有 ✅ 行（客情登记/客户档案、EMR）的纵深增强只改备注不加行，沿用上述历史计数差口径。
 
 ### 两个口径，避免「完成度错觉」
 
-- **全量页面口径：39%**——分母含 M1 集团 / M2 门店运营 / M3 客户运营 / A1 AI 中心 / T2 数据 / T4 算力 / C 端移动端等**远期独立阶段**约 **81 个页面**（占 ⬜ 的大头）。这些是与当前门店中台主线并行的后续大阶段，不应算作「主线欠债」。
-- **门店中台核心主线口径（交易 + 财务 + 组织权限 + 门店主数据 + 营销 + 客户运营基础 + 诊疗主轴）**：**核心闭环已打通** ✅。退款/退卡/划扣/审批/卡项/资金/对账/月结/成本/提成/权限/主数据链路全部真实落地，**营销 9 页与客户域 4 卡均收口闭合**（券/推送/核销/ROI、积分商城/积分账户/标签/等级真实闭环）；B24 把**咨询→方案→支付→治疗→归档诊疗主轴全链路贯通**，B27 再补齐主轴两端的**接待台/候诊分诊**（到店→分诊→同事务建方案草稿→叫号→完成，预约签到自动到店）与 **EMR 电子病历独立域**（DRAFT→SIGNED→ARCHIVED→修订全状态机 + signEmr/treatDone 病历联动），B28 收口**到店核销 /m2-checkin** 真实闭环，B29 再补**排队智能候补 + 候诊超时自动释放 + 核销↔预约/划扣勾连**，预约与接待域 8 模块 7✅（仅剩转化漏斗依赖数据分析）；工作台 5 个演示项已摘除 2 个；当前仅剩 **🔧 少量近线收口项**（复购提醒前端、营销设置、M1/M3 远期页）与**近线 ⬜ 补点**（术后随访 SOP、资产转移等）。
+- **全量页面口径：41%**——分母含 M1 集团 / M2 门店运营 / M3 客户运营 / A1 AI 中心 / T2 数据 / T4 算力 / C 端移动端等**远期独立阶段**约 **81 个页面**（占 ⬜ 的大头）。这些是与当前门店中台主线并行的后续大阶段，不应算作「主线欠债」。
+- **门店中台核心主线口径（交易 + 财务 + 组织权限 + 门店主数据 + 营销 + 客户运营基础 + 诊疗主轴）**：**核心闭环已打通** ✅。退款/退卡/划扣/审批/卡项/资金/对账/月结/成本/提成/权限/主数据链路全部真实落地，**营销 9 页与客户域 4 卡均收口闭合**（券/推送/核销/ROI、积分商城/积分账户/标签/等级真实闭环）；B24 把**咨询→方案→支付→治疗→归档诊疗主轴全链路贯通**，B27 再补齐主轴两端的**接待台/候诊分诊**（到店→分诊→同事务建方案草稿→叫号→完成，预约签到自动到店）与 **EMR 电子病历独立域**（DRAFT→SIGNED→ARCHIVED→修订全状态机 + signEmr/treatDone 病历联动），B28 收口**到店核销 /m2-checkin** 真实闭环，B29 再补**排队智能候补 + 候诊超时自动释放 + 核销↔预约/划扣勾连**，预约与接待域 8 模块 7✅（仅剩转化漏斗依赖数据分析）；B30 **近线收口四卡**（复购提醒前端接线 🔧→✅、EMR 模板库/真分页/中文 400、建档实时写 ES、术后随访 SOP 引擎），咨询诊疗域 6✅（仅剩复诊召回远期），工作台再摘除「术后回访/SOP 超期」两演示项（5 个演示项已摘除 4 个，仅剩复诊提醒）；当前仅剩 **🔧 少量近线收口项**（营销设置、充值赠金、BOM 异常前端、组织树、M1/移动端远期页）与**近线 ⬜ 补点**（资产转移、疗程跟踪、随访/SOP 管理整页、DEAD 事件处置台等）。
 
 ### 分业务域完成度
 
@@ -38,7 +38,7 @@
 |---|---|---|---|---|---|
 | ① | 客户与会员 | 8 | 0 | 10 | **客户基础运营 + 自动化 8 模块收口✅**（档案/积分商城/积分账户/标签/等级 B23；标签自动化/自动积分/等级批处理 B25）；M3 平台为后续 |
 | ② | 预约与接待 | 7 | 0 | 1 | 预约/新建/我的工作台✅；**接待台+客情登记 B27 收口✅**（到店五态队列/分诊建 CP 草稿/预约签到自动到店/客情建档自动到店）；**到店核销 B28 收口✅**（/m2-checkin 登记→核销/异常/解除+timeline+客情扩展字段后端化+改派时间线）；**排队候补 B29 收口✅**（arrival_waitlist 智能候补/超时自动释放/核销↔预约勾连）；仅剩转化漏斗（依赖数据分析）⬜ |
-| ③ | 咨询与诊疗 | 4 | 1 | 1 | 开方开单✅；咨询/医师工作台✅；**EMR 电子病历 B27 收口✅**（独立域全状态机+修订+方案联动）；复购提醒后端 only；复诊召回远期 |
+| ③ | 咨询与诊疗 | 6 | 0 | 1 | 开方开单✅；咨询/医师工作台✅；**EMR 电子病历 B27 收口✅**（独立域全状态机+修订+方案联动；B30 补模板库/真分页/中文 400）；**复购提醒 B30 全链路收口✅**（知情同意硬前置+三方签核，`7c922cb`）；**术后随访 SOP 引擎 B30 收口✅**（四表+幂等排程+超期升级 Job，`40a35ad`/`fa549d5`）；仅剩复诊召回远期 ⬜ |
 | ④ | 收银与交易 | 10 | 1 | 1 | **闭环✅**（收/退/划/批/卡/渠道全通；SLA/手续费收口；B24 治疗状态机贯通 PAID→TREATING→DONE） |
 | ⑤ | 营销与留存 | 11 | 1 | 6 | **营销 9 页收口✅**（B22）+ **赠金高级规则✅/外部渠道回传✅（B26）**；营销设置仍 🔧（前端 m5-settings 接线）；落地页/转介绍 Backlog |
 | ⑥ | 财务 | 11 | 0 | 1 | **全主线收口✅**（台账/对账/月结/成本/提成 + B24 发票/预算/设置/日报/卡余额/核销明细全部切真；经营毛利依赖全量收入，远期） |
@@ -73,10 +73,10 @@
 |---|---|---|---|---|
 | 预约看板 | ✅ | M4 | 视图直连 @/api | — |
 | 新建预约 | ✅ | M4 | 视图直连 @/api | — |
-| 我的工作台 | ✅ | P5-B24/B27 | DELIVERY-P5-B24，`50d694d`；B27 `a08bf4d` | 7 项计数真实；B27 摘除「候诊待接待」「病历草稿」两演示项（改 listArrivals(WAITING)/listEmr(DRAFT) 真实计数）；剩术后回访/SOP 超期/复诊提醒 3 演示项，依赖 Backlog 域 |
+| 我的工作台 | ✅ | P5-B24/B27/B30 | DELIVERY-P5-B24，`50d694d`；B27 `a08bf4d`；B30 `40a35ad` | 7 项计数真实；B27 摘除「候诊待接待」「病历草稿」两演示项（改 listArrivals(WAITING)/listEmr(DRAFT) 真实计数）；**B30 再摘除「术后回访」「SOP 超期」两演示项**（/api/txn/followup/stats 真实 sopPending/sopOverdue 计数，60s 超期升级 Job 驱动）；仅剩复诊提醒 1 演示项，依赖营销自动化 Flow |
 | 排队候补 | ✅ | P5-B29 | DELIVERY-P5-B29，`b85ee45`、`2e4d010` | arrival_waitlist 新域：WL 单号查库号池、手机号锚定会员/散客快照两态、WAITING→NOTIFIED→FULFILLED/CANCELLED 状态机；号源释放（手工/超时）同事务 FIFO 递补首位+店长站内信幂等（idemKey `WL:<wlNo>:<staffId>`）；/queue 第三卡+候补登记弹层+候补 KPI；超时自动释放见接待台行 |
 | 接待台 | ✅ | P5-B27/B28/B29 | DELIVERY-P5-B27，`759990d`、`a08bf4d`；B28 `cac3f37`；B29 `ae646ed`、`2e4d010` | arrival 独立域：AH 单号/queue_no 本店当日连号/四渠道/WAITING→TRIAGED→CALLING→DONE 五态；分诊（CONSULT/MEDICAL/SERVICE）同事务建 consult_plan 草稿双向回挂、叫号/完成；预约签到同事务自动到店；审计 ARRIVAL 全动作；**B28 改派历史时间线（triage_reassign 同事务追加、正序富化、右栏最小内联改派 UI，同资质候选池剔除当前负责人）**；**B29 候诊超时自动释放（ArrivalAutoReleaseJob 60s 扫描「30min 阈值+10min 宽限」、批 50、系统释放 LEFT 同事务 FIFO 递补、手工释放按钮接真、重载状态防重入、`meiyun.queue.auto-release-enabled` 开关收敛）** |
-| 客情登记 | ✅ | P5-B27/B28 | DELIVERY-P5-B27，`a08bf4d`；B28 `aa87fcb` | GuestReg 手机号 watch 查重（searchCustomers+hydrate）、真实建档成功后自动 checkIn 到店并跳接待台；**B28 十类扩展字段后端化（customer 加 9 列：年龄/肤质/诉求/过敏史三列/意向项目/意向等级/预算/沟通要点，白名单+过敏互斥，客户 360 档案 tab 有值才显示 kv 回显）**；建档实时写 ES 待补（现搜索缓存融合兜底） |
+| 客情登记 | ✅ | P5-B27/B28/B30 | DELIVERY-P5-B27，`a08bf4d`；B28 `aa87fcb`；B30 `09f590b` | GuestReg 手机号 watch 查重（searchCustomers+hydrate）、真实建档成功后自动 checkIn 到店并跳接待台；**B28 十类扩展字段后端化（customer 加 9 列：年龄/肤质/诉求/过敏史三列/意向项目/意向等级/预算/沟通要点，白名单+过敏互斥，客户 360 档案 tab 有值才显示 kv 回显）**；**B30 建档实时写 ES 已交付**（customer_search_event outbox 只存 customerId+10s 中继 Job 批 50 FIFO，SENT/RETRY/DEAD 三态，连续失败 3 次熔断 30s 降级 DB，显式 mapping name 分词+keyword 子字段，读时 mergeRecentFromDb 融合+DataScope 数据域过滤，ES reindex 对账治理留 Backlog） |
 | 到店核销 | ✅ | P5-B28/B29 | DELIVERY-P5-B28，`8ae7389`；B29 `abbe49e`、`2e4d010` | checkin_record 独立域：CI 单号查库号池、三方式（SCAN/APPOINTMENT/WALKIN）、三态（PENDING/DONE/EXCEPTION）+四异常码（NOT_SELF/ALREADY_DONE/NO_APPOINTMENT/INFO_MISMATCH）、timeline JSON 同事务流水、手机号掩码出域；by-phone 内部目录端点（本店→公海→404）锚定会员/散客快照两态；当日同号 PENDING 幂等；**B29 APPOINTMENT 手机号命中当日预约后同事务四连写（回写 ci.appt_no/wd_no、预约置已到店、自动建到店号 AH、生成 writeoff_desk_task PENDING），核销详情透出勾连单号** |
 | 转化漏斗 | ⬜ | — | — | 依赖数据分析 |
 
@@ -86,9 +86,10 @@
 |---|---|---|---|---|
 | 开方开单 | ✅ | M4/P3 | 视图直连 @/api | — |
 | 咨询工作台 | ✅ | P5-B24 | DELIVERY-P5-B24，`d2d369b` | 方案单草稿保存/接诊真实端点（draft/start），会话区接真实方案单；EMR 独立域列 Backlog |
-| 医师工作台 | ✅ | P5-B24 | DELIVERY-P5-B24，`512990d` | treat-start/treat-done 全链路（PAID→TREATING→DONE，术前四项/治疗归档），治疗队列切真；复购提醒仍后端 only |
-| EMR 电子病历 | ✅ | P5-B27 | DELIVERY-P5-B27，`759990d`、`a08bf4d` | emr_record 独立域：EM 单号查库号池（修订号 源号-R{n}）、DRAFT→SIGNED→ARCHIVED 全状态机、修订 parent_id/version、FIRST_VISIT/TREATMENT 两型；signEmr/treatDone 同事务幂等落病历并回挂 plan.emr_id/treat_emr_id；门店域全见越权 404；全链路网关+浏览器取证（audit 276–300）；分页/缺参 400 化 Backlog |
-| 复购提醒 | 🔧 | — | 后端 only | 前端未接 |
+| 医师工作台 | ✅ | P5-B24/B30 | DELIVERY-P5-B24，`512990d`；B30 `40a35ad` | treat-start/treat-done 全链路（PAID→TREATING→DONE，术前四项/治疗归档），治疗队列切真；**B30 起 treat-done AFTER_COMMIT 幂等触发术后随访 SOP 排程**（物理事务 REQUIRES_NEW，见术后随访 SOP 行） |
+| EMR 电子病历 | ✅ | P5-B27/B30 | DELIVERY-P5-B27，`759990d`、`a08bf4d`；B30 `5aa1e69`、`fc97d00` | emr_record 独立域：EM 单号查库号池（修订号 源号-R{n}）、DRAFT→SIGNED→ARCHIVED 全状态机、修订 parent_id/version、FIRST_VISIT/TREATMENT 两型；signEmr/treatDone 同事务幂等落病历并回挂 plan.emr_id/treat_emr_id；门店域全见越权 404；全链路网关+浏览器取证（audit 276–300）；**B30 补齐 EMR 模板库（emr_template 新域+集团 4 种子 EMT-SEED-001..004 只读+本店建/停用两态+模板库弹层九段范文，权限 emr:view/create 复用）、列表真分页（默认 20）/stats 后端聚合、ChineseValidationAdvice 框架异常中文 400；附修 fc97d00（JPQL cast(:type as string) 解决 PG 42P18 查询 500）；集团模板运营管理留 Backlog** |
+| 复购提醒 | ✅ | P5-B30 | DELIVERY-P5-B30，`7c922cb` | RepurchaseView 全链路切真：客户 /api/customer/search 真实检索（DataScope 数据域隔离）、目标项目必填+知情同意硬勾选前置、待签核统计实时、客户（预填）/经办/店长三方签核填齐解禁、RP 单号查库序号不回退（冒烟 RP20260911-003194 已还原）、REPURCHASE/CREATE+TRIPLE_SIGN 审计；**ApprovalService 医师/店长/财务多级审批流留 Backlog** |
+| 术后随访 SOP | ✅ | P5-B30 | DELIVERY-P5-B30，`40a35ad`、`fa549d5` | followup_sop_template/node/batch/followup 四表；treat-done AFTER_COMMIT→REQUIRES_NEW 物理事务幂等排程（source_plan_id uk+exists 双幂等），默认 1/3/7/30 天节点（微信/电话），种子 SPT-SEED-001 @Order(62) 仅 seed 库；batch_no 号池 `SOP{yyyyMMdd}-%` maxSeqOfDay 不回退；FollowupSopDueJob 60s 扫描批 50 FIFO 超期升级店长幂等通知（idemKey `SOP-ESC:{followupNo}:{staffId}`，免打扰）；/api/txn/followup 五端点（list/stats/get/complete/skip，followup:view/edit）+工作台两演示项摘除；**附修 fa549d5（afterCommit 无活动事务致排程静默丢写）；/followup 与 /sop 整页管理 UI、手工建随访端点留 Backlog** |
 | 复诊召回 | ⬜ | — | — | 依赖营销自动化，远期 |
 
 ### 域④ 收银与交易（txn-service）— 核心闭环 ✅
@@ -124,7 +125,7 @@
 | 营销设置 | 🔧 | — | 前后端均实 | 不在 B22 9 页内；随营销规则引擎(赠金高级规则/频控配置化)收口 |
 | 充值赠金 | 🔧 | B18 | DELIVERY-P5-B18 | 满赠/有效期/报表留后续 |
 | 落地页 / 日历 / 转介绍 | ⬜ | — | business-flows 缺口 | 转介绍到期重分配 Backlog；referral mock 待客户域 M3/营销渠道 |
-| 随访 / SOP / 关怀 / 召回 | ⬜ | — | — | 依赖私域自动化 Flow，远期 |
+| 随访 / SOP / 关怀 / 召回 | ⬜ | — | — | 依赖私域自动化 Flow，远期；术后随访 SOP 引擎已由 B30 在诊疗域（txn-service）闭合（见域③ 术后随访 SOP 行），本行指营销侧关怀/沉睡唤醒/复诊召回 Flow，仍远期 |
 
 ### 域⑥ 财务（finance-service）— 核心闭环 ✅
 
@@ -214,6 +215,7 @@
 | P5-B27 | 2026-09-10 | 主轴接待台/候诊分诊 + EMR 独立域（链路+完整页面交互）：arrival/triage/emr_record 三新表；到店五态队列（AH 单号、queue_no 本店当日连号、四渠道、预约签到同事务自动到店）；分诊三型同事务建 consult_plan 草稿+双向回挂+改派留痕+叫号/完成；EMR DRAFT→SIGNED→ARCHIVED+修订（-R{n}）全状态机，signEmr/treatDone 同事务幂等落病历回挂方案；客情登记真实建档+自动到店；工作台两演示项摘除；**附带修复 2 项运行态缺陷**（EMR 号池 char_length 18→17 每日重号 500；nanoTime 伪随机病历号删除收敛查库池）；前端 14 文件模板零改动 | `759990d`、`a08bf4d` | DELIVERY-P5-B27 | 接待台、客情登记、EMR 电子病历 3 模块 ✅（60→62/166=37%；预约接待 ✅3→5、⬜5→3；咨询诊疗 ✅3→4、🔧2→1）；冒烟全量还原 |
 | P5-B28 | 2026-09-10 | 预约接待收口批三卡：到店核销 /m2-checkin 真实闭环（checkin_record 新表+CI 单号池、SCAN/APPOINTMENT/WALKIN 三方式、PENDING/DONE/EXCEPTION 三态+四异常码、确认核销/标记异常/解除异常+timeline 同事务流水、KPI/过滤、by-phone 本店→公海→404 锚定、当日同号 PENDING 幂等、手机号掩码出域）；客情登记十类扩展字段后端化（customer 加 9 列、白名单+过敏互斥、360 档案有值才显示 kv）；triage 改派历史时间线（triage_reassign 新表同事务追加+读模型批量富化+接待台最小 UI） | `aa87fcb`、`cac3f37`、`8ae7389` | DELIVERY-P5-B28 | 到店核销 1 模块 ✅（62→63/166=38%；预约接待 ✅5→6、⬜3→2；客情扩展/改派时间线为既有模块纵深增强）；audit 301–313 共 13 行；冒烟全量还原 |
 | P5-B29 | 2026-09-10 | 预约接待尾工批三卡：排队智能候补（arrival_waitlist 新表+WL 单号池、手机号锚定会员/散客快照两态、WAITING→NOTIFIED→FULFILLED/CANCELLED 状态机、号源释放同事务 FIFO 递补首位+店长站内信幂等、/queue 第三卡+候补登记弹层+候补 KPI+30s 双刷）；候诊超时自动释放号源（ArrivalAutoReleaseJob 60s 扫描「30min 阈值+10min 宽限」、批 50、系统释放 LEFT 同事务递补、手工释放按钮接真、重载状态防重入、auto-release-enabled 开关收敛）；到店核销↔预约/划扣自动勾连（APPOINTMENT 手机号命中当日预约，同事务回写 appt_no/wd_no+预约置已到店+自动建到店号+writeoff_desk_task PENDING，核销详情透出勾连单号） | `b85ee45`、`ae646ed`、`abbe49e`、`2e4d010` | DELIVERY-P5-B29 | 排队候补 1 模块 ✅（63→64/166=39%；预约接待 ✅6→7、⬜2→1；超时释放/核销勾连为既有模块纵深增强，转化漏斗仍 ⬜）；网关 curl 五阶段 24 项全绿（含 Job 自动释放实证）+浏览器两页双轨取证 console 零错；audit 314–331 共 18 行、哈希链 17/17；冒烟全量还原（删除计数 2/2/1/1/4/3/1，审计 append-only） |
+| P5-B30 | 2026-09-11 | 近线收口四卡：③ 复购提醒前端接线（RepurchaseView 全链路：客户真实检索+目标项目必填+知情同意硬前置+客户·经办·店长三方签核+RP 单号池+REPURCHASE/CREATE·TRIPLE_SIGN 审计，🔧→✅）；④ EMR 模板库/400 化（emr_template 新域+集团 4 种子 EMT-SEED-001..004 只读+本店建/停用+模板库弹层九段范文、列表真分页/统计后端聚合、ChineseValidationAdvice 框架异常中文 400）；② 建档实时写 ES（customer_search_event outbox 只存 customerId+10s 中继 Job 批 50 FIFO+SENT/RETRY/DEAD+连续失败 3 次熔断 30s 降级 DB+显式 mapping+读时 mergeRecentFromDb 融合+DataScope 过滤+新索引全量回填）；① 术后随访 SOP 引擎（followup_sop_template/node/batch/followup 四表+treat-done AFTER_COMMIT 幂等排程 1/3/7/30 天+60s 超期升级 Job 店长幂等通知免打扰+/api/txn/followup 五端点+工作台两演示项切真摘除）；**附修 2 项运行态真实缺陷**（fa549d5 afterCommit 无活动事务致 SOP 排程静默丢写→REQUIRES_NEW 物理事务；fc97d00 模板库裸 null 参数致 PG 42P18 查询 500→JPQL cast string）；样式零改动 | `7c922cb`、`5aa1e69`、`09f590b`、`40a35ad`、`fa549d5`、`fc97d00` | DELIVERY-P5-B30 | 复购提醒、术后随访 SOP 2 模块 + 建档实时写 ES/EMR 模板库 2 项 Backlog 纵深闭合（64→68/166=41%，🔧6→5、⬜96→93；咨询诊疗 ✅4→6、🔧1→0）；网关 curl 全路径（事件 SENT/7 次 RETRY 自愈/熔断/DataScope SELF 隔离 []）+浏览器 RP20260911-003194 创建→三方签核与模板库 UI 双轨取证 console 零错；audit 81–93 共 13 行九类动作 append-only 保留；冒烟全量还原（PG 当日造数零残留、customer 基线 100、ES 113→110 三历史漂移槽位如实记录） |
 
 ---
 
@@ -258,7 +260,7 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | 超管 Impersonate（ impersonation 登录） | business-flows | RBAC 扩展 + 审计 | 平台批 |
 | ~~排队智能候补~~ | business-flows | **B29 已闭合（2026-09-10，arrival_waitlist 新域：WL 单号/手机号锚定会员·散客快照两态/WAITING→NOTIFIED→FULFILLED·CANCELLED、号源释放同事务 FIFO 递补+店长站内信幂等、/queue 第三卡+登记弹层+KPI，同批附带候诊超时自动释放与核销↔预约/划扣勾连，网关 24 项+浏览器两页取证 audit 314–331，详见 DELIVERY-P5-B29）** | ✅ B29 |
 | ~~转介绍到期重分配~~ | business-flows | 营销渠道 + 定时任务；**B22 复核：转介绍页 /m5-referral 不在 9 页内仍为 mock，老带新数据未接真实客户关系，维持 Backlog** | 营销二批 |
-| 私域自动化 Flow（随访/SOP/关怀/召回） | business-flows | 流程引擎 + 营销 | 远期营销阶段 |
+| 私域自动化 Flow（随访/SOP/关怀/召回） | business-flows | 流程引擎 + 营销；术后随访 SOP 引擎（诊疗侧）B30 已先行闭合，本行余营销侧关怀/召回 Flow | 远期营销阶段 |
 | 角色管理页（RBAC 可视化配置） | permission-matrix | 后端 RBAC 已就绪，缺前端管理页 | 组织收口批 |
 | ~~营销 9 页交付验证收口~~ | 盘点 | **B22 已闭合（2026-09-08，9 页逐页网关+浏览器验证、零控制台报错，详见 DELIVERY-P5-B22）** | ✅ B22 |
 | 外部广告渠道接入（美团/抖音/小红书/大众点评/新氧投放回传） | B22 移交 | m5-channel 7 平台卡片 + m5-roi 渠道区现为前端 mock；**B26 已落通用回传骨架**（ExternalChannelController：HMAC-SHA256 签名/±300s 窗口/限流 60/min/幂等 bizRef/客户硬校验/channel_returnback 落库，双栈冒烟取证）；仍需各平台 OAuth 对接 + 投放 spend 落库 + ROI 联调 | 外部集成批（T3） |
@@ -281,19 +283,19 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | ~~财务边角页（发票/预算/税/日结/核销预收）接线~~ | 盘点 | **B24 已闭合（2026-09-09，财务四页去 mock + 发票 CSV、卡余额时间线/核销双签明细内部投影切真，详见 DELIVERY-P5-B24）** | ✅ B24 |
 | ~~工作台/咨询/医师/EMR 会话区接线~~ | 盘点 | **B24 大部分闭合（2026-09-09，工作台 7 项计数真实、咨询草稿接诊、医师 treat 全链路切真；EMR 独立域仍留 Backlog），详见 DELIVERY-P5-B24** | ✅ B24（EMR 除外） |
 | ~~EMR 电子病历独立域（病历书写/模板/审签/归档实体与页面）~~ | B24 移交 | **B27 已闭合（2026-09-10，emr_record 独立域全状态机+修订+signEmr/treatDone 联动+EmrView 浏览器全链路取证，工作台「病历草稿」演示项摘除，详见 DELIVERY-P5-B27）**；余 EMR 列表分页/缺参 400 化/模板库见下方新增行 | ✅ B27 |
-| EMR 病历模板库 / 列表分页 / 缺参 400 化 | B27 新增 | 分页现全量（门店日量级可接受）；/emr 等端点缺参现 500 待 @Valid 400 化；模板库（常用主诉/诊断/处方）未做 | 诊疗域收口批 |
-| 建档实时写 ES + 客户搜索 DB 融合 | B27 新增 | B27 实证新建客户未入 meiyun-customer 索引（仅前端缓存融合兜底）；客户创建链路缺 ES 实时同步 | 客户域收口批 |
+| ~~EMR 病历模板库 / 列表分页 / 缺参 400 化~~ | B27 新增 | **B30 已闭合（2026-09-11，emr_template 新域+集团 4 种子只读+本店建/停用+模板库弹层九段范文、EMR 列表真分页默认 20/stats 后端聚合、ChineseValidationAdvice 框架异常中文 400，附修 fc97d00 PG 42P18，详见 DELIVERY-P5-B30）**；集团模板运营管理（上架/版本/审核）留 Backlog | ✅ B30 |
+| ~~建档实时写 ES + 客户搜索 DB 融合~~ | B27 新增 | **B30 已闭合（2026-09-11，customer_search_event outbox+10s 中继 Job SENT/RETRY/DEAD+熔断 30s 降级 DB+显式 mapping+新索引全量回填+读时 mergeRecentFromDb 融合+DataScope 过滤，网关事件 SENT/7 次 RETRY 自愈/SELF 隔离 [] 实证，详见 DELIVERY-P5-B30）**；ES reindex 对账治理（ES110 vs PG100 历史漂移 10 文档）、DEAD 事件处置台留 Backlog | ✅ B30 |
 | ~~客情登记扩展字段后端化~~ | B27 新增 | **B28 已闭合（2026-09-10，customer 加 9 列落十类扩展字段：年龄/肤质/诉求/过敏史三列/意向项目/意向等级/预算/沟通要点，白名单+过敏互斥，360 档案 tab 有值才显示 kv 回显，详见 DELIVERY-P5-B28）** | ✅ B28 |
 | ~~triage 改派时间线~~ | B27 新增 | **B28 已闭合（2026-09-10，triage_reassign 历史表+reassign 同事务追加+读模型批量富化+接待台最小 UI 时间线，详见 DELIVERY-P5-B28）** | ✅ B28 |
-| 术后随访 SOP 引擎（随访计划编排/超期扫描/回访记录） | B24 移交 | 工作台「术后待回访/SOP 超期」两项演示数据依赖此域；与营销私域 Flow 远期项协同 | 远期随访 SOP 批 |
-| 沉睡客户唤醒 / 复诊召回自动化 | B24 移交 | 工作台「复诊待提醒」演示项依赖营销自动化 Flow；复购提醒后端 only 前端未接 | 远期营销自动化批 |
+| ~~术后随访 SOP 引擎（随访计划编排/超期扫描/回访记录）~~ | B24 移交 | **B30 已闭合（2026-09-11，followup_sop_template/node/batch/followup 四表+treat-done AFTER_COMMIT(REQUIRES_NEW) 幂等排程 1/3/7/30 天节点+FollowupSopDueJob 60s 超期升级店长幂等通知+/api/txn/followup 五端点+工作台两演示项摘除，附修 fa549d5，详见 DELIVERY-P5-B30）**；/followup 与 /sop 整页管理 UI、手工建随访端点留 Backlog | ✅ B30 |
+| 沉睡客户唤醒 / 复诊召回自动化 | B24 移交 | 工作台「复诊待提醒」演示项依赖营销自动化 Flow，仍远期；**其中「复购提醒前端未接」已由 B30 闭合**（RepurchaseView 全链路+三方签核，`7c922cb`，ApprovalService 多级审批见末行） | 远期营销自动化批 |
 | ~~接待台 / 候诊接待域~~ | B24 移交 | **B27 已闭合（2026-09-10，到店五态队列+分诊建 CP 草稿+预约/客情自动到店+工作台「候诊待接待」演示项摘除，详见 DELIVERY-P5-B27）**；余排队智能候补/超时自动释放**已由 B29 闭合**（ArrivalAutoReleaseJob 30min+10min 宽限 60s 扫描、系统释放同事务 FIFO 递补，详见 DELIVERY-P5-B29）；到店核销见下条 B28 已闭合 | ✅ B27/B29 |
 | ~~到店核销 /m2-checkin~~ | B27 明确 | **B28 已闭合（2026-09-10，checkin_record 独立域 CI 单号池+三方式/三态/四异常码、确认核销/标记异常/解除异常+timeline+KPI/过滤、by-phone 本店→公海→404 锚定、当日同号 PENDING 幂等、手机号掩码出域，网关+浏览器全链路取证 audit 301–313，详见 DELIVERY-P5-B28）**；与预约/writeoff 自动勾连**已由 B29 闭合**（APPOINTMENT 命中当日预约同事务四连写 appt/wd/ci/arrival+核销详情透出勾连单号，audit 314–331，详见 DELIVERY-P5-B29） | ✅ B28/B29 |
 | 通用异常中心（跨域异常单据统一归集与处置工作台） | B24 移交 | BOM 异常等现为各域分散后端 only；财务税/日结/异常页 B24 已切真但无统一处置中心 | 平台/交易收口批 |
 | 异常账务处置登记（长短款/错账登记与审批闭环） | B24 移交 | 财务台账真实但缺异常账务专门登记审批流 | 财务收口批 |
 | 预收合规监控（合规指标/挂账时长监控预警） | B24 移交 | 核销/预收明细 B24 已切真可读，缺合规监控规则与预警 | 财务收口批 |
 | 进项税抵扣链路 | B24 移交 | 当前发票/税页仅覆盖销项与台账视角，进项抵扣诚实未实现 | 财务收口批 |
-| M4Repurchase 复购方案三方双签审批 | B24 移交 | 复购提醒后端 only；需医师/店长/财务三方双签流（可复用 ApprovalService） | 诊疗域收口批 |
+| M4Repurchase 复购方案签核 / 多级审批 | B24 移交 | **单据内客户（预填）/经办/店长三方签核 B30 已闭合**（RepurchaseView 知情同意硬前置+三方签核填齐解禁生效+REPURCHASE/TRIPLE_SIGN 审计，`7c922cb`，详见 DELIVERY-P5-B30）；医师/店长/财务 ApprovalService 多级审批流仍留 Backlog | 诊疗域收口批 |
 | seed 端到端造数/清理脚本工具化（幂等） | B24 移交 | B24 手工造数残留（CP…004/005/000006、OD…000003、PM…000004、SC026）已在 DELIVERY-P5-B24 §5.2 登记 | 测试体系批（不紧急） |
 | M2 门店运营平台（13 页） | 远期阶段 | 排班/工单/日结/申购/报损/绩效等 | 远期 M2 |
 | M3 客户运营平台（10 页） | 远期阶段 | 分群/旅程/自动化 | 远期 M3 |
