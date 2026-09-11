@@ -4,8 +4,8 @@
  * 一线个人首页：我的待办（行内计数 → 点击直达对应作业页）+ 高频操作 + 今日概览。
  * 待办项用「权限 + 实时计数」驱动，天然按当前角色/权限过滤，无需硬编码角色分支。
  * 真实计数：审批待办 / 待收款订单 / 今日预约（看板剔除已取消）/ 方案单五态队列（listPlans totalElements）
- *           / 候诊待接待（今日 WAITING）/ 病历草稿待签（DRAFT）。
- * 演示计数：术后 SOP / 复诊提醒（所属域暂无后端，文案带「演示」后缀、不计入真实总数）。
+ *           / 候诊待接待（今日 WAITING）/ 病历草稿待签（DRAFT）/ 术后 SOP 待回访与超期（完成治疗自动排程）。
+ * 演示计数：复诊提醒（所属域暂无后端，文案带「演示」后缀、不计入真实总数）。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -13,7 +13,6 @@ import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useFollowupStore } from '@/stores/followup'
 import { useRecallStore } from '@/stores/recall'
 import { useStoreContext } from '@/stores/storeContext'
 import { listApprovals, type ApprovalTodoDTO } from '@/api/approval'
@@ -22,11 +21,11 @@ import { listPlans } from '@/api/consultPlan'
 import { appointmentBoard } from '@/api/appointment'
 import { listArrivals } from '@/api/arrival'
 import { statsEmr } from '@/api/emr'
+import { statsFollowup } from '@/api/followup'
 import { staffName } from '@/config/staff'
 
 const router = useRouter()
 const auth = useAuthStore()
-const followup = useFollowupStore()
 const recall = useRecallStore()
 const storeCtx = useStoreContext()
 
@@ -40,6 +39,8 @@ const planPaidCount = ref(0)
 const planTreatingCount = ref(0)
 const waitingCount = ref(0)
 const emrDraftCount = ref(0)
+const sopPendingCount = ref(0)
+const sopOverdueCount = ref(0)
 
 function todayLocal(): string {
   const d = new Date()
@@ -155,11 +156,22 @@ async function loadTxnCounts() {
       emrDraftCount.value = 0
     }
   }
+
+  // 术后 SOP（真实）：当前门店待回访节点数 / 超期未回访节点数（完成治疗自动排程）
+  if (auth.can('followup:view')) {
+    try {
+      const fuRes = await statsFollowup(store)
+      sopPendingCount.value = fuRes.data.sopPending ?? 0
+      sopOverdueCount.value = fuRes.data.sopOverdue ?? 0
+    } catch {
+      sopPendingCount.value = 0
+      sopOverdueCount.value = 0
+    }
+  }
 }
 
 onMounted(() => {
-  // 以下域暂无后端（术后 SOP / 复诊提醒），计数为演示数据；候诊与病历计数已在 loadTxnCounts 真实拉取
-  followup.seed()
+  // 复诊提醒域暂无后端，计数为演示数据；其余计数均在 loadTxnCounts 真实拉取
   recall.seed()
   loadTxnCounts()
 })
@@ -174,7 +186,7 @@ interface Todo {
   icon: IconName
   tone: 'brand' | 'warning' | 'danger' | 'success'
   perm?: string
-  /** 演示数据：所属域暂无后端（候诊接待 / 病历独立域 / 术后 SOP / 复诊提醒），不计入真实待办总数 */
+  /** 演示数据：所属域暂无后端（复诊提醒），不计入真实待办总数 */
   demo?: boolean
   group: '临床诊疗' | '收银履约' | '术后跟进' | '管理协同'
 }
@@ -191,9 +203,9 @@ const todos = computed<Todo[]>(() => {
     { key: 'treating', label: '治疗中待归档', count: planTreatingCount.value, to: '/doctor', icon: 'tool', tone: 'brand', perm: 'consult:review', group: '临床诊疗' },
     // 收银履约：订单口径（含方案单自动生成的缴费单 + 零售/药妆应收单），不遗漏非诊疗单
     { key: 'pay', label: '待收款订单', count: pendingPayCount.value, to: '/order', icon: 'pos', tone: 'danger', perm: 'cashier:view', group: '收银履约' },
-    // 术后 SOP / 复诊提醒域暂无后端（Backlog）→ 演示数据
-    { key: 'fu', label: '术后待回访（演示）', count: followup.sopPending.length, to: '/followup', icon: 'phone', tone: 'success', perm: 'followup:view', demo: true, group: '术后跟进' },
-    { key: 'fu-overdue', label: 'SOP 超期未回访（演示）', count: followup.sopOverdue.length, to: '/sop', icon: 'alert', tone: 'danger', perm: 'followup:view', demo: true, group: '术后跟进' },
+    // 术后待回访 / SOP 超期（真实计数，完成治疗 AFTER_COMMIT 自动排程）；复诊提醒域暂无后端→演示数据
+    { key: 'fu', label: '术后待回访', count: sopPendingCount.value, to: '/followup', icon: 'phone', tone: 'success', perm: 'followup:view', group: '术后跟进' },
+    { key: 'fu-overdue', label: 'SOP 超期未回访', count: sopOverdueCount.value, to: '/sop', icon: 'alert', tone: 'danger', perm: 'followup:view', group: '术后跟进' },
     { key: 'recall', label: '复诊待提醒（演示）', count: recall.pending.length, to: '/recall', icon: 'bell', tone: 'warning', perm: 'recall:view', demo: true, group: '术后跟进' },
     // 管理协同（真实计数）
     { key: 'approval', label: '待我审批', count: myTodoCount.value, to: '/approval', icon: 'check-square', tone: 'warning', perm: 'approval:view', group: '管理协同' },

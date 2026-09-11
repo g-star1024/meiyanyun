@@ -11,6 +11,8 @@ import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
@@ -47,13 +49,15 @@ public class ConsultPlanService {
     private final ApptRefNameResolver names;
     private final StoreCatalogClient catalogClient;
     private final EmrService emrService;
+    private final FollowupScheduler followupScheduler;
     private final ObjectMapper json = new ObjectMapper();
 
     public ConsultPlanService(PlanRepository planRepo, PlanItemRepository itemRepo,
                               PlanRevisionRepository revRepo, TxnOrderRepository orderRepo,
                               OrderItemRepository orderItemRepo, OrderNoGenerator orderNoGen,
                               AuditRecorder audit, ApptRefNameResolver names,
-                              StoreCatalogClient catalogClient, EmrService emrService) {
+                              StoreCatalogClient catalogClient, EmrService emrService,
+                              FollowupScheduler followupScheduler) {
         this.planRepo = planRepo;
         this.itemRepo = itemRepo;
         this.revRepo = revRepo;
@@ -64,6 +68,7 @@ public class ConsultPlanService {
         this.names = names;
         this.catalogClient = catalogClient;
         this.emrService = emrService;
+        this.followupScheduler = followupScheduler;
     }
 
     // ==================== DTO ====================
@@ -705,8 +710,9 @@ public class ConsultPlanService {
 
     /**
      * 完成治疗：TREATING → DONE。治疗过程/操作记录必填，术后医嘱随治疗记录一并电子签名归档，
-     * 生成治疗记录病历号（EM 号）。术后 SOP 多节点随访暂无后端域，不做自动排程（见交付文档边界）。
-     * 幂等：DONE 重复提交直接返回当前单。
+     * 生成治疗记录病历号（EM 号）。事务提交成功后（AFTER_COMMIT）由 {@link FollowupScheduler}
+     * 按术后 SOP 模板自动排程多节点随访（1/3/7/30 天，source_plan_id 查库幂等，一张方案单只排一次）；
+     * 排程独立事务，失败不回滚治疗主链路。幂等：DONE 重复提交直接返回当前单。
      */
     @Transactional
     public PlanView treatDone(String planId, TreatDoneCmd cmd) {
@@ -742,6 +748,21 @@ public class ConsultPlanService {
                 "治疗记录 " + emrNo + " 已电子签名归档", null);
         audit.record("PLAN", planId, actor, "TREAT_DONE",
                 "{\"treatEmr\":\"" + emrNo + "\",\"noteLen\":" + note.length() + "}");
+
+        // 治疗事务提交成功后再排程术后 SOP：避免治疗回滚却已生成随访；独立事务 + 方案单查库幂等
+        final String scheduledPlanId = planId;
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    followupScheduler.scheduleForPlan(scheduledPlanId);
+                } catch (Exception ex) {
+                    // 排程失败不影响治疗完成主链路（下一轮可由补偿/人工排程兜底）
+                    org.slf4j.LoggerFactory.getLogger(ConsultPlanService.class)
+                            .warn("术后 SOP 排程失败 planId={}: {}", scheduledPlanId, ex.getMessage());
+                }
+            }
+        });
         return get(planId);
     }
 
