@@ -5,11 +5,13 @@
 // - 满意度 1-5 星；标记不良反应 (adverseReaction) 自动提示转投诉/医疗风险。
 // P5-B31：随访工作台接真——列表真分页（后端固定 planDate,id 升序）+ stats 九键聚合 +
 // 手工建/登记/无需回访走 txn-service；BoardView 待回访列由 sopTodos 真 SOP 待办驱动。
+// 卡B：/sop 批次看板与模板编排全部接真（/txn/followup/sop）——模板节点 id 键控、写后整体重拉，
+// 批次分页/五键 summary/一键升级均以后端为准；本地不再保留 SOP mock。
 // 适配层（铁律：模板/样式零改动，只换数据源）：
 //  - id 取数据库主键字符串（路径端点吃 Long id，与 emr 取 emrNo 相反）；followupNo 仅展示
 //  - serviceDate/planDate 直传后端 LocalDate（yyyy-MM-dd，禁止 toISOString 时区错位）
 //  - 可空文本 null → undefined；权限与状态机校验由后端兜底，400/403 中文经 errMsg 外露
-// 过渡保留（卡B 接真前不白屏）：SOP 模板/批次编排 mock 服务 /sop；followups 演示种子服务 C 端 /m/followup。
+// 过渡保留：followups 普通随访演示种子服务 C 端 /m/followup（含会员「陈美玲」2 条）。
 //  SOP 节点已由后端 FollowupScheduler 在治疗完成 AFTER_COMMIT 自动排程，schedulePostOpSop 降为空 shim 防重复。
 // ============================================================
 import { defineStore } from 'pinia'
@@ -22,7 +24,12 @@ import { errMsg } from './m5Coupon'
 import {
   listFollowup, statsFollowup, getFollowup, createFollowup,
   completeFollowup, skipFollowup,
+  getSopTemplate, addSopNode as apiAddSopNode, updateSopNode as apiUpdateSopNode,
+  toggleSopNode as apiToggleSopNode, deleteSopNode as apiDeleteSopNode,
+  resetSopTemplate as apiResetSopTemplate, listSopBatches, getSopSummary,
+  escalateSopOverdue,
   type FollowupViewDTO, type FollowupStats,
+  type SopNodeDTO, type SopBatchDTO, type SopSummaryDTO,
 } from '@/api/followup'
 
 export type FollowupMethod = 'PHONE' | 'WECHAT' | 'IN_STORE'
@@ -67,14 +74,19 @@ export interface Followup {
   createdAt: string
 }
 
-/** 术后 SOP 模板：节点 = 术后第 N 天 + 方式 + 阶段 */
+/** 术后 SOP 模板：节点 = 术后第 N 天 + 方式 + 阶段（卡B 接真：id 键控，后端行号/模板号随行） */
 export interface SopNodeDef {
-  stage: SopStage
+  /** 数据库主键字符串（增改删/启停路径吃它；初始内置四节点为 1-4） */
+  id: string
+  templateNo: string
+  /** 模板内行号（按术后天数升序，后端重排后刷新） */
+  lineNo: number
+  stage: SopStage | string
   label: string
   dayOffset: number
   method: FollowupMethod
-  /** 是否启用（编排页可停用某节点，停用后不再自动生成） */
-  enabled?: boolean
+  /** 是否启用（编排页可停用某节点，停用后不再参与新批次排程） */
+  enabled: boolean
 }
 
 /** SOP 批次执行汇总（同一次治疗生成的多节点） */
@@ -83,6 +95,7 @@ export interface SopBatch {
   customerId: string
   customerName: string
   project: string
+  relatedOrderNo?: string
   serviceDate: string
   nodes: Followup[]
   total: number
@@ -91,14 +104,6 @@ export interface SopBatch {
   /** 是否全部完成/跳过 */
   finished: boolean
 }
-
-/** 默认术后随访 SOP（注射/光电类通用，可按项目扩展） */
-export const DEFAULT_POST_OP_SOP: SopNodeDef[] = [
-  { stage: 'CARE_24H', label: '术后 24h 关怀', dayOffset: 1, method: 'WECHAT' },
-  { stage: 'FOLLOWUP_3D', label: '第 3 天回访', dayOffset: 3, method: 'PHONE' },
-  { stage: 'RECOVERY_7D', label: '第 7 天恢复评估', dayOffset: 7, method: 'WECHAT' },
-  { stage: 'REVISIT_30D', label: '第 30 天复诊提醒', dayOffset: 30, method: 'PHONE' },
-]
 
 export const SOP_STAGE_LABEL: Record<SopStage, string> = {
   CARE_24H: '术后 24h 关怀',
@@ -135,16 +140,17 @@ export const useFollowupStore = defineStore('followup', () => {
   /** 工作台待回访列真 SOP 待办（sopOnly+PENDING，loadSopTodos 填充）。 */
   const sopTodos = ref<Followup[]>([])
 
-  // ==================== 过渡演示层（/sop 编排 mock + C 端 /m/followup 演示种子） ====================
+  // ==================== 过渡演示层（仅 C 端 /m/followup 普通随访演示种子） ====================
 
   const followups = ref<Followup[]>([])
   let seq = 0
 
-  // ---- 术后 SOP 模板（可在编排页增删改 / 启停；停用节点不再自动生成） ----
-  const sopTemplate = ref<SopNodeDef[]>(
-    DEFAULT_POST_OP_SOP.map((n) => ({ ...n, enabled: true })),
-  )
-  /** 当前启用的节点（按术后天数升序），schedulePostOpSop 实际使用 */
+  // ==================== SOP 模板编排（真：/txn/followup/sop/template） ====================
+
+  /** 集团通用模板全量节点（含停用，后端行号升序）；未加载前为空，避免闪现默认假数据。 */
+  const sopTemplate = ref<SopNodeDef[]>([])
+  const sopTemplateLoading = ref(false)
+  /** 当前启用的节点（按术后天数升序），Tab 角标「x/y 节点启用」使用 */
   const enabledSopNodes = computed(() =>
     sopTemplate.value
       .filter((n) => n.enabled !== false)
@@ -152,53 +158,97 @@ export const useFollowupStore = defineStore('followup', () => {
       .sort((a, b) => a.dayOffset - b.dayOffset),
   )
 
-  /** 启停节点（按模板下标定位，兼容多个自定义 MANUAL 节点） */
-  function toggleSopNode(index: number, enabled: boolean) {
-    const n = sopTemplate.value[index]
-    if (!n) return
-    n.enabled = enabled
-    activity.log(auth.user.name, `术后 SOP 节点「${n.label}」已${enabled ? '启用' : '停用'}`, 'sop-template')
-  }
-  /** 修改节点（术后天数 / 回访方式 / 名称） */
-  function updateSopNode(
-    index: number,
-    patch: Partial<Pick<SopNodeDef, 'dayOffset' | 'method' | 'label'>>,
-  ) {
-    const n = sopTemplate.value[index]
-    if (!n) return
-    if (typeof patch.dayOffset === 'number' && patch.dayOffset >= 0) n.dayOffset = Math.round(patch.dayOffset)
-    if (patch.method) n.method = patch.method
-    if (patch.label?.trim()) n.label = patch.label.trim()
-  }
-  /** 新增自定义节点（stage 固定 MANUAL 以外不可重复，自定义节点用 MANUAL + 唯一 label） */
-  function addSopNode(input: { label: string; dayOffset: number; method: FollowupMethod }): boolean {
-    if (!input.label.trim() || input.dayOffset < 0) return false
-    sopTemplate.value.push({
-      stage: 'MANUAL',
-      label: input.label.trim(),
-      dayOffset: Math.round(input.dayOffset),
-      method: input.method,
-      enabled: true,
-    })
-    sopTemplate.value.sort((a, b) => a.dayOffset - b.dayOffset)
-    activity.log(auth.user.name, `术后 SOP 新增节点「${input.label.trim()}」（术后第 ${Math.round(input.dayOffset)} 天）`, 'sop-template')
-    return true
-  }
-  /** 删除自定义节点（内置四个阶段节点不可删，只能停用） */
-  function removeSopNode(index: number): boolean {
-    const n = sopTemplate.value[index]
-    if (!n || n.stage !== 'MANUAL') return false
-    sopTemplate.value.splice(index, 1)
-    activity.log(auth.user.name, `术后 SOP 节点「${n.label}」已删除`, 'sop-template')
-    return true
-  }
-  /** 恢复默认模板 */
-  function resetSopTemplate() {
-    sopTemplate.value = DEFAULT_POST_OP_SOP.map((n) => ({ ...n, enabled: true }))
-    activity.log(auth.user.name, '术后 SOP 模板已恢复默认（24h关怀/3天回访/7天评估/30天复诊）', 'sop-template')
+  function adaptSopNode(d: SopNodeDTO): SopNodeDef {
+    return {
+      id: d.id,
+      templateNo: d.templateNo,
+      lineNo: d.lineNo,
+      stage: d.stage,
+      label: d.label,
+      dayOffset: d.dayOffset,
+      method: (d.method as FollowupMethod) || 'PHONE',
+      enabled: d.enabled,
+    }
   }
 
-  // ---- /sop 批次看板与角标（mock，卡B 批次端点接真前保留） ----
+  /** 写动作统一入口：成功后整体替换模板，失败保留原态并由后端中文错误外露。 */
+  async function applyTemplate(p: Promise<{ data: { nodes: SopNodeDTO[] } }>): Promise<boolean> {
+    try {
+      const res = await p
+      sopTemplate.value = res.data.nodes.map(adaptSopNode)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, 'SOP 模板操作失败'))
+      return false
+    }
+  }
+
+  /** 拉取模板全量节点（进入编排页 / 写动作后兜底重拉）。 */
+  async function loadSopTemplate(): Promise<void> {
+    sopTemplateLoading.value = true
+    try {
+      const res = await getSopTemplate()
+      sopTemplate.value = res.data.nodes.map(adaptSopNode)
+    } catch (e) {
+      toast.error(errMsg(e, 'SOP 模板加载失败'))
+    } finally {
+      sopTemplateLoading.value = false
+    }
+  }
+
+  /** 启停节点（停用后不参与新批次排程，历史批次不变）；按节点 id 键控。 */
+  function toggleSopNode(id: string, enabled: boolean): Promise<boolean> {
+    const n = sopTemplate.value.find((x) => x.id === id)
+    if (!n || n.enabled === enabled) return Promise.resolve(true)
+    const label = n.label
+    return applyTemplate(apiToggleSopNode(id, enabled)).then((ok) => {
+      if (ok) activity.log(auth.user.name, `术后 SOP 节点「${label}」已${enabled ? '启用' : '停用'}`, 'sop-template')
+      return ok
+    })
+  }
+
+  /** 修改节点（术后天数 / 回访方式 / 名称；仅传非空字段，后端白名单校验）。 */
+  async function updateSopNode(
+    id: string,
+    patch: Partial<Pick<SopNodeDef, 'dayOffset' | 'method' | 'label'>>,
+  ): Promise<boolean> {
+    const n = sopTemplate.value.find((x) => x.id === id)
+    if (!n) return false
+    return applyTemplate(apiUpdateSopNode(id, {
+      label: patch.label?.trim() || undefined,
+      dayOffset: typeof patch.dayOffset === 'number' ? Math.round(patch.dayOffset) : undefined,
+      method: patch.method || undefined,
+    }))
+  }
+
+  /** 新增自定义节点（后端落 stage=MANUAL，插入后按天数重排行号）。 */
+  async function addSopNode(input: { label: string; dayOffset: number; method: FollowupMethod }): Promise<boolean> {
+    const label = input.label.trim()
+    const dayOffset = Math.round(input.dayOffset)
+    if (!label || dayOffset < 0) return false
+    const ok = await applyTemplate(apiAddSopNode({ label, dayOffset, method: input.method }))
+    if (ok) activity.log(auth.user.name, `术后 SOP 新增节点「${label}」（术后第 ${dayOffset} 天）`, 'sop-template')
+    return ok
+  }
+
+  /** 删除自定义节点（内置四阶段后端 400 中文引导停用）。 */
+  async function removeSopNode(id: string): Promise<boolean> {
+    const n = sopTemplate.value.find((x) => x.id === id)
+    if (!n) return false
+    const label = n.label
+    const ok = await applyTemplate(apiDeleteSopNode(id))
+    if (ok) activity.log(auth.user.name, `术后 SOP 节点「${label}」已删除`, 'sop-template')
+    return ok
+  }
+
+  /** 恢复默认模板（清空含自定义的全部节点，重建内置四节点并全启用）。 */
+  async function resetSopTemplate(): Promise<boolean> {
+    const ok = await applyTemplate(apiResetSopTemplate())
+    if (ok) activity.log(auth.user.name, '术后 SOP 模板已恢复默认（24h关怀/3天回访/7天评估/30天复诊）', 'sop-template')
+    return ok
+  }
+
+  // ---- C 端普通随访演示种子的本地计数（仅 /m/followup 使用） ----
   const pending = computed(() => followups.value.filter((f) => f.status === 'PENDING'))
   const done = computed(() => followups.value.filter((f) => f.status === 'DONE'))
   const skipped = computed(() => followups.value.filter((f) => f.status === 'SKIPPED'))
@@ -448,98 +498,115 @@ export const useFollowupStore = defineStore('followup', () => {
     return []
   }
 
-  /** 某客户/某批次的 SOP 节点（按计划时间升序；mock 演示数据，卡B 接真后替换） */
-  function sopOfBatch(batchId: string) {
-    return followups.value
-      .filter((f) => f.sopBatchId === batchId)
-      .sort((a, b) => new Date(a.planDate).getTime() - new Date(b.planDate).getTime())
-  }
-  function sopOfCustomer(customerId: string) {
-    return followups.value
-      .filter((f) => f.customerId === customerId && f.sopBatchId)
-      .sort((a, b) => new Date(a.planDate).getTime() - new Date(b.planDate).getTime())
-  }
+  // ==================== SOP 批次执行看板（真：/txn/followup/sop/batches|summary|escalate） ====================
 
-  /** SOP 待办（术后节点，未完成）——以 sopBatchId 判定，含自定义节点（mock 角标，/sop 卡B 接真前保留） */
-  const sopPending = computed(() => pending.value.filter((f) => f.sopBatchId))
-  /** SOP 超期未回访节点（含已升级，用于看板统计） */
-  const sopOverdue = computed(() => overdue.value.filter((f) => f.sopBatchId))
-  /** SOP 超期且尚未升级的节点（自动升级巡检目标） */
-  const sopOverdueNeedEscalation = computed(
-    () => sopOverdue.value.filter((f) => !f.escalated),
-  )
-
-  /**
-   * SOP 批次聚合：同一次治疗生成的多节点聚合成一个批次看板行。
-   * done = 已回访 + 无需回访；overdue = 超期待回访；finished = 全部节点完结。
-   */
-  const sopBatches = computed<SopBatch[]>(() => {
-    const map = new Map<string, Followup[]>()
-    for (const f of followups.value) {
-      if (!f.sopBatchId) continue
-      const arr = map.get(f.sopBatchId) ?? []
-      arr.push(f)
-      map.set(f.sopBatchId, arr)
-    }
-    const batches: SopBatch[] = []
-    for (const [batchId, nodesRaw] of map) {
-      const nodes = nodesRaw.sort(
-        (a, b) => new Date(a.planDate).getTime() - new Date(b.planDate).getTime(),
-      )
-      const head = nodes[0]
-      const closed = nodes.filter((f) => f.status !== 'PENDING').length
-      const today = new Date(); today.setHours(0, 0, 0, 0)
-      const od = nodes.filter(
-        (f) => f.status === 'PENDING' && new Date(f.planDate) < today,
-      ).length
-      batches.push({
-        batchId,
-        customerId: head.customerId,
-        customerName: head.customerName,
-        project: head.project,
-        serviceDate: head.serviceDate,
-        nodes,
-        total: nodes.length,
-        done: closed,
-        overdue: od,
-        finished: closed === nodes.length,
-      })
-    }
-    // 未完成在前；同状态按服务日期倒序（新批次在前）
-    return batches.sort((a, b) => {
-      if (a.finished !== b.finished) return a.finished ? 1 : -1
-      return new Date(b.serviceDate).getTime() - new Date(a.serviceDate).getTime()
-    })
+  /** 当前批次页行（后端排序：未完结在前、服务日期倒序；keyword 服务端模糊）。 */
+  const sopBatches = ref<SopBatch[]>([])
+  const sopBatchesTotal = ref(0)
+  const sopBatchesLoading = ref(false)
+  /** 看板五键（KPI/预警条/Tab 角标均取此，不信前端 .length 全量）。 */
+  const sopSummary = ref<SopSummaryDTO>({
+    activeBatches: 0, finishedBatches: 0, sopPending: 0, sopOverdue: 0, needEscalation: 0,
   })
 
-  /** 巡检：将所有超期未升级的 SOP 节点一键升级（编排页"超期升级"按钮 / 可扩展为定时任务） */
-  function escalateAllOverdue(): number {
-    let n = 0
-    for (const f of sopOverdueNeedEscalation.value) {
-      if (escalate(f.id)) n += 1
+  function adaptSopBatch(d: SopBatchDTO): SopBatch {
+    return {
+      batchId: d.batchId,
+      customerId: d.customerId,
+      customerName: d.customerName,
+      project: d.project,
+      relatedOrderNo: d.relatedOrderNo ?? undefined,
+      serviceDate: d.serviceDate,
+      nodes: (d.nodes ?? []).map(adaptFollowup),
+      total: d.total,
+      done: d.done,
+      overdue: d.overdue,
+      finished: d.finished,
     }
-    return n
   }
 
-  /** 标记 SOP 节点超时升级（由页面/定时巡检触发） */
-  function escalate(id: string): boolean {
-    const f = followups.value.find((x) => x.id === id)
-    if (!f || f.status !== 'PENDING' || f.escalated) return false
-    f.escalated = true
-    activity.log(auth.user.name, `术后随访 ${f.followupNo} 超期未完成，已升级提醒主管/医生`, f.id)
-    return true
+  /**
+   * 拉批次分页（锁当前门店；page 1 起）。
+   * 看板一次性全量驻留（size 100，延续原批次卡片全量展示语义），分页信息留待真分页扩展。
+   */
+  async function loadSopBatches(
+    storeCode?: string,
+    filters?: { keyword?: string },
+    opts?: { page?: number; size?: number; silent?: boolean },
+  ): Promise<boolean> {
+    sopBatchesLoading.value = true
+    try {
+      const res = await listSopBatches({
+        storeCode,
+        keyword: filters?.keyword?.trim() || undefined,
+        page: Math.max(0, (opts?.page ?? 1) - 1),
+        size: opts?.size ?? 100,
+      })
+      const data = res.data
+      sopBatches.value = (data.content ?? []).map(adaptSopBatch)
+      sopBatchesTotal.value = data.totalElements ?? 0
+      customer.hydrate(sopBatches.value.map((b) => ({ customerId: b.customerId, customerName: b.customerName })))
+      return true
+    } catch (e) {
+      sopBatches.value = []
+      sopBatchesTotal.value = 0
+      if (!opts?.silent) toast.error(errMsg(e, 'SOP 批次加载失败'))
+      return false
+    } finally {
+      sopBatchesLoading.value = false
+    }
   }
 
-  /** 重新安排回访日期（改期；mock 演示动作，后端端点卡B 后补） */
-  function reschedule(id: string, planDate: string): boolean {
-    const f = followups.value.find((x) => x.id === id)
-    if (!f || f.status !== 'PENDING') return false
-    f.planDate = planDate
-    activity.log(auth.user.name, `回访 ${f.followupNo} 改期至 ${planDate.slice(0, 10)}`, f.id)
-    return true
+  /** 拉看板五键（写动作后静默刷新；失败保留上次计数不阻断）。 */
+  async function loadSopSummary(storeCode?: string): Promise<void> {
+    try {
+      sopSummary.value = (await getSopSummary(storeCode)).data
+    } catch {
+      // 计数失败不阻断主流程
+    }
   }
 
-  /** 开发期演示种子（/sop 批次看板 + C 端 /m/followup；真实工作台走 load/refresh） */
+  /** 看板初始化/写后刷新：批次 + 五键一并拉取。 */
+  async function refreshSop(
+    storeCode?: string,
+    filters?: { keyword?: string },
+    opts?: { page?: number; size?: number; silent?: boolean },
+  ): Promise<boolean> {
+    const ok = await loadSopBatches(storeCode, filters, opts)
+    await loadSopSummary(storeCode)
+    return ok
+  }
+
+  /** 当前驻留批次中的超期 PENDING 节点（信息条用；全店待升级数以 summary.needEscalation 为准）。 */
+  const sopOverdue = computed(() =>
+    sopBatches.value.flatMap((b) => b.nodes).filter(
+      (f) => f.status === 'PENDING' && f.escalated !== undefined && isPlanOverdue(f.planDate),
+    ),
+  )
+
+  function isPlanOverdue(planDate: string): boolean {
+    const t = new Date(); t.setHours(0, 0, 0, 0)
+    const d = new Date(planDate); d.setHours(0, 0, 0, 0)
+    return d.getTime() < t.getTime()
+  }
+
+  /**
+   * 一键升级本店超期未升级 SOP 节点（后端 FIFO 50 + 通知幂等，与 60s 巡检同执行器）。
+   * 成功后刷新批次/五键；返回实际升级条数。
+   */
+  async function escalateAllOverdue(storeCode?: string): Promise<number> {
+    try {
+      const n = (await escalateSopOverdue(storeCode)).data.escalated ?? 0
+      if (n > 0) activity.log(auth.user.name, `术后随访 SOP：${n} 个超期节点已升级提醒主管/医生`, 'sop-template')
+      await refreshSop(storeCode, undefined, { silent: true })
+      return n
+    } catch (e) {
+      toast.error(errMsg(e, '一键升级失败'))
+      return 0
+    }
+  }
+
+  /** 开发期演示种子（仅 C 端 /m/followup 普通随访；/sop 看板与工作台走真接口 load/refreshSop） */
   let seeded = false
   function seed() {
     if (seeded) return
@@ -600,79 +667,6 @@ export const useFollowupStore = defineStore('followup', () => {
       }
       followups.value.push(f)
     })
-
-    // ---- SOP 批次种子：绑定真实客户（C-201~C-204），覆盖待办/超期/升级/完结全状态 ----
-    const seedBatch = (
-      batchNo: string,
-      customerId: string,
-      customerName: string,
-      project: string,
-      relatedOrderNo: string,
-      serviceOffset: number,
-      nodeStates: Array<{ def: SopNodeDef; state: 'DONE' | 'PENDING' | 'SKIPPED'; escalated?: boolean; satisfaction?: number; recovery?: RecoveryStatus }>,
-    ) => {
-      const batchId = `SOP-SEED-${batchNo}`
-      const svcDate = new Date(today); svcDate.setDate(svcDate.getDate() + serviceOffset)
-      nodeStates.forEach((ns, idx) => {
-        seq += 1
-        const plan = new Date(svcDate); plan.setDate(plan.getDate() + ns.def.dayOffset)
-        const node: Followup = {
-          id: nextId('fu'),
-          followupNo: `HF${batchNo}${idx + 1}`,
-          customerId,
-          customerName,
-          project,
-          relatedOrderNo,
-          serviceDate: svcDate.toISOString(),
-          planDate: plan.toISOString(),
-          method: ns.def.method,
-          status: ns.state,
-          adverseReaction: false,
-          needRevisit: false,
-          sopStage: ns.def.stage,
-          sopLabel: ns.def.label,
-          sopBatchId: batchId,
-          escalated: ns.escalated,
-          satisfaction: ns.satisfaction,
-          recovery: ns.recovery,
-          note: ns.state === 'DONE' ? '恢复情况良好，按 SOP 话术完成关怀。' : undefined,
-          followupByName: ns.state === 'DONE' ? '白桥（运营）' : undefined,
-          doneAt: ns.state === 'DONE' ? plan.toISOString() : undefined,
-          createdAt: svcDate.toISOString(),
-        }
-        followups.value.push(node)
-      })
-    }
-
-    const [n24h, n3d, n7d, n30d] = DEFAULT_POST_OP_SOP
-    // 批次1：王小姐 光子嫩肤（术后 10 天）——24h/3d 已完成，7d 超期未回访未升级，30d 待办
-    seedBatch('01', 'C-201', '王小姐', '光子嫩肤', 'SO20260818002', -10, [
-      { def: n24h, state: 'DONE', satisfaction: 5, recovery: 'GOOD' },
-      { def: n3d, state: 'DONE', satisfaction: 5, recovery: 'GOOD' },
-      { def: n7d, state: 'PENDING' },
-      { def: n30d, state: 'PENDING' },
-    ])
-    // 批次2：李女士 水光针（术后 4 天）——24h 已完成，3d 超期已升级主管，7d 待办
-    seedBatch('02', 'C-202', '李女士', '水光针', 'SO20260824006', -4, [
-      { def: n24h, state: 'DONE', satisfaction: 4, recovery: 'NORMAL' },
-      { def: n3d, state: 'PENDING', escalated: true },
-      { def: n7d, state: 'PENDING' },
-      { def: n30d, state: 'PENDING' },
-    ])
-    // 批次3：赵女士 热玛吉（术后 35 天）——前三节点已完成，30d 复诊提醒超期已升级
-    seedBatch('03', 'C-204', '赵女士', '热玛吉 4 代', 'SO20260724001', -35, [
-      { def: n24h, state: 'DONE', satisfaction: 5, recovery: 'GOOD' },
-      { def: n3d, state: 'DONE', satisfaction: 4, recovery: 'GOOD' },
-      { def: n7d, state: 'SKIPPED' },
-      { def: n30d, state: 'PENDING', escalated: true },
-    ])
-    // 批次4：张同学 果酸焕肤（术后 40 天）——全部完结
-    seedBatch('04', 'C-203', '张同学', '果酸焕肤', 'SO20260719008', -40, [
-      { def: n24h, state: 'DONE', satisfaction: 5, recovery: 'GOOD' },
-      { def: n3d, state: 'DONE', satisfaction: 5, recovery: 'GOOD' },
-      { def: n7d, state: 'DONE', satisfaction: 5, recovery: 'GOOD' },
-      { def: n30d, state: 'DONE', satisfaction: 5, recovery: 'GOOD' },
-    ])
   }
 
   /** C 端消费者自助提交回访（联动 5：C 端 → M4-11，不需要 followup:edit 权限；演示种子动作） */
@@ -702,15 +696,19 @@ export const useFollowupStore = defineStore('followup', () => {
   }
 
   return {
-    // 真实数据层
+    // 真实数据层（随访工作台 / BoardView）
     records, page, pageSize, total, totalPages, loading, stats, sopTodos,
     get, fetchDetail, load, loadStats, refresh, loadSopTodos, create, complete, skip,
-    // 过渡演示层（/sop + C 端）
+    // SOP 模板编排（真：/txn/followup/sop/template）
+    sopTemplate, sopTemplateLoading, enabledSopNodes,
+    loadSopTemplate, toggleSopNode, updateSopNode, addSopNode, removeSopNode, resetSopTemplate,
+    // SOP 批次看板（真：/txn/followup/sop/batches|summary|escalate）
+    sopBatches, sopBatchesTotal, sopBatchesLoading, sopSummary, sopOverdue,
+    loadSopBatches, loadSopSummary, refreshSop, escalateAllOverdue,
+    // 自动排程 shim（后端 FollowupScheduler 已排程，签名保留供咨询动线调用，恒返 []）
+    schedulePostOpSop,
+    // 过渡演示层（仅 C 端 /m/followup 普通随访种子）
     followups, pending, done, skipped, overdue, todayPending, avgSatisfaction, adverseCount,
-    sopPending, sopOverdue, sopOverdueNeedEscalation, sopBatches,
-    sopTemplate, enabledSopNodes,
-    schedulePostOpSop, sopOfBatch, sopOfCustomer, escalate, escalateAllOverdue,
-    toggleSopNode, updateSopNode, addSopNode, removeSopNode, resetSopTemplate,
-    reschedule, submitByCustomer, seed,
+    submitByCustomer, seed,
   }
 })

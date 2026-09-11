@@ -5,11 +5,12 @@
  *  1) 批次执行看板——治疗完成自动生成的多节点随访批次（客户/项目/进度/超期升级）
  *  2) SOP 模板编排——节点增删改 / 启停 / 恢复默认（仅影响此后新批次）
  * 链路打通：
- *  - 批次由咨询→医生「治疗完成」时 followup.schedulePostOpSop 自动生成
+ *  - 批次由后端 FollowupScheduler 在医生「治疗完成」AFTER_COMMIT 按启用模板自动排程
  *  - 客户名跳客户画像 360；「去随访工作台」跳 /followup 登记回访
  *  - 超期节点一键升级提醒主管/医生（followup.escalateAllOverdue）
+ * 卡B 接真：批次分页/五键 summary/模板增改删启停恢复默认均走 /txn/followup/sop。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -24,14 +25,20 @@ import {
   type Followup,
   type SopBatch,
 } from '@/stores/followup'
+import { useAuthStore } from '@/stores/auth'
 import { FOLLOWUP_METHOD, type FollowupMethod } from '@/config/dictionary'
 
 const followup = useFollowupStore()
+const auth = useAuthStore()
 const router = useRouter()
-onMounted(() => followup.seed())
 
 type Tab = 'batches' | 'template'
 const tab = ref<Tab>('batches')
+
+onMounted(() => {
+  followup.refreshSop(auth.user.storeId)
+  followup.loadSopTemplate()
+})
 
 const methodOptions = [
   { value: 'PHONE', label: '电话' },
@@ -39,24 +46,23 @@ const methodOptions = [
   { value: 'IN_STORE', label: '到店' },
 ]
 
-// ---------------- KPI ----------------
-const activeBatches = computed(() => followup.sopBatches.filter((b) => !b.finished))
-const finishedBatches = computed(() => followup.sopBatches.filter((b) => b.finished))
+// ---------------- KPI（五键取服务端 summary，不信前端 .length） ----------------
 const kpis = computed(() => [
-  { label: '进行中批次', value: String(activeBatches.value.length), tone: 'brand' as const, icon: 'layers' },
-  { label: 'SOP 待办节点', value: String(followup.sopPending.length), tone: 'warning' as const, icon: 'clock' },
-  { label: '超期节点', value: String(followup.sopOverdue.length), tone: 'danger' as const, icon: 'alert' },
-  { label: '已完结批次', value: String(finishedBatches.value.length), tone: 'success' as const, icon: 'check' },
+  { label: '进行中批次', value: String(followup.sopSummary.activeBatches), tone: 'brand' as const, icon: 'layers' },
+  { label: 'SOP 待办节点', value: String(followup.sopSummary.sopPending), tone: 'warning' as const, icon: 'clock' },
+  { label: '超期节点', value: String(followup.sopSummary.sopOverdue), tone: 'danger' as const, icon: 'alert' },
+  { label: '已完结批次', value: String(followup.sopSummary.finishedBatches), tone: 'success' as const, icon: 'check' },
 ])
 
-// ---------------- 批次看板 ----------------
+// ---------------- 批次看板（keyword 服务端模糊，300ms 防抖） ----------------
 const keyword = ref('')
-const batches = computed<SopBatch[]>(() => {
-  const kw = keyword.value.trim()
-  if (!kw) return followup.sopBatches
-  return followup.sopBatches.filter(
-    (b) => b.customerName.includes(kw) || b.project.includes(kw) || b.batchId.includes(kw),
-  )
+const batches = computed<SopBatch[]>(() => followup.sopBatches)
+let kwTimer: ReturnType<typeof setTimeout> | undefined
+watch(keyword, () => {
+  clearTimeout(kwTimer)
+  kwTimer = setTimeout(() => {
+    followup.refreshSop(auth.user.storeId, { keyword: keyword.value })
+  }, 300)
 })
 
 function isOverdue(f: Followup) {
@@ -90,30 +96,31 @@ function openCustomer(id: string) {
 function goFollowup() {
   router.push('/followup')
 }
-function doEscalateAll() {
-  const n = followup.escalateAllOverdue()
-  if (n > 0) {
-    // 活动流已在 store 内记录，此处无需额外提示
-  }
+async function doEscalateAll() {
+  // 活动流与批次/五键刷新均在 store 内完成
+  await followup.escalateAllOverdue(auth.user.storeId)
 }
 
 // ---------------- 模板编排 ----------------
 const newNode = ref({ label: '', dayOffset: 14, method: 'WECHAT' as FollowupMethod })
-const canAddNode = computed(() => newNode.value.label.trim() && newNode.value.dayOffset >= 0)
-function addNode() {
+const canAddNode = computed(() => !!newNode.value.label.trim() && newNode.value.dayOffset >= 0)
+async function addNode() {
   if (!canAddNode.value) return
-  followup.addSopNode({ ...newNode.value, label: newNode.value.label.trim() })
-  newNode.value = { label: '', dayOffset: 14, method: 'WECHAT' }
+  const ok = await followup.addSopNode({ ...newNode.value, label: newNode.value.label.trim() })
+  if (ok) newNode.value = { label: '', dayOffset: 14, method: 'WECHAT' }
+}
+async function doResetTemplate() {
+  await followup.resetSopTemplate()
 }
 </script>
 
 <template>
   <div class="sop">
-    <!-- 超期升级预警条 -->
-    <div v-if="followup.sopOverdueNeedEscalation.length > 0" class="warnbar">
+    <!-- 超期升级预警条（待升级数取服务端 summary 全店口径） -->
+    <div v-if="followup.sopSummary.needEscalation > 0" class="warnbar">
       <CIcon name="alert" :size="16" />
       <span>
-        有 <strong>{{ followup.sopOverdueNeedEscalation.length }}</strong> 个 SOP 节点超期未回访且未升级，
+        有 <strong>{{ followup.sopSummary.needEscalation }}</strong> 个 SOP 节点超期未回访且未升级，
         涉及客户术后关怀，请及时处理或升级主管 / 主诊医生。
       </span>
       <CButton variant="primary" size="sm" class="warnbar__btn" v-perm.disable="'followup:edit'" @click="doEscalateAll">
@@ -136,7 +143,7 @@ function addNode() {
     <div class="sop__bar">
       <div class="tabs">
         <button class="tab" :class="{ 'tab--active': tab === 'batches' }" @click="tab = 'batches'">
-          批次执行看板（{{ followup.sopBatches.length }}）
+          批次执行看板（{{ followup.sopBatchesTotal }}）
         </button>
         <button class="tab" :class="{ 'tab--active': tab === 'template' }" @click="tab = 'template'">
           SOP 模板编排（{{ followup.enabledSopNodes.length }}/{{ followup.sopTemplate.length }} 节点启用）
@@ -154,8 +161,8 @@ function addNode() {
     <div v-if="tab === 'batches'" class="batches">
       <div v-if="batches.length === 0" class="empty">
         <CIcon name="layers" :size="32" class="empty__icon" />
-        <div>暂无 SOP 批次</div>
-        <p>医生在医师台完成治疗后，系统会按 SOP 模板自动生成 24h 关怀 / 3 天回访 / 7 天评估 / 30 天复诊等随访节点。</p>
+        <div>{{ followup.sopBatchesLoading ? '批次加载中…' : '暂无 SOP 批次' }}</div>
+        <p v-if="!followup.sopBatchesLoading">医生在医师台完成治疗后，系统会按 SOP 模板自动生成 24h 关怀 / 3 天回访 / 7 天评估 / 30 天复诊等随访节点。</p>
       </div>
 
       <CCard
@@ -233,7 +240,7 @@ function addNode() {
       <template #header>
         <div class="tpl__head">
           <h3 class="tpl__title">术后随访 SOP 模板</h3>
-          <CButton variant="ghost" size="sm" @click="followup.resetSopTemplate()">
+          <CButton variant="ghost" size="sm" v-perm.disable="'followup:edit'" @click="doResetTemplate">
             <CIcon name="refresh" :size="13" />恢复默认
           </CButton>
         </div>
@@ -246,8 +253,8 @@ function addNode() {
 
       <div class="tpl__list">
         <div
-          v-for="(n, i) in followup.sopTemplate"
-          :key="i"
+          v-for="n in followup.sopTemplate"
+          :key="n.id"
           class="tpl-row"
           :class="{ 'tpl-row--off': n.enabled === false }"
         >
@@ -265,7 +272,8 @@ function addNode() {
               <input
                 type="number" min="0" max="365" class="tpl-num"
                 :value="n.dayOffset"
-                @input="followup.updateSopNode(i, { dayOffset: Number(($event.target as HTMLInputElement).value) })"
+                v-perm.disable="'followup:edit'"
+                @change="followup.updateSopNode(n.id, { dayOffset: Number(($event.target as HTMLInputElement).value) })"
               />
               <label>天</label>
             </div>
@@ -273,17 +281,19 @@ function addNode() {
               :model-value="n.method"
               width="110px"
               :options="methodOptions"
-              @update:model-value="(v) => followup.updateSopNode(i, { method: v as FollowupMethod })"
+              :disabled="!auth.can('followup:edit')"
+              @update:model-value="(v) => followup.updateSopNode(n.id, { method: v as FollowupMethod })"
             />
             <label class="switch">
-              <input type="checkbox" :checked="n.enabled !== false" @change="followup.toggleSopNode(i, ($event.target as HTMLInputElement).checked)" />
+              <input type="checkbox" :checked="n.enabled !== false" @change="followup.toggleSopNode(n.id, ($event.target as HTMLInputElement).checked)" />
               <span class="switch__track"><span class="switch__thumb" /></span>
               <span class="switch__txt">{{ n.enabled === false ? '已停用' : '启用中' }}</span>
             </label>
             <CButton
               v-if="n.stage === 'MANUAL'"
               variant="ghost" size="sm"
-              @click="followup.removeSopNode(i)"
+              v-perm.disable="'followup:edit'"
+              @click="followup.removeSopNode(n.id)"
             >删除</CButton>
           </div>
         </div>
