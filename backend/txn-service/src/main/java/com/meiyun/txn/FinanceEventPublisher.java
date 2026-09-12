@@ -22,10 +22,11 @@ import java.util.Map;
  * 渠道、source、refType），保双跑期 ledger-diff 净额零差异：
  * <ul>
  *   <li>订单收齐 ORDER_PAID → RF-REVENUE/IN/CASHIER/ORDER，渠道取入账额最大一笔（混合支付 memo 标注）；</li>
- *   <li>退款终审 REFUND_CONFIRMED（B4.1 按支付构成拆分）：原单含储值余额支付时，余额部分优先回加——
- *       RF-DEPOSIT/IN/ERP/balance（退款冲回预收，预收池回增，不走商户渠道镜像）；法币部分
- *       RF-REFUND/OUT/CASHIER（CASH→cash、TRANSFER→transfer、ORIGINAL→仅反查非 balance 收款主渠道，
- *       反查不到保守 null）。余额回加额 = min(原单 balance 实付, 退款额)，法币退 = 退款额 − 余额回加；</li>
+ *   <li>退款终审 REFUND_CONFIRMED（B39 按「赠金→卡本金→法币」级联拆分）：赠金段不产生资金分录
+ *       （门店让渡权益、无资金进出，与收款侧 grant 支付无专属分录对称，券回加走营销域 HTTP 联动）；
+ *       卡本金段回加 RF-DEPOSIT/IN/ERP/balance（退款冲回预收，预收池回增，不走商户渠道镜像）；
+ *       法币段 RF-REFUND/OUT/CASHIER（CASH→cash、TRANSFER→transfer、ORIGINAL→仅反查非 balance/grant
+ *       收款主渠道，反查不到保守 null）。三段拆分见 {@link #refundSplitForOrder}；</li>
  *   <li>退卡终审 CARD_CANCEL_CONFIRMED → 三条：实退现金 RF-REFUND/OUT（refundAmt，渠道同上但 CC 无订单号，
  *       ORIGINAL 保守 null）+ 全额冲预收 RF-DEPOSIT/OUT/ERP（balance）+ 违约金转收入 RF-REVENUE/IN/ERP（fee，
  *       fee=0 跳过），依实体恒等式 balance = refundAmt + fee；</li>
@@ -96,44 +97,76 @@ public class FinanceEventPublisher {
     }
 
     /**
-     * 退款终审（B4.1 按支付构成拆分）：余额部分回加储值 RF-DEPOSIT/IN/ERP/balance（冲回预收），
-     * 法币部分 RF-REFUND/OUT/CASHIER（渠道只反查非 balance 收款流水）。任一分录额为 0 跳过。
-     * 卡台账回加由 TxnService 另调 customer 端点（{@link #balanceRefundForOrder} 给额），本处只落资金分录。
+     * 退款终审（B39 三段级联拆分）：赠金段→卡本金段→法币段。
+     * <ul>
+     *   <li>赠金段（grant）不出任何资金分录：赠金是门店让渡权益、无资金进出商户户，与收款侧
+     *       grant 支付无专属分录对称；券回加与 REFUND 流水由 TxnService 联动营销域完成；</li>
+     *   <li>卡本金段（balance）回加储值 RF-DEPOSIT/IN/ERP/balance（冲回预收），卡台账回加由
+     *       TxnService 另调客户域端点（{@link #refundSplitForOrder} 给额）；</li>
+     *   <li>法币段 RF-REFUND/OUT/CASHIER（渠道只反查非 balance/grant 收款流水）。</li>
+     * </ul>
+     * 任一分录额为 0 跳过；三段全为 0（纯赠金单退款）不投递资金事件。
      */
     @Transactional(propagation = Propagation.REQUIRED)
     public void emitRefundConfirmed(TxnRefund r) {
         long refundAmt = r.getRefundAmt() == null ? 0L : r.getRefundAmt();
-        long balanceRefund = balanceRefundForOrder(r.getOrderNo(), refundAmt);
-        long cashRefund = refundAmt - balanceRefund;
+        RefundSplit split = refundSplitForOrder(r.getOrderNo(), refundAmt);
         String who = nz(r.getCustomerName(), r.getTxnNo());
         List<Map<String, Object>> cmds = new ArrayList<>();
-        if (balanceRefund > 0) {
+        if (split.balance() > 0) {
             cmds.add(entry("REFUND-BALANCE:" + r.getTxnNo(), r.getTxnNo(), "REFUND",
-                    "RF-DEPOSIT", "IN", balanceRefund, "balance", "ERP", "REFUND",
+                    "RF-DEPOSIT", "IN", split.balance(), "balance", "ERP", "REFUND",
                     r.getStoreCode(), "退款回加储值（冲回预收）· " + who));
         }
-        if (cashRefund > 0) {
+        if (split.cash() > 0) {
             cmds.add(entry("REFUND-PAID:" + r.getTxnNo(), r.getTxnNo(), "REFUND",
-                    "RF-REFUND", "OUT", cashRefund, refundChannel(r.getChannel(), r.getOrderNo()),
+                    "RF-REFUND", "OUT", split.cash(), refundChannel(r.getChannel(), r.getOrderNo()),
                     "CASHIER", "REFUND",
                     r.getStoreCode(), "退款支出 · " + who));
+        }
+        if (cmds.isEmpty()) {
+            log.info("退款终审 {} 无资金动账（赠金段 {} 分不产生分录），跳过资金事件", r.getTxnNo(), split.grant());
+            return;
         }
         enqueue("REFUND_CONFIRMED", r.getTxnNo(), cmds);
     }
 
     /**
-     * 本单退款应回加储值的金额：原单储值余额实付（order_payment payMethod=balance 的 postedAmount 合计，
-     * PaymentService 保证同单仅一笔）与本次退款额取小——部分退款优先回加余额，避免多退给储值、法币退负。
-     * 无 balance 支付或退款额 ≤ 0 返回 0（纯法币退款，不联动客户卡）。
+     * 本单退款按「赠金→卡本金→法币」级联拆分（B39），TxnService 远程联动（营销回加/卡回加）
+     * 与本类资金分录必须共用同一结果，避免两边口径漂移。
+     * 赠金段 = min(原单 grant 实付合计, 退款额)；卡本金段 = min(原单 balance 实付合计, 剩余)；
+     * 法币段 = 退款额 − 前两段。退款额 ≤ 0 返回全 0。
+     */
+    public RefundSplit refundSplitForOrder(String orderNo, long refundAmt) {
+        if (orderNo == null || orderNo.isBlank() || refundAmt <= 0) {
+            return new RefundSplit(0, 0, 0);
+        }
+        long grantPaid = 0;
+        long balancePaid = 0;
+        for (OrderPayment p : payRepo.findByOrderNoOrderByPaymentIdAsc(orderNo)) {
+            long posted = p.getPostedAmount() == null ? 0L : p.getPostedAmount();
+            if ("grant".equals(p.getPayMethod())) {
+                grantPaid += posted;
+            } else if ("balance".equals(p.getPayMethod())) {
+                balancePaid += posted;
+            }
+        }
+        long grantPart = Math.min(grantPaid, refundAmt);
+        long balancePart = Math.min(balancePaid, refundAmt - grantPart);
+        long cashPart = refundAmt - grantPart - balancePart;
+        return new RefundSplit(grantPart, balancePart, cashPart);
+    }
+
+    /**
+     * 本单退款应回加储值的金额：委托 {@link #refundSplitForOrder} 的卡本金段（B39 后口径为
+     * 「先冲赠金、再回余额」，保留本方法供既有调用方使用）。
      */
     public long balanceRefundForOrder(String orderNo, long refundAmt) {
-        if (orderNo == null || orderNo.isBlank() || refundAmt <= 0) return 0L;
-        long balancePart = payRepo.findByOrderNoOrderByPaymentIdAsc(orderNo).stream()
-                .filter(p -> "balance".equals(p.getPayMethod()))
-                .mapToLong(p -> p.getPostedAmount() == null ? 0L : p.getPostedAmount())
-                .sum();
-        return Math.min(balancePart, refundAmt);
+        return refundSplitForOrder(orderNo, refundAmt).balance();
     }
+
+    /** 退款三段拆分结果（单位：分）：赠金段 / 卡本金段 / 法币段，三者之和 = 本次退款额。 */
+    public record RefundSplit(long grant, long balance, long cash) {}
 
     /**
      * 退卡终审：依恒等式 balance = refundAmt + fee 落三条分录。
@@ -245,16 +278,17 @@ public class FinanceEventPublisher {
     }
 
     /**
-     * 退款法币渠道映射（B4.1）：CASH→cash、TRANSFER→transfer、ORIGINAL→反查原单<b>非 balance</b>
-     * 收款主渠道（余额部分已由 RF-DEPOSIT/IN 回加，法币退款不得记 channel=balance 污染渠道账户镜像）；
-     * 原单仅 balance 支付（纯余额单，法币退额必为 0，此路实际不会走到）或查不到 → null（落未标记渠道）。
+     * 退款法币渠道映射（B39）：CASH→cash、TRANSFER→transfer、ORIGINAL→反查原单<b>法币</b>
+     * 收款主渠道（同时排除 balance 与 grant——前者已由 RF-DEPOSIT/IN 回加，后者不产生资金分录，
+     * 法币退款若记 channel=balance/grant 会污染渠道账户镜像，grant 更是 finance 渠道白名单外的非法值）；
+     * 原单仅 balance/grant 支付（纯余额/纯赠金单，法币退额必为 0，此路实际不会走到）或查不到 → null。
      */
     private String refundChannel(String channel, String orderNo) {
         if ("CASH".equals(channel)) return "cash";
         if ("TRANSFER".equals(channel)) return "transfer";
         if ("ORIGINAL".equals(channel) && orderNo != null && !orderNo.isBlank()) {
             List<OrderPayment> cashPays = payRepo.findByOrderNoOrderByPaymentIdAsc(orderNo).stream()
-                    .filter(p -> !"balance".equals(p.getPayMethod()))
+                    .filter(p -> !"balance".equals(p.getPayMethod()) && !"grant".equals(p.getPayMethod()))
                     .toList();
             return resolvePayChannel(cashPays).method();
         }

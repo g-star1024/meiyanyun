@@ -46,6 +46,15 @@ public interface CustomerGrantRepository extends JpaRepository<CustomerGrant, Lo
             "and g.expireAt > :now and g.balanceFen > 0 order by g.expireAt asc, g.id asc")
     List<CustomerGrant> findUsableForUpdate(@Param("cid") String cid, @Param("now") OffsetDateTime now);
 
+    /**
+     * B39 退款回加取券：按 id 集合对涉及的赠金券行加行锁（含 USED/EXPIRED 状态，
+     * 与 {@link #findUsableForUpdate} 只锁可用券不同——回加目标恰是被扣尽的 USED 券），
+     * 串行化并发退款对同一券行的余额回补，防更新丢失。
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select g from CustomerGrant g where g.id in :ids order by g.id asc")
+    List<CustomerGrant> findByIdInForUpdate(@Param("ids") List<Long> ids);
+
     /** 过期扫描（限批 Pageable，防全表一事务毒化；调用方逐条独立事务处理）。 */
     List<CustomerGrant> findByStatusAndExpireAtBefore(String status, OffsetDateTime before, Pageable pageable);
 

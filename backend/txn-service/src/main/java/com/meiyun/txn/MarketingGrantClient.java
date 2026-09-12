@@ -55,6 +55,23 @@ public class MarketingGrantClient {
         post("/api/marketing/internal/grants/deduct", body, "赠金抵扣");
     }
 
+    /**
+     * 退款终审赠金回加（B39，幂等键=退款单号，同终审重放不双加）。
+     * amountFen 为本次退款按「赠金→卡本金→法币」级联拆出的赠金段；可回额不足由营销域 422 中文透传，
+     * 5xx/网络异常 502——调用方（退款终审事务）据此整体回滚，保证「未回加成功就不置 REFUNDED」。
+     */
+    public void refund(String customerId, long amountFen, String orderNo, String refundNo,
+                       String storeCode, String operator) {
+        Map<String, Object> body = Map.of(
+                "customerId", nz(customerId),
+                "amountFen", amountFen,
+                "orderNo", nz(orderNo),
+                "refundNo", nz(refundNo),
+                "storeCode", nz(storeCode),
+                "operator", nz(operator));
+        post("/api/marketing/internal/grants/refund", body, "赠金退款回加");
+    }
+
     /** 可用赠金余额（分）；营销域不可用时抛 502，由调用方决定是否降级。 */
     public long balance(String customerId) {
         String url = UriComponentsBuilder.fromHttpUrl(marketingBaseUrl + "/api/marketing/internal/grants/balance")

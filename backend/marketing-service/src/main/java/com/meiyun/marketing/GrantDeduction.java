@@ -14,8 +14,12 @@ import java.time.OffsetDateTime;
  * <p>幂等键 biz_ref = 订单号（同订单重放不双扣，与 txn 储值扣款「同单单笔」口径一致）；
  * 一次抵扣写多行流水共用同一 biz_ref，(biz_ref, grant_id) 复合唯一防单券重复扣。
  *
- * <p>金额单位「分」，amount_fen &gt; 0 表示扣减额（正数记账，方向由 change_type 表达）。
- * 退款回加（REFUND 反向流水）留下游 Backlog，本期只做 DEDUCT。
+ * <p>金额单位「分」，amount_fen &gt; 0 正数记账，方向由 change_type 表达：
+ * <ul>
+ *   <li>DEDUCT 收银台抵扣：biz_ref=订单号（OD…），origin_biz_ref 留空；</li>
+ *   <li>REFUND 退款回加（B39）：biz_ref=退款单号（RF…，终审重放幂等），
+ *       origin_biz_ref=原订单号（按原单汇总累计回加额，防多次部分退款超回）。</li>
+ * </ul>
  */
 @Entity
 @Table(name = "grant_deduction",
@@ -30,9 +34,16 @@ public class GrantDeduction {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** 业务幂等键：收银台抵扣为订单号 OD…。 */
+    /** 业务幂等键：DEDUCT 为订单号 OD…；REFUND 为退款单号 RF…（同终审重放不双加）。 */
     @Column(name = "biz_ref", nullable = false, length = 64)
     private String bizRef;
+
+    /**
+     * 原始业务单号：仅 REFUND 行填写=被退款的原订单号（OD…），用于按原单汇总累计回加额封顶；
+     * DEDUCT 行留空。列由 Hibernate ddl-auto=update 自动补齐，目标态随 B41 Flyway 基线收录。
+     */
+    @Column(name = "origin_biz_ref", length = 64)
+    private String originBizRef;
 
     /** 被扣减的赠金账本行 id。 */
     @Column(name = "grant_id", nullable = false)
@@ -49,7 +60,7 @@ public class GrantDeduction {
     @Column(name = "balance_after_fen", nullable = false)
     private Long balanceAfterFen;
 
-    /** DEDUCT 抵扣（本期唯一取值）。 */
+    /** 变动类型：DEDUCT 抵扣 / REFUND 退款回加。 */
     @Column(name = "change_type", nullable = false, length = 16)
     private String changeType;
 

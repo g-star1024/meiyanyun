@@ -27,9 +27,10 @@ import java.util.UUID;
  * <p>客户存在性 + 归属门店由客户域 internal 投影硬校验（客户不存在 400、客户域不可用 502，
  * 真实资金权益不允许凭空发放或降级照发）。
  *
- * <p>范围边界：本期覆盖「规则配置 + 赠金发放 + 账本余额 + 收银台抵扣 + 过期 + 报表」。
+ * <p>范围边界：本期覆盖「规则配置 + 赠金发放 + 账本余额 + 收银台抵扣 + 退款回加 + 过期 + 报表」。
  * 抵扣按到期时间 FIFO 跨券扣减并落 grant_deduction 流水（详见 {@link #deduct}）；
- * 退款回加（REFUND 反向流水）需交易域退款链路配合，列为下游 Backlog。
+ * 退款终审按「后扣先回」逆向 FIFO 把已抵扣赠金回补原券行（详见 {@link #refund}，B39）。
+ * 不在本卡范围：满赠发券订单退款后的门槛追回（异步轮询，另卡 Backlog）。
  */
 @Service
 public class GrantService {
@@ -308,6 +309,150 @@ public class GrantService {
                         "operator", operator == null ? "" : operator,
                         "amountFen", amountFen, "grantCount", saved.size(),
                         "balanceAfterFen", balance(cid)));
+        return saved;
+    }
+
+    // ==================== 退款回加（交易终审内部调用，B39） ====================
+
+    /**
+     * 退款终审赠金回加（域⑤ ←→ 交易域）。按「后扣先回」逆向 FIFO，把原订单 DEDUCT 流水
+     * 涉及的赠金券逐张回补，单券可部分回；USED 券回补后有余额且未过期复活为 VALID，
+     * EXPIRED/已过期券只加余额保持原态（过期券不可用，门店补偿走手工发券）。
+     *
+     * <p>幂等：biz_ref = 退款单号 RF…，同终审重放原样返回既有 REFUND 流水不双加。
+     * 封顶：按 origin_biz_ref=原订单号汇总每张券历史 REFUND 累计额，单券累计回加 ≤ 其原扣减额，
+     * 防同一订单多次部分退款把同一张券回加超过原扣额。
+     * 并发：findByIdInForUpdate 对涉及券行（含 USED/EXPIRED）加行锁，串行化并发退款的余额回补。
+     * 金额口径：本次退款的赠金段由交易域按「赠金→卡本金→法币」级联拆出后传入，
+     * 本方法只在各券可回额总额内回补；可回额不足（数据异常）直接 422，由终审事务整体回滚。
+     *
+     * @return 本次实际写入（或重放命中）的回加流水，可能多行
+     */
+    @Transactional
+    public List<GrantDeduction> refund(String customerId, Long amountFen, String orderNo,
+                                       String refundNo, String storeCode, String operator) {
+        if (customerId == null || customerId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "客户ID不可为空");
+        }
+        if (amountFen == null || amountFen <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "回加金额须为正数（单位：分）");
+        }
+        if (orderNo == null || orderNo.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "原订单号不可为空");
+        }
+        if (refundNo == null || refundNo.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "退款单号不可为空");
+        }
+        String cid = customerId.trim();
+        String origin = orderNo.trim();
+        String ref = refundNo.trim();
+        String store = storeCode == null ? "" : storeCode.trim();
+        String op = operator == null ? "" : operator.trim();
+
+        List<GrantDeduction> replay = deductionRepo.findByBizRefOrderByIdAsc(ref);
+        if (!replay.isEmpty()) {
+            return replay;
+        }
+
+        List<GrantDeduction> deductsAll = deductionRepo.findByBizRefOrderByIdAsc(origin);
+        List<GrantDeduction> deducts = new java.util.ArrayList<>();
+        for (GrantDeduction d : deductsAll) {
+            if ("DEDUCT".equals(d.getChangeType())) {
+                deducts.add(d);
+            }
+        }
+        if (deducts.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "原订单无赠金抵扣记录：" + origin);
+        }
+
+        Map<Long, Long> dedTotal = new java.util.HashMap<>();
+        List<Long> grantIds = new java.util.ArrayList<>();
+        for (GrantDeduction d : deducts) {
+            dedTotal.merge(d.getGrantId(), d.getAmountFen(), Long::sum);
+            if (!grantIds.contains(d.getGrantId())) {
+                grantIds.add(d.getGrantId());
+            }
+        }
+
+        Map<Long, Long> refundedTotal = new java.util.HashMap<>();
+        for (Object[] row : deductionRepo.sumRefundedByOriginGroupByGrant(origin)) {
+            refundedTotal.put((Long) row[0], ((Number) row[1]).longValue());
+        }
+
+        long reversible = 0;
+        for (Long gid : grantIds) {
+            reversible += dedTotal.get(gid) - refundedTotal.getOrDefault(gid, 0L);
+        }
+        if (reversible < amountFen) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "原订单可回赠金不足：可回 " + yuan(reversible) + " 元，本次需回加 "
+                            + yuan(amountFen) + " 元");
+        }
+
+        Map<Long, CustomerGrant> grantMap = new java.util.HashMap<>();
+        for (CustomerGrant g : grantRepo.findByIdInForUpdate(grantIds)) {
+            grantMap.put(g.getId(), g);
+        }
+
+        OffsetDateTime now = OffsetDateTime.now(BIZ_ZONE);
+        Map<Long, Long> returnedThisCall = new java.util.HashMap<>();
+        List<GrantDeduction> written = new java.util.ArrayList<>();
+        long remain = amountFen;
+        for (int i = deducts.size() - 1; i >= 0 && remain > 0; i--) {
+            GrantDeduction src = deducts.get(i);
+            long gid = src.getGrantId();
+            long cap = dedTotal.get(gid) - refundedTotal.getOrDefault(gid, 0L)
+                    - returnedThisCall.getOrDefault(gid, 0L);
+            long take = Math.min(remain, cap);
+            if (take <= 0) {
+                continue;
+            }
+            CustomerGrant g = grantMap.get(gid);
+            if (g == null) {
+                throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                        "赠金账本行不存在或已被清理：grantId=" + gid);
+            }
+            long after = g.getBalanceFen() + take;
+            g.setBalanceFen(after);
+            if ("USED".equals(g.getStatus()) && g.getExpireAt() != null && g.getExpireAt().isAfter(now)) {
+                g.setStatus("VALID");
+            }
+            grantRepo.save(g);
+
+            GrantDeduction d = new GrantDeduction();
+            d.setBizRef(ref);
+            d.setOriginBizRef(origin);
+            d.setGrantId(gid);
+            d.setCustomerId(cid);
+            d.setAmountFen(take);
+            d.setBalanceAfterFen(after);
+            d.setChangeType("REFUND");
+            d.setStoreCode(store);
+            d.setOperator(op);
+            written.add(d);
+            returnedThisCall.merge(gid, take, Long::sum);
+            remain -= take;
+        }
+
+        List<GrantDeduction> saved;
+        try {
+            saved = deductionRepo.saveAll(written);
+        } catch (DataIntegrityViolationException dup) {
+            List<GrantDeduction> exist = deductionRepo.findByBizRefOrderByIdAsc(ref);
+            if (!exist.isEmpty()) {
+                return exist;
+            }
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "赠金回加唯一键冲突且无法重查，请稍后重试");
+        }
+
+        long refunded = amountFen - remain;
+        audit("GRANT_REFUND", "ORDER", ref,
+                Map.of("customerId", cid, "storeCode", store, "operator", op,
+                        "orderNo", origin, "refundNo", ref,
+                        "amountFen", amountFen, "refundedFen", refunded,
+                        "grantCount", saved.size(), "balanceAfterFen", balance(cid)));
         return saved;
     }
 

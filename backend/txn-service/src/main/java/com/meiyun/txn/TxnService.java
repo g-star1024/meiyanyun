@@ -44,11 +44,13 @@ public class TxnService {
     private final ApprovalService approvalService;
     private final FinanceEventPublisher financeEvents;
     private final CustomerCardClient cardClient;
+    private final MarketingGrantClient grantClient;
 
     public TxnService(TxnRefundRepository refundRepo, TxnCardCancelRepository cancelRepo,
                       TxnOrderRepository orderRepo, MemberCardRepository cardRepo,
                       AuditRecorder audit, @Lazy ApprovalService approvalService,
-                      FinanceEventPublisher financeEvents, CustomerCardClient cardClient) {
+                      FinanceEventPublisher financeEvents, CustomerCardClient cardClient,
+                      MarketingGrantClient grantClient) {
         this.refundRepo = refundRepo;
         this.cancelRepo = cancelRepo;
         this.orderRepo = orderRepo;
@@ -57,6 +59,7 @@ public class TxnService {
         this.approvalService = approvalService;
         this.financeEvents = financeEvents;
         this.cardClient = cardClient;
+        this.grantClient = grantClient;
     }
 
     // ---------------- 退款 RF ----------------
@@ -297,14 +300,21 @@ public class TxnService {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "当前状态「" + r.getStatus() + "」不可财务确认（仅待财务复核单据可确认退款）");
             }
-            // B4.1 客户资金损失修复：含储值余额支付的订单，退款终审须把余额部分回加储值卡——
-            // 先按 order_payment 拆出余额回加额（min(原单余额实付, 退款额)），远程回写 customer 卡台账
-            // （REFUND 正额、RF 单号幂等、防超退、卡已退卡 422）；远程失败抛异常 → 终审事务整体回滚，
-            // 退款单不置 REFUNDED，杜绝「退款已终审但储值未回加」。customer 以 RF 单号幂等，终审重试安全。
-            long balanceRefund = financeEvents.balanceRefundForOrder(r.getOrderNo(),
+            // B39 退款三段级联拆分（赠金→卡本金→法币），远程联动与资金 outbox 共用同一拆分结果：
+            // ①赠金段：远程回加 marketing 赠金券（逆向 FIFO、RF 单号幂等、按原单累计封顶防超回），
+            //   赠金是门店让渡权益、无资金进出，不产生资金分录；
+            // ②卡本金段：远程回加 customer 储值卡（REFUND 正额、RF 单号幂等、防超退、卡已退卡 422）；
+            // ③法币段：仅落 RF-REFUND/OUT 资金分录。
+            // 远程调用全部在置 REFUNDED 之前，任一失败抛异常 → 终审事务整体回滚（两边均以 RF 单号幂等，重试安全），
+            // 杜绝「退款已终审但赠金/储值未回加」。
+            FinanceEventPublisher.RefundSplit split = financeEvents.refundSplitForOrder(r.getOrderNo(),
                     r.getRefundAmt() == null ? 0L : r.getRefundAmt());
-            if (balanceRefund > 0) {
-                cardClient.refundForOrder(r.getTxnNo(), r.getOrderNo(), balanceRefund);
+            if (split.grant() > 0) {
+                grantClient.refund(r.getCustomer(), split.grant(), r.getOrderNo(),
+                        r.getTxnNo(), r.getStoreCode(), actor);
+            }
+            if (split.balance() > 0) {
+                cardClient.refundForOrder(r.getTxnNo(), r.getOrderNo(), split.balance());
             }
             r.setStatus("REFUNDED");
             r.setFinanceBy(actor);
@@ -312,10 +322,12 @@ public class TxnService {
             refundRepo.save(r);
             audit.record("REFUND", txnNo, actor, "CONFIRM",
                     "{\"from\":\"PENDING_FINANCE\",\"to\":\"REFUNDED\",\"refundAmt\":" + r.getRefundAmt()
-                            + ",\"balanceRefund\":" + balanceRefund
+                            + ",\"grantRefund\":" + split.grant()
+                            + ",\"balanceRefund\":" + split.balance()
+                            + ",\"cashRefund\":" + split.cash()
                             + ",\"financeBy\":\"" + actor + "\"}");
-            // B3/B4.1 合规写：退款终审同事务入资金事件 outbox（余额部分 RF-DEPOSIT/IN/ERP 冲回预收，
-            // 法币部分 RF-REFUND/OUT/CASHIER，法币渠道仅反查非 balance 收款流水）
+            // B3/B39 合规写：退款终审同事务入资金事件 outbox（卡本金段 RF-DEPOSIT/IN/ERP 冲回预收，
+            // 法币段 RF-REFUND/OUT/CASHIER 仅反查非 balance/grant 收款流水，赠金段无分录）
             financeEvents.emitRefundConfirmed(r);
         } else {
             TxnCardCancel c = requireCardCancel(txnNo);
