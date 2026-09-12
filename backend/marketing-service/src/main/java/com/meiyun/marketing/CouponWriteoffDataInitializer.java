@@ -2,6 +2,7 @@ package com.meiyun.marketing;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -18,6 +19,11 @@ import java.util.List;
  * <p>券模板表为空时补建两张进行中、带展示券码的券（WATER500 满减 / NEWBIE88 新客无门槛），
  * 并补四条核销流水（2 正常 + 1 重复 + 1 伪造，与前端 mock 基线一致）。
  * 幂等：券已存在或流水已存在则跳过；正常流水对应券 usedQty 同步到 2。
+ *
+ * <p><b>栈门控</b>：流水门店码 SST01 仅与 seed 栈主数据（01_master.sql，店名「上海徐汇店」
+ * 同源同栈）自洽；prod/core 栈门店码为 ST-XX-NNN 且无 SST01，若把 SST 演示流水播进正式库
+ * 会形成 store_name 解析不出来的幽灵门店数据。故仅在种子库（JDBC URL 含 meiyun_seed）播种，
+ * 与 finance CommissionDataInitializer 同一门控约定；正式栈数据由页面真实核销产生。
  */
 @Component
 @Order(18)
@@ -27,16 +33,24 @@ public class CouponWriteoffDataInitializer implements ApplicationRunner {
 
     private final CouponTemplateRepository couponRepo;
     private final CouponWriteoffRecordRepository writeoffRepo;
+    private final String datasourceUrl;
 
     public CouponWriteoffDataInitializer(CouponTemplateRepository couponRepo,
-                                         CouponWriteoffRecordRepository writeoffRepo) {
+                                         CouponWriteoffRecordRepository writeoffRepo,
+                                         @Value("${spring.datasource.url:}") String datasourceUrl) {
         this.couponRepo = couponRepo;
         this.writeoffRepo = writeoffRepo;
+        this.datasourceUrl = datasourceUrl;
     }
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        if (datasourceUrl == null || !datasourceUrl.contains("meiyun_seed")) {
+            log.info("非种子库（{}），跳过券核销演示数据播种；正式栈核销流水由页面真实核销产生",
+                    datasourceUrl == null || datasourceUrl.isBlank() ? "默认数据源" : datasourceUrl);
+            return;
+        }
         seedCoupon("CPN-SEED-WATER", "WATER500", "水光满3000减500", "AMOUNT",
                 50_000L, 300_000L, 500, LocalDate.now().minusDays(30), LocalDate.now().plusDays(60));
         seedCoupon("CPN-SEED-NEWBIE", "NEWBIE88", "新客88元体验券", "AMOUNT",
@@ -101,7 +115,7 @@ public class CouponWriteoffDataInitializer implements ApplicationRunner {
         r.setCustomerName(customer);
         r.setCustomerPhone(phone);
         r.setStoreCode("SST01");
-        r.setStoreName("上海静安旗舰店");
+        r.setStoreName("上海徐汇店");
         r.setOrderAmountFen(orderFen);
         r.setDiscountFen(discountFen);
         r.setChannel("门店核销");

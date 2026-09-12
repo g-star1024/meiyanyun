@@ -3,6 +3,7 @@ package com.meiyun.marketing;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -17,6 +18,10 @@ import java.util.List;
  * 素材库启动播种（M5-13）：表为空时幂等灌入 10 条演示素材（对齐前端活规格）。
  * tags/storeCodes 存 JSON 文本数组；scope=ALL 时 storeCodes 存空数组（前端按门店主数据展开）；
  * 指定门店授权落 SST 编码（仅营业中门店）；日期相对今天，保证有效期演示不过期。
+ *
+ * <p><b>栈门控</b>：SPECIFIED 授权落的 SST01-04 仅存在于 seed 栈主数据（01_master.sql），
+ * core/prod 栈门店码为 ST-XX-NNN，播入后授权名单全部指向不存在的门店。故仅在种子库
+ * （JDBC URL 含 meiyun_seed）播种，与 finance CommissionDataInitializer 同一门控约定。
  */
 @Component
 @Order(30)
@@ -26,14 +31,22 @@ public class MarketingAssetDataInitializer implements ApplicationRunner {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final MarketingAssetRepository repo;
+    private final String datasourceUrl;
 
-    public MarketingAssetDataInitializer(MarketingAssetRepository repo) {
+    public MarketingAssetDataInitializer(MarketingAssetRepository repo,
+                                         @Value("${spring.datasource.url:}") String datasourceUrl) {
         this.repo = repo;
+        this.datasourceUrl = datasourceUrl;
     }
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        if (datasourceUrl == null || !datasourceUrl.contains("meiyun_seed")) {
+            log.info("非种子库（{}），跳过素材库演示数据播种；正式栈素材由页面运营录入",
+                    datasourceUrl == null || datasourceUrl.isBlank() ? "默认数据源" : datasourceUrl);
+            return;
+        }
         if (repo.count() > 0) {
             log.info("素材库已有 {} 条，跳过播种", repo.count());
             return;

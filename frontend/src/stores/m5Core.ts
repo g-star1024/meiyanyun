@@ -8,15 +8,15 @@ import { useAuthStore } from '@/stores/auth'
 // M5 营销核心 store
 // - 周频配额：同一客户/人群 7 天内推送 ≤3 条（合规硬约束）
 // - 推送批次：PushBatch（人群/通道/模板/状态/到达点击）
-// - 核销记录：WriteoffRecord（券核销流水，防重复/伪造）
 // - 渠道业绩：ChannelPerf（美团/抖音/新氧等线索/成交/ROI）
 // - ROI 汇总：跨活动 + 渠道的投放 ROI 看板
 // 活动/券数据复用 m1Marketing store，不重复造。
+// 券核销流水的真实链路在 m5Writeoff store（走 /marketing 真实端点），
+// 本 store 不再保留任何核销 mock。
 // ============================================================
 
 export type PushChannel = 'SMS' | 'WECOM' | 'WECHAT_MP'
 export type PushStatus = 'DRAFT' | 'SCHEDULED' | 'SENDING' | 'SENT' | 'BLOCKED'
-export type WriteoffStatus = 'OK' | 'DUPLICATE' | 'FORGED' | 'EXPIRED'
 export type ChannelKey = 'meituan' | 'douyin' | 'xiaohongshu' | 'dianping' | 'xinyang' | 'referral' | 'wecom'
 
 let _id = 0
@@ -44,21 +44,6 @@ export interface PushBatch {
   blockedReason?: string
 }
 
-export interface WriteoffRecord {
-  id: string
-  couponCode: string
-  couponName: string
-  customerName: string
-  customerPhone: string
-  storeName: string
-  amount: number       // 核销订单金额
-  discount: number     // 优惠金额
-  channel: string
-  status: WriteoffStatus
-  verifiedAt: string
-  operator: string
-}
-
 export interface ChannelPerf {
   key: ChannelKey
   name: string
@@ -81,12 +66,6 @@ export const PUSH_STATUS_LABEL: Record<PushStatus, string> = {
 export const PUSH_STATUS_PILL: Record<PushStatus, 'default' | 'primary' | 'info' | 'success' | 'danger'> = {
   DRAFT: 'default', SCHEDULED: 'primary', SENDING: 'info', SENT: 'success', BLOCKED: 'danger',
 }
-export const WRITEOFF_STATUS_LABEL: Record<WriteoffStatus, string> = {
-  OK: '正常', DUPLICATE: '重复核销', FORGED: '伪造券码', EXPIRED: '已过期',
-}
-export const WRITEOFF_STATUS_PILL: Record<WriteoffStatus, 'success' | 'danger' | 'warning'> = {
-  OK: 'success', DUPLICATE: 'danger', FORGED: 'danger', EXPIRED: 'warning',
-}
 
 export const useM5CoreStore = defineStore('m5Core', () => {
   const m1 = useM1MarketingStore()
@@ -94,7 +73,6 @@ export const useM5CoreStore = defineStore('m5Core', () => {
   const auth = useAuthStore()
 
   const batches = ref<PushBatch[]>([])
-  const writeoffs = ref<WriteoffRecord[]>([])
   const channels = ref<ChannelPerf[]>([])
   const seeded = ref(false)
 
@@ -157,36 +135,6 @@ export const useM5CoreStore = defineStore('m5Core', () => {
     activity.log(auth.user?.name ?? '系统', `发送营销推送「${b.name}」触达 ${b.delivered} 人`, b.id)
   }
 
-  // ---------- 核销 ----------
-  function verifyCoupon(code: string, customerName: string, customerPhone: string, amount: number): { ok: boolean; record: WriteoffRecord; reason?: string } {
-    if (!auth.can('couponWriteoff:verify')) throw new Error('无核销权限')
-    const coupon = m1.coupons.find((c) => c.code.toLowerCase() === code.toLowerCase())
-    const now = new Date().toISOString().slice(0, 16).replace('T', ' ')
-    let status: WriteoffStatus = 'OK'
-    let reason = ''
-    if (!coupon) {
-      status = 'FORGED'; reason = '券码不存在，疑似伪造'
-    } else if (writeoffs.value.some((w) => w.couponCode === coupon.code && w.status === 'OK')) {
-      status = 'DUPLICATE'; reason = '该券已核销，禁止重复使用'
-    } else if (coupon.used >= coupon.total) {
-      status = 'EXPIRED'; reason = '券已用完或过期'
-    }
-    const discount = coupon
-      ? (coupon.type === 'AMOUNT' ? Math.min(coupon.value, amount - coupon.threshold > 0 ? coupon.value : 0)
-        : Math.round(amount * (coupon.value / 10)))
-      : 0
-    const rec: WriteoffRecord = {
-      id: nextId('wr'), couponCode: code, couponName: coupon?.name ?? '未知券',
-      customerName, customerPhone, storeName: '上海静安旗舰店',
-      amount, discount: discount > 0 ? discount : 0,
-      channel: '门店核销', status, verifiedAt: now, operator: auth.user?.name ?? '前台',
-    }
-    writeoffs.value.unshift(rec)
-    if (status === 'OK' && coupon) { coupon.used += 1 }
-    activity.log(auth.user?.name ?? '前台', `核销券 ${code} ${status === 'OK' ? '成功' : '拦截：' + reason}`, rec.id)
-    return { ok: status === 'OK', record: rec, reason: reason || undefined }
-  }
-
   // ---------- 渠道业绩 ----------
   function updateChannel(key: ChannelKey, patch: Partial<ChannelPerf>) {
     const c = channels.value.find((x) => x.key === key)
@@ -200,14 +148,6 @@ export const useM5CoreStore = defineStore('m5Core', () => {
   const totalLeads = computed(() => channels.value.reduce((s, c) => s + c.leads, 0))
   const totalDeals = computed(() => channels.value.reduce((s, c) => s + c.deals, 0))
   const overallRoi = computed(() => totalAdCost.value ? Number((totalRevenue.value / totalAdCost.value).toFixed(1)) : 0)
-  const writeoffStats = computed(() => {
-    const list = writeoffs.value
-    return {
-      total: list.length, ok: list.filter((w) => w.status === 'OK').length,
-      abnormal: list.filter((w) => w.status !== 'OK').length,
-      discount: list.filter((w) => w.status === 'OK').reduce((s, w) => s + w.discount, 0),
-    }
-  })
 
   function seed() {
     if (seeded.value) return
@@ -228,13 +168,6 @@ export const useM5CoreStore = defineStore('m5Core', () => {
       mkBatch('会员日乔雅登满减', 'WECHAT_MP', '高价值客户', '会员日专属满减，仅此3天', 260, 'SCHEDULED', 2, 0, 0, 0),
       mkBatch('热玛吉专场-VIP邀约', 'SMS', '高价值客户', '抗衰专场一对一咨询', 180, 'BLOCKED', -1, 0, 0, 0, '该人群近7天已推送3次，达周频上限'),
     ]
-    // 核销流水 seed
-    writeoffs.value = [
-      mkWr('WATER500', '水光满3000减500', '孙佳宁', '138****2201', 3680, 500, 'OK', -2),
-      mkWr('NEWBIE88', '新客88元体验券', '赵雨晴', '139****8830', 580, 200, 'OK', -1),
-      mkWr('WATER500', '水光满3000减500', '孙佳宁', '138****2201', 3680, 0, 'DUPLICATE', -1),
-      mkWr('FAKE999', '未知券', '匿名', '—', 1280, 0, 'FORGED', 0),
-    ]
     seeded.value = true
   }
 
@@ -247,22 +180,13 @@ export const useM5CoreStore = defineStore('m5Core', () => {
       delivered, clicked, converted, blockedReason,
     }
   }
-  function mkWr(code: string, cname: string, customer: string, phone: string, amount: number, discount: number,
-    status: WriteoffStatus, day: number): WriteoffRecord {
-    return {
-      id: nextId('wr'), couponCode: code, couponName: cname, customerName: customer,
-      customerPhone: phone, storeName: '上海静安旗舰店', amount, discount,
-      channel: '门店核销', status,
-      verifiedAt: dayOffset(day) + ' 14:20', operator: status === 'FORGED' ? '前台' : '陈雅琳',
-    }
-  }
 
   return {
-    batches, writeoffs, channels, WEEKLY_LIMIT,
-    PUSH_CHANNEL_LABEL, PUSH_STATUS_LABEL, PUSH_STATUS_PILL, WRITEOFF_STATUS_LABEL, WRITEOFF_STATUS_PILL,
+    batches, channels, WEEKLY_LIMIT,
+    PUSH_CHANNEL_LABEL, PUSH_STATUS_LABEL, PUSH_STATUS_PILL,
     sentLast7Days, weeklyLimit, weeklyRemaining, quotaPct,
-    checkWeeklyQuota, createBatch, sendBatch, verifyCoupon, updateChannel,
-    totalAdCost, totalRevenue, totalLeads, totalDeals, overallRoi, writeoffStats,
+    checkWeeklyQuota, createBatch, sendBatch, updateChannel,
+    totalAdCost, totalRevenue, totalLeads, totalDeals, overallRoi,
     seed,
   }
 })
