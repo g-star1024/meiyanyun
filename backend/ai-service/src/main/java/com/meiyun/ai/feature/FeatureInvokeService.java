@@ -14,6 +14,8 @@ import com.meiyun.ai.domain.AiProvider;
 import com.meiyun.ai.domain.AiProviderRepository;
 import com.meiyun.ai.llm.LlmClient;
 import com.meiyun.ai.model.ApiKeyRef;
+import com.meiyun.ai.quota.QuotaService;
+import com.meiyun.ai.security.SensitiveWordService;
 import com.meiyun.security.LoginUser;
 import com.meiyun.security.SecurityContext;
 import org.springframework.http.HttpStatus;
@@ -45,6 +47,8 @@ public class FeatureInvokeService {
     private final AiInvokeLogRepository logRepo;
     private final ApiKeyRef keyRef;
     private final LlmClient llm;
+    private final SensitiveWordService sensitiveWordService;
+    private final QuotaService quotaService;
     private final ObjectMapper json = new ObjectMapper();
 
     public FeatureInvokeService(AiFeatureBindingRepository bindingRepo,
@@ -53,7 +57,9 @@ public class FeatureInvokeService {
                                 AiProviderRepository providerRepo,
                                 AiInvokeLogRepository logRepo,
                                 ApiKeyRef keyRef,
-                                LlmClient llm) {
+                                LlmClient llm,
+                                SensitiveWordService sensitiveWordService,
+                                QuotaService quotaService) {
         this.bindingRepo = bindingRepo;
         this.roleRepo = roleRepo;
         this.modelRepo = modelRepo;
@@ -61,6 +67,8 @@ public class FeatureInvokeService {
         this.logRepo = logRepo;
         this.keyRef = keyRef;
         this.llm = llm;
+        this.sensitiveWordService = sensitiveWordService;
+        this.quotaService = quotaService;
     }
 
     public record InvokeCmd(String input, String storeCode) {
@@ -130,6 +138,9 @@ public class FeatureInvokeService {
                     "供应商「" + provider.getProviderName() + "」已停用");
         }
         String apiKey = keyRef.decrypt(provider);
+
+        sensitiveWordService.screen(input);
+        quotaService.check(featureCode, model.getModelCode());
 
         String prompt = buildPrompt(binding.getPromptTemplate(), input);
         Double temperature = overrideDecimal(binding.getParamOverrides(), "temperature", model.getTemperature());

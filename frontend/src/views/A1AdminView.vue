@@ -19,8 +19,9 @@ import { errMsg } from '@/stores/m5Coupon'
 import {
   logKpi, monthlyBill, listFeatures, saveFeatureRoles,
   getCfg, saveCfg, listModels, saveFeatureBinding, invokeFeature,
+  listQuotas, saveQuota,
   type AiKpi, type FeatureBill, type BindingView, type CfgView,
-  type ModelView, type InvokeView,
+  type ModelView, type InvokeView, type QuotaView,
 } from '@/api/ai'
 
 const auth = useAuthStore()
@@ -32,6 +33,7 @@ const tabOptions = [
   { label: '功能绑定', value: 'bind' },
   { label: '灰度权限', value: 'perm' },
   { label: '用量计费', value: 'bill' },
+  { label: '配额管理', value: 'quota' },
   { label: '模板市场', value: 'tpl' },
   { label: '全局配置', value: 'cfg' },
 ]
@@ -222,6 +224,87 @@ const billRows = computed(() =>
   bills.value.map((b) => ({ ...b, trend: '—' })),
 )
 
+// 配额管理：维度 FEATURE/MODEL/GLOBAL，用量按 ai_invoke_log 实时聚合，空限额 = 不限
+const scopeNames: Record<string, string> = {
+  FEATURE: '功能', MODEL: '模型', GLOBAL: '全局',
+}
+const quotas = ref<QuotaView[]>([])
+const quotaCols = [
+  { key: 'quotaScope', label: '维度', width: '80' },
+  { key: 'targetName', label: '目标' },
+  { key: 'daily', label: '今日用量 / 日额度', align: 'center' as const },
+  { key: 'monthly', label: '本月用量 / 月额度', align: 'center' as const },
+  { key: 'watermark', label: '最高水位', width: '110', align: 'center' as const },
+  { key: 'enabled', label: '状态', width: '90', align: 'center' as const },
+  { key: 'updatedAt', label: '最近更新', width: '160' },
+  { key: 'ops', label: '操作', width: '90', align: 'right' as const },
+]
+function fmtLimit(v: number | null) {
+  return v == null ? '不限' : v.toLocaleString()
+}
+function watermarkOf(q: QuotaView): number | null {
+  const d = q.dailyLimit && q.dailyLimit > 0 ? (q.dailyUsed / q.dailyLimit) * 100 : null
+  const m = q.monthlyLimit && q.monthlyLimit > 0 ? (q.monthlyUsed / q.monthlyLimit) * 100 : null
+  if (d == null && m == null) return null
+  return Math.max(d ?? 0, m ?? 0)
+}
+const quotaRows = computed(() =>
+  quotas.value.map((q) => ({
+    ...q,
+    daily: `${q.dailyUsed.toLocaleString()} / ${fmtLimit(q.dailyLimit)}`,
+    monthly: `${q.monthlyUsed.toLocaleString()} / ${fmtLimit(q.monthlyLimit)}`,
+    updatedAt: q.updatedAt ? q.updatedAt.replace('T', ' ').slice(0, 16) : '—',
+  })),
+)
+async function loadQuotas() {
+  try {
+    quotas.value = await listQuotas()
+  } catch (e) {
+    toast.error('配额列表加载失败：' + errMsg(e))
+  }
+}
+const qDrawer = ref(false)
+const qEditing = ref<QuotaView | null>(null)
+const qSaving = ref(false)
+const qForm = reactive({ dailyLimit: '', monthlyLimit: '', enabled: true })
+function openQuota(row: QuotaView) {
+  qEditing.value = row
+  Object.assign(qForm, {
+    dailyLimit: row.dailyLimit == null ? '' : String(row.dailyLimit),
+    monthlyLimit: row.monthlyLimit == null ? '' : String(row.monthlyLimit),
+    enabled: !!row.enabled,
+  })
+  qDrawer.value = true
+}
+async function saveQuotaRow() {
+  if (!qEditing.value) return
+  const dailyRaw = qForm.dailyLimit.trim()
+  const monthlyRaw = qForm.monthlyLimit.trim()
+  if (dailyRaw && (!/^\d+$/.test(dailyRaw) || Number(dailyRaw) < 0)) {
+    toast.error('日额度必须是非负整数，留空表示不限')
+    return
+  }
+  if (monthlyRaw && (!/^\d+$/.test(monthlyRaw) || Number(monthlyRaw) < 0)) {
+    toast.error('月额度必须是非负整数，留空表示不限')
+    return
+  }
+  qSaving.value = true
+  try {
+    const r = await saveQuota(qEditing.value.quotaScope, qEditing.value.targetCode, {
+      dailyLimit: dailyRaw ? Number(dailyRaw) : null,
+      monthlyLimit: monthlyRaw ? Number(monthlyRaw) : null,
+      enabled: qForm.enabled,
+    })
+    toast.success(r.changed ? '配额已保存并写入审计日志' : '配置无变化，未产生更新')
+    await loadQuotas()
+    qDrawer.value = false
+  } catch (e) {
+    toast.error('配额保存失败：' + errMsg(e))
+  } finally {
+    qSaving.value = false
+  }
+}
+
 // 模板（规划能力，本期占位）
 const templates = [
   { id: 1, name: '新客破冰话术包', desc: '20 条标准破冰话术，适配首次到店客户', uses: 0, tag: '话术' },
@@ -290,7 +373,7 @@ async function loadAll() {
   else toast.error('用量账单加载失败：' + errMsg(b.reason))
   if (m.status === 'fulfilled') models.value = m.value
   else toast.error('模型列表加载失败：' + errMsg(m.reason))
-  await Promise.all([loadMatrix(), loadCfg()])
+  await Promise.all([loadMatrix(), loadCfg(), loadQuotas()])
 }
 onMounted(loadAll)
 </script>
@@ -359,6 +442,39 @@ onMounted(loadAll)
           <template #col-trend="{ value }"><span class="muted">{{ value }}</span></template>
         </CTable>
         <p class="hint">账单口径：按 ai_invoke_log 当月成功调用汇总，金额按模型定价折算（分 → 元）；环比为后续批次能力。</p>
+      </div>
+
+      <!-- 配额管理 -->
+      <div v-else-if="tab === 'quota'" class="mt">
+        <CTable :columns="quotaCols" :rows="quotaRows" row-key="targetCode" stripe
+          :empty-text="quotas.length ? '暂无数据' : '配额数据加载中…'">
+          <template #col-quotaScope="{ value }">
+            <CStatusPill :status="value === 'GLOBAL' ? 'primary' : value === 'MODEL' ? 'info' : 'default'">
+              {{ scopeNames[value] || value }}
+            </CStatusPill>
+          </template>
+          <template #col-targetName="{ row }">
+            <strong>{{ row.targetName }}</strong>
+            <span v-if="row.quotaScope !== 'GLOBAL'" class="mono" style="margin-left:6px">{{ row.targetCode }}</span>
+          </template>
+          <template #col-watermark="{ row }">
+            <span v-if="watermarkOf(row as QuotaView) == null" class="muted">—</span>
+            <CStatusPill v-else
+              :status="(watermarkOf(row as QuotaView) as number) >= 100 ? 'danger' : (watermarkOf(row as QuotaView) as number) >= 80 ? 'warning' : 'success'"
+              dot>{{ (watermarkOf(row as QuotaView) as number).toFixed(0) }}%</CStatusPill>
+          </template>
+          <template #col-enabled="{ value }">
+            <CStatusPill :status="value ? 'success' : 'disabled'" dot>{{ value ? '启用' : '停用' }}</CStatusPill>
+          </template>
+          <template #col-ops="{ row }">
+            <CButton v-if="canEdit" size="sm" variant="text" @click="openQuota(row as QuotaView)">调整配额</CButton>
+            <span v-else class="muted">—</span>
+          </template>
+        </CTable>
+        <p class="hint">
+          配额按「功能 → 模型 → 全局」三级在真实调用出站前依次校验，任一限额用尽即中文拒绝（HTTP 429）；
+          用量以 ai_invoke_log 为准按北京时间当日/当月实时统计，被拦截请求不落日志、不占额度；留空限额表示不限。
+        </p>
       </div>
 
       <!-- 模板市场 -->
@@ -475,6 +591,56 @@ onMounted(loadAll)
       <template #footer>
         <CButton variant="secondary" @click="bDrawer = false">关闭</CButton>
         <CButton variant="primary" :disabled="bSaving || !canEdit" @click="saveBinding">{{ bSaving ? '保存中…' : '保存绑定' }}</CButton>
+      </template>
+    </CDrawer>
+
+    <!-- 配额调整抽屉 -->
+    <CDrawer v-model:show="qDrawer" :title="qEditing ? `配额调整 · ${qEditing.targetName}` : '配额调整'" size="md">
+      <div v-if="qEditing" class="bind-form">
+        <div class="bf-grid">
+          <div class="bf-row">
+            <label class="fld-label">配额维度</label>
+            <CInput :model-value="scopeNames[qEditing.quotaScope] || qEditing.quotaScope" disabled />
+          </div>
+          <div class="bf-row">
+            <label class="fld-label">目标编码</label>
+            <CInput :model-value="qEditing.targetCode" disabled />
+          </div>
+        </div>
+        <div class="bf-grid">
+          <div class="bf-row">
+            <label class="fld-label">今日已用（次）</label>
+            <CInput :model-value="String(qEditing.dailyUsed)" disabled />
+          </div>
+          <div class="bf-row">
+            <label class="fld-label">本月已用（次）</label>
+            <CInput :model-value="String(qEditing.monthlyUsed)" disabled />
+          </div>
+        </div>
+        <div class="bf-grid">
+          <div class="bf-row">
+            <label class="fld-label">日调用额度（留空 = 不限）</label>
+            <CInput v-model="qForm.dailyLimit" type="number" placeholder="如 200" />
+          </div>
+          <div class="bf-row">
+            <label class="fld-label">月调用额度（留空 = 不限）</label>
+            <CInput v-model="qForm.monthlyLimit" type="number" placeholder="如 3000" />
+          </div>
+        </div>
+        <div class="bf-row">
+          <label class="fld-label">配额状态</label>
+          <CSelect :model-value="qForm.enabled ? '1' : '0'" width="100%"
+            :options="[{ label: '启用（出站前校验）', value: '1' }, { label: '停用（不限制该维度）', value: '0' }]"
+            @update:model-value="qForm.enabled = $event === '1'" />
+        </div>
+        <p class="hint">
+          调整后立即生效；用量按北京时间当日 00:00 / 当月 1 日 00:00 起从 ai_invoke_log 实时统计。
+          保存动作写入审计日志（AI_QUOTA）。
+        </p>
+      </div>
+      <template #footer>
+        <CButton variant="secondary" @click="qDrawer = false">关闭</CButton>
+        <CButton variant="primary" :disabled="qSaving || !canEdit" @click="saveQuotaRow">{{ qSaving ? '保存中…' : '保存配额' }}</CButton>
       </template>
     </CDrawer>
   </div>

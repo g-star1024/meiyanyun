@@ -29,6 +29,10 @@ public interface AiInvokeLogRepository extends JpaRepository<AiInvokeLog, Long> 
 
     long countByInvokedAtGreaterThanEqualAndSuccess(OffsetDateTime since, Boolean success);
 
+    long countByInvokedAtGreaterThanEqualAndFeatureCode(OffsetDateTime since, String featureCode);
+
+    long countByInvokedAtGreaterThanEqualAndModelCode(OffsetDateTime since, String modelCode);
+
     @Query("select coalesce(sum(l.costFen),0) from AiInvokeLog l")
     long sumCostFen();
 

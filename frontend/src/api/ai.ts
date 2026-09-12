@@ -357,3 +357,64 @@ export function listApprovals(query: ApprovalQuery): Promise<PageResult<Approval
 export function decideApproval(id: number, cmd: DecideCmd): Promise<ApprovalView> {
   return client.post(`/ai/approvals/${id}/decide`, cmd).then((r) => r.data)
 }
+
+// -------------------- 调用配额（B44） --------------------
+
+export interface QuotaCmd {
+  dailyLimit: number | null
+  monthlyLimit: number | null
+  enabled: boolean
+}
+
+export interface QuotaView {
+  quotaId: number | null
+  quotaScope: string
+  targetCode: string
+  targetName: string
+  dailyLimit: number | null
+  monthlyLimit: number | null
+  dailyUsed: number
+  monthlyUsed: number
+  enabled: boolean
+  updatedBy: string | null
+  updatedAt: string | null
+}
+
+export interface QuotaSaveResult {
+  changed: boolean
+  quotaId: number | null
+  quotaScope: string
+  targetCode: string
+}
+
+export function listQuotas(): Promise<QuotaView[]> {
+  return client.get('/ai/quotas').then((r) => r.data)
+}
+
+// target 走 query（GLOBAL 目标为 *，含斜杠/星号不宜放 path）
+export function saveQuota(scope: string, target: string, cmd: QuotaCmd): Promise<QuotaSaveResult> {
+  return client
+    .post(`/ai/quotas/${scope}/save`, cmd, { params: { target } })
+    .then((r) => r.data)
+}
+
+// -------------------- 监控告警（B44） --------------------
+
+export interface AlertView {
+  ruleId: number
+  ruleCode: string
+  ruleName: string
+  metric: string
+  compareOp: string
+  thresholdNum: number
+  windowMinutes: number
+  notifyChannel: string
+  enabled: boolean
+  active: boolean
+  currentValue: number
+  status: string
+}
+
+export function listAlerts(): Promise<AlertView[]> {
+  return client.get('/ai/alerts').then((r) => r.data)
+}

@@ -13,7 +13,7 @@ import CSelect from '@/components/CSelect.vue'
 import CPagination from '@/components/CPagination.vue'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
-import { logKpi, searchLogs, type AiKpi, type AiLogView } from '@/api/ai'
+import { logKpi, searchLogs, listAlerts, type AiKpi, type AiLogView, type AlertView } from '@/api/ai'
 
 const toast = useToast()
 
@@ -75,16 +75,43 @@ const successOptions = [
 ]
 
 const alertCols = [
-  { key: 'name', label: '规则名' }, { key: 'metric', label: '指标' },
-  { key: 'threshold', label: '阈值' }, { key: 'channel', label: '通知渠道' },
-  { key: 'status', label: '状态', width: '90' }, { key: 'ops', label: '操作', width: '100' },
+  { key: 'ruleName', label: '规则名' }, { key: 'metricText', label: '指标' },
+  { key: 'thresholdText', label: '阈值' }, { key: 'currentText', label: '当前值', width: '110' },
+  { key: 'notifyChannel', label: '通知渠道', width: '100' },
+  { key: 'status', label: '状态', width: '90' },
 ]
-const alerts = [
-  { id: 1, name: 'P99 延迟告警', metric: 'latency_p99', threshold: '> 200ms', channel: '企微/邮件', status: '规划中' },
-  { id: 2, name: '错误率告警', metric: 'error_rate', threshold: '> 1%', channel: '企微/短信', status: '规划中' },
-  { id: 3, name: '调用量突增', metric: 'qps', threshold: '> 500', channel: '企微', status: '规划中' },
-  { id: 4, name: '供应商不可用', metric: 'availability', threshold: '< 99.9%', channel: '电话/企微', status: '规划中' },
-]
+const alerts = ref<AlertView[]>([])
+async function loadAlerts() {
+  try {
+    alerts.value = await listAlerts()
+  } catch (e) {
+    toast.error('告警规则加载失败：' + errMsg(e))
+  }
+}
+const alertRows = computed(() =>
+  alerts.value.map((a) => ({
+    ...a,
+    metricText: METRIC_LABEL[a.metric] || a.metric,
+    thresholdText: `${a.compareOp} ${fmtMetric(a.metric, a.thresholdNum)}`,
+    currentText: fmtMetric(a.metric, a.currentValue),
+  })),
+)
+const METRIC_LABEL: Record<string, string> = {
+  LATENCY_P99: 'P99 延迟',
+  ERROR_RATE: '错误率',
+  CALL_COUNT: '调用量（当日）',
+  SUCCESS_RATE: '成功率',
+  QUOTA_WATERMARK: '配额水位',
+}
+function fmtMetric(metric: string, v: number) {
+  if (metric === 'LATENCY_P99') return `${Math.round(v)}ms`
+  if (metric === 'CALL_COUNT') return `${v} 次`
+  return `${v}%`
+}
+function alertPill(a: AlertView) {
+  if (!a.enabled) return 'default' as const
+  return a.active ? 'danger' as const : 'success' as const
+}
 
 async function loadKpi() {
   try {
@@ -120,6 +147,7 @@ function changePage(n: number) {
 onMounted(() => {
   loadKpi()
   loadLogs()
+  loadAlerts()
 })
 
 function fmtTime(s: string | null) {
@@ -174,15 +202,17 @@ function statusPill(s: string) {
           <CPagination :page="page" :page-size="pageSize" :total="total" @update:page="changePage" />
         </template>
         <template v-else>
-          <div class="bar"><CButton size="sm" variant="primary" disabled>新建规则（规划中）</CButton></div>
-          <CTable :columns="alertCols" :rows="alerts" row-key="id" stripe>
-            <template #col-status="{ value }"><CStatusPill status="default">{{ value }}</CStatusPill></template>
-            <template #col-ops><CButton size="sm" variant="text" disabled>编辑</CButton></template>
+          <div class="bar"><CButton size="sm" variant="secondary" @click="loadAlerts">刷新状态</CButton></div>
+          <CTable :columns="alertCols" :rows="alertRows" row-key="ruleId" stripe
+            empty-text="暂无告警规则">
+            <template #col-status="{ row }">
+              <CStatusPill :status="alertPill(row as AlertView)" :title="row.active ? '当前值已越过阈值' : ''" dot>{{ row.status }}</CStatusPill>
+            </template>
           </CTable>
         </template>
       </div>
     </CCard>
-    <p class="hint">所有 AI 调用经网关鉴权后落 ai_invoke_log（append-only），连通性测试与配置变更同步写入审计日志；告警推送为后续批次能力。</p>
+    <p class="hint">所有 AI 调用经网关鉴权后落 ai_invoke_log（append-only），连通性测试与配置变更同步写入审计日志；告警状态按当日调用数据实时评估，通知推送为后续批次能力。</p>
   </div>
 </template>
 

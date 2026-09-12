@@ -1,5 +1,6 @@
 package com.meiyun.ai.log;
 
+import com.meiyun.ai.alert.AlertService;
 import com.meiyun.ai.domain.AiFeatureBindingRepository;
 import com.meiyun.ai.domain.AiInvokeLog;
 import com.meiyun.ai.domain.AiInvokeLogRepository;
@@ -24,11 +25,14 @@ public class InvokeLogService {
 
     private final AiInvokeLogRepository logRepo;
     private final AiFeatureBindingRepository bindingRepo;
+    private final AlertService alertService;
 
     public InvokeLogService(AiInvokeLogRepository logRepo,
-                            AiFeatureBindingRepository bindingRepo) {
+                            AiFeatureBindingRepository bindingRepo,
+                            AlertService alertService) {
         this.logRepo = logRepo;
         this.bindingRepo = bindingRepo;
+        this.alertService = alertService;
     }
 
     public record LogView(Long logId, OffsetDateTime invokedAt, String staffId, String staffName,
@@ -95,7 +99,7 @@ public class InvokeLogService {
                 .filter(b -> Boolean.TRUE.equals(b.getEnabled())).count();
 
         return new KpiView(todayCalls, successRate, p99 == null ? null : Math.round(p99),
-                0L, featureCount, enabledFeatureCount,
+                alertService.activeCount(), featureCount, enabledFeatureCount,
                 monthCalls, totalCostFen, modelCount,
                 pendingApprovals, monthApproved);
     }
