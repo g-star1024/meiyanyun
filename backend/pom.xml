@@ -29,6 +29,7 @@
         <module>org-service</module>
         <module>finance-service</module>
         <module>marketing-service</module>
+        <module>ai-service</module>
     </modules>
 
     <dependencyManagement>

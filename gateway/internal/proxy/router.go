@@ -31,6 +31,7 @@ var routeTable = []routeEntry{
 	{"/api/org", "ORG_SERVICE_URL", "http://127.0.0.1:8086"},            // org-service
 	{"/api/finance", "FINANCE_SERVICE_URL", "http://127.0.0.1:8087"},    // finance-service
 	{"/api/marketing", "MARKETING_SERVICE_URL", "http://127.0.0.1:8088"}, // marketing-service
+	{"/api/ai", "AI_SERVICE_URL", "http://127.0.0.1:8089"},               // ai-service
 }
 
 // resolveTarget 读取环境变量，缺失时回退默认值。

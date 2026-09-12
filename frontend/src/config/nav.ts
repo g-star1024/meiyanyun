@@ -321,6 +321,7 @@ export const NAV_GROUPS: NavGroup[] = [
     title: '模型与治理',
     items: [
       { to: '/ai/models', label: '模型仓库', icon: 'box', permission: 'model:view' },
+      { to: '/ai/providers', label: '模型接入', icon: 'settings', permission: 'aiAdmin:view' },
       { to: '/ai/compute', label: '算力管理', icon: 'dashboard', permission: 'compute:view' },
       { to: '/ai/features', label: '特征平台', icon: 'sign', permission: 'feature:view' },
       { to: '/ai/monitor', label: '监控告警', icon: 'bell', permission: 'monitor:view' },
@@ -551,6 +552,7 @@ export const PAGE_TITLES: Record<string, PageTitle> = {
   '/integrations': { breadcrumb: '管理后台 / 集成中心', title: '集成中心' },
   // T4 AI 中台底座
   '/ai/models': { breadcrumb: 'AI 中心 / 模型仓库', title: '模型仓库' },
+  '/ai/providers': { breadcrumb: 'AI 中心 / 模型接入', title: '供应商与模型接入' },
   '/ai/compute': { breadcrumb: 'AI 中心 / 算力管理', title: '算力管理' },
   '/ai/features': { breadcrumb: 'AI 中心 / 特征平台', title: '特征平台' },
   '/ai/monitor': { breadcrumb: 'AI 中心 / 监控告警', title: '监控告警' },

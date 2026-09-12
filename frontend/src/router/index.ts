@@ -205,6 +205,7 @@ const router = createRouter({
     { path: '/ai/privacy', name: 'a1-privacy', component: () => import('@/views/A1PrivacyView.vue') },
     { path: '/ai/gateway', name: 'a1-gateway', component: () => import('@/views/A1GatewayView.vue') },
     { path: '/ai/admin', name: 'a1-admin', component: () => import('@/views/A1AdminView.vue') },
+    { path: '/ai/providers', name: 'a1-providers', component: () => import('@/views/AiProvidersView.vue') },
 
     // ===== Wave 7 · G 通用收尾 =====
     { path: '/search', name: 'g-search', component: () => import('@/views/GSearchView.vue') },

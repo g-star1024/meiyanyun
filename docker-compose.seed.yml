@@ -129,11 +129,29 @@ services:
       retries: 10
       start_period: 60s
 
+  ai-service:
+    <<: *seed-backend
+    image: meiyun/ai-service:latest
+    container_name: meiyun-seed-ai-service
+    ports: ["18089:8089"]
+    environment:
+      <<: *seed-env
+      AUDIT_SERVICE_URL: "http://meiyun-seed-audit-service:8084"
+      AI_CONFIG_SECRET: "${AI_CONFIG_SECRET:-meiyun-dev-ai-config-secret-change-in-prod-0123}"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8089' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
   gateway:
     image: meiyun/gateway:latest
     container_name: meiyun-seed-gateway
     networks: [seed-net]
     ports: ["18443:8443"]
+    depends_on:
+      ai-service: { condition: service_healthy }
     environment:
       CUSTOMER_SERVICE_URL: "http://meiyun-seed-customer-service:8082"
       TXN_SERVICE_URL: "http://meiyun-seed-txn-service:8083"
@@ -142,6 +160,7 @@ services:
       ORG_SERVICE_URL: "http://meiyun-seed-org-service:8086"
       FINANCE_SERVICE_URL: "http://meiyun-seed-finance-service:8087"
       MARKETING_SERVICE_URL: "http://meiyun-seed-marketing-service:8088"
+      AI_SERVICE_URL: "http://meiyun-seed-ai-service:8089"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/healthz || exit 1"]
       interval: 15s

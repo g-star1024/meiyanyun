@@ -1,0 +1,63 @@
+server:
+  port: 8089
+
+spring:
+  application:
+    name: ai-service
+  datasource:
+    url: jdbc:postgresql://localhost:5433/meiyun_core?stringtype=unspecified
+    username: meiyun
+    password: meiyun123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # AI 平台系统表为全新表：baseline-version=0，V15 起新增；DDL 全部 CREATE TABLE IF NOT EXISTS，
+    # 迁移后 Hibernate update no-op。
+    baseline-on-migrate: true
+    baseline-version: 0
+    baseline-description: "JPA 自动建表基线"
+    table: flyway_schema_history
+    validate-on-migrate: true
+    # 全库共享 flyway_schema_history：customer V1/V2/V3/V5/V9、finance V4/V6/V7/V8、
+    # audit V10、marketing V11-V14；ai-service 类路径仅持 V15，他服务脚本缺失须忽略：
+    #   missing = 已应用但本地缺失且版本早于本地最新迁移；future = 已应用但本地缺失且版本更新。
+    ignore-migration-patterns:
+      - "*:missing"
+      - "*:future"
+
+meiyun:
+  security:
+    # 生产经环境变量注入；dev 默认值仅供本地联调
+    secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}
+    internal-token: ${MEIYUN_INTERNAL_TOKEN:meiyun-dev-internal-token-please-change-in-prod}
+    dev-login: ${MEIYUN_DEV_LOGIN:false}
+    # public-paths 整体覆盖默认列表，须显式带全默认公共路径
+    public-paths:
+      - /api/org/auth/login
+      - /api/org/auth/dev-login
+      - /actuator/health
+      - /error
+  ai:
+    # 供应商 API Key 落库主密钥（AES-GCM）；生产经环境变量注入，dev 默认值仅供本地联调
+    config-secret: ${AI_CONFIG_SECRET:meiyun-dev-ai-config-secret-change-in-prod-0123}
+    # LLM 出站超时（毫秒）：连通性测试与真实生成可能较慢，独立于服务间 5s RestTemplate
+    llm-connect-timeout: ${AI_LLM_CONNECT_TIMEOUT:10000}
+    llm-read-timeout: ${AI_LLM_READ_TIMEOUT:60000}
+
+audit:
+  service:
+    url: ${AUDIT_SERVICE_URL:http://127.0.0.1:8084}
+
+logging:
+  level:
+    com.meiyun: INFO

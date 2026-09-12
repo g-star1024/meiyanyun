@@ -116,6 +116,8 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     // Wave 6 · A1 AI 中心：操作端页面（话术/排班/内容/知识库/治理/隐私/网关）尚未落地，
     // 对应操作码字典已回收；仅 AI 管理台配置码有真实端点门控，予以保留。
     'aiAdmin:edit',
+    // B42：AI 治理审批决策（A1Govern 通过/驳回），区域经理持有
+    'aiGovern:approve',
     // B32：客户检索 outbox 事件处置台（DEAD 重试/重放/丢弃 + ES reindex），区域/集团级运维码
     'customer:search:admin',
   ],
