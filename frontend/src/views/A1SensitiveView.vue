@@ -2,9 +2,10 @@
 /* ============================================================
  * A1-04 敏感词检测（红线页）
  * 路由：/ai/sensitive
- * 红线：实时拦截 M5/M4/M3；误报标注回流 A1-13 训练数据
+ * 真实链路：AI 中心六功能出站前敏感词校验，命中即落 ai_sensitive_hit 留痕并 400 拦截；
+ * 误报标注回流词库治理（B46 卡1 去 mock）。
  * ============================================================ */
-import { ref, computed } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
@@ -12,6 +13,23 @@ import CTable from '@/components/CTable.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
+import CSelect from '@/components/CSelect.vue'
+import CInput from '@/components/CInput.vue'
+import CDrawer from '@/components/CDrawer.vue'
+import CPagination from '@/components/CPagination.vue'
+import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { fmtDateTimeSec, fmtDateTime } from '@/utils/datetime'
+import {
+  listSensitiveWords, createSensitiveWord, updateSensitiveWord,
+  listSensitiveHits, getSensitiveHitStats, markSensitiveHitFalsePositive,
+  type SensitiveHitView, type SensitiveWordView, type SensitiveHitStats,
+} from '@/api/ai'
+
+const auth = useAuthStore()
+const toast = useToast()
+const canEdit = computed(() => auth.can('aiAdmin:edit'))
 
 const tab = ref<'hit' | 'dict'>('hit')
 
@@ -20,108 +38,199 @@ const tabOptions = [
   { label: '词库管理', value: 'dict' },
 ]
 
+const stats = ref<SensitiveHitStats>({ todayHits: 0, totalHits: 0, falsePositiveHits: 0, totalWords: 0, enabledWords: 0 })
+
 const kpis = computed(() => [
-  { label: '今日命中', icon: 'calendar', value: '347', tone: 'danger' as const, trend: '-12%', trendUp: false, trendGood: true },
-  { label: '拦截率', icon: 'alert', value: '99.2%', tone: 'success' as const, trend: '+0.3pp', trendUp: true, trendGood: true },
-  { label: '误报率', icon: 'alert', value: '1.2%', tone: 'teal' as const, trend: '-0.4pp', trendUp: false, trendGood: true },
-  { label: '词库规模', icon: 'settings', value: '2,840 词', tone: 'purple' as const, trend: '+24', trendUp: true, trendGood: true },
+  { label: '今日命中', icon: 'calendar', value: String(stats.value.todayHits), tone: 'danger' as const },
+  { label: '累计命中', icon: 'alert', value: String(stats.value.totalHits), tone: 'blue' as const },
+  { label: '误报标注', icon: 'alert', value: String(stats.value.falsePositiveHits), tone: 'teal' as const },
+  { label: '词库规模', icon: 'settings', value: `${stats.value.totalWords} 词（启用 ${stats.value.enabledWords}）`, tone: 'purple' as const },
 ])
 
 // 命中记录
-interface HitRow {
-  id: number
-  time: string
-  channel: 'M5推送' | 'M4咨询' | 'M3关怀'
-  word: string
-  context: string
-  action: '拦截' | '告警' | '放行'
-}
+const hitRows = ref<SensitiveHitView[]>([])
+const hitLoading = ref(false)
+const hitPage = ref(1)
+const hitPageSize = ref(20)
+const hitTotal = ref(0)
+const catFilter = ref('')
 
-const hitRows = ref<HitRow[]>([
-  { id: 1, time: '2026-08-26 14:32:11', channel: 'M5推送', word: '最低价', context: '本次活动保证全网最低价，错过再等一年…', action: '拦截' },
-  { id: 2, time: '2026-08-26 14:28:45', channel: 'M4咨询', word: '包治', context: '我们的项目可以包治您的皮肤问题，永不复发…', action: '拦截' },
-  { id: 3, time: '2026-08-26 14:21:09', channel: 'M5推送', word: '国家级', context: '本机构荣获国家级认证，权威专家坐诊…', action: '告警' },
-  { id: 4, time: '2026-08-26 14:15:30', channel: 'M3关怀', word: '治愈率', context: '根据历史数据，该疗程治愈率达 98%…', action: '拦截' },
-  { id: 5, time: '2026-08-26 14:02:57', channel: 'M4咨询', word: '免费', context: '首次到店可免费体验全套护理方案…', action: '放行' },
-  { id: 6, time: '2026-08-26 13:55:18', channel: 'M5推送', word: '100%有效', context: '使用本品 7 天 100% 有效，无效全额退款…', action: '拦截' },
-  { id: 7, time: '2026-08-26 13:42:33', channel: 'M3关怀', word: '根除', context: '三个疗程根除您的所有面部困扰…', action: '拦截' },
-  { id: 8, time: '2026-08-26 13:30:12', channel: 'M4咨询', word: '神药', context: '这款产品被誉为美容神药，很多老客户回购…', action: '告警' },
-  { id: 9, time: '2026-08-26 13:18:04', channel: 'M5推送', word: '特效', context: '新品上线，特效抗衰老精华限时 5 折…', action: '告警' },
-  { id: 10, time: '2026-08-26 13:05:48', channel: 'M3关怀', word: '无副作用', context: '本产品纯植物提取，无副作用，请您放心…', action: '拦截' },
-])
+const catFilterOptions = [
+  { label: '全部词类', value: '' },
+  { label: '违禁内容（BANNED）', value: 'BANNED' },
+  { label: '越权提示词（INJECTION）', value: 'INJECTION' },
+]
 
 const hitColumns = [
-  { key: 'time', label: '时间', width: '170' },
-  { key: 'channel', label: '渠道', width: '110' },
-  { key: 'word', label: '命中词', width: '120' },
-  { key: 'context', label: '上下文摘要' },
+  { key: 'hitAt', label: '时间', width: '150' },
+  { key: 'featureName', label: '功能来源', width: '110' },
+  { key: 'word', label: '命中词', width: '140' },
+  { key: 'contextSnippet', label: '上下文摘要' },
   { key: 'action', label: '处置', width: '100' },
   { key: 'op', label: '操作', width: '110', align: 'center' as const },
 ]
 
-function channelPill(c: HitRow['channel']) {
-  if (c === 'M5推送') return { status: 'primary' as const, text: 'M5 推送' }
-  if (c === 'M4咨询') return { status: 'info' as const, text: 'M4 咨询' }
-  return { status: 'success' as const, text: 'M3 关怀' }
+function catName(c: string) {
+  return c === 'INJECTION' ? '越权提示词' : '违禁内容'
 }
 
-function actionPill(a: HitRow['action']) {
-  if (a === '拦截') return { status: 'danger' as const }
-  if (a === '告警') return { status: 'warning' as const }
-  return { status: 'default' as const }
+function catPill(c: string) {
+  return c === 'INJECTION' ? 'warning' as const : 'danger' as const
 }
 
-function markFalsePositive(row: Record<string, any>) {
-  const r = row as HitRow
-  window.alert(`已将「${r.word}」标记为误报，将回流 A1-13 训练数据`)
+function fmtHitTime(s: string | null) {
+  return fmtDateTimeSec(s)
+}
+
+async function loadHits() {
+  hitLoading.value = true
+  try {
+    const res = await listSensitiveHits({
+      category: catFilter.value || undefined,
+      page: hitPage.value - 1,
+      size: hitPageSize.value,
+    })
+    hitRows.value = res.content
+    hitTotal.value = res.totalElements
+  } catch (e) {
+    toast.error('命中记录加载失败：' + errMsg(e))
+  } finally {
+    hitLoading.value = false
+  }
+}
+
+async function loadStats() {
+  try {
+    stats.value = await getSensitiveHitStats()
+  } catch (e) {
+    toast.error('统计加载失败：' + errMsg(e))
+  }
+}
+
+function changeCatFilter(v: string) {
+  catFilter.value = v
+  hitPage.value = 1
+  loadHits()
+}
+
+function changeHitPage(n: number) {
+  hitPage.value = n
+  loadHits()
+}
+
+async function markFalsePositive(row: Record<string, any>) {
+  const r = row as SensitiveHitView
+  if (r.falsePositive) return
+  try {
+    await markSensitiveHitFalsePositive(r.hitId)
+    toast.success(`已将「${r.word}」标注为误报`)
+    await Promise.all([loadHits(), loadStats()])
+  } catch (e) {
+    toast.error('误报标注失败：' + errMsg(e))
+  }
 }
 
 // 词库管理
-interface DictRow {
-  id: number
-  word: string
-  level: '高危' | '中危' | '低危'
-  synonyms: string
-  hits: number
-  status: '启用' | '停用'
-}
-
-const dictRows = ref<DictRow[]>([
-  { id: 1, word: '100%有效', level: '高危', synonyms: '百分百有效 / 彻底有效', hits: 128, status: '启用' },
-  { id: 2, word: '包治', level: '高危', synonyms: '包治好 / 根治', hits: 86, status: '启用' },
-  { id: 3, word: '治愈率', level: '高危', synonyms: '治好比例 / 痊愈率', hits: 72, status: '启用' },
-  { id: 4, word: '神药', level: '高危', synonyms: '灵药 / 神品', hits: 41, status: '启用' },
-  { id: 5, word: '国家级', level: '中危', synonyms: '国家指定 / 国家认证', hits: 63, status: '启用' },
-  { id: 6, word: '特效', level: '中危', synonyms: '强效 / 立竿见影', hits: 154, status: '启用' },
-  { id: 7, word: '无副作用', level: '高危', synonyms: '零副作用 / 绝对安全', hits: 38, status: '启用' },
-  { id: 8, word: '根除', level: '高危', synonyms: '彻底去除 / 杜绝复发', hits: 55, status: '启用' },
-  { id: 9, word: '最低价', level: '中危', synonyms: '全网最低 / 底价', hits: 97, status: '启用' },
-  { id: 10, word: '免费', level: '低危', synonyms: '0元 / 不要钱', hits: 212, status: '启用' },
-])
+const dictRows = ref<SensitiveWordView[]>([])
+const dictLoaded = ref(false)
+const dictLoading = ref(false)
 
 const dictColumns = [
-  { key: 'word', label: '敏感词', width: '140' },
-  { key: 'level', label: '分级', width: '100' },
-  { key: 'synonyms', label: '同义词' },
+  { key: 'word', label: '敏感词', width: '160' },
+  { key: 'category', label: '词类', width: '120' },
   { key: 'hits', label: '命中次数', width: '110', align: 'right' as const },
-  { key: 'status', label: '状态', width: '100' },
+  { key: 'enabled', label: '状态', width: '100' },
+  { key: 'updatedAt', label: '最近更新', width: '160' },
   { key: 'op', label: '操作', width: '100', align: 'center' as const },
 ]
 
-function levelPill(l: DictRow['level']) {
-  if (l === '高危') return 'danger' as const
-  if (l === '中危') return 'warning' as const
-  return 'info' as const
+async function loadWords() {
+  dictLoading.value = true
+  try {
+    dictRows.value = await listSensitiveWords()
+    dictLoaded.value = true
+  } catch (e) {
+    toast.error('词库加载失败：' + errMsg(e))
+  } finally {
+    dictLoading.value = false
+  }
 }
 
+function switchTab(v: string) {
+  const t = v as 'hit' | 'dict'
+  tab.value = t
+  if (t === 'dict' && !dictLoaded.value) loadWords()
+}
+
+// 新增 / 编辑抽屉
+const drawerShow = ref(false)
+const drawerSaving = ref(false)
+const editingId = ref<number | null>(null)
+const form = reactive({ word: '', category: 'BANNED', enabled: 'true' })
+
+const categoryOptions = [
+  { label: '违禁内容（BANNED）', value: 'BANNED' },
+  { label: '越权提示词（INJECTION）', value: 'INJECTION' },
+]
+const enabledOptions = [
+  { label: '启用', value: 'true' },
+  { label: '停用', value: 'false' },
+]
+
+const drawerTitle = computed(() => (editingId.value == null ? '新增敏感词' : '编辑敏感词'))
+const wordError = computed(() => form.word.trim().length === 0 || form.word.trim().length > 128)
+
 function addWord() {
-  window.alert('新增敏感词（演示）')
+  editingId.value = null
+  form.word = ''
+  form.category = 'BANNED'
+  form.enabled = 'true'
+  drawerShow.value = true
 }
 
 function editWord(row: Record<string, any>) {
-  const r = row as DictRow
-  window.alert(`编辑词「${r.word}」`)
+  const r = row as SensitiveWordView
+  editingId.value = r.wordId
+  form.word = r.word
+  form.category = r.category
+  form.enabled = r.enabled ? 'true' : 'false'
+  drawerShow.value = true
 }
+
+async function submitWord() {
+  const word = form.word.trim()
+  if (!word) {
+    toast.warning('请填写敏感词内容')
+    return
+  }
+  if (word.length > 128) {
+    toast.warning('敏感词内容不能超过 128 字')
+    return
+  }
+  const cmd = { word, category: form.category, enabled: form.enabled === 'true' }
+  drawerSaving.value = true
+  try {
+    const res = editingId.value == null
+      ? await createSensitiveWord(cmd)
+      : await updateSensitiveWord(editingId.value, cmd)
+    if (!res.changed) {
+      toast.warning('内容无变化，未保存')
+    } else {
+      toast.success(editingId.value == null ? '敏感词已新增' : '敏感词已更新')
+    }
+    drawerShow.value = false
+    await Promise.all([loadWords(), loadStats()])
+  } catch (e) {
+    toast.error('保存失败：' + errMsg(e))
+  } finally {
+    drawerSaving.value = false
+  }
+}
+
+onMounted(() => {
+  loadStats()
+  loadHits()
+})
 </script>
 
 <template>
@@ -138,8 +247,15 @@ function editWord(row: Record<string, any>) {
             <h3>敏感词实时检测</h3>
           </div>
           <div class="card-head__right">
-            <CSegmented v-model="tab" :options="tabOptions" size="sm" />
-            <CButton v-if="tab === 'dict'" size="sm" variant="primary" @click="addWord">
+            <CSelect
+              v-if="tab === 'hit'"
+              :model-value="catFilter"
+              :options="catFilterOptions"
+              width="190px"
+              @update:model-value="changeCatFilter"
+            />
+            <CSegmented :model-value="tab" :options="tabOptions" size="sm" @update:model-value="switchTab" />
+            <CButton v-if="tab === 'dict' && canEdit" size="sm" variant="primary" @click="addWord">
               <CIcon name="plus" :size="14" />
               新增词
             </CButton>
@@ -149,61 +265,109 @@ function editWord(row: Record<string, any>) {
 
       <!-- 命中记录 -->
       <div v-if="tab === 'hit'" class="tab-pane">
-        <CTable :columns="hitColumns" :rows="hitRows" row-key="id">
-          <template #col-channel="{ row }">
-            <CStatusPill :status="channelPill(row.channel).status" dot>
-              {{ channelPill(row.channel).text }}
-            </CStatusPill>
+        <CTable
+          :columns="hitColumns"
+          :rows="hitRows"
+          row-key="hitId"
+          :empty-text="hitLoading ? '加载中…' : '暂无命中记录'"
+        >
+          <template #col-hitAt="{ value }">
+            {{ fmtHitTime(value) }}
           </template>
-          <template #col-word="{ value }">
-            <span class="word-hit">{{ value }}</span>
+          <template #col-featureName="{ row }">
+            <CStatusPill status="info" dot>{{ row.featureName || '—' }}</CStatusPill>
           </template>
-          <template #col-context="{ value }">
-            <span class="ctx">{{ value }}</span>
+          <template #col-word="{ row }">
+            <span class="word-hit">{{ row.word }}</span>
+            <span class="word-cat">{{ catName(row.category) }}</span>
           </template>
-          <template #col-action="{ row }">
-            <CStatusPill :status="actionPill(row.action).status" dot>
-              {{ row.action }}
-            </CStatusPill>
+          <template #col-contextSnippet="{ value }">
+            <span class="ctx">{{ value || '—' }}</span>
+          </template>
+          <template #col-action>
+            <CStatusPill status="danger" dot>拦截</CStatusPill>
           </template>
           <template #col-op="{ row }">
-            <CButton size="sm" variant="text" @click="markFalsePositive(row)">误报标注</CButton>
+            <CButton
+              v-if="canEdit && !row.falsePositive"
+              size="sm"
+              variant="text"
+              @click="markFalsePositive(row)"
+            >
+              误报标注
+            </CButton>
+            <span v-else-if="row.falsePositive" class="fp-done">已标误报</span>
+            <span v-else class="fp-done">—</span>
           </template>
         </CTable>
+        <CPagination :page="hitPage" :page-size="hitPageSize" :total="hitTotal" @update:page="changeHitPage" />
       </div>
 
       <!-- 词库管理 -->
       <div v-else class="tab-pane">
-        <CTable :columns="dictColumns" :rows="dictRows" row-key="id">
+        <CTable
+          :columns="dictColumns"
+          :rows="dictRows"
+          row-key="wordId"
+          :empty-text="dictLoading ? '加载中…' : '词库为空，点击右上角新增'"
+        >
           <template #col-word="{ value }">
             <span class="word-dict">{{ value }}</span>
           </template>
-          <template #col-level="{ value }">
-            <CStatusPill :status="levelPill(value)" dot>{{ value }}</CStatusPill>
+          <template #col-category="{ value }">
+            <CStatusPill :status="catPill(value)" dot>{{ catName(value) }}</CStatusPill>
           </template>
           <template #col-hits="{ value }">
             <span class="hits-num">{{ value.toLocaleString() }}</span>
           </template>
-          <template #col-status="{ value }">
-            <CStatusPill :status="value === '启用' ? 'success' : 'disabled'" dot>
-              {{ value }}
+          <template #col-enabled="{ value }">
+            <CStatusPill :status="value ? 'success' : 'disabled'" dot>
+              {{ value ? '启用' : '停用' }}
             </CStatusPill>
           </template>
+          <template #col-updatedAt="{ value }">{{ fmtDateTime(value, true) }}</template>
           <template #col-op="{ row }">
-            <CButton size="sm" variant="text" @click="editWord(row)">
+            <CButton v-if="canEdit" size="sm" variant="text" @click="editWord(row)">
               <CIcon name="edit" :size="13" />
               编辑
             </CButton>
+            <span v-else>—</span>
           </template>
         </CTable>
       </div>
     </CCard>
 
+    <!-- 新增/编辑抽屉 -->
+    <CDrawer :show="drawerShow" size="md" :title="drawerTitle" @update:show="drawerShow = $event">
+      <div class="word-form">
+        <CInput
+          v-model="form.word"
+          label="敏感词内容"
+          placeholder="请输入需拦截的词或短语（128 字内）"
+          :error="wordError && form.word.trim().length > 0"
+        />
+        <div class="wf-row">
+          <label class="fld-label">词类</label>
+          <CSelect v-model="form.category" :options="categoryOptions" width="100%" />
+        </div>
+        <div class="wf-row">
+          <label class="fld-label">状态</label>
+          <CSelect v-model="form.enabled" :options="enabledOptions" width="100%" />
+        </div>
+      </div>
+      <template #footer>
+        <CButton variant="secondary" @click="drawerShow = false">取消</CButton>
+        <CButton variant="primary" :disabled="drawerSaving || wordError" @click="submitWord">
+          {{ drawerSaving ? '保存中…' : '保存' }}
+        </CButton>
+      </template>
+    </CDrawer>
+
     <!-- 红线提示条 -->
     <div class="redline-bar">
       <CIcon name="shield" :size="16" />
       <span class="redline-bar__text">
-        A1-04 敏感词实时拦截已接入 M5 推送 / M4 咨询 / M3 关怀，误报标注回流 A1-13 训练数据
+        敏感词实时拦截已接入 AI 中心六大功能出站链路（客户画像 / 流失预警 / 智能话术 / 智能排班 / 内容生成 / 审批评估），命中即在 LLM 调用前拦截并留痕，误报标注可回流词库治理
       </span>
     </div>
   </div>
@@ -264,6 +428,12 @@ function editWord(row: Record<string, any>) {
   border-radius: var(--r-sm);
   font-size: var(--t-xs);
 }
+.word-cat {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--t-xs);
+  color: var(--c-text-3);
+}
 .word-dict {
   font-weight: 600;
   color: var(--c-text);
@@ -276,6 +446,25 @@ function editWord(row: Record<string, any>) {
   font-variant-numeric: tabular-nums;
   color: var(--c-text);
   font-weight: 500;
+}
+.fp-done {
+  font-size: var(--t-xs);
+  color: var(--c-text-3);
+}
+.word-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-md);
+}
+.wf-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.fld-label {
+  font-size: 13px;
+  color: var(--c-text);
+  line-height: 18px;
 }
 
 .redline-bar {

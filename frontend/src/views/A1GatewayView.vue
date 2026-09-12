@@ -14,6 +14,7 @@ import CPagination from '@/components/CPagination.vue'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
 import { logKpi, searchLogs, listAlerts, type AiKpi, type AiLogView, type AlertView } from '@/api/ai'
+import { fmtDateTimeSec } from '@/utils/datetime'
 
 const toast = useToast()
 
@@ -151,8 +152,7 @@ onMounted(() => {
 })
 
 function fmtTime(s: string | null) {
-  if (!s) return '—'
-  return s.replace('T', ' ').slice(5, 19)
+  return fmtDateTimeSec(s)
 }
 function fmtTokens(v: number | null) {
   return v == null ? '—' : v.toLocaleString()

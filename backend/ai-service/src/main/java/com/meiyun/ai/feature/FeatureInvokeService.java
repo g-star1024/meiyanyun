@@ -139,7 +139,7 @@ public class FeatureInvokeService {
         }
         String apiKey = keyRef.decrypt(provider);
 
-        sensitiveWordService.screen(input);
+        sensitiveWordService.screen(input, featureCode, user, reqStore);
         quotaService.check(featureCode, model.getModelCode());
 
         String prompt = buildPrompt(binding.getPromptTemplate(), input);

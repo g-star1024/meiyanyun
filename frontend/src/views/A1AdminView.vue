@@ -24,6 +24,7 @@ import {
   type AiKpi, type FeatureBill, type BindingView, type CfgView,
   type ModelView, type InvokeView, type QuotaView,
 } from '@/api/ai'
+import { fmtDateTime } from '@/utils/datetime'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -118,7 +119,7 @@ const bindRows = computed(() =>
     model: f.modelDisplayName ? `${f.modelDisplayName}（${f.modelCode}）` : '—',
     storeScopeText: f.storeScope === 'SPECIFIED' ? `指定门店：${f.storeCodes || '—'}` : '全部门店',
     roles: roleCodes.filter((r) => f.roles?.[r]).map((r) => roleNames[r]).join('、') || '—',
-    updatedAt: f.updatedAt ? f.updatedAt.replace('T', ' ').slice(0, 16) : '—',
+    updatedAt: f.updatedAt ? fmtDateTime(f.updatedAt, true) : '—',
   })),
 )
 const bindModelOptions = computed(() =>
@@ -265,7 +266,7 @@ const quotaRows = computed(() =>
     ...q,
     daily: `${q.dailyUsed.toLocaleString()} / ${fmtLimit(q.dailyLimit)}`,
     monthly: `${q.monthlyUsed.toLocaleString()} / ${fmtLimit(q.monthlyLimit)}`,
-    updatedAt: q.updatedAt ? q.updatedAt.replace('T', ' ').slice(0, 16) : '—',
+    updatedAt: q.updatedAt ? fmtDateTime(q.updatedAt, true) : '—',
   })),
 )
 async function loadQuotas() {
@@ -352,7 +353,7 @@ async function loadCfg() {
     config.sensitiveCheck = c.sensitiveCheck
     config.explainability = c.explainability
     modelOptions.value = c.modelOptions.map((m) => ({ label: m.label, value: String(m.modelId) }))
-    cfgUpdated.value = c.updatedAt ? c.updatedAt.replace('T', ' ').slice(0, 16) : null
+    cfgUpdated.value = c.updatedAt ? fmtDateTime(c.updatedAt, true) : null
   } catch (e) {
     toast.error('全局配置加载失败：' + errMsg(e))
   }

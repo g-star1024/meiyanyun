@@ -26,6 +26,7 @@ import {
   type AiKpi, type ApprovalView, type BindingView, type ModelView,
   type EvalView, type ExperimentView, type EvalMetrics,
 } from '@/api/ai'
+import { fmtDateTime } from '@/utils/datetime'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -413,8 +414,7 @@ function typeName(t: string) {
   return TYPE_NAMES[t] || t
 }
 function fmtTime(s: string | null) {
-  if (!s) return '—'
-  return s.replace('T', ' ').slice(5, 16)
+  return fmtDateTime(s)
 }
 function fmtYuan(fen: number) {
   return (fen / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })

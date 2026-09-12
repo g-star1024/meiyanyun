@@ -530,3 +530,74 @@ export function concludeExperiment(id: number, conclusion: string): Promise<Expe
 export function getEvalStats(): Promise<EvalStats> {
   return client.get('/ai/eval-stats').then((r) => r.data)
 }
+
+// -------------------- 敏感词治理（B46 卡1） --------------------
+
+export interface SensitiveWordCmd {
+  word: string
+  category: string
+  enabled: boolean
+}
+
+export interface SensitiveWordView {
+  wordId: number
+  word: string
+  category: string
+  enabled: boolean
+  hits: number
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface SensitiveHitView {
+  hitId: number
+  hitAt: string | null
+  wordId: number | null
+  word: string
+  category: string
+  featureCode: string | null
+  featureName: string
+  staffName: string | null
+  storeCode: string | null
+  contextSnippet: string | null
+  falsePositive: boolean
+  markedBy: string | null
+  markedAt: string | null
+}
+
+export interface SensitiveHitStats {
+  todayHits: number
+  totalHits: number
+  falsePositiveHits: number
+  totalWords: number
+  enabledWords: number
+}
+
+export interface SensitiveSaveResult {
+  changed: boolean
+  wordId: number
+}
+
+export function listSensitiveWords(): Promise<SensitiveWordView[]> {
+  return client.get('/ai/sensitive/words').then((r) => r.data)
+}
+
+export function createSensitiveWord(cmd: SensitiveWordCmd): Promise<SensitiveSaveResult> {
+  return client.post('/ai/sensitive/words', cmd).then((r) => r.data)
+}
+
+export function updateSensitiveWord(id: number, cmd: SensitiveWordCmd): Promise<SensitiveSaveResult> {
+  return client.post(`/ai/sensitive/words/${id}`, cmd).then((r) => r.data)
+}
+
+export function listSensitiveHits(params: { category?: string; page: number; size: number }): Promise<PageResult<SensitiveHitView>> {
+  return client.get('/ai/sensitive/hits', { params }).then((r) => r.data)
+}
+
+export function getSensitiveHitStats(): Promise<SensitiveHitStats> {
+  return client.get('/ai/sensitive/hits/stats').then((r) => r.data)
+}
+
+export function markSensitiveHitFalsePositive(id: number): Promise<SensitiveSaveResult> {
+  return client.post(`/ai/sensitive/hits/${id}/mark-fp`).then((r) => r.data)
+}

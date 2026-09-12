@@ -19,6 +19,7 @@ import {
   listModels, createModel, updateModel, deleteModel, testModel,
   type ProviderView, type ModelView, type ModelTestResult,
 } from '@/api/ai'
+import { fmtDateTime } from '@/utils/datetime'
 
 const auth = useAuthStore()
 const toast = useToast()
@@ -282,8 +283,7 @@ function connLabel(s: string | null) {
   return '未测试'
 }
 function fmtTime(s: string | null) {
-  if (!s) return '—'
-  return s.replace('T', ' ').slice(0, 16)
+  return fmtDateTime(s, true)
 }
 function fmtPrice(inP: number | null, outP: number | null) {
   if (inP == null && outP == null) return '—'
