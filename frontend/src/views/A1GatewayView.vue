@@ -2,7 +2,7 @@
 /* A1-18/19/20 API网关与日志 /ai/gateway
    B42 接真：KPI 与调用日志来自 ai-service /api/ai/logs（权限 aiGateway:view）。
    API 目录与告警规则为规划能力，本期静态占位（Backlog）。 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CKpi from '@/components/CKpi.vue'
@@ -24,7 +24,8 @@ const tabOptions = [
   { label: '告警规则', value: 'alerts' },
 ]
 
-const kpis = ref<ReturnType<typeof toKpis> | null>(null)
+const kpiRaw = ref<AiKpi | null>(null)
+const kpis = computed(() => (kpiRaw.value ? toKpis(kpiRaw.value) : null))
 function toKpis(k: AiKpi) {
   return [
     { label: '今日调用', icon: 'settings', value: k.todayCalls.toLocaleString(), tone: 'purple' as const },
@@ -40,13 +41,19 @@ const apiCols = [
   { key: 'auth', label: '鉴权', width: '100' }, { key: 'calls', label: '今日调用', width: '100', align: 'right' as const },
   { key: 'status', label: '状态', width: '90' },
 ]
-const apis = [
-  { id: 1, path: '/api/ai/features/{code}/invoke', method: 'POST', qps: 100, auth: 'Bearer', calls: 0, status: '正常' },
-  { id: 2, path: '/api/ai/internal/llm/chat', method: 'POST', qps: 50, auth: 'Internal-Token', calls: 0, status: '正常' },
-  { id: 3, path: '/api/ai/providers', method: 'GET', qps: 100, auth: 'Bearer', calls: 0, status: '正常' },
-  { id: 4, path: '/api/ai/models/{id}/test', method: 'POST', qps: 20, auth: 'Bearer', calls: 0, status: '正常' },
-  { id: 5, path: '/api/ai/logs', method: 'GET', qps: 100, auth: 'Bearer', calls: 0, status: '正常' },
+const apiCatalog = [
+  { id: 1, path: '/api/ai/features/{code}/invoke', method: 'POST', qps: 100, auth: 'Bearer', invoke: true, status: '正常' },
+  { id: 2, path: '/api/ai/internal/llm/chat', method: 'POST', qps: 50, auth: 'Internal-Token', invoke: false, status: '规划中' },
+  { id: 3, path: '/api/ai/providers', method: 'GET', qps: 100, auth: 'Bearer', invoke: false, status: '正常' },
+  { id: 4, path: '/api/ai/models/{id}/test', method: 'POST', qps: 20, auth: 'Bearer', invoke: false, status: '正常' },
+  { id: 5, path: '/api/ai/logs', method: 'GET', qps: 100, auth: 'Bearer', invoke: false, status: '正常' },
 ]
+const apis = computed(() =>
+  apiCatalog.map((a) => ({
+    ...a,
+    calls: a.invoke ? (kpiRaw.value?.todayCalls ?? 0) : 0,
+  })),
+)
 const logCols = [
   { key: 'invokedAt', label: '时间', width: '150' },
   { key: 'feature', label: '功能 / 模型' },
@@ -81,7 +88,7 @@ const alerts = [
 
 async function loadKpi() {
   try {
-    kpis.value = toKpis(await logKpi())
+    kpiRaw.value = await logKpi()
   } catch (e) {
     toast.error('网关指标加载失败：' + errMsg(e))
   }

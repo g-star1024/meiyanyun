@@ -44,7 +44,7 @@ const modelCols = [
   { key: 'providerName', label: '供应商', width: '130' },
   { key: 'capabilities', label: '能力', width: '150' },
   { key: 'contextWindow', label: '上下文', width: '100', align: 'right' as const },
-  { key: 'price', label: '价格(元/千tok)', width: '150', align: 'right' as const },
+  { key: 'price', label: '价格(元/百万tok)', width: '160', align: 'right' as const },
   { key: 'priority', label: '优先级', width: '80', align: 'center' as const },
   { key: 'enabled', label: '启用', width: '80' },
   { key: 'connStatus', label: '连通状态', width: '110' },
@@ -432,10 +432,10 @@ function capsLabel(raw: string) {
           <CInput v-model="mForm.priority" type="number" label="优先级（小者优先）" placeholder="100" />
         </div>
         <div>
-          <CInput v-model="mForm.inputPrice" type="number" label="输入价（元/千tokens）" placeholder="可选" />
+          <CInput v-model="mForm.inputPrice" type="number" label="输入价（元/百万token）" placeholder="可选" />
         </div>
         <div>
-          <CInput v-model="mForm.outputPrice" type="number" label="输出价（元/千tokens）" placeholder="可选" />
+          <CInput v-model="mForm.outputPrice" type="number" label="输出价（元/百万token）" placeholder="可选" />
         </div>
         <div>
           <label class="fld-label">状态</label>

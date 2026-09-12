@@ -12,21 +12,24 @@ import CTable from '@/components/CTable.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import CSelect from '@/components/CSelect.vue'
 import CInput from '@/components/CInput.vue'
+import CDrawer from '@/components/CDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
 import {
   logKpi, monthlyBill, listFeatures, saveFeatureRoles,
-  getCfg, saveCfg,
+  getCfg, saveCfg, listModels, saveFeatureBinding, invokeFeature,
   type AiKpi, type FeatureBill, type BindingView, type CfgView,
+  type ModelView, type InvokeView,
 } from '@/api/ai'
 
 const auth = useAuthStore()
 const toast = useToast()
 const canEdit = computed(() => auth.can('aiAdmin:edit'))
 
-const tab = ref('perm')
+const tab = ref('bind')
 const tabOptions = [
+  { label: '功能绑定', value: 'bind' },
   { label: '灰度权限', value: 'perm' },
   { label: '用量计费', value: 'bill' },
   { label: '模板市场', value: 'tpl' },
@@ -92,6 +95,117 @@ async function saveMatrix() {
     toast.error('灰度矩阵保存失败：' + errMsg(e))
   } finally {
     matrixSaving.value = false
+  }
+}
+
+// 功能绑定：模型 / 灰度范围 / 提示词模板 / 参数覆盖 / 启用，抽屉内支持真实试运行
+const models = ref<ModelView[]>([])
+const bindCols = [
+  { key: 'featureName', label: 'AI 功能' },
+  { key: 'model', label: '绑定模型' },
+  { key: 'storeScopeText', label: '门店灰度' },
+  { key: 'enabled', label: '状态', width: '90', align: 'center' as const },
+  { key: 'roles', label: '已放开角色' },
+  { key: 'updatedAt', label: '最近更新', width: '160' },
+  { key: 'ops', label: '操作', width: '150', align: 'right' as const },
+]
+const bindRows = computed(() =>
+  features.value.map((f) => ({
+    ...f,
+    model: f.modelDisplayName ? `${f.modelDisplayName}（${f.modelCode}）` : '—',
+    storeScopeText: f.storeScope === 'SPECIFIED' ? `指定门店：${f.storeCodes || '—'}` : '全部门店',
+    roles: roleCodes.filter((r) => f.roles?.[r]).map((r) => roleNames[r]).join('、') || '—',
+    updatedAt: f.updatedAt ? f.updatedAt.replace('T', ' ').slice(0, 16) : '—',
+  })),
+)
+const bindModelOptions = computed(() =>
+  models.value.map((m) => ({
+    label: `${m.displayName}（${m.modelCode}）${m.enabled ? '' : '·已停用'}`,
+    value: String(m.modelId),
+  })),
+)
+
+const bDrawer = ref(false)
+const bEditing = ref<BindingView | null>(null)
+const bSaving = ref(false)
+const bForm = reactive({
+  modelId: '', storeScope: 'ALL', storeCodes: '', promptTemplate: '',
+  paramOverrides: '', enabled: false, requireApproval: false,
+})
+function openBind(row: BindingView) {
+  bEditing.value = row
+  Object.assign(bForm, {
+    modelId: row.modelId == null ? '' : String(row.modelId),
+    storeScope: row.storeScope || 'ALL',
+    storeCodes: row.storeCodes || '',
+    promptTemplate: row.promptTemplate || '',
+    paramOverrides: row.paramOverrides || '',
+    enabled: !!row.enabled,
+    requireApproval: !!row.requireApproval,
+  })
+  invokeResult.value = null
+  invokeInput.value = ''
+  invokeError.value = ''
+  bDrawer.value = true
+}
+async function saveBinding() {
+  if (!bEditing.value) return
+  let overrides: string | null = bForm.paramOverrides.trim()
+  if (overrides) {
+    try {
+      JSON.parse(overrides)
+    } catch {
+      toast.error('参数覆盖不是合法 JSON，示例：{"temperature":0.2,"maxTokens":2048}')
+      return
+    }
+  } else {
+    overrides = null
+  }
+  bSaving.value = true
+  try {
+    const r = await saveFeatureBinding(bEditing.value.featureCode, {
+      modelId: bForm.modelId === '' ? null : Number(bForm.modelId),
+      storeScope: bForm.storeScope,
+      storeCodes: bForm.storeScope === 'SPECIFIED' ? bForm.storeCodes.trim() : null,
+      promptTemplate: bForm.promptTemplate.trim() || null,
+      paramOverrides: overrides,
+      enabled: bForm.enabled,
+      requireApproval: bForm.requireApproval,
+    })
+    toast.success(r.changed ? '功能绑定已保存并写入审计日志' : '配置无变化，未产生更新')
+    await loadMatrix()
+    bDrawer.value = false
+  } catch (e) {
+    toast.error('功能绑定保存失败：' + errMsg(e))
+  } finally {
+    bSaving.value = false
+  }
+}
+
+// 试运行：走真实 POST /api/ai/features/{code}/invoke，结果与费用同步沉淀 ai_invoke_log
+const invokeInput = ref('')
+const invoking = ref(false)
+const invokeResult = ref<InvokeView | null>(null)
+const invokeError = ref('')
+async function runInvoke() {
+  if (!bEditing.value) return
+  const text = invokeInput.value.trim()
+  if (!text) {
+    toast.warning('请先输入试运行内容')
+    return
+  }
+  invoking.value = true
+  invokeResult.value = null
+  invokeError.value = ''
+  try {
+    invokeResult.value = await invokeFeature(bEditing.value.featureCode, { input: text })
+    const [k, b] = await Promise.allSettled([logKpi(), monthlyBill()])
+    if (k.status === 'fulfilled') kpis.value = toKpis(k.value)
+    if (b.status === 'fulfilled') bills.value = b.value
+  } catch (e) {
+    invokeError.value = errMsg(e)
+  } finally {
+    invoking.value = false
   }
 }
 
@@ -169,11 +283,13 @@ async function saveGlobalCfg() {
 }
 
 async function loadAll() {
-  const [k, b] = await Promise.allSettled([logKpi(), monthlyBill()])
+  const [k, b, m] = await Promise.allSettled([logKpi(), monthlyBill(), listModels()])
   if (k.status === 'fulfilled') kpis.value = toKpis(k.value)
   else toast.error('平台指标加载失败：' + errMsg(k.reason))
   if (b.status === 'fulfilled') bills.value = b.value
   else toast.error('用量账单加载失败：' + errMsg(b.reason))
+  if (m.status === 'fulfilled') models.value = m.value
+  else toast.error('模型列表加载失败：' + errMsg(m.reason))
   await Promise.all([loadMatrix(), loadCfg()])
 }
 onMounted(loadAll)
@@ -185,8 +301,31 @@ onMounted(loadAll)
     <CCard padding="lg">
       <CSegmented v-model="tab" :options="tabOptions" />
 
+      <!-- 功能绑定 -->
+      <div v-if="tab === 'bind'" class="mt">
+        <CTable :columns="bindCols" :rows="bindRows" row-key="featureCode" stripe
+          :empty-text="features.length ? '暂无数据' : '功能目录加载中…'">
+          <template #col-model="{ value }">
+            <span v-if="value !== '—'" class="mono">{{ value }}</span>
+            <span v-else class="muted">未绑定</span>
+          </template>
+          <template #col-enabled="{ value }">
+            <CStatusPill :status="value ? 'success' : 'disabled'" dot>{{ value ? '已启用' : '未启用' }}</CStatusPill>
+          </template>
+          <template #col-roles="{ value }"><span class="muted">{{ value }}</span></template>
+          <template #col-ops="{ row }">
+            <CButton v-if="canEdit" size="sm" variant="text" @click="openBind(row as BindingView)">绑定 / 试运行</CButton>
+            <span v-else class="muted">—</span>
+          </template>
+        </CTable>
+        <p class="hint">
+          功能绑定决定每个 AI 能力实际走哪个已接入模型、提示词模板与参数覆盖；启用并在「灰度权限」放开角色后，
+          六功能页与试运行才会产生真实调用，调用量与费用实时沉淀到网关监控与用量计费。
+        </p>
+      </div>
+
       <!-- 灰度权限 -->
-      <div v-if="tab === 'perm'" class="mt">
+      <div v-else-if="tab === 'perm'" class="mt">
         <div class="perm-bar">
           <span class="perm-bar__tip">勾选表示该角色在灰度范围内可使用对应 AI 功能（不影响 T1 菜单 RBAC）</span>
           <CButton v-if="canEdit" size="sm" variant="primary" :disabled="matrixSaving || !dirty" @click="saveMatrix">
@@ -207,7 +346,7 @@ onMounted(loadAll)
         </div>
         <p class="hint">
           AI 功能的后台菜单权限受 T1 RBAC 统一管控；本矩阵控制功能内的 AI 能力灰度放量，
-          保存动作逐功能写入审计日志。当前绑定模型与启用状态请在各功能页查看。
+          保存动作逐功能写入审计日志。功能绑定模型与启用状态请在「功能绑定」页配置。
         </p>
       </div>
 
@@ -267,6 +406,77 @@ onMounted(loadAll)
         <p class="hint">红线：数据保留期配置须满足训练集「授权来源/去标识/保留期」三要素要求；配置变更全动作审计。</p>
       </div>
     </CCard>
+
+    <!-- 功能绑定 + 试运行抽屉 -->
+    <CDrawer v-model:show="bDrawer" :title="bEditing ? `功能绑定 · ${bEditing.featureName}` : '功能绑定'" size="md">
+      <div v-if="bEditing" class="bind-form">
+        <div class="bf-row">
+          <label class="fld-label">绑定模型</label>
+          <CSelect v-model="bForm.modelId" :options="bindModelOptions" width="100%"
+            placeholder="未绑定，请选择已接入且具备对话能力的模型" />
+        </div>
+        <div class="bf-grid">
+          <div class="bf-row">
+            <label class="fld-label">门店灰度范围</label>
+            <CSelect v-model="bForm.storeScope" width="100%"
+              :options="[{ label: '全部门店', value: 'ALL' }, { label: '指定门店', value: 'SPECIFIED' }]" />
+          </div>
+          <div class="bf-row">
+            <label class="fld-label">功能状态</label>
+            <CSelect :model-value="bForm.enabled ? '1' : '0'" width="100%"
+              :options="[{ label: '启用', value: '1' }, { label: '停用', value: '0' }]"
+              @update:model-value="bForm.enabled = $event === '1'" />
+          </div>
+        </div>
+        <div v-if="bForm.storeScope === 'SPECIFIED'" class="bf-row">
+          <CInput v-model="bForm.storeCodes" label="灰度门店编码（逗号分隔）" placeholder="如 S001,S002" />
+        </div>
+        <div class="bf-row">
+          <label class="fld-label">提示词模板（{input} 为用户输入占位符；留空则直接透传输入）</label>
+          <textarea v-model="bForm.promptTemplate" class="bf-textarea" rows="4"
+            placeholder="如：你是医美连锁的专业话术助手，请基于以下客户情况生成到店沟通话术：&#10;{input}"></textarea>
+        </div>
+        <div class="bf-row">
+          <label class="fld-label">参数覆盖（可选，JSON）</label>
+          <textarea v-model="bForm.paramOverrides" class="bf-textarea" rows="2"
+            placeholder='如 {"temperature":0.2,"maxTokens":2048}'></textarea>
+        </div>
+
+        <div class="bf-divider">
+          <span>真实试运行</span>
+          <span class="bf-divider__sub">走 POST /api/ai/features/{{ bEditing.featureCode }}/invoke，结果沉淀调用日志</span>
+        </div>
+        <div class="bf-row">
+          <label class="fld-label">试运行输入</label>
+          <textarea v-model="invokeInput" class="bf-textarea" rows="3"
+            placeholder="输入一段真实业务内容，如：客户 32 岁，做过水光针，担心恢复期，想推荐新品项"></textarea>
+        </div>
+        <div class="bf-invoke">
+          <CButton variant="primary" size="sm" :disabled="invoking || !canEdit" @click="runInvoke">
+            {{ invoking ? '调用中…' : '发起真实调用' }}
+          </CButton>
+          <span class="muted">需当前账号已在灰度矩阵放开、功能已启用并绑定可用模型</span>
+        </div>
+        <div v-if="invokeResult" class="bf-result">
+          <div class="bf-result__meta">
+            <CStatusPill status="success" dot>调用成功</CStatusPill>
+            <span class="mono">{{ invokeResult.modelCode }}</span>
+            <span>耗时 {{ invokeResult.latencyMs }}ms</span>
+            <span>提示 {{ invokeResult.promptTokens }} / 补全 {{ invokeResult.completionTokens }} / 合计 {{ invokeResult.totalTokens }} tokens</span>
+            <span>费用 ¥{{ fmtYuan(invokeResult.costFen ?? 0) }}</span>
+          </div>
+          <pre class="bf-result__content">{{ invokeResult.content }}</pre>
+        </div>
+        <div v-if="invokeError" class="bf-result bf-result--fail">
+          <CStatusPill status="danger" dot>调用失败（失败也已写入调用日志）</CStatusPill>
+          <p class="bf-result__err">{{ invokeError }}</p>
+        </div>
+      </div>
+      <template #footer>
+        <CButton variant="secondary" @click="bDrawer = false">关闭</CButton>
+        <CButton variant="primary" :disabled="bSaving || !canEdit" @click="saveBinding">{{ bSaving ? '保存中…' : '保存绑定' }}</CButton>
+      </template>
+    </CDrawer>
   </div>
 </template>
 
@@ -305,4 +515,35 @@ onMounted(loadAll)
 .toggle.on { background: var(--c-brand); }
 .toggle.on span { left: 20px; }
 .toggle.disabled { opacity: .5; cursor: not-allowed; }
+
+.mono { font-family: ui-monospace, monospace; font-size: var(--t-xs); color: var(--c-text-2); }
+.bind-form { display: flex; flex-direction: column; gap: var(--s-md); }
+.bf-row { display: flex; flex-direction: column; gap: 6px; }
+.bf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-md); }
+.fld-label { font-size: 13px; color: var(--c-text); line-height: 18px; }
+.bf-textarea {
+  width: 100%; border: 1px solid var(--c-border); border-radius: var(--r-md);
+  padding: 8px 10px; font-size: var(--t-sm); color: var(--c-text); resize: vertical;
+  font-family: inherit; line-height: 1.5; background: var(--c-surface);
+}
+.bf-textarea:focus { outline: none; border-color: var(--c-brand); }
+.bf-divider {
+  display: flex; align-items: baseline; gap: var(--s-sm); margin-top: var(--s-xs);
+  padding-top: var(--s-md); border-top: 1px solid var(--c-border-light);
+  font-size: var(--t-sm); font-weight: 600; color: var(--c-text);
+}
+.bf-divider__sub { font-size: 11px; font-weight: 400; color: var(--c-text-3); }
+.bf-invoke { display: flex; align-items: center; gap: var(--s-sm); }
+.bf-result {
+  border: 1px solid var(--c-success, #16a34a); border-radius: var(--r-lg);
+  padding: var(--s-md); display: flex; flex-direction: column; gap: var(--s-sm); background: var(--c-bg-page);
+}
+.bf-result__meta { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-sm); font-size: var(--t-xs); color: var(--c-text-2); }
+.bf-result__content {
+  margin: 0; white-space: pre-wrap; word-break: break-word;
+  font-size: var(--t-sm); line-height: 1.6; color: var(--c-text); font-family: inherit;
+  max-height: 240px; overflow-y: auto;
+}
+.bf-result--fail { border-color: var(--c-danger, #dc2626); }
+.bf-result__err { margin: 0; font-size: var(--t-xs); color: var(--c-danger, #dc2626); line-height: 1.5; }
 </style>

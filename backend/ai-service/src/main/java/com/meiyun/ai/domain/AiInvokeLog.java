@@ -66,7 +66,7 @@ public class AiInvokeLog {
     @Column(name = "success", nullable = false)
     private Boolean success = true;
 
-    @Column(name = "error_code")
+    @Column(name = "error_code", length = 512)
     private String errorCode;
 
     /** 费用，单位：分 */

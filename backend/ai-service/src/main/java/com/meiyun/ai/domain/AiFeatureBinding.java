@@ -55,6 +55,6 @@ public class AiFeatureBinding {
     @Column(name = "updated_by")
     private String updatedBy;
 
-    @Column(name = "updated_at", insertable = false, updatable = false)
+    @Column(name = "updated_at")
     private OffsetDateTime updatedAt;
 }

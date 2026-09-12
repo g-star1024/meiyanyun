@@ -65,6 +65,7 @@ public class FeatureService {
                 b.setFeatureCode(f.code());
                 b.setFeatureName(f.name());
                 b.setEnabled(false);
+                b.setUpdatedAt(java.time.OffsetDateTime.now());
                 bindingRepo.save(b);
             }
         }
@@ -152,6 +153,7 @@ public class FeatureService {
             return new SaveResult(false, featureCode);
         }
         b.setUpdatedBy(actor);
+        b.setUpdatedAt(java.time.OffsetDateTime.now());
         bindingRepo.save(b);
         audit.record("AI_FEATURE", "FEAT-" + featureCode, actor, "BIND",
                 payload(Map.of("featureCode", featureCode,

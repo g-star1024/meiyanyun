@@ -2,7 +2,7 @@
 // AI 中心 API（对接 ai-service，经网关 /api/ai 前缀）
 // B42：供应商/模型接入、功能绑定灰度、调用日志/KPI、全局配置、审批。
 // Key 安全：API 密钥仅写入，回显只有掩码（apiKeyMask）；更新时留空或含 * 表示不改。
-// 金额口径：inputPrice/outputPrice 为元/千 tokens 展示口径；costFen 为「分」。
+// 金额口径：inputPrice/outputPrice 为「元/百万 token」；costFen 为「分」。
 // ============================================================
 import client from './client'
 
@@ -174,6 +174,33 @@ export function saveFeatureBinding(featureCode: string, cmd: BindingCmd): Promis
 
 export function saveFeatureRoles(featureCode: string, roles: Record<string, boolean>): Promise<FeatureSaveResult> {
   return client.post(`/ai/features/${featureCode}/roles`, roles).then((r) => r.data)
+}
+
+// -------------------- 功能真实调用（B43） --------------------
+
+export interface InvokeCmd {
+  input: string
+  storeCode?: string | null
+}
+
+export interface InvokeView {
+  success: boolean
+  featureCode: string
+  featureName: string
+  providerCode: string | null
+  modelCode: string | null
+  content: string | null
+  promptTokens: number | null
+  completionTokens: number | null
+  totalTokens: number | null
+  latencyMs: number | null
+  costFen: number | null
+  errorCode: string | null
+}
+
+// 真实出网调用大模型，超时放宽到 60s（默认 client 为 10s）
+export function invokeFeature(featureCode: string, cmd: InvokeCmd): Promise<InvokeView> {
+  return client.post(`/ai/features/${featureCode}/invoke`, cmd, { timeout: 60000 }).then((r) => r.data)
 }
 
 // -------------------- 调用日志 / KPI / 账单 --------------------
