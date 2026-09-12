@@ -4,6 +4,7 @@ import com.meiyun.store.consumable.ConsumableRepository;
 import com.meiyun.store.consumable.ConsumableService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -47,13 +48,16 @@ public class StoreBomDataInitializer implements ApplicationRunner {
     private final ConsumableRepository consumableRepo;
     private final ConsumableService consumableService;
     private final ProjectBomRepository bomRepo;
+    private final String datasourceUrl;
 
     public StoreBomDataInitializer(ConsumableRepository consumableRepo,
                                    ConsumableService consumableService,
-                                   ProjectBomRepository bomRepo) {
+                                   ProjectBomRepository bomRepo,
+                                   @Value("${spring.datasource.url:}") String datasourceUrl) {
         this.consumableRepo = consumableRepo;
         this.consumableService = consumableService;
         this.bomRepo = bomRepo;
+        this.datasourceUrl = datasourceUrl;
     }
 
     @Override
@@ -64,6 +68,11 @@ public class StoreBomDataInitializer implements ApplicationRunner {
     }
 
     private void seedConsumables() {
+        if (datasourceUrl == null || !datasourceUrl.contains("meiyun_seed")) {
+            log.info("非种子库（{}），跳过门店耗材播种；正式栈耗材由库存页面建档产生",
+                    datasourceUrl == null || datasourceUrl.isBlank() ? "默认数据源" : datasourceUrl);
+            return;
+        }
         if (consumableRepo.count() > 0) {
             log.info("耗材台账已存在（{} 条），跳过耗材播种", consumableRepo.count());
             return;

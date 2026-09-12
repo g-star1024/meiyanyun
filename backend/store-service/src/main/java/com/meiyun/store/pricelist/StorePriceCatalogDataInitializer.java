@@ -7,6 +7,7 @@ import com.meiyun.store.project.ProductCategoryRepository;
 import com.meiyun.store.project.ProjectService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -21,8 +22,9 @@ import java.util.Map;
  * 项目目录 + 门店价目主数据种子（B14，DESIGN-P5 §五）：
  * 9 品牌 / 16 品类（二级树）/ 15 项目 SKU / SST01 门店价目 11 条（8 ACTIVE / 2 PENDING / 1 DISABLED）。
  *
- * <p>全环境播种（主数据两栈都需要，同 B13 惯例）；复用 {@link ProjectService}/{@link PricelistService}
- * 的 seed* 辅助方法（不写审计）；count 门控幂等。两条 PENDING 价目 requested_by 播 SST01 店长「许店长」。
+ * <p>品牌/品类/SKU 集团目录全环境播种（两栈都需要，同 B13 惯例）；SST01 门店价目仅种子库播种
+ * （JDBC URL 含 meiyun_seed，B40 门控，同 CouponWriteoffDataInitializer 约定）。复用
+ * {@link ProjectService}/{@link PricelistService} 的 seed* 辅助方法（不写审计）；count 门控幂等。两条 PENDING 价目 requested_by 播 SST01 店长「许店长」。
  * 金额「元→分」×100；Order(70) 晚于房间床位/设备种子 Order(60)。
  */
 @Component
@@ -55,15 +57,18 @@ public class StorePriceCatalogDataInitializer implements ApplicationRunner {
     private final ProductCategoryRepository categoryRepo;
     private final ProjectService projectService;
     private final PricelistService pricelistService;
+    private final String datasourceUrl;
 
     public StorePriceCatalogDataInitializer(ProductBrandRepository brandRepo,
                                             ProductCategoryRepository categoryRepo,
                                             ProjectService projectService,
-                                            PricelistService pricelistService) {
+                                            PricelistService pricelistService,
+                                            @Value("${spring.datasource.url:}") String datasourceUrl) {
         this.brandRepo = brandRepo;
         this.categoryRepo = categoryRepo;
         this.projectService = projectService;
         this.pricelistService = pricelistService;
+        this.datasourceUrl = datasourceUrl;
     }
 
     @Override
@@ -173,6 +178,11 @@ public class StorePriceCatalogDataInitializer implements ApplicationRunner {
     }
 
     private void seedPrices() {
+        if (datasourceUrl == null || !datasourceUrl.contains("meiyun_seed")) {
+            log.info("非种子库（{}），跳过 SST01 门店价目播种；正式栈价目由价格页面审批产生",
+                    datasourceUrl == null || datasourceUrl.isBlank() ? "默认数据源" : datasourceUrl);
+            return;
+        }
         if (pricelistService.countByStore(STORE) > 0) {
             log.info("门店价目已存在（SST01 {} 条），跳过价目播种", pricelistService.countByStore(STORE));
             return;

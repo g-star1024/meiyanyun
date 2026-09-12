@@ -8,6 +8,7 @@ import com.meiyun.store.room.TreatmentBedRepository;
 import com.meiyun.store.room.TreatmentRoom;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -52,20 +53,28 @@ public class StoreMasterDataInitializer implements ApplicationRunner {
     private final EquipmentRepository eqRepo;
     private final RoomService roomService;
     private final EquipmentService equipmentService;
+    private final String datasourceUrl;
 
     public StoreMasterDataInitializer(TreatmentBedRepository bedRepo,
                                       EquipmentRepository eqRepo,
                                       RoomService roomService,
-                                      EquipmentService equipmentService) {
+                                      EquipmentService equipmentService,
+                                      @Value("${spring.datasource.url:}") String datasourceUrl) {
         this.bedRepo = bedRepo;
         this.eqRepo = eqRepo;
         this.roomService = roomService;
         this.equipmentService = equipmentService;
+        this.datasourceUrl = datasourceUrl;
     }
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        if (datasourceUrl == null || !datasourceUrl.contains("meiyun_seed")) {
+            log.info("非种子库（{}），跳过房间床位/设备仪器演示主数据播种；正式栈主数据由门店页面建档产生",
+                    datasourceUrl == null || datasourceUrl.isBlank() ? "默认数据源" : datasourceUrl);
+            return;
+        }
         seedRooms();
         seedEquipments();
     }
