@@ -27,7 +27,7 @@ public class AuditLog {
     @Column(name = "biz_type", nullable = false, length = 32)
     private String bizType;
 
-    @Column(name = "txn_no", length = 24)
+    @Column(name = "txn_no", length = 128)
     private String txnNo;
 
     @Column(name = "actor", nullable = false, length = 32)

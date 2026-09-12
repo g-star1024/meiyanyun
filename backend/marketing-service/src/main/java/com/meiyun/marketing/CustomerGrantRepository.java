@@ -20,6 +20,16 @@ public interface CustomerGrantRepository extends JpaRepository<CustomerGrant, Lo
     /** 按非空幂等键查重（手工/规则统一入口）。 */
     Optional<CustomerGrant> findByIdemKey(String idemKey);
 
+    /**
+     * 订单级来源号查重（B37 卡2 消费满额自动发赠金）。
+     *
+     * <p>{@code idem_key=RULE:{ruleId}:{orderNo}} 只防「同规则同订单」重复；运营若在两笔收款之间
+     * 停用规则 A、启用同门槛规则 B，单靠 idem_key 会让同一订单被 B 再发一次。source_biz_ref=orderNo
+     * 锚定「一笔已收款订单至多被自动规则发放一次」，跨规则改动同样吞掉（手工发放 sourceBizRef 为
+     * MANUAL:{cid}:{号}，不会与订单号冲突）。
+     */
+    boolean existsBySourceBizRef(String sourceBizRef);
+
     @Query("select coalesce(sum(g.balanceFen),0) from CustomerGrant g " +
             "where g.customerId = :cid and g.status = 'VALID'")
     Long sumBalanceByCustomer(@Param("cid") String cid);
