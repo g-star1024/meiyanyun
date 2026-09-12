@@ -21,8 +21,13 @@ import java.util.Map;
  * 门店名解析（服务间调用，铁律：禁止 JdbcTemplate 直读别域表）。
  *
  * <p>调 store-service {@code GET /api/stores/name-map?codes=SST01,SST02}
- * 返回 store_code → store_name；被调方不可用时降级返回空 Map（不阻断主流程），
- * 调用方按「解析不到则回显编码」兜底。
+ * 返回 store_code → store_name。两种故障语义严格分层：
+ * <ul>
+ *   <li><b>远程故障</b>（连不上/超时/4xx/5xx）：{@link #resolveNamesRequired} 抛
+ *       {@link StoreServiceUnavailableException}，写链路据此返 503；{@link #resolveNames}
+ *       仍降级返回空 Map，仅供「回显编码」「不可用即放行」的非阻断路径使用；</li>
+ *   <li><b>门店真不存在</b>：接口 200 但返回 Map 中缺码，属业务语义（400），不是故障。</li>
+ * </ul>
  */
 @Component
 public class StoreNameResolver {
@@ -41,8 +46,32 @@ public class StoreNameResolver {
         this.restTemplate = restTemplate;
     }
 
-    /** 批量解析门店编码 → 中文名；异常/空入参返回空 Map。 */
+    /**
+     * 宽松版批量解析（仅用于展示回显、不可用即放行等非阻断路径）：
+     * 远程故障（含连不上/超时/4xx/5xx）降级返回空 Map，调用方按「解析不到则回显编码」兜底；
+     * 注意：空 Map 无法区分「故障」与「全不存在」，写链路校验必须改用
+     * {@link #resolveNamesRequired}。空入参返回空 Map。
+     */
     public Map<String, String> resolveNames(List<String> codes) {
+        try {
+            return fetchNames(codes);
+        } catch (StoreServiceUnavailableException e) {
+            log.warn("门店名解析失败，降级回显编码：{}", e.getMessage());
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /**
+     * 严格版批量解析（写链路存在性校验专用）：远程故障抛
+     * {@link StoreServiceUnavailableException}，由调用方转 503；
+     * 接口 200 但 Map 中缺码即「门店真不存在」，由调用方判 400。空入参返回空 Map。
+     */
+    public Map<String, String> resolveNamesRequired(List<String> codes) {
+        return fetchNames(codes);
+    }
+
+    /** 远程取数唯一出口：传输/HTTP 故障统一包成 StoreServiceUnavailableException。 */
+    private Map<String, String> fetchNames(List<String> codes) {
         Map<String, String> out = new LinkedHashMap<>();
         if (codes == null || codes.isEmpty()) {
             return out;
@@ -52,23 +81,24 @@ public class StoreNameResolver {
         if (distinct.isEmpty()) {
             return out;
         }
+        String url = UriComponentsBuilder
+                .fromHttpUrl(storeBaseUrl + "/api/stores/name-map")
+                .queryParam("codes", String.join(",", distinct))
+                .toUriString();
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
         try {
-            String url = UriComponentsBuilder
-                    .fromHttpUrl(storeBaseUrl + "/api/stores/name-map")
-                    .queryParam("codes", String.join(",", distinct))
-                    .toUriString();
-            HttpHeaders headers = new HttpHeaders();
-            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
             ResponseEntity<Map<String, String>> resp = restTemplate.exchange(
                     url, HttpMethod.GET, new HttpEntity<>(headers),
                     new ParameterizedTypeReference<Map<String, String>>() {});
             if (resp.getBody() != null) {
                 out.putAll(resp.getBody());
             }
+            return out;
         } catch (Exception e) {
-            log.warn("门店名解析失败，降级回显编码：{}", e.getMessage());
+            throw new StoreServiceUnavailableException(
+                    "store-service 门店主数据暂不可用：" + e.getMessage(), e);
         }
-        return out;
     }
 
     /**

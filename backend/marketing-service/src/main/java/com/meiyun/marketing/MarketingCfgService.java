@@ -185,12 +185,21 @@ public class MarketingCfgService {
     /**
      * 兜底门店校验：留空合法（运行时取门店表首家）；填写则必须在门店主数据中真实存在，
      * 避免把不存在的编码写进核销流水（core 库无 SST01 这类 seed 编码）。
+     * 故障分层：store-service 不可用转 503（稍后重试），不得当成「不存在」误拒为 400；
+     * 仅接口 200 但缺码才是真不存在，返 400。
      */
     private void validateFallbackStore(String code) {
         if (code == null) {
             return;
         }
-        String name = storeNameResolver.resolveNames(List.of(code)).get(code);
+        Map<String, String> names;
+        try {
+            names = storeNameResolver.resolveNamesRequired(List.of(code));
+        } catch (StoreServiceUnavailableException e) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
+                    "门店主数据服务暂不可用，暂时无法保存营销设置，请稍后重试");
+        }
+        String name = names.get(code);
         if (name == null || name.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "兜底门店不存在：" + code + "，请从门店列表中选择");
