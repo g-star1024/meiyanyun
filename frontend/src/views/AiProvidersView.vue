@@ -173,8 +173,8 @@ function openModelEdit(row: ModelView) {
   })
   mDrawer.value = true
 }
-function numOrNull(v: string): number | null {
-  const t = v.trim()
+function numOrNull(v: string | number | null | undefined): number | null {
+  const t = String(v ?? '').trim()
   if (t === '') return null
   const n = Number(t)
   return Number.isFinite(n) ? n : null
