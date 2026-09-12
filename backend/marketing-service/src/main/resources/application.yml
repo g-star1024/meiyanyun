@@ -18,6 +18,23 @@ spring:
           lob:
             non_contextual_creation: true
     open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # 现网 marketing 域表历史全部由 JPA ddl-auto=update 建出：baseline-version=0 标记历史基线，
+    # V11 起新增/校准走迁移；DDL 全部 CREATE TABLE IF NOT EXISTS，迁移后 Hibernate update no-op。
+    baseline-on-migrate: true
+    baseline-version: 0
+    baseline-description: "JPA 自动建表基线"
+    table: flyway_schema_history
+    validate-on-migrate: true
+    # 全库共享 flyway_schema_history：customer 持 V1/V2/V3/V5/V9、finance 持 V4/V6/V7/V8、
+    # audit 持 V10，marketing 类路径仅持 V11。他服务脚本缺失分两种状态，均须忽略：
+    #   missing = 已应用但本地缺失且版本早于本地最新迁移；future = 已应用但本地缺失且版本更新；
+    # 显式配置 patterns 后默认 ignoreFutureMigrations 被覆盖，故两个状态都要列。
+    ignore-migration-patterns:
+      - "*:missing"
+      - "*:future"
 
   # Redis：违禁词库缓存（@Cacheable）常驻使用；rate-limiter=redis 时兼用于触达频控。
   # Lettuce 懒连接，本机无 Redis 也不影响服务启动；密码经环境变量注入（与中间件 requirepass 一致）。
