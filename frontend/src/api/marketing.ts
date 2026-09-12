@@ -485,14 +485,12 @@ export const endLiveSession = (id: string) =>
   client.post<TransitResult>(`/marketing/live-sessions/${id}/end`)
 
 // -------------------- M5-15 营销设置（GET/POST /config） --------------------
-// 金额口径：largeCouponThresholdFen bigint 存「分」，前端活规格用「元」，换算在 store 适配层；
-// defaultPushChannels/defaultAdChannels 后端存 JSON 数组文本，DTO 直接透出字符串由适配层 parse。
+// B37 收口：GET 返回独立只读视图 ConfigView，与写命令 ConfigCmd 字段名/类型完全对称；
+// 金额口径 largeCouponThresholdFen bigint 存「分」、前端活规格用「元」，换算在 store 适配层；
+// 渠道后端库内为 JSON 数组文本，视图已在服务层解析为 string[]，适配层无需再 parse。
+// 视图刻意不含 cfgId / 老带新奖励 / 佣金比例等与 M5-15 无关的遗留列。
 
 export interface MarketingCfgDTO {
-  cfgId?: number
-  referralArrivedReward?: number | null
-  referralDealReward?: number | null
-  commissionRate?: number | null
   weeklyPushLimit?: number | null
   quietHoursEnabled?: boolean | null
   quietStart?: string | null
@@ -501,14 +499,14 @@ export interface MarketingCfgDTO {
   largeCouponThresholdFen?: number | null
   pushRequiresApproval?: boolean | null
   approvalLevel?: number | null
-  defaultPushChannels?: string | null
-  defaultAdChannels?: string | null
+  defaultPushChannels?: string[]
+  defaultAdChannels?: string[]
   /** 券核销兜底门店编码（B34）：集团账号核销时流水记到哪家门店；null=未配置，运行时取门店表首家。 */
   writeoffFallbackStoreCode?: string | null
 }
 
 export interface MarketingCfgCmd {
-  weeklyLimit: number
+  weeklyPushLimit: number
   quietHoursEnabled: boolean
   quietStart: string
   quietEnd: string

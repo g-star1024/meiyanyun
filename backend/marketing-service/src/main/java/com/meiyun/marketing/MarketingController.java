@@ -73,9 +73,13 @@ public class MarketingController {
 
     // ==================== 配置 ====================
 
+    /**
+     * M5-15 读取营销设置：返回只读视图 {@link MarketingCfgService.ConfigView}（十一个设置字段，
+     * 读写对称、渠道为数组、不暴露 cfgId 与老带新/佣金遗留列）；不直出 JPA 实体。
+     */
     @GetMapping("/config")
-    public MarketingCfg config() {
-        return cfgService.get();
+    public MarketingCfgService.ConfigView config() {
+        return cfgService.view();
     }
 
     /**
@@ -173,7 +177,8 @@ public class MarketingController {
     /** 查询某客户近 7 天触达计数与剩余额度。 */
     @GetMapping("/push/quota/{customerId}")
     public Map<String, Object> quota(@PathVariable String customerId) {
-        int limit = config().getWeeklyPushLimit() == null ? 3 : config().getWeeklyPushLimit();
+        Integer cfgLimit = cfgService.get().getWeeklyPushLimit();
+        int limit = cfgLimit == null ? 3 : cfgLimit;
         long sent = rateLimiter.currentCount("push:customer:" + customerId, PUSH_WINDOW_SECONDS);
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("customerId", customerId);

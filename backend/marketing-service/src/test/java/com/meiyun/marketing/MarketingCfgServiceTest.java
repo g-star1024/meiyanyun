@@ -53,6 +53,69 @@ class MarketingCfgServiceTest {
         return m;
     }
 
+    // ==================== B37 读视图 ConfigView ====================
+
+    @Test
+    void view_emptyRow_returns_nulls_and_empty_channel_lists() {
+        MarketingCfgService.ConfigView v = service.view();
+
+        assertNull(v.weeklyPushLimit());
+        assertNull(v.quietHoursEnabled());
+        assertNull(v.quietStart());
+        assertNull(v.quietEnd());
+        assertNull(v.holidayExempt());
+        assertNull(v.largeCouponThresholdFen());
+        assertNull(v.pushRequiresApproval());
+        assertNull(v.approvalLevel());
+        assertNull(v.writeoffFallbackStoreCode());
+        assertEquals(List.of(), v.defaultPushChannels());
+        assertEquals(List.of(), v.defaultAdChannels());
+    }
+
+    @Test
+    void view_parses_stored_channel_json_into_lists() {
+        MarketingCfg cfg = new MarketingCfg();
+        cfg.setWeeklyPushLimit(2);
+        cfg.setQuietHoursEnabled(true);
+        cfg.setQuietStart("21:00");
+        cfg.setQuietEnd("09:00");
+        cfg.setHolidayExempt(true);
+        cfg.setLargeCouponThresholdFen(50000L);
+        cfg.setPushRequiresApproval(true);
+        cfg.setApprovalLevel(1);
+        cfg.setDefaultPushChannels("[\"SMS\",\"WECOM\"]");
+        cfg.setDefaultAdChannels("[\"美团\",\"抖音\"]");
+        cfg.setWriteoffFallbackStoreCode("ST-BJ-001");
+        when(cfgRepo.findById(1)).thenReturn(java.util.Optional.of(cfg));
+
+        MarketingCfgService.ConfigView v = service.view();
+
+        assertEquals(2, v.weeklyPushLimit());
+        assertTrue(v.quietHoursEnabled());
+        assertEquals("21:00", v.quietStart());
+        assertEquals("09:00", v.quietEnd());
+        assertTrue(v.holidayExempt());
+        assertEquals(50000L, v.largeCouponThresholdFen());
+        assertTrue(v.pushRequiresApproval());
+        assertEquals(1, v.approvalLevel());
+        assertEquals(List.of("SMS", "WECOM"), v.defaultPushChannels());
+        assertEquals(List.of("美团", "抖音"), v.defaultAdChannels());
+        assertEquals("ST-BJ-001", v.writeoffFallbackStoreCode());
+    }
+
+    @Test
+    void view_blank_or_broken_channel_json_falls_back_to_empty_lists() {
+        MarketingCfg cfg = new MarketingCfg();
+        cfg.setDefaultPushChannels("   ");
+        cfg.setDefaultAdChannels("not-json");
+        when(cfgRepo.findById(1)).thenReturn(java.util.Optional.of(cfg));
+
+        MarketingCfgService.ConfigView v = service.view();
+
+        assertEquals(List.of(), v.defaultPushChannels());
+        assertEquals(List.of(), v.defaultAdChannels());
+    }
+
     @Test
     void save_existingFallbackStorePasses() {
         when(storeNameResolver.resolveNamesRequired(List.of("ST-BJ-001")))

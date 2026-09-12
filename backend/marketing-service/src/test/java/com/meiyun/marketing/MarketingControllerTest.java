@@ -280,14 +280,73 @@ class MarketingControllerTest {
     }
 
     @Test
-    void config_endpoint_returns_cfg_when_present() throws Exception {
-        MarketingCfg cfg = new MarketingCfg();
-        cfg.setWeeklyPushLimit(3);
-        when(cfgService.get()).thenReturn(cfg);
+    void config_endpoint_returns_view_without_leaked_columns() throws Exception {
+        // B37：GET /config 返 ConfigView 只读视图，渠道已在服务层解析为数组，
+        // 且物理不含 cfgId / 老带新奖励 / 佣金比例等遗留列；旧写键 weeklyLimit 也不得出现。
+        when(cfgService.view()).thenReturn(new MarketingCfgService.ConfigView(
+                3, true, "21:00", "09:00", true, 50000L, true, 1,
+                List.of("SMS", "WECOM"), List.of("美团"), null));
         mockMvc.perform(get("/api/marketing/config")
                         .header("Authorization", adminToken()))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.weeklyPushLimit").value(3));
+                .andExpect(jsonPath("$.weeklyPushLimit").value(3))
+                .andExpect(jsonPath("$.largeCouponThresholdFen").value(50000))
+                .andExpect(jsonPath("$.defaultPushChannels[0]").value("SMS"))
+                .andExpect(jsonPath("$.defaultPushChannels[1]").value("WECOM"))
+                .andExpect(jsonPath("$.defaultAdChannels[0]").value("美团"))
+                .andExpect(jsonPath("$.writeoffFallbackStoreCode")
+                        .value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.cfgId").doesNotExist())
+                .andExpect(jsonPath("$.commissionRate").doesNotExist())
+                .andExpect(jsonPath("$.referralArrivedReward").doesNotExist())
+                .andExpect(jsonPath("$.referralDealReward").doesNotExist())
+                .andExpect(jsonPath("$.weeklyLimit").doesNotExist());
+        // 视图出口不得再触碰返回实体的 get()
+        org.mockito.Mockito.verify(cfgService, org.mockito.Mockito.never()).get();
+    }
+
+    @Test
+    void save_config_binds_symmetrical_cmd_and_returns_changed() throws Exception {
+        // B37：写命令字段名与读视图对称（weeklyPushLimit、渠道数组），切片层验证 JSON→ConfigCmd 绑定透传
+        when(cfgService.save(any())).thenReturn(java.util.Map.of("changed", true));
+        mockMvc.perform(post("/api/marketing/config")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"weeklyPushLimit":2,"quietHoursEnabled":true,"quietStart":"21:00",
+                                 "quietEnd":"09:00","holidayExempt":true,"largeCouponThresholdFen":50000,
+                                 "pushRequiresApproval":true,"approvalLevel":1,
+                                 "defaultPushChannels":["SMS"],"defaultAdChannels":["美团"],
+                                 "writeoffFallbackStoreCode":null}"""))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.changed").value(true));
+        org.mockito.Mockito.verify(cfgService).save(org.mockito.ArgumentMatchers.argThat(cmd ->
+                cmd.weeklyPushLimit() == 2
+                        && "21:00".equals(cmd.quietStart())
+                        && "09:00".equals(cmd.quietEnd())
+                        && cmd.largeCouponThresholdFen() == 50000L
+                        && cmd.defaultPushChannels().equals(List.of("SMS"))
+                        && cmd.defaultAdChannels().equals(List.of("美团"))
+                        && cmd.writeoffFallbackStoreCode() == null));
+    }
+
+    @Test
+    void save_config_rejects_weekly_limit_over_hard_cap_with_chinese_400() throws Exception {
+        // 周频 1~3 硬约束的判定在 MarketingCfgService（其单测覆盖各分支），
+        // 切片层只验证「服务抛 ResponseStatusException → GlobalExceptionHandler 转中文 400」这段链路。
+        when(cfgService.save(any())).thenThrow(new ResponseStatusException(
+                HttpStatus.BAD_REQUEST, "周频上限不合法：取值范围 1~3 条/周/客户（硬约束不得放宽）"));
+        mockMvc.perform(post("/api/marketing/config")
+                        .header("Authorization", adminToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"weeklyPushLimit":5,"quietHoursEnabled":true,"quietStart":"21:00",
+                                 "quietEnd":"09:00","holidayExempt":true,"largeCouponThresholdFen":50000,
+                                 "pushRequiresApproval":true,"approvalLevel":1,
+                                 "defaultPushChannels":["SMS"],"defaultAdChannels":["美团"]}"""))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message")
+                        .value(org.hamcrest.Matchers.containsString("周频上限不合法")));
     }
 
     // ==================== 触达红线（违禁词 + 周频限 3 条）====================

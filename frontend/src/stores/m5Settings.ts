@@ -76,14 +76,13 @@ const DEFAULT_SETTINGS: M5Settings = {
 const fen2yuan = (f: number | null | undefined): number => (f == null ? 0 : f / 100)
 const yuan2fen = (y: number): number => Math.round(y * 100)
 
-function parseChannels(json: string | null | undefined, fallback: string[]): string[] {
-  if (!json) return [...fallback]
-  try {
-    const arr = JSON.parse(json)
-    return Array.isArray(arr) ? arr.map(String) : [...fallback]
-  } catch {
-    return [...fallback]
-  }
+/**
+ * B37 起渠道在视图上已是 string[]（后端解析库内 JSON 文本）。
+ * 空数组/缺省视为后端未配置，回落前端默认；对元素统一 String 化防御异常类型。
+ */
+function resolveChannels(list: string[] | null | undefined, fallback: string[]): string[] {
+  if (!Array.isArray(list) || list.length === 0) return [...fallback]
+  return list.map(String)
 }
 
 /** DTO → 页面 M5Settings；后端空值回落前端默认（与 Initializer 默认口径一致）。 */
@@ -100,8 +99,8 @@ function adapt(dto: MarketingCfgDTO | null | undefined): M5Settings {
       : DEFAULT_SETTINGS.largeCouponThreshold,
     pushRequiresApproval: dto.pushRequiresApproval ?? DEFAULT_SETTINGS.pushRequiresApproval,
     approvalLevel: (dto.approvalLevel === 1 ? 1 : 2) as ApprovalLevel,
-    defaultPushChannels: parseChannels(dto.defaultPushChannels, DEFAULT_SETTINGS.defaultPushChannels) as PushChannel[],
-    defaultAdChannels: parseChannels(dto.defaultAdChannels, DEFAULT_SETTINGS.defaultAdChannels),
+    defaultPushChannels: resolveChannels(dto.defaultPushChannels, DEFAULT_SETTINGS.defaultPushChannels) as PushChannel[],
+    defaultAdChannels: resolveChannels(dto.defaultAdChannels, DEFAULT_SETTINGS.defaultAdChannels),
     // 兜底门店不套默认值：后端 null 即「未配置」的合法态，页面显示为「自动取首家门店」
     writeoffFallbackStoreCode: dto.writeoffFallbackStoreCode ?? '',
   }
@@ -192,7 +191,7 @@ export const useM5SettingsStore = defineStore('m5Settings', () => {
 
     try {
       await saveMarketingConfig({
-        weeklyLimit: clamped.weeklyLimit,
+        weeklyPushLimit: clamped.weeklyLimit,
         quietHoursEnabled: clamped.quietHoursEnabled,
         quietStart: clamped.quietStart,
         quietEnd: clamped.quietEnd,
@@ -279,11 +278,21 @@ export const useM5SettingsStore = defineStore('m5Settings', () => {
         prev = null
       }
     }
+    // B37 前 append-only 历史快照周频键为 weeklyLimit，归一到新键 weeklyPushLimit，
+    // 否则新旧快照各持一键会在跨行 diff 时把未变的周频误判为变更。
+    const normalizeSnap = (s: Record<string, unknown>): Record<string, unknown> => {
+      if (!('weeklyPushLimit' in s) && 'weeklyLimit' in s) {
+        return { ...s, weeklyPushLimit: s.weeklyLimit }
+      }
+      return s
+    }
+    snap = normalizeSnap(snap)
+    if (prev) prev = normalizeSnap(prev)
     const norm = (jsonKey: string, v: unknown): unknown =>
       jsonKey === 'largeCouponThresholdFen' ? fen2yuan(Number(v)) : v
     const out: { field: string; oldValue: string; newValue: string }[] = []
     const map: Record<string, keyof M5Settings> = {
-      weeklyLimit: 'weeklyLimit',
+      weeklyPushLimit: 'weeklyLimit',
       quietHoursEnabled: 'quietHoursEnabled',
       quietStart: 'quietStart',
       quietEnd: 'quietEnd',

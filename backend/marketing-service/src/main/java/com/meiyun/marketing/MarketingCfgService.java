@@ -19,11 +19,15 @@ import java.util.regex.Pattern;
  * 营销全局配置写链路（M5-15 营销设置）。
  *
  * <p>写接口四件套：① 参数校验（周频 1~3 硬约束、HH:mm 时段格式、审批层级 1|2、
- * 推送渠道⊆三渠道白名单、投放渠道⊆六渠道白名单、大额阈值&gt;0）；② 幂等（十个设置字段
+ * 推送渠道⊆三渠道白名单、投放渠道⊆六渠道白名单、大额阈值&gt;0）；② 幂等（十一个设置字段
  * 全部未变返回 changed=false，不审计）；③ 全动作审计（bizType=MARKETING_CFG，payload JSON）；
  * ④ 中文错误。
  *
  * <p>金额口径：大额券阈值 bigint 存「分」，前端活规格用「元」；渠道列存 JSON 数组文本。
+ *
+ * <p>读契约（B37 收口）：GET /config 不再直出 JPA 实体，改返 {@link ConfigView}，
+ * 读写两端字段名/类型完全对称（weeklyPushLimit、渠道均为 List），且不暴露 cfgId 与
+ * 老带新奖励/佣金比例等与 M5-15 无关的遗留列。
  */
 @Service
 public class MarketingCfgService {
@@ -60,11 +64,35 @@ public class MarketingCfgService {
         return cfgRepo.findById(1).orElseGet(MarketingCfg::new);
     }
 
+    /**
+     * 读取对外只读视图（M5-15 十一个设置字段）。
+     * 渠道列由 JSON 文本反序列化为 List，与写命令类型对称；
+     * 不暴露 cfgId 及老带新奖励/佣金比例等遗留列；空库返回字段全 null 的视图，由前端回落默认值。
+     */
+    public ConfigView view() {
+        return toView(get());
+    }
+
+    private ConfigView toView(MarketingCfg cfg) {
+        return new ConfigView(
+                cfg.getWeeklyPushLimit(),
+                cfg.getQuietHoursEnabled(),
+                cfg.getQuietStart(),
+                cfg.getQuietEnd(),
+                cfg.getHolidayExempt(),
+                cfg.getLargeCouponThresholdFen(),
+                cfg.getPushRequiresApproval(),
+                cfg.getApprovalLevel(),
+                parseChannels(cfg.getDefaultPushChannels()),
+                parseChannels(cfg.getDefaultAdChannels()),
+                cfg.getWriteoffFallbackStoreCode());
+    }
+
     // ==================== 写动作 ====================
 
     /**
      * 保存营销设置（upsert cfgId=1）。
-     * 只更新 M5-15 十个设置字段；老带新奖励/佣金比例等既有字段不动。
+     * 只更新 M5-15 十一个设置字段；老带新奖励/佣金比例等既有字段不动。
      * 全字段与现值一致时返回 changed=false 且不审计。
      */
     @Transactional
@@ -83,7 +111,7 @@ public class MarketingCfgService {
         List<String> adChannels = cmd.defaultAdChannels() == null ? List.of() : cmd.defaultAdChannels();
         String fallbackStore = normalizeStoreCode(cmd.writeoffFallbackStoreCode());
 
-        boolean changed = !eq(cfg.getWeeklyPushLimit(), cmd.weeklyLimit())
+        boolean changed = !eq(cfg.getWeeklyPushLimit(), cmd.weeklyPushLimit())
                 || !eq(cfg.getQuietHoursEnabled(), cmd.quietHoursEnabled())
                 || !eq(cfg.getQuietStart(), cmd.quietStart())
                 || !eq(cfg.getQuietEnd(), cmd.quietEnd())
@@ -101,7 +129,7 @@ public class MarketingCfgService {
             return result;
         }
 
-        cfg.setWeeklyPushLimit(cmd.weeklyLimit());
+        cfg.setWeeklyPushLimit(cmd.weeklyPushLimit());
         cfg.setQuietHoursEnabled(cmd.quietHoursEnabled());
         cfg.setQuietStart(cmd.quietStart());
         cfg.setQuietEnd(cmd.quietEnd());
@@ -115,7 +143,7 @@ public class MarketingCfgService {
         cfgRepo.save(cfg);
 
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("weeklyLimit", cmd.weeklyLimit());
+        payload.put("weeklyPushLimit", cmd.weeklyPushLimit());
         payload.put("quietHoursEnabled", cmd.quietHoursEnabled());
         payload.put("quietStart", cmd.quietStart());
         payload.put("quietEnd", cmd.quietEnd());
@@ -135,8 +163,8 @@ public class MarketingCfgService {
     // ==================== 校验 ====================
 
     private void validate(ConfigCmd cmd) {
-        if (cmd.weeklyLimit() == null || cmd.weeklyLimit() < WEEKLY_MIN
-                || cmd.weeklyLimit() > WEEKLY_HARD_LIMIT) {
+        if (cmd.weeklyPushLimit() == null || cmd.weeklyPushLimit() < WEEKLY_MIN
+                || cmd.weeklyPushLimit() > WEEKLY_HARD_LIMIT) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "周频上限不合法：取值范围 1~" + WEEKLY_HARD_LIMIT + " 条/周/客户（硬约束不得放宽）");
         }
@@ -259,7 +287,7 @@ public class MarketingCfgService {
         }
     }
 
-    // ==================== 命令 DTO ====================
+    // ==================== 命令 / 视图 DTO ====================
 
     /**
      * 营销设置保存命令。
@@ -267,7 +295,26 @@ public class MarketingCfgService {
      * writeoffFallbackStoreCode 留空表示不指定（运行时取门店表首家）。
      */
     public record ConfigCmd(
-            Integer weeklyLimit,
+            Integer weeklyPushLimit,
+            Boolean quietHoursEnabled,
+            String quietStart,
+            String quietEnd,
+            Boolean holidayExempt,
+            Long largeCouponThresholdFen,
+            Boolean pushRequiresApproval,
+            Integer approvalLevel,
+            List<String> defaultPushChannels,
+            List<String> defaultAdChannels,
+            String writeoffFallbackStoreCode) {}
+
+    /**
+     * 营销设置只读视图（GET /config 契约）。
+     * 字段名/类型与 {@link ConfigCmd} 完全对称：weeklyPushLimit 与库列 weekly_push_limit 对齐，
+     * 两个渠道字段均为 List（库内 JSON 文本由服务层解析），金额仍为「分」。
+     * 刻意不含 cfgId 与老带新奖励/佣金比例遗留列。
+     */
+    public record ConfigView(
+            Integer weeklyPushLimit,
             Boolean quietHoursEnabled,
             String quietStart,
             String quietEnd,
