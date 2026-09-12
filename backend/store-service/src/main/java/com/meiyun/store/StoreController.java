@@ -72,15 +72,21 @@ public class StoreController {
     }
 
     /**
-     * 服务间调用专用：返回任意一家门店（编码+名称），供集团/大区账号（无所属门店）
+     * 服务间调用专用：返回兜底门店（编码+名称），供集团/大区账号（无所属门店）
      * 在必须落门店编码的写链路（如券核销）中兜底，避免硬编码不存在的门店编码。
-     * 无门店时返回 {code:null,name:null}，调用方自行降级。
+     *
+     * <p><b>排序契约</b>：固定返回 store_code 字典序升序首家（{@code findFirstByOrderByStoreCodeAsc}）。
+     * store 表无创建时间字段，不能依赖 JPA 无 ORDER BY 时的物理返回顺序（PG 下受 VACUUM/
+     * 并发写入影响，跨重启不稳定）；字典序首家保证同库态下任意实例、任意时刻结果一致。
+     * core/prod 栈实测首家为 ST-BJ-001（北京朝阳店，2026-09 库态），seed 栈为 SST01。
+     *
+     * <p>无门店时返回 {code:null,name:null}，调用方自行降级。
      */
     @GetMapping("/internal/first")
     @RequirePerm("internal:name-map")
     public Map<String, String> firstStore() {
         Map<String, String> out = new LinkedHashMap<>();
-        storeRepository.findAll().stream().findFirst().ifPresent(s -> {
+        storeRepository.findFirstByOrderByStoreCodeAsc().ifPresent(s -> {
             out.put("code", s.getStoreCode());
             out.put("name", s.getStoreName());
         });
