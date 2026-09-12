@@ -13,6 +13,7 @@ import CSegmented from '@/components/CSegmented.vue'
 import CSelect from '@/components/CSelect.vue'
 import CInput from '@/components/CInput.vue'
 import CDrawer from '@/components/CDrawer.vue'
+import AiApplyDrawer from '@/components/AiApplyDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
@@ -182,6 +183,17 @@ async function saveBinding() {
   } finally {
     bSaving.value = false
   }
+}
+
+// B45：停用功能提交上架（绑定启用）审批，治理岗在 AI 治理页裁决
+const applyShow = ref(false)
+const applyTargetId = ref<number | null>(null)
+const applyLabel = ref('')
+function openBindingApply() {
+  if (!bEditing.value) return
+  applyTargetId.value = bEditing.value.bindingId
+  applyLabel.value = `${bEditing.value.featureName}（${bEditing.value.featureCode}）`
+  applyShow.value = true
 }
 
 // 试运行：走真实 POST /api/ai/features/{code}/invoke，结果与费用同步沉淀 ai_invoke_log
@@ -590,9 +602,14 @@ onMounted(loadAll)
       </div>
       <template #footer>
         <CButton variant="secondary" @click="bDrawer = false">关闭</CButton>
+        <CButton v-if="canEdit && bEditing && !bEditing.enabled" variant="secondary" @click="openBindingApply">提交上架申请</CButton>
         <CButton variant="primary" :disabled="bSaving || !canEdit" @click="saveBinding">{{ bSaving ? '保存中…' : '保存绑定' }}</CButton>
       </template>
     </CDrawer>
+
+    <!-- B45 功能绑定上架申请抽屉 -->
+    <AiApplyDrawer v-model:show="applyShow" approval-type="BINDING"
+      :target-id="applyTargetId" :target-label="applyLabel" @applied="loadMatrix" />
 
     <!-- 配额调整抽屉 -->
     <CDrawer v-model:show="qDrawer" :title="qEditing ? `配额调整 · ${qEditing.targetName}` : '配额调整'" size="md">

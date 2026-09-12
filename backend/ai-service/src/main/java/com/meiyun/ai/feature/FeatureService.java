@@ -44,7 +44,7 @@ public class FeatureService {
                              Boolean enabled, Boolean requireApproval) {
     }
 
-    public record BindingView(String featureCode, String featureName, Long modelId,
+    public record BindingView(Long bindingId, String featureCode, String featureName, Long modelId,
                               String modelCode, String modelDisplayName,
                               String storeScope, String storeCodes,
                               String promptTemplate, String paramOverrides,
@@ -199,6 +199,7 @@ public class FeatureService {
     private BindingView toView(AiFeatureBinding b, Map<Long, String> modelCodes, Map<Long, String> modelNames) {
         Long mid = b.getModelId();
         return new BindingView(
+                b.getBindingId(),
                 b.getFeatureCode(),
                 b.getFeatureName(),
                 mid,

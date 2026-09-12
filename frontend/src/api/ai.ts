@@ -143,6 +143,7 @@ export interface BindingCmd {
 }
 
 export interface BindingView {
+  bindingId: number
   featureCode: string
   featureName: string
   modelId: number | null
@@ -358,6 +359,16 @@ export function decideApproval(id: number, cmd: DecideCmd): Promise<ApprovalView
   return client.post(`/ai/approvals/${id}/decide`, cmd).then((r) => r.data)
 }
 
+export interface ApplyCmd {
+  approvalType: string
+  targetId?: number | null
+  content: string
+}
+
+export function applyApproval(cmd: ApplyCmd): Promise<ApprovalView> {
+  return client.post('/ai/approvals', cmd).then((r) => r.data)
+}
+
 // -------------------- 调用配额（B44） --------------------
 
 export interface QuotaCmd {
@@ -417,4 +428,105 @@ export interface AlertView {
 
 export function listAlerts(): Promise<AlertView[]> {
   return client.get('/ai/alerts').then((r) => r.data)
+}
+
+// -------------------- 效果评估与 A/B 实验（B45） --------------------
+
+export interface EvalMetrics {
+  calls: number
+  successCalls: number
+  successRate: number
+  p99LatencyMs: number | null
+  tokens: number
+  costFen: number
+}
+
+export interface EvalView {
+  taskId: number
+  taskName: string
+  evalScope: string
+  targetCode: string
+  targetName: string
+  windowDays: number
+  periodStart: string
+  periodEnd: string
+  metrics: EvalMetrics
+  status: string
+  conclusion: string | null
+  createdBy: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface EvalCreateCmd {
+  taskName: string
+  evalScope: string
+  targetCode: string
+  windowDays: number
+}
+
+export interface ExperimentView {
+  experimentId: number
+  experimentName: string
+  controlModel: string
+  experimentModel: string
+  windowDays: number
+  periodStart: string
+  periodEnd: string
+  controlMetrics: EvalMetrics
+  experimentMetrics: EvalMetrics
+  liftPp: number | null
+  status: string
+  conclusion: string | null
+  createdBy: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface ExperimentCreateCmd {
+  experimentName: string
+  controlModel: string
+  experimentModel: string
+  windowDays: number
+}
+
+export interface EvalStats {
+  runningExperiments: number
+  avgLiftPp: number | ''
+}
+
+export function listEvals(): Promise<EvalView[]> {
+  return client.get('/ai/evals').then((r) => r.data)
+}
+
+export function createEval(cmd: EvalCreateCmd): Promise<EvalView> {
+  return client.post('/ai/evals', cmd).then((r) => r.data)
+}
+
+export function refreshEval(id: number): Promise<EvalView> {
+  return client.post(`/ai/evals/${id}/refresh`).then((r) => r.data)
+}
+
+export function concludeEval(id: number, conclusion: string): Promise<EvalView> {
+  return client.post(`/ai/evals/${id}/conclude`, { conclusion }).then((r) => r.data)
+}
+
+export function listExperiments(): Promise<ExperimentView[]> {
+  return client.get('/ai/experiments').then((r) => r.data)
+}
+
+export function createExperiment(cmd: ExperimentCreateCmd): Promise<ExperimentView> {
+  return client.post('/ai/experiments', cmd).then((r) => r.data)
+}
+
+export function refreshExperiment(id: number): Promise<ExperimentView> {
+  return client.post(`/ai/experiments/${id}/refresh`).then((r) => r.data)
+}
+
+export function concludeExperiment(id: number, conclusion: string): Promise<ExperimentView> {
+  return client.post(`/ai/experiments/${id}/conclude`, { conclusion }).then((r) => r.data)
+}
+
+export function getEvalStats(): Promise<EvalStats> {
+  return client.get('/ai/eval-stats').then((r) => r.data)
 }

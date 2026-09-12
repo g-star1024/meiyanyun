@@ -10,6 +10,7 @@ import CTable from '@/components/CTable.vue'
 import CSelect from '@/components/CSelect.vue'
 import CInput from '@/components/CInput.vue'
 import CDrawer from '@/components/CDrawer.vue'
+import AiApplyDrawer from '@/components/AiApplyDrawer.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
@@ -49,7 +50,7 @@ const modelCols = [
   { key: 'enabled', label: '启用', width: '80' },
   { key: 'connStatus', label: '连通状态', width: '110' },
   { key: 'connCheckedAt', label: '最近测试', width: '150' },
-  { key: 'ops', label: '操作', width: '230' },
+  { key: 'ops', label: '操作', width: '290' },
 ]
 
 const providerOptions = computed(() => [
@@ -242,6 +243,16 @@ async function runTest(row: ModelView) {
   }
 }
 
+// -------------------- 模型上架申请 --------------------
+const applyShow = ref(false)
+const applyTargetId = ref<number | null>(null)
+const applyLabel = ref('')
+function openModelApply(row: ModelView) {
+  applyTargetId.value = row.modelId
+  applyLabel.value = `${row.displayName}（模型 ID：${row.modelCode}）`
+  applyShow.value = true
+}
+
 // -------------------- 加载与展示辅助 --------------------
 async function loadAll() {
   loading.value = true
@@ -349,6 +360,7 @@ function capsLabel(raw: string) {
               {{ testing[row.modelId] ? '测试中…' : '连通测试' }}
             </CButton>
             <CButton size="sm" variant="text" @click="openModelEdit(row as ModelView)">编辑</CButton>
+            <CButton v-if="!(row as ModelView).enabled" size="sm" variant="text" @click="openModelApply(row as ModelView)">上架申请</CButton>
             <CButton size="sm" variant="text" @click="removeModel(row as ModelView)">删除</CButton>
           </template>
           <span v-else class="muted">—</span>
@@ -449,6 +461,14 @@ function capsLabel(raw: string) {
         <CButton variant="primary" :disabled="mSaving" @click="saveModel">{{ mSaving ? '保存中…' : '保存' }}</CButton>
       </template>
     </CDrawer>
+
+    <AiApplyDrawer
+      v-model:show="applyShow"
+      approval-type="MODEL"
+      :target-id="applyTargetId"
+      :target-label="applyLabel"
+      @applied="loadAll"
+    />
   </div>
 </template>
 

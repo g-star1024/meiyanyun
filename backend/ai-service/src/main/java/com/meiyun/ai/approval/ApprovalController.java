@@ -32,6 +32,12 @@ public class ApprovalController {
         return approvalService.list(status, page, size);
     }
 
+    @PostMapping
+    @RequirePerm("aiAdmin:edit")
+    public ApprovalService.ApprovalView apply(@RequestBody ApprovalService.ApplyCmd cmd) {
+        return approvalService.apply(cmd, DataScope.currentActor());
+    }
+
     @PostMapping("/{id}/decide")
     @RequirePerm("aiGovern:approve")
     public ApprovalService.ApprovalView decide(@PathVariable Long id,

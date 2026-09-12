@@ -64,7 +64,7 @@ public class ApprovalService {
         return result.map(this::toView);
     }
 
-    /** 登记一条待审批（供应商/模型/绑定敏感变更前置申请，一期由配置页「提交审批」触发）。 */
+    /** 登记一条待审批（模型上架/功能绑定等敏感变更前置申请，由配置页「提交审批」触发）。 */
     @Transactional
     public ApprovalView apply(ApplyCmd cmd, String actor) {
         if (cmd == null || cmd.approvalType() == null || !TYPES.contains(cmd.approvalType().trim().toUpperCase())) {
@@ -73,8 +73,17 @@ public class ApprovalService {
         if (cmd.content() == null || cmd.content().isBlank()) {
             throw badRequest("申请内容不能为空");
         }
+        if (cmd.content().trim().length() > 512) {
+            throw badRequest("申请内容不能超过 512 字");
+        }
+        String type = cmd.approvalType().trim().toUpperCase();
+        validateApplyTarget(type, cmd.targetId());
+        if (cmd.targetId() != null
+                && approvalRepo.existsByApprovalTypeAndTargetIdAndStatus(type, cmd.targetId(), "PENDING")) {
+            throw badRequest("该目标已存在待审批申请，请勿重复提交");
+        }
         AiApproval a = new AiApproval();
-        a.setApprovalType(cmd.approvalType().trim().toUpperCase());
+        a.setApprovalType(type);
         a.setTargetId(cmd.targetId());
         a.setContent(cmd.content().trim());
         a.setApplicant(actor);
@@ -85,6 +94,29 @@ public class ApprovalService {
                         "targetId", saved.getTargetId() == null ? "" : saved.getTargetId(),
                         "content", saved.getContent())));
         return toView(saved);
+    }
+
+    /** 申请目标校验：MODEL/BINDING 必须指向存在且未启用的目标；PROVIDER 不做联动，宽松处理。 */
+    private void validateApplyTarget(String type, Long targetId) {
+        if ("MODEL".equals(type)) {
+            if (targetId == null) {
+                throw badRequest("模型上架申请必须指定目标模型");
+            }
+            AiModel m = modelRepo.findById(targetId)
+                    .orElseThrow(() -> badRequest("目标模型不存在（id=" + targetId + "）"));
+            if (Boolean.TRUE.equals(m.getEnabled())) {
+                throw badRequest("模型已启用，无需重复申请上架");
+            }
+        } else if ("BINDING".equals(type)) {
+            if (targetId == null) {
+                throw badRequest("功能绑定申请必须指定目标绑定");
+            }
+            AiFeatureBinding b = bindingRepo.findById(targetId)
+                    .orElseThrow(() -> badRequest("目标功能绑定不存在（id=" + targetId + "）"));
+            if (Boolean.TRUE.equals(b.getEnabled())) {
+                throw badRequest("功能绑定已启用，无需重复申请");
+            }
+        }
     }
 
     /** 审批决策：通过联动启用模型/绑定；驳回仅记录。重复决策中文拒绝。 */

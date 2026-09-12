@@ -11,4 +11,6 @@ public interface AiApprovalRepository extends JpaRepository<AiApproval, Long> {
     Page<AiApproval> findAllByOrderByApprovalIdDesc(Pageable pageable);
     long countByStatus(String status);
     long countByStatusAndDecidedAtGreaterThanEqual(String status, OffsetDateTime since);
+
+    boolean existsByApprovalTypeAndTargetIdAndStatus(String approvalType, Long targetId, String status);
 }

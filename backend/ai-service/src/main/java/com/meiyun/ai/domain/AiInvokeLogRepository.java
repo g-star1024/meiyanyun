@@ -66,4 +66,41 @@ public interface AiInvokeLogRepository extends JpaRepository<AiInvokeLog, Long> 
             order by calls desc
             """, nativeQuery = true)
     List<FeatureCost> costByFeature();
+
+    interface MetricAgg {
+        Long getCalls();
+
+        Long getSuccessCalls();
+
+        Long getTokens();
+
+        Long getCostFen();
+    }
+
+    /** 时间窗内按功能或模型聚合调用侧技术指标（featureCode/modelCode 互斥，皆空为全局）。 */
+    @Query(value = """
+            select count(*) as calls,
+                   coalesce(sum(case when success then 1 else 0 end), 0) as successCalls,
+                   coalesce(sum(total_tokens), 0) as tokens,
+                   coalesce(sum(cost_fen), 0) as costFen
+            from ai_invoke_log
+            where invoked_at >= :since
+              and (cast(:featureCode as text) is null or feature_code = :featureCode)
+              and (cast(:modelCode as text) is null or model_code = :modelCode)
+            """, nativeQuery = true)
+    MetricAgg aggregateSince(@Param("since") OffsetDateTime since,
+                             @Param("featureCode") String featureCode,
+                             @Param("modelCode") String modelCode);
+
+    /** 同窗口 P99 延迟（ms），支持按功能或模型过滤。 */
+    @Query(value = """
+            select percentile_cont(0.99) within group (order by latency_ms)
+            from ai_invoke_log
+            where invoked_at >= :since and latency_ms is not null
+              and (cast(:featureCode as text) is null or feature_code = :featureCode)
+              and (cast(:modelCode as text) is null or model_code = :modelCode)
+            """, nativeQuery = true)
+    Double p99LatencySince(@Param("since") OffsetDateTime since,
+                           @Param("featureCode") String featureCode,
+                           @Param("modelCode") String modelCode);
 }
