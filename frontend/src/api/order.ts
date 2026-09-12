@@ -153,6 +153,21 @@ export const payOrder = (
 export const listOrderPayments = (no: string) =>
   client.get<OrderPaymentDTO[]>(`/txn/order/${no}/payments`)
 
+/** 订单客户的可用营销赠金余额（分）。 */
+export interface GrantBalanceDTO {
+  customerId: string
+  balanceFen: number
+  /** 营销服务不可用 / 散客无客户号时为 false，此时 balanceFen 恒为 0，前端应隐藏额度提示而非报错。 */
+  available: boolean
+}
+
+/**
+ * 查订单客户可用赠金（B35）。走 txn 转发而非营销域 /marketing/grants/customer/{id}：
+ * 收银角色 FRONT_DESK 无 marketing:view，直读会 403。本端点权限为 cashier:view。
+ */
+export const getOrderGrantBalance = (no: string) =>
+  client.get<GrantBalanceDTO>(`/txn/order/${no}/grant-balance`)
+
 export const cancelOrder = (no: string, operator: string) =>
   client.post<OrderViewDTO>(`/txn/order/${no}/cancel`, { operator })
 

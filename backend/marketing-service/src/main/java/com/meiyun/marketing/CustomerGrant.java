@@ -11,8 +11,9 @@ import java.time.OffsetDateTime;
  * 客户赠金账本（域⑤ 赠金额度发放与余额）。以非空 idem_key 唯一保证发赠金幂等
  * （旧 (source_biz_ref, rule_id) 复合约束在 rule_id 为 NULL 时被 PG 判 NULL DISTINCT 而失效，弃用）。
  *
- * <p>status ∈ VALID（可用）/ USED（已抵扣，下游收银台接入前不会流转）/ EXPIRED（过期清零）/ REVOKED（作废）。
- * 金额单位「分」，余额 balance_fen ≤ amount_fen。本期只做发放+过期+报表，抵扣（USED）留下游 Backlog。
+ * <p>status ∈ VALID（可用）/ USED（余额扣尽）/ EXPIRED（过期清零）/ REVOKED（作废）。
+ * 金额单位「分」，余额 balance_fen ≤ amount_fen。收银台抵扣按到期时间 FIFO 递减 balance_fen，
+ * 扣尽方置 USED，逐笔明细落 grant_deduction 流水。
  */
 @Entity
 @Table(name = "customer_grant",

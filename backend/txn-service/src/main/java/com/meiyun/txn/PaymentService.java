@@ -26,7 +26,7 @@ import java.util.Set;
 @Service
 public class PaymentService {
 
-    private static final Set<String> METHODS = Set.of("cash", "card", "wxpay", "alipay", "balance");
+    private static final Set<String> METHODS = Set.of("cash", "card", "wxpay", "alipay", "balance", "grant");
 
     private final TxnOrderRepository orderRepo;
     private final OrderPaymentRepository payRepo;
@@ -34,16 +34,19 @@ public class PaymentService {
     private final AuditRecorder audit;
     private final FinanceEventPublisher financeEvents;
     private final CustomerCardClient cardClient;
+    private final MarketingGrantClient grantClient;
 
     public PaymentService(TxnOrderRepository orderRepo, OrderPaymentRepository payRepo,
                           ConsultPlanService planService, AuditRecorder audit,
-                          FinanceEventPublisher financeEvents, CustomerCardClient cardClient) {
+                          FinanceEventPublisher financeEvents, CustomerCardClient cardClient,
+                          MarketingGrantClient grantClient) {
         this.orderRepo = orderRepo;
         this.payRepo = payRepo;
         this.planService = planService;
         this.audit = audit;
         this.financeEvents = financeEvents;
         this.cardClient = cardClient;
+        this.grantClient = grantClient;
     }
 
     /** 单笔支付流水读模型。 */
@@ -58,7 +61,7 @@ public class PaymentService {
     /**
      * 登记一笔收款。
      *
-     * @param method   支付方式 cash/card/wxpay/alipay/balance
+     * @param method   支付方式 cash/card/wxpay/alipay/balance/grant
      * @param tendered 客户实付（分）；现金为递交现金，非现金等于实际扣款
      * @param operator 收银员
      * @param cardNo   储值余额支付（balance）时的会员卡号；其他方式忽略
@@ -83,13 +86,19 @@ public class PaymentService {
         }
         if (method == null || method.isBlank() || !METHODS.contains(method)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "支付方式无效: " + method + "（支持 cash/card/wxpay/alipay/balance）");
+                    "支付方式无效: " + method + "（支持 cash/card/wxpay/alipay/balance/grant）");
         }
         if ("CARD_SALE".equals(o.getBizKind()) && "balance".equals(method)) {
             // 售卡禁储值余额支付：售卡本身是预收负债（RF-DEPOSIT/IN），用余额买卡会「预收转增、无实款进商户户」，
             // 绕开资金闭环（卡买卡套现）；售卡须以法币现金/刷卡/微信/支付宝实付。
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "购卡 / 开卡订单不能使用储值余额支付（售卡须实付现金/刷卡/微信/支付宝），请更换支付方式");
+        }
+        if ("CARD_SALE".equals(o.getBizKind()) && "grant".equals(method)) {
+            // 售卡禁营销赠金：赠金是营销费用形成的负债，用它买卡等于「负债转预收、无实款进商户户」，
+            // 与储值买卡同类套现路径，且会虚增储值池。售卡须以法币实付。
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "购卡 / 开卡订单不能使用营销赠金抵扣（售卡须实付现金/刷卡/微信/支付宝），请更换支付方式");
         }
         long t = tendered == null ? 0L : tendered;
         if (t <= 0) {
@@ -149,6 +158,25 @@ public class PaymentService {
             // 顺序（DESIGN §6.1）：先扣卡（customer）→ 再写 order_payment → 收齐联动。
             // 余额不足 customer 抛 422 中文；跨服务失败抛异常 → 本事务整体回滚，绝不出现「收款成功但卡没扣」。
             cardClient.consume(cardNo.trim(), o.getCustomerId(), posted, orderNo);
+        }
+
+        if ("grant".equals(method)) {
+            // B35 赠金实扣：grant_deduction 以 orderNo 为幂等键（一单只能一笔赠金，重放不双扣），
+            // 与储值同口径。赠金归属客户，故订单必须有客户（散客单无从抵扣）。
+            if (o.getCustomerId() == null || o.getCustomerId().isBlank()) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "营销赠金抵扣需要订单关联客户，散客订单请改用现金/微信/支付宝/银行卡");
+            }
+            boolean alreadyGrant = payRepo.findByOrderNoOrderByPaymentIdAsc(orderNo).stream()
+                    .anyMatch(p -> "grant".equals(p.getPayMethod()));
+            if (alreadyGrant) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "本订单已使用营销赠金抵扣过一笔（赠金抵扣按订单幂等，不支持同单分次抵扣）；"
+                                + "剩余待收请改用现金/微信/支付宝/银行卡");
+            }
+            // 顺序同储值：先扣赠金（marketing）→ 再写 order_payment → 收齐联动。
+            // 余额不足营销域抛 422 中文；跨服务失败抛异常 → 本事务整体回滚，绝不出现「收款成功但赠金没扣」。
+            grantClient.deduct(o.getCustomerId(), posted, orderNo, o.getStoreCode(), operator);
         }
 
         long paidAfter = paidBefore + posted;

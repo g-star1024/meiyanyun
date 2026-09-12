@@ -54,6 +54,7 @@ public class M4FlowController {
     private final PaymentService paymentService;
     private final FinanceEventPublisher financeEvents;
     private final CustomerCardClient customerCardClient;
+    private final MarketingGrantClient grantClient;
 
     public M4FlowController(ConsultationRepository consultRepo, TxnOrderRepository orderRepo,
                             OrderItemRepository itemRepo,
@@ -61,7 +62,7 @@ public class M4FlowController {
                             AuditRecorder audit, ApptRefNameResolver names,
                             ConsultPlanService planService, OrderNoGenerator orderNoGen,
                             PaymentService paymentService, FinanceEventPublisher financeEvents,
-                            CustomerCardClient customerCardClient) {
+                            CustomerCardClient customerCardClient, MarketingGrantClient grantClient) {
         this.consultRepo = consultRepo;
         this.orderRepo = orderRepo;
         this.itemRepo = itemRepo;
@@ -74,6 +75,7 @@ public class M4FlowController {
         this.paymentService = paymentService;
         this.financeEvents = financeEvents;
         this.customerCardClient = customerCardClient;
+        this.grantClient = grantClient;
     }
 
     // ==================== M4-06 客情咨询 ====================
@@ -323,6 +325,29 @@ public class M4FlowController {
     public List<PaymentService.PaymentView> orderPayments(@PathVariable String no) {
         requireOrder(no);
         return paymentService.listByOrder(no);
+    }
+
+    /**
+     * 收银台可用赠金余额（分）。收银角色 FRONT_DESK 无 marketing:view，不能直读营销域
+     * /api/marketing/grants/customer/{id}，故由本域以内部令牌转发，权限口径对齐收银台 cashier:view。
+     *
+     * <p>只读查询，营销服务不可用时降级返回 available=false 而非 502：
+     * 收银台据此隐藏赠金余额提示即可，不应阻断其他支付方式的正常收款。
+     */
+    @GetMapping("/order/{no}/grant-balance")
+    @RequirePerm("cashier:view")
+    public Map<String, Object> orderGrantBalance(@PathVariable String no) {
+        TxnOrder order = requireOrder(no);
+        String customerId = order.getCustomerId();
+        if (customerId == null || customerId.isBlank()) {
+            return Map.of("customerId", "", "balanceFen", 0L, "available", false);
+        }
+        try {
+            long fen = grantClient.balance(customerId);
+            return Map.of("customerId", customerId, "balanceFen", fen, "available", true);
+        } catch (ResponseStatusException e) {
+            return Map.of("customerId", customerId, "balanceFen", 0L, "available", false);
+        }
     }
 
     private Long parseAmount(Object v) {

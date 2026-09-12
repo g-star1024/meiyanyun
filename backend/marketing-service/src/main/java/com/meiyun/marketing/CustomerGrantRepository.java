@@ -1,7 +1,9 @@
 package com.meiyun.marketing;
 
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -21,6 +23,18 @@ public interface CustomerGrantRepository extends JpaRepository<CustomerGrant, Lo
     @Query("select coalesce(sum(g.balanceFen),0) from CustomerGrant g " +
             "where g.customerId = :cid and g.status = 'VALID'")
     Long sumBalanceByCustomer(@Param("cid") String cid);
+
+    /**
+     * 收银台抵扣取券：同事务行锁按「先到期先用」FIFO 列出客户可用赠金，
+     * SELECT ... FOR UPDATE 串行化并发扣减，防余额更新丢失导致的赠金双花。
+     *
+     * <p>只取 VALID 且未过期者：过期扫描是定时任务，可能尚未跑到，抵扣侧必须自行按 now 兜底，
+     * 否则会扣到「事实已过期但状态仍 VALID」的赠金。
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("select g from CustomerGrant g where g.customerId = :cid and g.status = 'VALID' " +
+            "and g.expireAt > :now and g.balanceFen > 0 order by g.expireAt asc, g.id asc")
+    List<CustomerGrant> findUsableForUpdate(@Param("cid") String cid, @Param("now") OffsetDateTime now);
 
     /** 过期扫描（限批 Pageable，防全表一事务毒化；调用方逐条独立事务处理）。 */
     List<CustomerGrant> findByStatusAndExpireAtBefore(String status, OffsetDateTime before, Pageable pageable);

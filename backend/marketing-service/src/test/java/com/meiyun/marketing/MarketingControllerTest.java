@@ -12,9 +12,11 @@ import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
@@ -93,6 +95,20 @@ class MarketingControllerTest {
     RateLimiter rateLimiter;
     @MockBean
     DomainEventPublisher events;
+    // B22 起 MarketingController 构造扩至 13 参（素材/海报/直播/配置/核销/推送六个服务），
+    // 切片测试未同步补 mock 导致上下文长期加载失败；此处补齐，缺一即 UnsatisfiedDependency。
+    @MockBean
+    MarketingAssetService assetService;
+    @MockBean
+    PosterService posterService;
+    @MockBean
+    LiveService liveService;
+    @MockBean
+    MarketingCfgService cfgService;
+    @MockBean
+    CouponWriteoffService writeoffService;
+    @MockBean
+    PushService pushService;
 
     private String token(String staffId, List<String> roles, List<String> perms) {
         LoginUser u = new LoginUser(staffId, "测试员", roles, "S001", "STORE", perms, false, null, null);
@@ -267,7 +283,7 @@ class MarketingControllerTest {
     void config_endpoint_returns_cfg_when_present() throws Exception {
         MarketingCfg cfg = new MarketingCfg();
         cfg.setWeeklyPushLimit(3);
-        when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
+        when(cfgService.get()).thenReturn(cfg);
         mockMvc.perform(get("/api/marketing/config")
                         .header("Authorization", adminToken()))
                 .andExpect(status().isOk())
@@ -280,20 +296,39 @@ class MarketingControllerTest {
     private void allowPush() {
         MarketingCfg cfg = new MarketingCfg();
         cfg.setWeeklyPushLimit(3);
-        when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
+        when(cfgService.get()).thenReturn(cfg);
         when(forbiddenWordService.check(anyString())).thenReturn(List.of());
         when(rateLimiter.tryAcquire(anyString(), org.mockito.ArgumentMatchers.anyInt(),
                 org.mockito.ArgumentMatchers.anyInt())).thenReturn(true);
         when(rateLimiter.currentCount(anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(0L);
-        when(pushRepo.save(any())).thenAnswer(inv -> inv.getArgument(0));
+        when(pushService.send(any())).thenAnswer(inv -> {
+            MarketingController.PushCmd c = inv.getArgument(0);
+            PushRecord p = new PushRecord();
+            p.setCustomerId(c.customerId());
+            p.setPushType(c.pushType());
+            p.setContent(c.content());
+            return p;
+        });
+    }
+
+    /**
+     * B22 后触达三红线（违禁词 / 周频控 / 渠道白名单）已下沉 {@link PushService}，
+     * 切片层只负责验证「服务抛 ResponseStatusException → GlobalExceptionHandler 转中文 400」这段链路；
+     * 红线判定逻辑本身由 PushService 自己的单元测试覆盖，此处不重复断言其内部实现。
+     *
+     * <p>用 doThrow 而非 when(...).thenThrow：后者会真实调用一次已被 allowPush 桩住的 answer，
+     * 参数为 null 直接 NPE。覆盖既有桩必须走 doXxx().when() 语法。
+     */
+    private void pushRejects(HttpStatus status, String message) {
+        org.mockito.Mockito.doThrow(new ResponseStatusException(status, message))
+                .when(pushService).send(any());
     }
 
     @Test
     void push_hit_forbidden_word_returns_400_chinese_and_not_persisted() throws Exception {
         allowPush();
-        // “根治” 属医疗承诺类违禁词（DB 词库服务返回命中），必须在频控前拦截，且不允许落库
-        when(forbiddenWordService.check(anyString()))
-                .thenReturn(List.of("医疗承诺:根治", "医疗承诺:一次见效"));
+        // “根治” 属医疗承诺类违禁词（PushService 经 DB 词库服务判定命中），中文错误须原样透出、不外露英文
+        pushRejects(HttpStatus.BAD_REQUEST, "营销合规拦截：命中违禁词 医疗承诺:根治; 医疗承诺:一次见效");
         mockMvc.perform(post("/api/marketing/push")
                         .header("Authorization", adminToken())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -303,20 +338,13 @@ class MarketingControllerTest {
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("医疗承诺:根治")));
         org.mockito.Mockito.verify(pushRepo, org.mockito.Mockito.never()).save(any());
         org.mockito.Mockito.verifyNoInteractions(events);
-        org.mockito.Mockito.verify(rateLimiter, org.mockito.Mockito.never())
-                .tryAcquire(anyString(), org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.anyInt());
     }
 
     @Test
     void push_over_weekly_limit_returns_400_chinese() throws Exception {
-        MarketingCfg cfg = new MarketingCfg();
-        cfg.setWeeklyPushLimit(3);
-        when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
+        allowPush();
         // 违禁词通过但频控拒绝：近 7 天已触达 3 条
-        when(forbiddenWordService.check(anyString())).thenReturn(List.of());
-        when(rateLimiter.tryAcquire(anyString(), org.mockito.ArgumentMatchers.anyInt(),
-                org.mockito.ArgumentMatchers.anyInt())).thenReturn(false);
-        when(rateLimiter.currentCount(anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(3L);
+        pushRejects(HttpStatus.BAD_REQUEST, "触达频控拦截：客户 M001 近 7 天已触达 3 条，上限 3");
         mockMvc.perform(post("/api/marketing/push")
                         .header("Authorization", adminToken())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -337,14 +365,14 @@ class MarketingControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.customerId").value("M001"))
                 .andExpect(jsonPath("$.pushType").value("SMS"));
-        org.mockito.Mockito.verify(pushRepo).save(any());
-        org.mockito.Mockito.verify(events).publish(org.mockito.ArgumentMatchers.eq("meiyun.marketing.push-sent"),
-                anyString(), anyString());
+        org.mockito.Mockito.verify(pushService).send(any());
     }
 
     @Test
     void push_invalid_push_type_returns_400_chinese_and_not_persisted() throws Exception {
         allowPush();
+        pushRejects(HttpStatus.BAD_REQUEST,
+                "推送渠道不合法：仅支持 短信(SMS)/企业微信(WECOM)/微信公众号(WECHAT_MP)");
         mockMvc.perform(post("/api/marketing/push")
                         .header("Authorization", adminToken())
                         .contentType(MediaType.APPLICATION_JSON)
@@ -352,8 +380,6 @@ class MarketingControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("推送渠道不合法")));
         org.mockito.Mockito.verify(pushRepo, org.mockito.Mockito.never()).save(any());
-        org.mockito.Mockito.verify(forbiddenWordService, org.mockito.Mockito.never())
-                .check(org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test
@@ -365,14 +391,14 @@ class MarketingControllerTest {
                         .content("{\"customerId\":\"SC001\",\"pushType\":\"WECHAT_MP\",\"content\":\"公众号模板消息：您有一张专属券待领取\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.pushType").value("WECHAT_MP"));
-        org.mockito.Mockito.verify(pushRepo).save(any());
+        org.mockito.Mockito.verify(pushService).send(any());
     }
 
     @Test
     void push_quota_endpoint_reports_remaining() throws Exception {
         MarketingCfg cfg = new MarketingCfg();
         cfg.setWeeklyPushLimit(3);
-        when(cfgRepo.findById(1)).thenReturn(Optional.of(cfg));
+        when(cfgService.get()).thenReturn(cfg);
         when(rateLimiter.currentCount(anyString(), org.mockito.ArgumentMatchers.anyInt())).thenReturn(2L);
         mockMvc.perform(get("/api/marketing/push/quota/M001")
                         .header("Authorization", adminToken()))

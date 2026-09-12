@@ -48,6 +48,9 @@ services:
       TXN_SERVICE_URL: "http://txn-service:8083"
       # B4：customer 充值资金事件 outbox 投递 finance（/api/finance/internal/entries）。
       FINANCE_SERVICE_URL: "http://finance-service:8087"
+      # B35：txn 收银台查余额/扣赠金调用 marketing 内部端点（/api/marketing/internal/grants/**）。
+      # 不注入则 @Value 默认 127.0.0.1:8088，容器内连自身会被拒、赠金额度静默降级为不可用。
+      MARKETING_SERVICE_URL: "http://marketing-service:8088"
       # 开发期免密登录（/api/org/auth/dev-login）：生产必须关闭。默认 false，
       # 联调/演示时在宿主环境或 .env 显式 MEIYUN_DEV_LOGIN=true 开启。
       MEIYUN_DEV_LOGIN: "${MEIYUN_DEV_LOGIN:-false}"

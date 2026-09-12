@@ -27,8 +27,9 @@ import java.util.UUID;
  * <p>客户存在性 + 归属门店由客户域 internal 投影硬校验（客户不存在 400、客户域不可用 502，
  * 真实资金权益不允许凭空发放或降级照发）。
  *
- * <p>范围边界：本期只做「规则配置 + 赠金发放 + 账本余额 + 过期 + 报表」。
- * 赠金在收银台抵扣（status→USED）需接入定价/交易链路，列为下游 Backlog，不在本期。
+ * <p>范围边界：本期覆盖「规则配置 + 赠金发放 + 账本余额 + 收银台抵扣 + 过期 + 报表」。
+ * 抵扣按到期时间 FIFO 跨券扣减并落 grant_deduction 流水（详见 {@link #deduct}）；
+ * 退款回加（REFUND 反向流水）需交易域退款链路配合，列为下游 Backlog。
  */
 @Service
 public class GrantService {
@@ -43,14 +44,17 @@ public class GrantService {
 
     private final GrantRuleRepository ruleRepo;
     private final CustomerGrantRepository grantRepo;
+    private final GrantDeductionRepository deductionRepo;
     private final AuditRecorder audit;
     private final BizNoGenerator bizNoGenerator;
     private final CustomerDirectoryClient customerDirectory;
 
-    public GrantService(GrantRuleRepository ruleRepo, CustomerGrantRepository grantRepo, AuditRecorder audit,
+    public GrantService(GrantRuleRepository ruleRepo, CustomerGrantRepository grantRepo,
+                        GrantDeductionRepository deductionRepo, AuditRecorder audit,
                         BizNoGenerator bizNoGenerator, CustomerDirectoryClient customerDirectory) {
         this.ruleRepo = ruleRepo;
         this.grantRepo = grantRepo;
+        this.deductionRepo = deductionRepo;
         this.audit = audit;
         this.bizNoGenerator = bizNoGenerator;
         this.customerDirectory = customerDirectory;
@@ -220,6 +224,96 @@ public class GrantService {
                     .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
                             "赠金发放唯一键冲突且无法重查，请稍后重试"));
         }
+    }
+
+    // ==================== 抵扣（收银台内部调用） ====================
+
+    /**
+     * 收银台赠金抵扣（域⑤ ←→ 交易域）。按「先到期先用」FIFO 跨券扣减，单券可部分扣、扣尽置 USED。
+     *
+     * <p>幂等：biz_ref = 订单号，同单重放原样返回既有流水不双扣（与储值扣款「同单单笔」口径一致）。
+     * 并发：findUsableForUpdate 行锁串行化，防同客户并发下单把同一张券扣两次。
+     * 余额不足直接 422 拒绝（不做「有多少扣多少」），由收银台先查余额再决定抵扣额，
+     * 避免调用方以为全额抵扣成功而少收钱。
+     *
+     * @return 本次实际写入（或重放命中）的抵扣流水，可能多行
+     */
+    @Transactional
+    public List<GrantDeduction> deduct(String customerId, Long amountFen, String bizRef,
+                                       String storeCode, String operator) {
+        if (customerId == null || customerId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "客户ID不可为空");
+        }
+        if (amountFen == null || amountFen <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "抵扣金额须为正数（单位：分）");
+        }
+        if (bizRef == null || bizRef.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "抵扣业务单号不可为空");
+        }
+        String cid = customerId.trim();
+        String ref = bizRef.trim();
+
+        List<GrantDeduction> replay = deductionRepo.findByBizRefOrderByIdAsc(ref);
+        if (!replay.isEmpty()) {
+            return replay;
+        }
+
+        OffsetDateTime now = OffsetDateTime.now(BIZ_ZONE);
+        List<CustomerGrant> usable = grantRepo.findUsableForUpdate(cid, now);
+        long available = usable.stream().mapToLong(CustomerGrant::getBalanceFen).sum();
+        if (available < amountFen) {
+            throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "赠金余额不足：可用 " + yuan(available) + " 元，本次需抵扣 " + yuan(amountFen) + " 元");
+        }
+
+        List<GrantDeduction> written = new java.util.ArrayList<>();
+        long remain = amountFen;
+        for (CustomerGrant g : usable) {
+            if (remain <= 0) break;
+            long take = Math.min(remain, g.getBalanceFen());
+            long after = g.getBalanceFen() - take;
+            g.setBalanceFen(after);
+            if (after == 0) {
+                g.setStatus("USED");
+            }
+            grantRepo.save(g);
+
+            GrantDeduction d = new GrantDeduction();
+            d.setBizRef(ref);
+            d.setGrantId(g.getId());
+            d.setCustomerId(cid);
+            d.setAmountFen(take);
+            d.setBalanceAfterFen(after);
+            d.setChangeType("DEDUCT");
+            d.setStoreCode(storeCode == null ? "" : storeCode.trim());
+            d.setOperator(operator == null ? "" : operator.trim());
+            written.add(d);
+            remain -= take;
+        }
+
+        List<GrantDeduction> saved;
+        try {
+            saved = deductionRepo.saveAll(written);
+        } catch (DataIntegrityViolationException dup) {
+            List<GrantDeduction> exist = deductionRepo.findByBizRefOrderByIdAsc(ref);
+            if (!exist.isEmpty()) {
+                return exist;
+            }
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "赠金抵扣唯一键冲突且无法重查，请稍后重试");
+        }
+
+        audit("GRANT_DEDUCT", "ORDER", ref,
+                Map.of("customerId", cid, "storeCode", storeCode == null ? "" : storeCode,
+                        "operator", operator == null ? "" : operator,
+                        "amountFen", amountFen, "grantCount", saved.size(),
+                        "balanceAfterFen", balance(cid)));
+        return saved;
+    }
+
+    /** 分转元的中文错误文案用格式（仅用于提示，不参与计算）。 */
+    private static String yuan(long fen) {
+        return java.math.BigDecimal.valueOf(fen, 2).toPlainString();
     }
 
     // ==================== 查询 / 报表 ====================

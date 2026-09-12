@@ -13,7 +13,7 @@ import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
 import { useToast } from '@/composables/useToast'
-import { listOrders, payOrder, type OrderViewDTO, type OrderPaymentDTO } from '@/api/order'
+import { listOrders, payOrder, getOrderGrantBalance, type OrderViewDTO, type OrderPaymentDTO } from '@/api/order'
 import { listCustomerCards, type MemberCardDTO } from '@/api/customer'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -23,7 +23,7 @@ import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 
-type PayMethod = 'cash' | 'card' | 'wxpay' | 'alipay' | 'balance'
+type PayMethod = 'cash' | 'card' | 'wxpay' | 'alipay' | 'balance' | 'grant'
 type UiStatus = 'PENDING_SIGN' | 'PENDING_PAY' | 'PAID' | 'CANCELLED'
 
 interface UiPayment {
@@ -143,10 +143,16 @@ const PAY_METHODS: { key: PayMethod; label: string; icon: 'pos' | 'card' | 'phon
   { key: 'alipay', label: '支付宝', icon: 'phone', desc: '扫码 / 付款码' },
   { key: 'card', label: '银行卡', icon: 'card', desc: 'POS 刷卡' },
   { key: 'balance', label: '会员储值', icon: 'finance', desc: '余额扣款' },
+  { key: 'grant', label: '营销赠金', icon: 'finance', desc: '赠金抵扣' },
   { key: 'cash', label: '现金', icon: 'pos', desc: '需双人复核' },
 ]
 const METHOD_LABEL: Record<PayMethod, string> = {
-  wxpay: '微信支付', alipay: '支付宝', card: '银行卡', balance: '会员储值', cash: '现金',
+  wxpay: '微信支付',
+  alipay: '支付宝',
+  card: '银行卡',
+  balance: '会员储值',
+  grant: '营销赠金',
+  cash: '现金',
 }
 
 // ---- 选中订单 ----
@@ -166,6 +172,9 @@ function selectOrder(id: string) {
   // 切换订单后重置储值卡选择，防止把 A 客户卡号用到 B 订单
   balanceCards.value = []
   balanceCardNo.value = ''
+  // 同理重置赠金额度：额度按客户维度，留着会把 A 客户的额度当成 B 客户的
+  grantBalance.value = 0
+  grantAvailable.value = false
 }
 
 // ---- 支付录入 ----
@@ -199,9 +208,41 @@ const balanceCardOptions = computed(() =>
     label: `${c.cardItem}（${c.cardNo}）余额 ${money(fen2yuan(c.balance))}`,
   })),
 )
+
+// ---- B35 营销赠金：可用额度（元）。散客/营销服务不可用时 available=false，只影响提示不阻断收款 ----
+const grantBalance = ref(0)
+const grantAvailable = ref(false)
+const grantLoading = ref(false)
+/**
+ * 拉取赠金额度并以 toast 告知收银员（模板无赠金专属 DOM，故不新增元素、走轻提示）。
+ * 查询失败一律静默：赠金只是可选支付方式，拉不到额度不应打断其他方式收款；
+ * 真实扣减以后端 FIFO 带锁为准，余额不足由 422 中文透传。
+ */
+async function loadGrantBalance(order: UiOrder) {
+  grantBalance.value = 0
+  grantAvailable.value = false
+  grantLoading.value = true
+  try {
+    const res = await getOrderGrantBalance(order.orderNo)
+    grantAvailable.value = !!res.data.available
+    grantBalance.value = fen2yuan(res.data.balanceFen)
+    if (!grantAvailable.value) {
+      toast.info('赠金额度暂不可查（散客或营销服务不可用），可改用其他支付方式')
+    } else if (grantBalance.value <= 0) {
+      toast.info('该客户当前无可用营销赠金（已用完或已过期）')
+    } else {
+      toast.info(`该客户可用营销赠金 ${money(grantBalance.value)}，不足部分请用其他方式补收`)
+    }
+  } catch {
+    // 静默：赠金额度查询失败不阻断收款，强行提交由后端 422 中文透传
+  } finally {
+    grantLoading.value = false
+  }
+}
 function pickMethod(m: PayMethod) {
   activeMethod.value = m
   if (m === 'balance' && selected.value) void loadBalanceCards(selected.value)
+  if (m === 'grant' && selected.value) void loadGrantBalance(selected.value)
 }
 const received = computed(() => (selected.value ? paidAmount(selected.value) : 0))
 const rest = computed(() => (selected.value ? selected.value.amount - received.value : 0))
@@ -231,6 +272,16 @@ async function addPayment() {
   // B4 会员储值：必须选定会员卡号（后端先扣卡后写流水）；无可用卡前端拦截，避免无效请求
   if (activeMethod.value === 'balance' && !balanceCardNo.value) {
     toast.error('请先选择用于扣款的会员储值卡（该客户无在用储值卡时不可使用会员储值支付）')
+    return
+  }
+  // B35 营销赠金：仅在"已确认查到额度"时前端拦截；额度查不到（散客/营销服务抖动）一律放行，
+  // 交由后端 FIFO 带锁扣减与 422 中文错误裁决，避免前端过度判断挡掉本可成功的收款
+  if (activeMethod.value === 'grant' && grantAvailable.value && grantBalance.value <= 0) {
+    toast.error('该客户当前无可用营销赠金（已用完或已过期），请改用其他支付方式')
+    return
+  }
+  if (activeMethod.value === 'grant' && grantAvailable.value && amt > grantBalance.value) {
+    toast.error(`本次抵扣 ${money(amt)} 超出可用赠金 ${money(grantBalance.value)}，请下调金额后用其他方式补收`)
     return
   }
   // 现金传"客户实付"（后端按待收封顶入账并计算找零）；非现金传实际扣款额
