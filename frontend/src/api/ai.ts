@@ -968,3 +968,107 @@ export function registerRepurchasePush(id: number): Promise<RepurchaseActionResu
 export function batchRepurchaseFollowup(period: string): Promise<RepurchaseBatchResult> {
   return client.post('/ai/repurchase/batch-followup', null, { params: { period } }).then((r) => r.data)
 }
+
+// -------------------- 流失预警引擎（B47 卡3） --------------------
+
+export interface ChurnCmd {
+  storeCode?: string | null
+  limit?: number | null
+}
+
+export interface ChurnRow {
+  predictionId: number
+  customerId: string
+  customerName: string
+  phone: string
+  level: string
+  riskLevel: string
+  score: number
+  keyFactor: string
+  suggestedAction: string
+  lastVisitDate: string
+  recencyDays: number | null
+  spendDeclinePct: number | null
+  cardBalanceFen: number | null
+  interveneRegistered: boolean
+  invokeLogId: number | null
+  modelCode: string | null
+  createdAt: string | null
+}
+
+export interface ChurnBatch {
+  batchNo: string
+  size: number
+  highCount: number
+  midCount: number
+  avgScore: number
+  storeCode: string | null
+  createdAt: string | null
+}
+
+export interface ChurnStats {
+  scoredCustomers: number
+  highCount: number
+  midCount: number
+  interveneTotal: number
+  weekInvokes: number
+  modelVersion: string
+  modelNote: string
+  ran: boolean
+}
+
+export interface ChurnFactor {
+  rank: number
+  title: string
+  desc: string
+  weight: number
+  available: boolean
+  unavailableNote: string | null
+}
+
+export interface ChurnFactorModel {
+  modelVersion: string
+  note: string
+  rows: ChurnFactor[]
+}
+
+export interface ChurnActionResult {
+  changed: boolean
+  predictionId: number
+  action: string
+}
+
+export interface ChurnBatchResult {
+  batchNo: string
+  affected: number
+  changed: boolean
+}
+
+// 运行评分按候选客户逐人真实模型 invoke，耗时较长，超时对齐后端出站读超时 180s
+export function runChurn(cmd: ChurnCmd): Promise<ChurnBatch> {
+  return client.post('/ai/churn/run', cmd, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function listChurn(riskLevel?: string): Promise<ChurnRow[]> {
+  return client.get('/ai/churn/list', { params: { riskLevel } }).then((r) => r.data)
+}
+
+export function getChurnBatch(): Promise<ChurnBatch> {
+  return client.get('/ai/churn/batch').then((r) => r.data)
+}
+
+export function getChurnStats(): Promise<ChurnStats> {
+  return client.get('/ai/churn/stats').then((r) => r.data)
+}
+
+export function getChurnFactors(): Promise<ChurnFactorModel> {
+  return client.get('/ai/churn/factors').then((r) => r.data)
+}
+
+export function registerChurnIntervene(id: number): Promise<ChurnActionResult> {
+  return client.post(`/ai/churn/${id}/intervene`).then((r) => r.data)
+}
+
+export function batchChurnIntervene(): Promise<ChurnBatchResult> {
+  return client.post('/ai/churn/batch-intervene').then((r) => r.data)
+}
