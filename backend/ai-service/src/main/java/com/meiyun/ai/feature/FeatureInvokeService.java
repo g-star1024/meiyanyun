@@ -77,7 +77,7 @@ public class FeatureInvokeService {
     public record InvokeView(boolean success, String featureCode, String featureName,
                              String providerCode, String modelCode, String content,
                              Integer promptTokens, Integer completionTokens, Integer totalTokens,
-                             Long latencyMs, Long costFen, String errorCode) {
+                             Long latencyMs, Long costFen, String errorCode, Long logId) {
     }
 
     // 刻意不加方法级事务：真实出站失败时需保证失败日志独立提交，
@@ -175,7 +175,7 @@ public class FeatureInvokeService {
             return new InvokeView(true, featureCode, featureName,
                     provider.getProviderCode(), model.getModelCode(), r.content(),
                     r.promptTokens(), r.completionTokens(), r.totalTokens(),
-                    latency, costFen, null);
+                    latency, costFen, null, log.getLogId());
         } catch (Exception e) {
             long latency = System.currentTimeMillis() - start;
             String msg = e.getMessage() == null ? "调用失败" : e.getMessage();

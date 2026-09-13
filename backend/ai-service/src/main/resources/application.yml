@@ -50,9 +50,10 @@ meiyun:
   ai:
     # 供应商 API Key 落库主密钥（AES-GCM）；生产经环境变量注入，dev 默认值仅供本地联调
     config-secret: ${AI_CONFIG_SECRET:meiyun-dev-ai-config-secret-change-in-prod-0123}
-    # LLM 出站超时（毫秒）：连通性测试与真实生成可能较慢，独立于服务间 5s RestTemplate
+    # LLM 出站超时（毫秒）：连通性测试与真实生成可能较慢，独立于服务间 5s RestTemplate；
+    # 长文案（完整推文/海报）completion 可达 2000+ tokens，实测约需 60~120s，读取超时给到 180s
     llm-connect-timeout: ${AI_LLM_CONNECT_TIMEOUT:10000}
-    llm-read-timeout: ${AI_LLM_READ_TIMEOUT:60000}
+    llm-read-timeout: ${AI_LLM_READ_TIMEOUT:180000}
 
 audit:
   service:

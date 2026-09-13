@@ -17,6 +17,8 @@ public interface AiSensitiveHitRepository extends JpaRepository<AiSensitiveHit, 
 
     long countByHitAtGreaterThanEqual(OffsetDateTime since);
 
+    long countByHitAtGreaterThanEqualAndFeatureCode(OffsetDateTime since, String featureCode);
+
     long countByFalsePositiveTrue();
 
     /** 按词聚合成对：word_id（0 表示词已被删的孤儿命中）、命中次数、最近命中时间。 */

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-/* A1-10 内容生成 /ai/content — 合规过滤 + 下发 M5 */
-import { computed, ref } from 'vue'
+/* A1-10 内容生成 /ai/content — 渠道真实出网 + 合规过滤 + 站内下发（B46 卡3 去 mock） */
+import { computed, onMounted, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CKpi from '@/components/CKpi.vue'
@@ -9,6 +9,16 @@ import CTable from '@/components/CTable.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import CInput from '@/components/CInput.vue'
 import CIcon from '@/components/CIcon.vue'
+import CPagination from '@/components/CPagination.vue'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { fmtDateTime } from '@/utils/datetime'
+import {
+  generateContent, listContentRecords, getContentStats, deployContent,
+  type ContentView, type ContentStats,
+} from '@/api/ai'
+
+const toast = useToast()
 
 const typeTab = ref('wechat')
 const typeOptions = [
@@ -19,39 +29,31 @@ const typeOptions = [
 const typeLabel = (v: string) => typeOptions.find(o => o.value === v)?.label ?? ''
 const topicInput = ref<InstanceType<typeof CInput> | null>(null)
 
-const kpis = [
-  { label: '今日生成', icon: 'calendar', value: '128', tone: 'purple' as const },
-  { label: '采纳率', icon: 'trend-up', value: '54%', tone: 'brand' as const },
-  { label: '合规拦截', icon: 'alert', value: '8', tone: 'danger' as const },
-  { label: '下发 M5', icon: 'marketing', value: '46', tone: 'teal' as const },
-]
+const stats = ref<ContentStats>({
+  todayGenerated: 0, totalGenerated: 0, todayDeployed: 0,
+  totalDeployed: 0, todayBlocked: 0, adoptRatePct: 0,
+})
+
+const kpis = computed(() => [
+  { label: '今日生成', icon: 'calendar', value: String(stats.value.todayGenerated), tone: 'purple' as const },
+  { label: '采纳率', icon: 'trend-up', value: `${stats.value.adoptRatePct}%`, tone: 'brand' as const },
+  { label: '今日合规拦截', icon: 'alert', value: String(stats.value.todayBlocked), tone: 'danger' as const },
+  { label: '今日下发', icon: 'marketing', value: String(stats.value.todayDeployed), tone: 'teal' as const },
+])
 
 const historyCols = [
-  { key: 'title', label: '标题' }, { key: 'type', label: '类型', width: '90' },
-  { key: 'time', label: '生成时间', width: '150' },
-  { key: 'compliance', label: '合规', width: '100' },
+  { key: 'title', label: '标题' }, { key: 'type', label: '类型', width: '100' },
+  { key: 'time', label: '生成时间', width: '160' },
+  { key: 'compliance', label: '状态', width: '100' },
   { key: 'ops', label: '操作', width: '140' },
 ]
-const history = ref([
-  { id: 1, title: '秋季护肤新品推广', type: '公众号文案', channel: 'wechat', time: '2026-08-26 10:30', compliance: '通过' },
-  { id: 2, title: '会员日倒计时海报', type: '海报文案', channel: 'poster', time: '2026-08-26 09:15', compliance: '通过' },
-  { id: 3, title: '限时秒杀提醒', type: '短信文案', channel: 'sms', time: '2026-08-25 18:40', compliance: '拦截' },
-  { id: 4, title: '老客专属福利', type: '公众号文案', channel: 'wechat', time: '2026-08-25 16:20', compliance: '通过' },
-  { id: 5, title: '新店开业邀请函', type: '海报文案', channel: 'poster', time: '2026-08-25 14:00', compliance: '通过' },
-  { id: 6, title: '疗程升级推荐', type: '短信文案', channel: 'sms', time: '2026-08-25 11:30', compliance: '通过' },
-  { id: 7, title: '换季敏感肌护理指南', type: '公众号文案', channel: 'wechat', time: '2026-08-24 15:10', compliance: '通过' },
-])
-const filteredHistory = computed(() => history.value.filter(h => h.channel === typeTab.value))
 
-const generatedContent = ref('秋季护肤新品上市！针对干燥、敏感、暗沉三大肌肤问题，精选天然植物精华，深层滋养修复。现在预约体验，新客专享 8 折优惠，老客推荐更有好礼相送。')
-const generating = ref(false)
-const topic = ref('')
+const history = ref<ContentView[]>([])
+const historyLoading = ref(false)
+const page = ref(1)
+const pageSize = ref(10)
+const total = ref(0)
 
-const channelTemplates: Record<string, (t: string) => string> = {
-  wechat: t => `【${t}】\n\n亲爱的会员，秋季护肤正当时！我们为您精选了多款深层滋养项目，针对换季干燥、敏感等问题提供专业解决方案。\n\n预约即享：\n✓ 新客 8 折体验\n✓ 老客推荐赠高端面膜一盒\n✓ 疗程升级立减 ¥200\n\n名额有限，点击立即预约。`,
-  poster: t => `${t}\n━━━━━━━━━━\n秋季焕新 · 限时礼遇\n新客到店 8 折｜老客带新赠好礼\n名额有限 先约先得\n📞 点击预约 · 到店体验`,
-  sms: t => `【美研云】${t}，秋季护肤新客8折、老客带新赠面膜，退订回T`,
-}
 const channelPlaceholders: Record<string, string> = {
   wechat: '如：秋季护肤新品推广（公众号长文）',
   poster: '如：会员日倒计时（海报主标题/短句）',
@@ -59,63 +61,171 @@ const channelPlaceholders: Record<string, string> = {
 }
 const topicPlaceholder = computed(() => channelPlaceholders[typeTab.value])
 
+// 当前预览/编辑中的记录与文案
+const current = ref<ContentView | null>(null)
+const generatedContent = ref('')
+const generating = ref(false)
+const deploying = ref(false)
+const topic = ref('')
+
+const previewStatus = computed(() => {
+  if (!current.value) return null
+  return current.value.status === 'DEPLOYED'
+    ? { status: 'success' as const, text: '已下发' }
+    : { status: 'primary' as const, text: '已生成待下发' }
+})
+const deployed = computed(() => current.value?.status === 'DEPLOYED')
+
+function toRow(r: ContentView) {
+  return {
+    id: r.recordId,
+    title: r.title,
+    type: typeLabel(r.channel),
+    channel: r.channel,
+    time: fmtDateTime(r.createdAt),
+    compliance: r.status === 'DEPLOYED' ? '已下发' : '待下发',
+    raw: r,
+  }
+}
+const rows = computed(() => history.value.map(toRow))
+
+function compliancePill(c: string) {
+  return c === '已下发' ? 'success' : 'primary'
+}
+
+async function loadStats() {
+  try {
+    stats.value = await getContentStats()
+  } catch (e) {
+    toast.error('统计加载失败：' + errMsg(e))
+  }
+}
+
+async function loadHistory() {
+  historyLoading.value = true
+  try {
+    const res = await listContentRecords({
+      channel: typeTab.value,
+      page: page.value - 1,
+      size: pageSize.value,
+    })
+    history.value = res.content
+    total.value = res.totalElements
+  } catch (e) {
+    toast.error('生成历史加载失败：' + errMsg(e))
+  } finally {
+    historyLoading.value = false
+  }
+}
+
+function switchChannel(v: string) {
+  typeTab.value = v
+  page.value = 1
+  loadHistory()
+}
+
+function changePage(n: number) {
+  page.value = n
+  loadHistory()
+}
+
 function focusTopic() {
   topicInput.value?.focus?.()
 }
 
-function generate() {
-  if (!topic.value.trim()) { window.alert('请输入主题'); focusTopic(); return }
-  generating.value = true
-  setTimeout(() => {
-    generatedContent.value = channelTemplates[typeTab.value](topic.value.trim())
-    const now = new Date()
-    const pad = (n: number) => String(n).padStart(2, '0')
-    const time = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}`
-    history.value.unshift({ id: Date.now(), title: topic.value.trim(), type: typeLabel(typeTab.value), channel: typeTab.value, time, compliance: '通过' })
-    generating.value = false
-  }, 800)
+function preview(r: ContentView) {
+  current.value = r
+  generatedContent.value = r.content
+  topic.value = r.topic
+  typeTab.value = r.channel
 }
 
-function deploy() {
-  if (generatedContent.value.includes('秒杀') || generatedContent.value.includes('最低价')) {
-    window.alert('A1-04 敏感词检测未通过：命中"秒杀/最低价"等违禁词，请修改后重试。')
+async function generate() {
+  const t = topic.value.trim()
+  if (!t) {
+    toast.warning('请输入主题')
+    focusTopic()
     return
   }
-  window.alert('内容已下发至 M5 营销中心，可在 M5-01 活动 / M5-13 素材中使用。')
+  generating.value = true
+  try {
+    const v = await generateContent({ channel: typeTab.value, topic: t })
+    current.value = v
+    generatedContent.value = v.content
+    toast.success('文案已生成，可在右侧预览后下发')
+    await Promise.all([loadStats(), loadHistory()])
+  } catch (e) {
+    toast.error('生成失败：' + errMsg(e))
+  } finally {
+    generating.value = false
+  }
 }
 
-function compliancePill(c: string) {
-  return c === '通过' ? 'success' : 'danger'
+async function deploy() {
+  if (!current.value) {
+    toast.warning('请先生成或选择一条文案')
+    return
+  }
+  if (current.value.status === 'DEPLOYED') {
+    toast.warning('该内容已下发，无需重复操作')
+    return
+  }
+  deploying.value = true
+  try {
+    const res = await deployContent(current.value.recordId)
+    if (!res.changed) {
+      toast.warning('该内容已下发，无需重复操作')
+    } else {
+      toast.success('内容已登记下发至 M5 营销中心')
+    }
+    current.value = { ...current.value, status: res.status }
+    await Promise.all([loadStats(), loadHistory()])
+  } catch (e) {
+    toast.error('下发失败：' + errMsg(e))
+  } finally {
+    deploying.value = false
+  }
 }
+
+onMounted(() => {
+  loadStats()
+  loadHistory()
+})
 </script>
 
 <template>
   <div class="a1-content">
     <div class="kpis"><CKpi v-for="k in kpis" :key="k.label" v-bind="k" /></div>
-    <div class="bar"><CSegmented v-model="typeTab" :options="typeOptions" /><CButton variant="primary" @click="focusTopic"><CIcon name="plus" :size="14" />新建生成</CButton></div>
+    <div class="bar"><CSegmented :model-value="typeTab" :options="typeOptions" @update:model-value="switchChannel" /><CButton variant="primary" @click="focusTopic"><CIcon name="plus" :size="14" />新建生成</CButton></div>
     <div class="layout">
       <CCard padding="lg" class="layout__list">
-        <template #header><h3>生成历史 · {{ typeLabel(typeTab) }}（{{ filteredHistory.length }}）</h3></template>
-        <CTable :columns="historyCols" :rows="filteredHistory" row-key="id" :empty-text="`暂无${typeLabel(typeTab)}记录`">
+        <template #header><h3>生成历史 · {{ typeLabel(typeTab) }}（{{ total }}）</h3></template>
+        <CTable :columns="historyCols" :rows="rows" row-key="id" :empty-text="historyLoading ? '加载中…' : `暂无${typeLabel(typeTab)}记录`">
           <template #col-compliance="{ value }"><CStatusPill :status="compliancePill(value)" dot>{{ value }}</CStatusPill></template>
-          <template #col-ops><CButton size="sm" variant="text">预览</CButton><CButton size="sm" variant="text">下发</CButton></template>
+          <template #col-ops="{ row }"><CButton size="sm" variant="text" @click="preview(row.raw)">预览</CButton><CButton size="sm" variant="text" @click="preview(row.raw); deploy()" :disabled="row.raw.status === 'DEPLOYED'">下发</CButton></template>
         </CTable>
+        <CPagination :page="page" :page-size="pageSize" :total="total" @update:page="changePage" />
       </CCard>
       <CCard padding="lg" class="layout__preview">
         <template #header>
-          <div class="ph"><h3>预览与编辑 · {{ typeLabel(typeTab) }}</h3><CStatusPill status="success" dot>A1-04 合规通过</CStatusPill></div>
+          <div class="ph">
+            <h3>预览与编辑 · {{ typeLabel(typeTab) }}</h3>
+            <CStatusPill v-if="previewStatus" :status="previewStatus.status" dot>{{ previewStatus.text }}</CStatusPill>
+          </div>
         </template>
         <div class="topic">
           <label>主题</label>
           <div class="topic__row">
             <CInput ref="topicInput" v-model="topic" :placeholder="topicPlaceholder" @keyup.enter="generate" />
-            <CButton variant="primary" :disabled="generating" @click="generate"><CIcon name="refresh" :size="14" />{{ generating ? '生成中…' : '生成文案' }}</CButton>
+            <CButton variant="primary" :disabled="generating" @click="generate"><CIcon name="refresh" :size="14" />{{ generating ? '生成中…（长文案约需 1-3 分钟）' : '生成文案' }}</CButton>
           </div>
         </div>
-        <textarea class="editor" v-model="generatedContent" :rows="10" />
+        <textarea v-model="generatedContent" class="editor" :rows="10" :placeholder="`输入主题后点击「生成文案」，将由 AI 生成可直接使用的${typeLabel(typeTab)}`" />
         <div class="ops">
           <span class="hint">所有生成内容经 A1-04 敏感词过滤，命中违禁词将自动拦截</span>
-          <CButton variant="primary" :disabled="generating" @click="deploy">一键下发 M5</CButton>
+          <CButton variant="primary" :disabled="generating || deploying || deployed" @click="deploy">
+            <CIcon name="marketing" :size="14" />{{ deployed ? '已下发' : (deploying ? '下发中…' : '一键下发 M5') }}
+          </CButton>
         </div>
       </CCard>
     </div>

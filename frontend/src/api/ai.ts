@@ -601,3 +601,62 @@ export function getSensitiveHitStats(): Promise<SensitiveHitStats> {
 export function markSensitiveHitFalsePositive(id: number): Promise<SensitiveSaveResult> {
   return client.post(`/ai/sensitive/hits/${id}/mark-fp`).then((r) => r.data)
 }
+
+// -------------------- 渠道内容生成（B46 卡3） --------------------
+
+export interface ContentCmd {
+  channel: string
+  topic: string
+  storeCode?: string | null
+}
+
+export interface ContentView {
+  recordId: number
+  channel: string
+  topic: string
+  title: string
+  content: string
+  invokeLogId: number | null
+  modelCode: string | null
+  totalTokens: number | null
+  costFen: number
+  status: string
+  deployedAt: string | null
+  deployedBy: string | null
+  staffId: string | null
+  staffName: string | null
+  storeCode: string | null
+  createdAt: string | null
+}
+
+export interface ContentStats {
+  todayGenerated: number
+  totalGenerated: number
+  todayDeployed: number
+  totalDeployed: number
+  todayBlocked: number
+  adoptRatePct: number
+}
+
+export interface ContentDeployResult {
+  changed: boolean
+  recordId: number
+  status: string
+}
+
+// 完整推文/海报 completion 可达 2000+ tokens，实测 40~140s，超时放宽到 180s（对齐后端出站读超时）
+export function generateContent(cmd: ContentCmd): Promise<ContentView> {
+  return client.post('/ai/content/generate', cmd, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function listContentRecords(params: { channel?: string; page: number; size: number }): Promise<PageResult<ContentView>> {
+  return client.get('/ai/content/records', { params }).then((r) => r.data)
+}
+
+export function getContentStats(): Promise<ContentStats> {
+  return client.get('/ai/content/stats').then((r) => r.data)
+}
+
+export function deployContent(id: number): Promise<ContentDeployResult> {
+  return client.post(`/ai/content/records/${id}/deploy`).then((r) => r.data)
+}

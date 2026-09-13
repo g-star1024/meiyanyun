@@ -1,6 +1,7 @@
 package com.meiyun.ai.llm;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -25,6 +26,7 @@ public class LlmClient {
 
     private final int connectTimeout;
     private final int readTimeout;
+    private final ObjectMapper mapper = new ObjectMapper();
 
     public LlmClient(@Value("${meiyun.ai.llm-connect-timeout:10000}") int connectTimeout,
                      @Value("${meiyun.ai.llm-read-timeout:60000}") int readTimeout) {
@@ -47,7 +49,7 @@ public class LlmClient {
             body.put("max_tokens", maxTokens);
         }
         try {
-            JsonNode resp = client().post()
+            byte[] rawBytes = client().post()
                     .uri(url)
                     .headers(h -> {
                         h.setContentType(MediaType.APPLICATION_JSON);
@@ -55,7 +57,18 @@ public class LlmClient {
                     })
                     .body(body)
                     .retrieve()
-                    .body(JsonNode.class);
+                    .body(byte[].class);
+            if (rawBytes == null || rawBytes.length == 0) {
+                throw new IllegalStateException("供应商返回为空");
+            }
+            String raw = new String(rawBytes, java.nio.charset.StandardCharsets.UTF_8);
+            JsonNode resp;
+            try {
+                resp = mapper.readTree(raw);
+            } catch (Exception parseEx) {
+                throw new IllegalStateException("供应商返回不是合法 JSON："
+                        + (raw.length() > 200 ? raw.substring(0, 200) : raw));
+            }
             if (resp == null || !resp.hasNonNull("choices")) {
                 throw new IllegalStateException("供应商返回缺少 choices 字段");
             }
@@ -74,8 +87,22 @@ public class LlmClient {
             if (e instanceof IllegalStateException) {
                 throw (IllegalStateException) e;
             }
-            throw new IllegalStateException("调用供应商失败：" + e.getMessage());
+            if (isReadTimeout(e)) {
+                throw new IllegalStateException(
+                        "供应商响应超时（超过 " + readTimeout + "ms 读取时限，长文案生成可能较慢，可稍后重试或缩短主题）", e);
+            }
+            throw new IllegalStateException("调用供应商失败：" + e.getMessage(), e);
         }
+    }
+
+    /** JDK HttpURLConnection 的读超时会被包装在 RestClientException 成因链里（SocketTimeoutException: Read timed out）。 */
+    private static boolean isReadTimeout(Throwable e) {
+        for (Throwable c = e; c != null; c = c.getCause()) {
+            if (c instanceof java.net.SocketTimeoutException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** 连通性测试：一次最短往返 ping。 */
@@ -88,7 +115,16 @@ public class LlmClient {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout((int) Duration.ofMillis(connectTimeout).toMillis());
         factory.setReadTimeout((int) Duration.ofMillis(readTimeout).toMillis());
-        return RestClient.builder().requestFactory(factory).build();
+        // 部分供应商网关把 JSON 响应头返回为 application/octet-stream，默认转换器链会在
+        // 内容协商阶段抛 UnknownContentTypeException；这里显式让字节转换器兼容该类型，先收字节再自行解析。
+        var byteConverter = new org.springframework.http.converter.ByteArrayHttpMessageConverter();
+        byteConverter.setSupportedMediaTypes(java.util.List.of(
+                MediaType.APPLICATION_OCTET_STREAM, MediaType.APPLICATION_JSON,
+                MediaType.TEXT_PLAIN, MediaType.ALL));
+        return RestClient.builder()
+                .requestFactory(factory)
+                .messageConverters(converters -> converters.add(0, byteConverter))
+                .build();
     }
 
     private static String normalizeBaseUrl(String baseUrl) {
