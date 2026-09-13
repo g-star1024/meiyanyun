@@ -4,15 +4,22 @@
  * 定位：AI 能力总入口 — 能力矩阵卡片 + 全局效果 KPI + 待办
  * 红线：A1-17 隐私合规、A1-04 敏感词、模型发布走 T3-01 审批
  * ============================================================ */
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import { AI_CAPABILITY_STATUS, dictPill } from '@/config/dictionary'
+import { useAuthStore } from '@/stores/auth'
+import {
+  logKpi, monthlyBill, listApprovals, listAlerts, getSensitiveHitStats,
+  type AiKpi, type AlertView, type ApprovalView, type SensitiveHitStats,
+} from '@/api/ai'
+import { fmtAgo } from '@/utils/datetime'
 
 const router = useRouter()
+const auth = useAuthStore()
 
 interface AiCapability {
   key: string
@@ -21,55 +28,173 @@ interface AiCapability {
   icon: 'customer' | 'marketing' | 'alert' | 'sign' | 'box' | 'dashboard' | 'shield'
   to: string
   status: 'online' | 'beta' | 'coming'
-  calls: number
+  featureCode?: string
 }
 
+// 能力目录为产品元数据（名称/图标/跳转/生命周期），保留静态；交易口径（调用量/状态指标）一律接真。
 const capabilities = ref<AiCapability[]>([
-  { key: 'profile', name: '客户画像', desc: '标签/分群/价值分', icon: 'customer', to: '/ai/profile', status: 'online', calls: 12840 },
-  { key: 'repurchase', name: '复购预测', desc: '时机/项目/概率榜', icon: 'marketing', to: '/ai/repurchase', status: 'online', calls: 8320 },
-  { key: 'churn', name: '流失预警', desc: '因子/风险分/干预', icon: 'alert', to: '/ai/churn-model', status: 'online', calls: 5640 },
-  { key: 'scripts', name: '智能话术', desc: '破冰/升单/异议', icon: 'sign', to: '/ai/scripts', status: 'online', calls: 21300 },
-  { key: 'chatbot', name: 'AI 客服', desc: '意图识别/转人工', icon: 'customer', to: '/ai/chatbot', status: 'beta', calls: 3420 },
-  { key: 'content', name: '内容生成', desc: '文案/海报/合规过滤', icon: 'marketing', to: '/ai/content', status: 'beta', calls: 1980 },
-  { key: 'knowledge', name: '知识库', desc: '检索/向量化/溯源', icon: 'box', to: '/ai/knowledge', status: 'online', calls: 9750 },
-  { key: 'scheduling', name: '智能排班', desc: '预测/成本/回填', icon: 'dashboard', to: '/ai/scheduling', status: 'online', calls: 420 },
-  { key: 'daily', name: '经营日报', desc: '摘要/异常/建议', icon: 'dashboard', to: '/ai/daily-report', status: 'online', calls: 1860 },
-  { key: 'sensitive', name: '敏感词检测', desc: '实时拦截/词库', icon: 'alert', to: '/ai/sensitive', status: 'online', calls: 45200 },
-  { key: 'govern', name: '审批与评估', desc: 'AI动作受控/AB', icon: 'shield', to: '/ai/govern', status: 'online', calls: 320 },
-  { key: 'privacy', name: '隐私合规', desc: '脱敏/等保/审计', icon: 'shield', to: '/ai/privacy', status: 'online', calls: 0 },
+  { key: 'profile', name: '客户画像', desc: '标签/分群/价值分', icon: 'customer', to: '/ai/profile', status: 'online', featureCode: 'profile' },
+  { key: 'repurchase', name: '复购预测', desc: '时机/项目/概率榜', icon: 'marketing', to: '/ai/repurchase', status: 'online' },
+  { key: 'churn', name: '流失预警', desc: '因子/风险分/干预', icon: 'alert', to: '/ai/churn-model', status: 'online', featureCode: 'churn' },
+  { key: 'scripts', name: '智能话术', desc: '破冰/升单/异议', icon: 'sign', to: '/ai/scripts', status: 'online', featureCode: 'scripts' },
+  { key: 'chatbot', name: 'AI 客服', desc: '意图识别/转人工', icon: 'customer', to: '/ai/chatbot', status: 'beta' },
+  { key: 'content', name: '内容生成', desc: '文案/海报/合规过滤', icon: 'marketing', to: '/ai/content', status: 'beta', featureCode: 'content' },
+  { key: 'knowledge', name: '知识库', desc: '检索/向量化/溯源', icon: 'box', to: '/ai/knowledge', status: 'online' },
+  { key: 'scheduling', name: '智能排班', desc: '预测/成本/回填', icon: 'dashboard', to: '/ai/scheduling', status: 'online', featureCode: 'scheduling' },
+  { key: 'daily', name: '经营日报', desc: '摘要/异常/建议', icon: 'dashboard', to: '/ai/daily-report', status: 'online' },
+  { key: 'sensitive', name: '敏感词检测', desc: '实时拦截/词库', icon: 'alert', to: '/ai/sensitive', status: 'online' },
+  { key: 'govern', name: '审批与评估', desc: 'AI动作受控/AB', icon: 'shield', to: '/ai/govern', status: 'online', featureCode: 'govern' },
+  { key: 'privacy', name: '隐私合规', desc: '脱敏/等保/审计', icon: 'shield', to: '/ai/privacy', status: 'online' },
 ])
 
+const canGateway = computed(() => auth.can('aiGateway:view'))
+const canAdmin = computed(() => auth.can('aiAdmin:view'))
+const canGovern = computed(() => auth.can('aiGovern:view'))
+
+const kpiRaw = ref<AiKpi | null>(null)
+const hitStats = ref<SensitiveHitStats | null>(null)
+const billMap = ref<Record<string, number>>({})
+const pendingCount = ref(0)
+
+const ALERT_METRIC_LABEL: Record<string, string> = {
+  LATENCY_P99: 'P99 延迟',
+  ERROR_RATE: '错误率',
+  CALL_COUNT: '调用量',
+  SUCCESS_RATE: '成功率',
+  QUOTA_WATERMARK: '配额水位',
+}
+function fmtAlertMetric(metric: string, v: number) {
+  if (metric === 'LATENCY_P99') return `${Math.round(v)}ms`
+  if (metric === 'CALL_COUNT') return `${v} 次`
+  return `${v}%`
+}
+
+const APPROVAL_TYPE_LABEL: Record<string, string> = {
+  PROVIDER: '供应商接入',
+  MODEL: '模型发布',
+  BINDING: '功能绑定',
+}
+
 const kpis = computed(() => [
-  { label: '今日 AI 调用', icon: 'settings', value: '112,050', tone: 'purple' as const, trend: '+8.2%', trendUp: true, trendGood: true },
-  { label: '敏感词拦截', icon: 'alert', value: '347', tone: 'danger' as const, trend: '-12%', trendUp: false, trendGood: true },
-  { label: '话术采纳率', icon: 'chat', value: '68.4%', tone: 'teal' as const, trend: '+3.1%', trendUp: true, trendGood: true },
-  { label: '待审批模型', icon: 'settings', value: '3', tone: 'warning' as const, trend: 'T3-01', trendUp: false, trendGood: false },
+  {
+    label: '今日 AI 调用', icon: 'settings',
+    value: canGateway.value && kpiRaw.value ? kpiRaw.value.todayCalls.toLocaleString() : '—',
+    tone: 'purple' as const,
+  },
+  {
+    label: '敏感词拦截（今日）', icon: 'alert',
+    value: canAdmin.value && hitStats.value ? hitStats.value.todayHits.toLocaleString() : '—',
+    tone: 'danger' as const,
+  },
+  {
+    label: '今日调用成功率', icon: 'trend-up',
+    value: canGateway.value && kpiRaw.value ? `${kpiRaw.value.successRate}%` : '—',
+    tone: 'teal' as const,
+  },
+  {
+    label: '待审批', icon: 'shield',
+    value: canGovern.value ? String(pendingCount.value) : '—',
+    tone: 'warning' as const,
+    trend: canGovern.value && pendingCount.value > 0 ? '待处理' : '',
+    trendUp: false, trendGood: false,
+  },
 ])
 
 interface TodoItem {
   id: string
-  type: 'approval' | 'alert' | 'review'
+  type: 'approval' | 'alert'
   title: string
   desc: string
   time: string
   to: string
 }
 
-const todos = ref<TodoItem[]>([
-  { id: 'T1', type: 'approval', title: '模型发布审批', desc: 'churn-v2.3 提交发布申请，等待 T3-01 审批', time: '10 分钟前', to: '/ai/govern' },
-  { id: 'T2', type: 'approval', title: '训练集授权核验', desc: 'profile-train-0815 语料待授权核验（12,400 条）', time: '1 小时前', to: '/ai/models' },
-  { id: 'T3', type: 'alert', title: '敏感词命中激增', desc: 'M5 推送渠道近 1h 命中 23 次，超阈值', time: '32 分钟前', to: '/ai/sensitive' },
-  { id: 'T4', type: 'review', title: '话术效果复核', desc: '升单话术 S-031 转化率下降 5.2%，建议复核', time: '2 小时前', to: '/ai/scripts' },
-  { id: 'T5', type: 'alert', title: '模型 P99 延迟告警', desc: 'repurchase-v1.8 P99 = 285ms 超阈值 200ms', time: '3 小时前', to: '/ai/monitor' },
-])
+const pendingApprovals = ref<ApprovalView[]>([])
+const activeAlerts = ref<AlertView[]>([])
+
+const todos = computed<TodoItem[]>(() => {
+  const list: TodoItem[] = []
+  if (canGovern.value) {
+    pendingApprovals.value.slice(0, 5).forEach((a) => {
+      list.push({
+        id: `apr-${a.approvalId}`,
+        type: 'approval',
+        title: `${APPROVAL_TYPE_LABEL[a.approvalType] || a.approvalType}审批`,
+        desc: a.content,
+        time: fmtAgo(a.appliedAt),
+        to: '/ai/govern',
+      })
+    })
+  }
+  if (canAdmin.value && hitStats.value && hitStats.value.todayHits > 0) {
+    list.push({
+      id: 'sensitive-today',
+      type: 'alert',
+      title: '敏感词命中',
+      desc: `今日已拦截敏感词 ${hitStats.value.todayHits} 次，累计 ${hitStats.value.totalHits} 次`,
+      time: '实时',
+      to: '/ai/sensitive',
+    })
+  }
+  if (canGateway.value) {
+    activeAlerts.value.slice(0, 5).forEach((a) => {
+      list.push({
+        id: `alert-${a.ruleId}`,
+        type: 'alert',
+        title: a.ruleName,
+        desc: `${ALERT_METRIC_LABEL[a.metric] || a.metric}当前 ${fmtAlertMetric(a.metric, a.currentValue)}，规则 ${a.compareOp} ${fmtAlertMetric(a.metric, a.thresholdNum)}`,
+        time: '实时',
+        to: '/ai/gateway',
+      })
+    })
+  }
+  return list.slice(0, 6)
+})
+
+const capCalls = computed(() => {
+  const m: Record<string, string> = {}
+  capabilities.value.forEach((c) => {
+    if (c.featureCode && canGateway.value) {
+      const calls = billMap.value[c.featureCode]
+      if (calls != null) m[c.key] = `本月 ${calls.toLocaleString()} 次调用`
+    }
+    if (c.key === 'sensitive' && canAdmin.value && hitStats.value && hitStats.value.todayHits > 0) {
+      m[c.key] = `今日拦截 ${hitStats.value.todayHits.toLocaleString()} 次`
+    }
+  })
+  return m
+})
+
+onMounted(async () => {
+  // 按权限分组拉取：网关口径（调用/账单/告警）、治理口径（审批）、安全口径（敏感词统计），无权限直接降级，不发请求避免 403。
+  if (canGateway.value) {
+    const [k, b, al] = await Promise.allSettled([logKpi(), monthlyBill(), listAlerts()])
+    if (k.status === 'fulfilled') kpiRaw.value = k.value
+    if (b.status === 'fulfilled') {
+      billMap.value = Object.fromEntries(b.value.map((x) => [x.featureCode ?? '', x.calls]))
+    }
+    if (al.status === 'fulfilled') activeAlerts.value = al.value.filter((x) => x.active)
+  }
+  if (canGovern.value) {
+    const ap = await listApprovals({ status: 'PENDING', page: 0, size: 5 }).catch(() => null)
+    if (ap) {
+      pendingApprovals.value = ap.content
+      pendingCount.value = ap.totalElements
+    }
+  }
+  if (canAdmin.value) {
+    const st = await getSensitiveHitStats().catch(() => null)
+    if (st) hitStats.value = st
+  }
+})
 
 const aiPill = (s: AiCapability['status']) => dictPill(AI_CAPABILITY_STATUS[s.toUpperCase() as 'ONLINE' | 'BETA' | 'COMING'])
 
-const todoPill = (t: TodoItem['type']) => {
-  if (t === 'approval') return { status: 'warning' as const, label: '审批' }
-  if (t === 'alert') return { status: 'danger' as const, label: '告警' }
-  return { status: 'info' as const, label: '复核' }
-}
+const todoPill = (t: TodoItem['type']) => (
+  t === 'approval'
+    ? { status: 'warning' as const, label: '审批' }
+    : { status: 'danger' as const, label: '告警' }
+)
 
 function go(to: string) {
   router.push(to)
@@ -111,7 +236,7 @@ function go(to: string) {
                 </CStatusPill>
               </div>
               <div class="cap-card__desc">{{ cap.desc }}</div>
-              <div v-if="cap.calls > 0" class="cap-card__calls">今日 {{ cap.calls.toLocaleString() }} 次调用</div>
+              <div v-if="capCalls[cap.key]" class="cap-card__calls">{{ capCalls[cap.key] }}</div>
             </div>
           </div>
         </div>
@@ -134,6 +259,7 @@ function go(to: string) {
             </div>
             <div class="todo-item__time">{{ t.time }}</div>
           </div>
+          <div v-if="todos.length === 0" class="todo-empty">暂无待办，各项指标运行正常</div>
         </div>
         <!-- 红线提示条 -->
         <div class="redline-bar">
@@ -191,6 +317,7 @@ function go(to: string) {
 .todo-item__title { font-size: var(--t-sm); font-weight: 500; color: var(--c-text); }
 .todo-item__desc { font-size: var(--t-xs); color: var(--c-text-3); line-height: 1.4; margin-top: 2px; }
 .todo-item__time { font-size: 11px; color: var(--c-text-3); flex-shrink: 0; }
+.todo-empty { padding: var(--s-lg) 0; text-align: center; font-size: var(--t-xs); color: var(--c-text-3); }
 
 /* 红线提示 */
 .redline-bar {
