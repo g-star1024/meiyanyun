@@ -1405,3 +1405,118 @@ export function getSchedulingStats(): Promise<SchedulingStats> {
 export function listSchedulingHistory(storeCode?: string): Promise<SchedulingHistoryItem[]> {
   return client.get('/ai/scheduling/history', { params: { storeCode } }).then((r) => r.data)
 }
+
+// ============================ A1-09 AI 知识库（B47 卡7） ============================
+
+export interface KnowledgeDoc {
+  docId: number
+  title: string
+  category: string | null
+  content: string
+  tags: string | null
+  source: string | null
+  indexStatus: string
+  indexNote: string | null
+  refsCount: number
+  staffId: string | null
+  staffName: string | null
+  storeCode: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface KnowledgeStats {
+  totalDocs: number
+  indexedCount: number
+  pendingCount: number
+  failedCount: number
+  indexedPct: number | null
+  totalRefs: number
+  todaySearches: number
+  feedbackTotal: number
+  usefulRatePct: number | null
+}
+
+export interface KnowledgeSearchHit {
+  citationId: number
+  docId: number
+  title: string
+  category: string | null
+  tags: string | null
+  snippet: string
+  rank: number
+  refsCount: number
+}
+
+export interface KnowledgeCitation {
+  citationId: number
+  docId: number
+  query: string
+  sourceFeature: string
+  useful: boolean | null
+  staffName: string | null
+  createdAt: string | null
+}
+
+export interface KnowledgeSaveCmd {
+  title: string
+  category?: string | null
+  content: string
+  tags?: string | null
+  source?: string | null
+}
+
+export function listKnowledgeDocs(params: {
+  category?: string
+  keyword?: string
+  page?: number
+  size?: number
+}): Promise<PageResult<KnowledgeDoc>> {
+  return client.get('/ai/knowledge', { params }).then((r) => r.data)
+}
+
+export function getKnowledgeStats(): Promise<KnowledgeStats> {
+  return client.get('/ai/knowledge/stats').then((r) => r.data)
+}
+
+export function getKnowledgeDoc(docId: number): Promise<KnowledgeDoc> {
+  return client.get(`/ai/knowledge/${docId}`).then((r) => r.data)
+}
+
+export function getKnowledgeHot(): Promise<string[]> {
+  return client.get('/ai/knowledge/hot').then((r) => r.data)
+}
+
+// 显式检索：后端会为每条命中写入真实引用（citation）并累加 refsCount
+export function searchKnowledge(q: string, limit = 10): Promise<KnowledgeSearchHit[]> {
+  return client.get('/ai/knowledge/search', { params: { q, limit } }).then((r) => r.data)
+}
+
+export function getKnowledgeCitations(
+  docId: number,
+  page = 0,
+  size = 10
+): Promise<PageResult<KnowledgeCitation>> {
+  return client.get(`/ai/knowledge/${docId}/citations`, { params: { page, size } }).then((r) => r.data)
+}
+
+export function createKnowledge(cmd: KnowledgeSaveCmd): Promise<KnowledgeDoc> {
+  return client.post('/ai/knowledge', cmd).then((r) => r.data)
+}
+
+export function updateKnowledge(docId: number, cmd: KnowledgeSaveCmd): Promise<KnowledgeDoc> {
+  return client.post(`/ai/knowledge/${docId}`, cmd).then((r) => r.data)
+}
+
+export function reindexKnowledge(docId: number): Promise<KnowledgeDoc> {
+  return client.post(`/ai/knowledge/${docId}/reindex`).then((r) => r.data)
+}
+
+export function feedbackCitation(
+  citationId: number,
+  useful: boolean
+): Promise<KnowledgeCitation> {
+  return client
+    .post(`/ai/knowledge/citations/${citationId}/feedback`, { useful })
+    .then((r) => r.data)
+}
