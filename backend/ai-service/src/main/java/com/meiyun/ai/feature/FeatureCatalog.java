@@ -14,6 +14,7 @@ public final class FeatureCatalog {
             new Feature("profile", "客户画像"),
             new Feature("repurchase", "复购预测"),
             new Feature("churn", "流失预警"),
+            new Feature("daily", "经营日报"),
             new Feature("scripts", "智能话术"),
             new Feature("scheduling", "智能排班"),
             new Feature("content", "内容生成"),

@@ -1,64 +1,132 @@
 <script setup lang="ts">
 /* ============================================================
- * A1-05 AI 经营日报
- * 路由 /ai/daily-report
- * 数据来源：T2-04 指标字典 + M1-01 经营看板 + M2-06 门店日报，AI 摘要模型由 T4 提供
+ * A1-05 AI 经营日报 /ai/daily-report
+ * 真实收款/到店/新客/退款/风控指标（txn 内部投影，Asia/Shanghai 自然日）
+ * + daily invoke 全治理链（B47 卡4 去 mock）
  * ============================================================ */
-import { ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CTable from '@/components/CTable.vue'
 import CIcon from '@/components/CIcon.vue'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import {
+  getDailyMetrics, generateDaily, getDailyReport, listDailyHistory,
+  getDailyStats, listDailyChannels, getDailySubscription, toggleDailySubscription,
+  adoptDailySuggestion,
+  type DailyMetrics, type DailyReport, type DailyHistoryItem,
+  type DailyStats, type DailyChannel, type DailySuggestion,
+} from '@/api/ai'
 
-const reportDate = ref('2026-08-26')
-const subscribed = ref(true)
+const toast = useToast()
 
-interface Suggestion {
-  id: string
-  type: 'core' | 'anomaly' | 'action'
-  title: string
-  detail: string
-  adopted: boolean
+function todayStr(): string {
+  const d = new Date()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
 }
 
-const suggestions = ref<Suggestion[]>([
-  { id: 'S1', type: 'core', title: '核心指标：营收与到店双增长', detail: '今日营收 ¥28.6 万，环比 +12.4%；到店 186 人，环比 +8.1%。新客占比 22.6%，高于上周均值 19.3%。老客复购率 64.2%，保持稳定。', adopted: false },
-  { id: 'S2', type: 'anomaly', title: '异常点：光电项目退单率上升', detail: '今日光电类项目退单 3 单，退单率 4.8%，高于近 7 日均值 2.1%。集中在"光子嫩肤"项目，疑似与今日咨询师李婷的话术调整有关，建议复核。', adopted: false },
-  { id: 'S3', type: 'action', title: '行动建议：跟进高意向未到店客户', detail: '有 17 位 7 日内咨询但未预约客户，意向评分 > 80，建议今日 18:00 前由对应咨询师跟进，预计可转化 5-7 单。', adopted: false },
-  { id: 'S4', type: 'action', title: '行动建议：补货热门 SKU', detail: '"玻尿酸 1ml"库存剩余 12 支，按近 7 日消耗速度预计 2 日内售罄，建议提交补货申请（参考 M5 库存）。', adopted: false },
-  { id: 'S5', type: 'core', title: '员工表现：TOP3 咨询师', detail: '今日业绩 TOP3：王芳（¥4.2 万）、张敏（¥3.8 万）、李婷（¥3.1 万）。王芳连带率 2.3，为全店最高。', adopted: false },
-])
+function fmtNum(n: number | null | undefined): string {
+  return (n ?? 0).toLocaleString('zh-CN')
+}
 
+/** 分 → 万元（>=1 万显示万元，否则显示元）。 */
+function fmtRevenue(fen: number): string {
+  const yuan = fen / 100
+  if (yuan >= 10000) {
+    return `¥${(yuan / 10000).toLocaleString('zh-CN', { maximumFractionDigits: 1 })}万`
+  }
+  return `¥${yuan.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`
+}
+
+function trendText(pct: number | null): string {
+  if (pct === null || pct === undefined) return '环比不可算'
+  return `${pct >= 0 ? '+' : ''}${pct}%`
+}
+
+const reportDate = ref(todayStr())
+const subscribed = ref(false)
+
+const metrics = ref<DailyMetrics | null>(null)
+const report = ref<DailyReport | null>(null)
+const stats = ref<DailyStats | null>(null)
+const channels = ref<DailyChannel[]>([])
+const history = ref<DailyHistoryItem[]>([])
+
+const loadingMetrics = ref(false)
+const generating = ref(false)
+const loadingReport = ref(false)
+const actionId = ref<number | null>(null)
+
+// ---------- 4 KPI（真实当日聚合 + 上一自然日环比） ----------
+const kpis = computed(() => {
+  const m = metrics.value
+  const unavailable = !m || !m.available
+  return [
+    {
+      label: '今日营收', icon: 'finance', value: unavailable ? '—' : fmtRevenue(m!.revenueFen),
+      tone: 'brand' as const,
+      trend: unavailable ? '交易数据暂不可用' : trendText(m!.revenueDeltaPct),
+      trendUp: (m?.revenueDeltaPct ?? 0) >= 0, trendGood: (m?.revenueDeltaPct ?? 0) >= 0,
+    },
+    {
+      label: '到店', icon: 'user-check', value: unavailable ? '—' : fmtNum(m!.arrivalCount),
+      tone: 'teal' as const,
+      trend: unavailable ? '交易数据暂不可用' : trendText(m!.arrivalDeltaPct),
+      trendUp: (m?.arrivalDeltaPct ?? 0) >= 0, trendGood: (m?.arrivalDeltaPct ?? 0) >= 0,
+    },
+    {
+      label: '新客', icon: 'customer', value: unavailable ? '—' : fmtNum(m!.newCustomerCount),
+      tone: 'purple' as const,
+      trend: unavailable ? '交易数据暂不可用' : trendText(m!.newCustomerDeltaPct),
+      trendUp: (m?.newCustomerDeltaPct ?? 0) >= 0, trendGood: (m?.newCustomerDeltaPct ?? 0) >= 0,
+    },
+    {
+      label: '异常项', icon: 'alert', value: unavailable ? '—' : fmtNum(m!.anomalyCount),
+      tone: 'warning' as const,
+      trend: unavailable
+        ? '交易数据暂不可用'
+        : `退款 ${fmtNum(m!.refundCount)} · 红黄单 ${fmtNum(m!.contraYellowCount + m!.contraRedCount)}`,
+      trendUp: true, trendGood: false,
+    },
+  ]
+})
+
+const suggestions = computed<DailySuggestion[]>(() => report.value?.suggestions ?? [])
+const hasReport = computed(() => !!report.value)
+
+const sourceNote = computed(() => {
+  const m = metrics.value
+  const scope = !m ? '全部门店' : m.store === 'ALL' ? '全部门店' : `门店 ${m.store}`
+  return `数据来源：已收款订单 · 到店登记 · 退款流水 · 收款风控（${scope}，Asia/Shanghai 自然日）`
+})
+
+const modelPill = computed(() => {
+  if (generating.value) return 'AI 生成中…'
+  if (report.value?.modelCode) return `由 ${report.value.modelCode} 生成`
+  return stats.value?.modelVersion ? `模型 ${stats.value.modelVersion}` : 'AI 日报'
+})
+
+const costText = computed(() => {
+  const r = report.value
+  if (!r || !r.totalTokens) return ''
+  const yuan = (r.costFen ?? 0) / 100
+  return `本次调用 ${fmtNum(r.totalTokens)} tokens · 成本 ¥${yuan.toFixed(2)}`
+})
+
+// ---------- 推送通道（四通道本期一律置灰，真实触达 M5-03 远期） ----------
 const pushColumns = [
-  { key: 'channel', label: '推送渠道' },
-  { key: 'subscribers', label: '订阅人数', align: 'right' as const },
+  { key: 'channelName', label: '推送渠道' },
   { key: 'status', label: '推送状态' },
-  { key: 'time', label: '推送时间' },
+  { key: 'note', label: '说明' },
 ]
-
-const pushRows = ref([
-  { id: 'P1', channel: 'T3-03 站内消息', subscribers: 248, status: 'success', time: '08:00' },
-  { id: 'P2', channel: '企业微信', subscribers: 186, status: 'success', time: '08:05' },
-  { id: 'P3', channel: '短信', subscribers: 312, status: 'warning', time: '发送中（82%）' },
-  { id: 'P4', channel: '邮件', subscribers: 54, status: 'disabled', time: '未订阅' },
-])
-
-const historyColumns = [
-  { key: 'date', label: '日期' },
-  { key: 'summary', label: '核心指标摘要' },
-  { key: 'generatedAt', label: '生成时间' },
-  { key: 'actions', label: '操作', align: 'right' as const, width: 140 },
-]
-
-const historyRows = ref([
-  { id: 'H1', date: '2026-08-25', summary: '营收 ¥25.4 万 · 到店 172 · 新客 38 · 异常 1', generatedAt: '08:02:14' },
-  { id: 'H2', date: '2026-08-24', summary: '营收 ¥22.8 万 · 到店 158 · 新客 35 · 异常 0', generatedAt: '08:01:45' },
-  { id: 'H3', date: '2026-08-23', summary: '营收 ¥30.1 万 · 到店 201 · 新客 48 · 异常 2', generatedAt: '08:03:02' },
-  { id: 'H4', date: '2026-08-22', summary: '营收 ¥19.6 万 · 到店 142 · 新客 28 · 异常 1', generatedAt: '08:01:58' },
-  { id: 'H5', date: '2026-08-21', summary: '营收 ¥27.3 万 · 到店 189 · 新客 44 · 异常 0', generatedAt: '08:02:30' },
-])
+const pushRows = computed(() =>
+  channels.value.map((c, i) => ({ id: c.channel + i, ...c })),
+)
 
 function statusPill(s: string) {
   const map: Record<string, { status: 'success' | 'warning' | 'disabled' | 'info'; label: string }> = {
@@ -67,30 +135,148 @@ function statusPill(s: string) {
     disabled: { status: 'disabled', label: '未发送' },
     info: { status: 'info', label: '排队中' },
   }
-  return map[s] || { status: 'disabled', label: s }
+  return map[s] || { status: 'disabled' as const, label: s }
 }
 
-function adoptSuggestion(id: string) {
-  const s = suggestions.value.find((x) => x.id === id)
-  if (s) s.adopted = true
+// ---------- 历史日报（真实生成记录，按日归并最新版） ----------
+const historyColumns = [
+  { key: 'date', label: '日期' },
+  { key: 'summary', label: '核心指标摘要' },
+  { key: 'generatedAt', label: '生成时间' },
+  { key: 'actions', label: '操作', align: 'right' as const, width: 140 },
+]
+const historyRows = computed(() =>
+  history.value.map((h, i) => ({
+    id: h.date + '-' + i,
+    ...h,
+    summary: `营收 ${fmtRevenue(h.revenueFen)} · 到店 ${fmtNum(h.arrivalCount)} · 新客 ${fmtNum(h.newCustomerCount)} · 异常 ${fmtNum(h.anomalyCount)}`,
+  })),
+)
+
+async function loadMetrics() {
+  loadingMetrics.value = true
+  try {
+    metrics.value = await getDailyMetrics({ date: reportDate.value })
+  } catch (e) {
+    metrics.value = null
+    toast.error('经营指标加载失败：' + errMsg(e))
+  } finally {
+    loadingMetrics.value = false
+  }
 }
 
-function generateReport() {
-  alert('AI 正在基于 T2-04 指标字典 + M1-01 经营看板 + M2-06 门店日报 生成 ' + reportDate.value + ' 日报...')
+async function loadReport() {
+  loadingReport.value = true
+  try {
+    report.value = await getDailyReport({ date: reportDate.value })
+  } catch (e) {
+    if (String(errMsg(e)).includes('尚未生成')) {
+      report.value = null
+    } else {
+      toast.error('日报加载失败：' + errMsg(e))
+    }
+  } finally {
+    loadingReport.value = false
+  }
 }
 
-function toggleSubscribe() {
-  subscribed.value = !subscribed.value
+async function loadRefs() {
+  try {
+    const [s, c, sub, h] = await Promise.all([
+      getDailyStats(),
+      listDailyChannels(),
+      getDailySubscription(),
+      listDailyHistory(),
+    ])
+    stats.value = s
+    channels.value = c
+    subscribed.value = sub.subscribed
+    history.value = h
+  } catch (e) {
+    toast.error('日报辅助信息加载失败：' + errMsg(e))
+  }
 }
+
+async function generateReport() {
+  if (generating.value) return
+  generating.value = true
+  try {
+    const res = await generateDaily({ date: reportDate.value })
+    report.value = res.report
+    metrics.value = res.metrics
+    const n = res.report.suggestions.length
+    toast.success(`${reportDate.value} 经营日报已生成，摘要与 ${n} 条建议来自真实模型出站`)
+    loadRefs()
+  } catch (e) {
+    toast.error('生成日报失败：' + errMsg(e))
+  } finally {
+    generating.value = false
+  }
+}
+
+async function adoptSuggestion(s: DailySuggestion) {
+  if (s.adopted) {
+    toast.info('该建议已采纳，无需重复操作')
+    return
+  }
+  actionId.value = s.suggestionId
+  try {
+    const res = await adoptDailySuggestion(s.suggestionId)
+    if (res.changed) {
+      s.adopted = true
+      toast.success('已采纳并站内登记（真实任务下发待 M3-10/M5-03 建设）')
+      if (stats.value) stats.value.adoptedCount += 1
+    } else {
+      s.adopted = true
+      toast.info('该建议已采纳，无需重复操作')
+    }
+  } catch (e) {
+    toast.error('采纳建议失败：' + errMsg(e))
+  } finally {
+    actionId.value = null
+  }
+}
+
+async function toggleSubscribe() {
+  const want = !subscribed.value
+  try {
+    const res = await toggleDailySubscription(want)
+    subscribed.value = res.subscribed
+    toast.success(res.subscribed ? '已开启每日日报订阅偏好（真实推送通道建设中）' : '已关闭日报订阅偏好')
+  } catch (e) {
+    toast.error('订阅设置失败：' + errMsg(e))
+  }
+}
+
+function viewHistory(row: Record<string, any>) {
+  reportDate.value = String(row.date)
+}
+
+watch(reportDate, () => {
+  loadMetrics()
+  loadReport()
+})
+
+onMounted(() => {
+  loadMetrics()
+  loadReport()
+  loadRefs()
+})
 </script>
 
 <template>
   <div class="a1-daily">
     <div class="a1-daily__kpis">
-      <CKpi label="今日营收" value="¥28.6万" tone="brand" trend="+12.4%" trend-up trend-good icon="finance" />
-      <CKpi label="到店" value="186" tone="teal" trend="+8.1%" trend-up trend-good icon="user-check" />
-      <CKpi label="新客" value="42" tone="purple" trend="+10.5%" trend-up trend-good icon="customer" />
-      <CKpi label="异常项" value="3" tone="warning" trend="需关注" trend-up :trend-good="false" icon="alert" />
+      <CKpi
+        v-for="k in kpis"
+        :key="k.label"
+        :label="k.label"
+        :value="k.value"
+        :tone="k.tone"
+        :trend="k.trend"
+        :trend-up="k.trendUp"
+        :trend-good="k.trendGood"
+        :icon="k.icon" />
     </div>
 
     <!-- 顶栏 -->
@@ -99,9 +285,9 @@ function toggleSubscribe() {
         <div class="toolbar__left">
           <label class="field-label">日报日期</label>
           <input v-model="reportDate" type="date" class="date-input" />
-          <CButton variant="primary" @click="generateReport">
+          <CButton variant="primary" :disabled="generating" @click="generateReport">
             <CIcon name="dashboard" :size="14" />
-            生成日报
+            {{ generating ? '生成中…' : '生成日报' }}
           </CButton>
         </div>
         <div class="toolbar__right">
@@ -120,39 +306,58 @@ function toggleSubscribe() {
           <div class="card-head__left">
             <CIcon name="dashboard" :size="18" class="card-head__icon" />
             <h3>AI 经营摘要</h3>
-            <CStatusPill status="draft" dot>由 T4 模型生成</CStatusPill>
+            <CStatusPill status="draft" dot>{{ modelPill }}</CStatusPill>
           </div>
-          <span class="card-sub">数据来源：T2-04 指标字典 · M1-01 经营看板 · M2-06 门店日报</span>
+          <span class="card-sub">{{ sourceNote }}</span>
         </div>
       </template>
 
-      <div class="suggestion-list">
-        <div
-          v-for="s in suggestions"
-          :key="s.id"
-          class="suggestion-item"
-          :class="`suggestion-item--${s.type}`"
-        >
-          <div class="suggestion-item__body">
-            <div class="suggestion-item__title">
-              <span class="suggestion-tag" :class="`suggestion-tag--${s.type}`">
-                {{ s.type === 'core' ? '核心' : s.type === 'anomaly' ? '异常' : '建议' }}
-              </span>
-              {{ s.title }}
-            </div>
-            <div class="suggestion-item__detail">{{ s.detail }}</div>
-          </div>
-          <CButton
-            size="sm"
-            :variant="s.adopted ? 'ghost' : 'secondary'"
-            :disabled="s.adopted"
-            @click="adoptSuggestion(s.id)"
-          >
-            <CIcon :name="s.adopted ? 'check' : 'plus'" :size="14" />
-            {{ s.adopted ? '已采纳' : '采纳为任务' }}
-          </CButton>
-        </div>
+      <div v-if="generating" class="daily-state">
+        <CIcon name="loading" :size="28" />
+        <p>正在调用大模型基于当日真实收款/到店/退款指标生成经营日报，通常需数十秒，请勿离开本页…</p>
       </div>
+      <div v-else-if="loadingReport" class="daily-state">
+        <CIcon name="loading" :size="28" />
+        <p>正在加载 {{ reportDate }} 的经营日报…</p>
+      </div>
+      <div v-else-if="!hasReport" class="daily-state">
+        <CIcon name="dashboard" :size="28" />
+        <p>{{ reportDate }} 尚未生成 AI 经营日报，请选择日期后点击「生成日报」；上方 KPI 为当日真实经营指标。</p>
+      </div>
+      <template v-else>
+        <div class="report-summary">
+          <p>{{ report!.summary }}</p>
+          <div v-if="costText" class="report-meta">{{ costText }} · 生成时间 {{ report!.generatedAt }}</div>
+        </div>
+
+        <div class="suggestion-list">
+          <div
+            v-for="s in suggestions"
+            :key="s.suggestionId"
+            class="suggestion-item"
+            :class="`suggestion-item--${s.type}`"
+          >
+            <div class="suggestion-item__body">
+              <div class="suggestion-item__title">
+                <span class="suggestion-tag" :class="`suggestion-tag--${s.type}`">
+                  {{ s.type === 'core' ? '核心' : s.type === 'anomaly' ? '异常' : '建议' }}
+                </span>
+                {{ s.title }}
+              </div>
+              <div class="suggestion-item__detail">{{ s.detail }}</div>
+            </div>
+            <CButton
+              size="sm"
+              :variant="s.adopted ? 'ghost' : 'secondary'"
+              :disabled="s.adopted || actionId === s.suggestionId"
+              @click="adoptSuggestion(s)"
+            >
+              <CIcon :name="s.adopted ? 'check' : 'plus'" :size="14" />
+              {{ s.adopted ? '已采纳' : '采纳为任务' }}
+            </CButton>
+          </div>
+        </div>
+      </template>
     </CCard>
 
     <!-- 推送状态 -->
@@ -160,7 +365,7 @@ function toggleSubscribe() {
       <template #header>
         <div class="card-head">
           <h3>推送状态</h3>
-          <span class="card-sub">T3-03 通知通道</span>
+          <span class="card-sub">本期仅登记订阅偏好，站内/企微/短信/邮件真实触达为 M5-03 远期规划</span>
         </div>
       </template>
       <CTable :columns="pushColumns" :rows="pushRows" row-key="id">
@@ -177,14 +382,14 @@ function toggleSubscribe() {
       <template #header>
         <div class="card-head">
           <h3>历史日报</h3>
-          <CButton size="sm" variant="text">查看全部</CButton>
+          <span class="card-sub">最近 {{ historyRows.length }} 期真实生成记录</span>
         </div>
       </template>
       <CTable :columns="historyColumns" :rows="historyRows" row-key="id">
-        <template #col-actions>
+        <template #col-actions="{ row }">
           <div class="row-actions">
-            <CButton size="sm" variant="text">查看</CButton>
-            <CButton size="sm" variant="text">对比</CButton>
+            <CButton size="sm" variant="text" @click="viewHistory(row)">查看</CButton>
+            <CButton size="sm" variant="text" disabled>对比</CButton>
           </div>
         </template>
       </CTable>
@@ -228,6 +433,22 @@ function toggleSubscribe() {
 .card-head__left h3 { margin: 0; font-size: var(--t-md); font-weight: 700; }
 .card-head__icon { color: var(--c-purple); }
 .card-sub { font-size: var(--t-xs); color: var(--c-text-3); }
+
+.daily-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--s-sm); padding: var(--s-lg) 0;
+  color: var(--c-text-3); font-size: var(--t-sm); text-align: center;
+}
+.daily-state p { margin: 0; max-width: 420px; }
+
+.report-summary {
+  padding: var(--s-md);
+  background: var(--c-bg-page);
+  border-radius: var(--r-md);
+  margin-bottom: var(--s-md);
+}
+.report-summary p { margin: 0; font-size: var(--t-sm); color: var(--c-text); line-height: 1.7; }
+.report-meta { margin-top: var(--s-xs); font-size: var(--t-xs); color: var(--c-text-3); }
 
 .suggestion-list { display: flex; flex-direction: column; gap: var(--s-md); }
 .suggestion-item {

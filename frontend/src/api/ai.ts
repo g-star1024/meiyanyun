@@ -1072,3 +1072,138 @@ export function registerChurnIntervene(id: number): Promise<ChurnActionResult> {
 export function batchChurnIntervene(): Promise<ChurnBatchResult> {
   return client.post('/ai/churn/batch-intervene').then((r) => r.data)
 }
+
+// -------------------- AI 经营日报（B47 卡4） --------------------
+
+export interface DailyCmd {
+  date?: string | null
+  storeCode?: string | null
+}
+
+export interface DailyMetrics {
+  date: string
+  store: string
+  available: boolean
+  revenueFen: number
+  paidOrderCount: number
+  arrivalCount: number
+  newCustomerCount: number
+  refundCount: number
+  refundFen: number
+  contraYellowCount: number
+  contraRedCount: number
+  anomalyCount: number
+  prevRevenueFen: number
+  prevArrivalCount: number
+  prevNewCustomerCount: number
+  prevAnomalyCount: number
+  revenueDeltaPct: number | null
+  arrivalDeltaPct: number | null
+  newCustomerDeltaPct: number | null
+  anomalyDeltaPct: number | null
+}
+
+export interface DailySuggestion {
+  suggestionId: number
+  type: string
+  title: string
+  detail: string
+  adopted: boolean
+  adoptedAt: string | null
+  adoptedBy: string | null
+}
+
+export interface DailyReport {
+  reportId: number
+  date: string
+  storeCode: string
+  summary: string
+  modelCode: string | null
+  invokeLogId: number | null
+  totalTokens: number | null
+  costFen: number | null
+  adoptedAll: boolean
+  suggestions: DailySuggestion[]
+  createdAt: string | null
+  generatedAt: string
+}
+
+export interface DailyGenerateResult {
+  report: DailyReport
+  metrics: DailyMetrics
+}
+
+export interface DailyHistoryItem {
+  date: string
+  summary: string
+  revenueFen: number
+  arrivalCount: number
+  newCustomerCount: number
+  anomalyCount: number
+  createdAt: string | null
+  generatedAt: string
+}
+
+export interface DailyStats {
+  reportCount: number
+  suggestionCount: number
+  adoptedCount: number
+  weekInvokes: number
+  modelVersion: string
+  modelNote: string
+}
+
+export interface DailyChannel {
+  channel: string
+  channelName: string
+  status: string
+  statusLabel: string
+  note: string
+}
+
+export interface DailySubscription {
+  subscribed: boolean
+}
+
+export interface DailyActionResult {
+  changed: boolean
+  suggestionId: number
+  action: string
+}
+
+export function getDailyMetrics(params?: DailyCmd): Promise<DailyMetrics> {
+  return client.get('/ai/daily/metrics', { params }).then((r) => r.data)
+}
+
+// 生成日报需真实模型出站，耗时对齐后端读超时 180s
+export function generateDaily(cmd: DailyCmd): Promise<DailyGenerateResult> {
+  return client.post('/ai/daily/generate', cmd, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function getDailyReport(params?: DailyCmd): Promise<DailyReport> {
+  return client.get('/ai/daily/report', { params }).then((r) => r.data)
+}
+
+export function listDailyHistory(storeCode?: string): Promise<DailyHistoryItem[]> {
+  return client.get('/ai/daily/history', { params: { storeCode } }).then((r) => r.data)
+}
+
+export function getDailyStats(): Promise<DailyStats> {
+  return client.get('/ai/daily/stats').then((r) => r.data)
+}
+
+export function listDailyChannels(): Promise<DailyChannel[]> {
+  return client.get('/ai/daily/channels').then((r) => r.data)
+}
+
+export function getDailySubscription(): Promise<DailySubscription> {
+  return client.get('/ai/daily/subscription').then((r) => r.data)
+}
+
+export function toggleDailySubscription(subscribed: boolean): Promise<DailySubscription> {
+  return client.post('/ai/daily/subscription', { subscribed }).then((r) => r.data)
+}
+
+export function adoptDailySuggestion(id: number): Promise<DailyActionResult> {
+  return client.post(`/ai/daily/suggestions/${id}/adopt`).then((r) => r.data)
+}
