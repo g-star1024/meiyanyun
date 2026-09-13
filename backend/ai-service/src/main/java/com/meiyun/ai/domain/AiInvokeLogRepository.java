@@ -25,6 +25,8 @@ public interface AiInvokeLogRepository extends JpaRepository<AiInvokeLog, Long> 
 
     long countBySuccess(Boolean success);
 
+    long countByFeatureCode(String featureCode);
+
     long countByInvokedAtGreaterThanEqual(OffsetDateTime since);
 
     long countByInvokedAtGreaterThanEqualAndSuccess(OffsetDateTime since, Boolean success);
@@ -91,6 +93,19 @@ public interface AiInvokeLogRepository extends JpaRepository<AiInvokeLog, Long> 
     MetricAgg aggregateSince(@Param("since") OffsetDateTime since,
                              @Param("featureCode") String featureCode,
                              @Param("modelCode") String modelCode);
+
+    @Query(value = """
+            select count(*) as calls,
+                   coalesce(sum(case when success then 1 else 0 end), 0) as successCalls,
+                   coalesce(sum(total_tokens), 0) as tokens,
+                   coalesce(sum(cost_fen), 0) as costFen
+            from ai_invoke_log
+            where invoked_at >= :start and invoked_at < :end
+              and (cast(:featureCode as text) is null or feature_code = :featureCode)
+            """, nativeQuery = true)
+    MetricAgg aggregateBetween(@Param("start") OffsetDateTime start,
+                               @Param("end") OffsetDateTime end,
+                               @Param("featureCode") String featureCode);
 
     /** 同窗口 P99 延迟（ms），支持按功能或模型过滤。 */
     @Query(value = """

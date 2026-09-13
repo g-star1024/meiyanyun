@@ -739,3 +739,118 @@ export function adoptScript(id: number): Promise<ScriptActionResult> {
 export function feedbackScript(id: number): Promise<ScriptActionResult> {
   return client.post(`/ai/scripts/${id}/feedback`).then((r) => r.data)
 }
+
+// -------------------- 客户画像引擎（B47 卡1） --------------------
+
+export interface ProfileCmd {
+  keyword?: string | null
+  customerId?: string | null
+  storeCode?: string | null
+}
+
+export interface ProfileTag {
+  label: string
+  status: string
+}
+
+export interface ProfileView {
+  profileId: number
+  customerId: string
+  customerName: string
+  phone: string
+  level: string
+  valueScore: number
+  groups: string[]
+  tags: ProfileTag[]
+  invokeLogId: number | null
+  modelCode: string | null
+  totalTokens: number | null
+  costFen: number
+  appliedToSegment: boolean
+  staffId: string | null
+  staffName: string | null
+  storeCode: string | null
+  createdAt: string | null
+}
+
+export interface ProfileCandidate {
+  customerId: string
+  name: string
+  phone: string
+  level: string
+  hasProfile: boolean
+  profileId: number | null
+  profileCreatedAt: string | null
+}
+
+export interface ProfileStats {
+  coveredCustomers: number
+  tagTotal: number
+  totalInvokes: number
+  weekInvokes: number
+  appliedSegments: number
+  todayInvokes: number
+}
+
+export interface ProfileWeight {
+  feature: string
+  weight: number
+  direction: string
+  shap: number
+}
+
+export interface ProfileWeightModel {
+  modelVersion: string
+  note: string
+  rows: ProfileWeight[]
+}
+
+export interface ProfileWeekAccuracy {
+  week: string
+  weekStart: string | null
+  weekEnd: string | null
+  calls: number | null
+  successRate: number | null
+}
+
+export interface ProfileReview {
+  weeks: ProfileWeekAccuracy[]
+  calls: number | null
+  avgSuccessRate: number | null
+  statusNote: string
+}
+
+export interface ProfileApplyResult {
+  changed: boolean
+  profileId: number
+  appliedToSegment: boolean
+}
+
+export function searchProfileCandidates(keyword: string): Promise<ProfileCandidate[]> {
+  return client.get('/ai/profile/search', { params: { keyword } }).then((r) => r.data)
+}
+
+// 画像生成走真实大模型出站，completion 耗时较长，超时对齐后端出站读超时 180s
+export function generateProfile(cmd: ProfileCmd): Promise<ProfileView> {
+  return client.post('/ai/profile/generate', cmd, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function getLatestProfile(customerId: string): Promise<ProfileView> {
+  return client.get('/ai/profile/latest', { params: { customerId } }).then((r) => r.data)
+}
+
+export function getProfileStats(): Promise<ProfileStats> {
+  return client.get('/ai/profile/stats').then((r) => r.data)
+}
+
+export function getProfileWeights(): Promise<ProfileWeightModel> {
+  return client.get('/ai/profile/weights').then((r) => r.data)
+}
+
+export function getProfileReview(): Promise<ProfileReview> {
+  return client.get('/ai/profile/review').then((r) => r.data)
+}
+
+export function applyProfileToSegment(id: number): Promise<ProfileApplyResult> {
+  return client.post(`/ai/profile/${id}/apply`).then((r) => r.data)
+}

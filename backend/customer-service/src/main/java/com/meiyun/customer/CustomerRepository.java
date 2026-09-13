@@ -2,7 +2,9 @@ package com.meiyun.customer;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.Optional;
@@ -29,4 +31,16 @@ public interface CustomerRepository extends JpaRepository<Customer, String>, Jpa
 
     /** ES 读时合并：最近建档的 200 个客户参与内存匹配，兜 outbox 中继秒级延迟（建档即可搜到）。 */
     List<Customer> findTop200ByOrderByCreatedAtDesc();
+
+    /** AI 画像搜索候选：按姓名/手机号/客户编号模糊取前 10，跨服务上下文投影仅需候选集。 */
+    @Query("""
+            select c from Customer c
+            where c.name like :kw or c.phone like :kw or c.customerId like :kw
+            order by c.createdAt desc
+            """)
+    List<Customer> searchProfileCandidates(@Param("kw") String keyword, Pageable pageable);
+
+    /** AI 覆盖客户 KPI：客户域全量客户数（派生统计不入库）。 */
+    @Query("select count(c) from Customer c")
+    long countAllCustomers();
 }

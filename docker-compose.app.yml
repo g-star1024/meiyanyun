@@ -187,6 +187,8 @@ services:
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
       AUDIT_SERVICE_URL: "http://audit-service:8084"
+      # B47：客户画像上下文/候选/KPI 跨服务取数（客户域不可用时 ai 侧客户端全降级，不阻断画像页）
+      CUSTOMER_SERVICE_URL: "http://customer-service:8082"
       # 供应商 API Key 落库主密钥（AES-GCM）；生产经宿主环境注入，勿提交真实值
       AI_CONFIG_SECRET: "${AI_CONFIG_SECRET:-meiyun-dev-ai-config-secret-change-in-prod-0123}"
       MEIYUN_DEV_LOGIN: "${MEIYUN_DEV_LOGIN:-false}"

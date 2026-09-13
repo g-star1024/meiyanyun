@@ -59,6 +59,11 @@ audit:
   service:
     url: ${AUDIT_SERVICE_URL:http://127.0.0.1:8084}
 
+customer:
+  service:
+    # 客户画像上下文/候选搜索/画像 KPI 跨服务取数（X-Internal-Token 系统身份，客户域不可用时客户端全降级）
+    url: ${CUSTOMER_SERVICE_URL:http://127.0.0.1:8082}
+
 logging:
   level:
     com.meiyun: INFO
