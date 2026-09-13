@@ -5,9 +5,9 @@
 > 每闭合一小步立即更新「最近心跳」与「下一步动作」；遇 429 / 模型上限 / 进程中断，在报错当刻刷新本文件落盘。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-14 02:45 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-14 03:09 CST -->
 <!-- MACHINE:BATCH=P5-B47 -->
-<!-- MACHINE:CARD=卡8 隐私合规 /ai/privacy A1PrivacyView (A1-10，A1 最后一个 mock 视图)·步骤1 待开工 -->
+<!-- MACHINE:CARD=卡8 隐私合规 /ai/privacy A1PrivacyView (A1-10，A1 最后一个 mock 视图)·步骤1 进行中（03:09 实例接管，心跳停滞23分钟） -->
 
 - **状态**：ACTIVE
 - **批次 / ROADMAP 落点**：P5-B47 卡8，A1 AI 中心最后一个 mock 视图 **隐私合规页 `/ai/privacy`（A1PrivacyView，A1-10）**；闭合后落账 93→**94/166**（约57%）、⬜71→**70**、域⑧ 19✅2🔧46⬜→**20✅2🔧45⬜**、A1 **15/15 页真实闭环且实测 nav mock 视图 1→0（A1 全去 mock）**。
