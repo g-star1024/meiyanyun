@@ -854,3 +854,117 @@ export function getProfileReview(): Promise<ProfileReview> {
 export function applyProfileToSegment(id: number): Promise<ProfileApplyResult> {
   return client.post(`/ai/profile/${id}/apply`).then((r) => r.data)
 }
+
+// -------------------- 复购预测引擎（B47 卡2） --------------------
+
+export interface RepurchaseCmd {
+  period?: string | null
+  storeCode?: string | null
+  limit?: number | null
+}
+
+export interface RepurchaseRow {
+  predictionId: number
+  customerId: string
+  customerName: string
+  phone: string
+  level: string
+  projectCode: string
+  projectName: string
+  timing: string
+  prob: number
+  expectedAmountFen: number
+  avgTicketFen: number
+  recencyDays: number | null
+  avgIntervalDays: number | null
+  cardBalanceFen: number | null
+  followupRegistered: boolean
+  pushRegistered: boolean
+  invokeLogId: number | null
+  modelCode: string | null
+  createdAt: string | null
+}
+
+export interface RepurchaseBatch {
+  batchNo: string
+  period: string
+  horizonDays: number
+  size: number
+  avgProb: number
+  expectedTotalFen: number
+  followupRegistered: number
+  storeCode: string | null
+  createdAt: string | null
+}
+
+export interface RepurchaseStats {
+  predictedCustomers: number
+  avgProb: number
+  expectedTotalFen: number
+  expectedNote: string
+  followupTotal: number
+  weekInvokes: number
+  trendNote: string
+  modelVersion: string
+  ran: boolean
+}
+
+export interface RepurchaseFactor {
+  rank: number
+  title: string
+  desc: string
+  weight: number
+  available: boolean
+  unavailableNote: string | null
+}
+
+export interface RepurchaseFactorModel {
+  modelVersion: string
+  note: string
+  rows: RepurchaseFactor[]
+}
+
+export interface RepurchaseActionResult {
+  changed: boolean
+  predictionId: number
+  action: string
+}
+
+export interface RepurchaseBatchResult {
+  batchNo: string
+  affected: number
+  changed: boolean
+}
+
+// 运行预测按候选客户逐人真实模型 invoke，耗时较长，超时对齐后端出站读超时 180s
+export function runRepurchase(cmd: RepurchaseCmd): Promise<RepurchaseBatch> {
+  return client.post('/ai/repurchase/run', cmd, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function listRepurchase(period: string, projectCode?: string): Promise<RepurchaseRow[]> {
+  return client.get('/ai/repurchase/list', { params: { period, projectCode } }).then((r) => r.data)
+}
+
+export function getRepurchaseBatch(period: string): Promise<RepurchaseBatch> {
+  return client.get('/ai/repurchase/batch', { params: { period } }).then((r) => r.data)
+}
+
+export function getRepurchaseStats(period: string): Promise<RepurchaseStats> {
+  return client.get('/ai/repurchase/stats', { params: { period } }).then((r) => r.data)
+}
+
+export function getRepurchaseFactors(): Promise<RepurchaseFactorModel> {
+  return client.get('/ai/repurchase/factors').then((r) => r.data)
+}
+
+export function registerRepurchaseFollowup(id: number): Promise<RepurchaseActionResult> {
+  return client.post(`/ai/repurchase/${id}/followup`).then((r) => r.data)
+}
+
+export function registerRepurchasePush(id: number): Promise<RepurchaseActionResult> {
+  return client.post(`/ai/repurchase/${id}/push`).then((r) => r.data)
+}
+
+export function batchRepurchaseFollowup(period: string): Promise<RepurchaseBatchResult> {
+  return client.post('/ai/repurchase/batch-followup', null, { params: { period } }).then((r) => r.data)
+}

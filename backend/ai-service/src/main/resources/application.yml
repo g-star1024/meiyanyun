@@ -64,6 +64,11 @@ customer:
     # 客户画像上下文/候选搜索/画像 KPI 跨服务取数（X-Internal-Token 系统身份，客户域不可用时客户端全降级）
     url: ${CUSTOMER_SERVICE_URL:http://127.0.0.1:8082}
 
+txn:
+  service:
+    # 复购预测候选信号（已收款订单 RFM/最近项目）跨服务取数（X-Internal-Token 系统身份，交易域不可用时客户端全降级）
+    url: ${TXN_SERVICE_URL:http://127.0.0.1:8083}
+
 logging:
   level:
     com.meiyun: INFO

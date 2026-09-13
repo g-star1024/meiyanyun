@@ -1,9 +1,6 @@
 <script setup lang="ts">
-/* ============================================================
- * A1-03 复购预测 /ai/repurchase
- * KPI + 周期筛选 + 复购概率榜 + 推荐依据
- * ============================================================ */
-import { ref } from 'vue'
+/* A1-03 复购预测 /ai/repurchase — 真实交易 RFM 信号 + repurchase invoke 全治理链（B47 卡2 去 mock） */
+import { computed, onMounted, ref, watch } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
@@ -13,14 +10,56 @@ import CTable from '@/components/CTable.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import CSelect from '@/components/CSelect.vue'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import {
+  runRepurchase, listRepurchase, getRepurchaseStats, getRepurchaseFactors,
+  registerRepurchaseFollowup, registerRepurchasePush, batchRepurchaseFollowup,
+  type RepurchaseRow, type RepurchaseStats, type RepurchaseFactorModel,
+} from '@/api/ai'
 
-const kpis = [
-  { label: '预测复购客户', icon: 'customer', value: '842', tone: 'purple' as const, trend: '较上周 +46', trendUp: true },
-  { label: '平均概率', icon: 'trend-up', value: '72%', tone: 'brand' as const, trend: '模型 v2.3', trendUp: true },
-  { label: '预计转化', icon: 'trend-up', value: '¥128万', tone: 'orange' as const, trend: '置信区间 ±8%', trendUp: true },
-  { label: '已建任务', icon: 'check-square', value: '36', tone: 'teal' as const, trend: '本周新增 12', trendUp: true },
-]
+const toast = useToast()
 
+function fmtNum(n: number): string {
+  return n.toLocaleString('zh-CN')
+}
+
+function yuan(fen: number): string {
+  return fmtNum(Math.round(fen / 100))
+}
+
+function fmtAmount(fen: number): string {
+  if (fen >= 10000000) return `¥${(fen / 10000000).toFixed(1)}千万`
+  if (fen >= 1000000) return `¥${(fen / 1000000).toFixed(1)}百万`
+  if (fen >= 100000) return `¥${(fen / 100000).toFixed(1)}万`
+  return `¥${yuan(fen)}`
+}
+
+// ---------- KPI（全部真实统计，趋势文案诚实表达，无历史不造环比） ----------
+const stats = ref<RepurchaseStats>({
+  predictedCustomers: 0, avgProb: 0, expectedTotalFen: 0, expectedNote: '',
+  followupTotal: 0, weekInvokes: 0, trendNote: '', modelVersion: '', ran: false,
+})
+const kpis = computed(() => [
+  {
+    label: '预测复购客户', icon: 'customer', value: fmtNum(stats.value.predictedCustomers),
+    tone: 'purple' as const, trend: stats.value.trendNote || '本批次真实人数', trendUp: true,
+  },
+  {
+    label: '平均概率', icon: 'trend-up', value: `${stats.value.avgProb}%`,
+    tone: 'brand' as const, trend: stats.value.modelVersion ? `模型 ${stats.value.modelVersion}` : '模型基线', trendUp: true,
+  },
+  {
+    label: '预计转化', icon: 'trend-up', value: stats.value.expectedTotalFen > 0 ? fmtAmount(stats.value.expectedTotalFen) : '¥0',
+    tone: 'orange' as const, trend: stats.value.expectedNote || '模型估算，非成交承诺', trendUp: true,
+  },
+  {
+    label: '已建任务', icon: 'check-square', value: fmtNum(stats.value.followupTotal),
+    tone: 'teal' as const, trend: `本周预测调用 ${fmtNum(stats.value.weekInvokes)} 次`, trendUp: true,
+  },
+])
+
+// ---------- 筛选 ----------
 const period = ref('week')
 const periodOpts = [
   { label: '本周', value: 'week' },
@@ -36,26 +75,16 @@ const projectOpts = [
   { label: '身体护理', value: 'body' },
 ]
 
-interface RepurchaseRow {
-  id: number
-  name: string
-  phone: string
-  project: string
-  timing: string
-  prob: number
-}
-const rows = ref<RepurchaseRow[]>([
-  { id: 1, name: '李晓雯', phone: '138****1234', project: '热玛吉五代', timing: '3 天内', prob: 92 },
-  { id: 2, name: '王佳琪', phone: '139****5678', project: '水光针疗程', timing: '本周', prob: 88 },
-  { id: 3, name: '陈雅婷', phone: '136****9012', project: '光子嫩肤', timing: '本周', prob: 85 },
-  { id: 4, name: '张敏', phone: '137****3456', project: '抗衰紧致套组', timing: '1 周内', prob: 82 },
-  { id: 5, name: '刘思雨', phone: '135****7890', project: '皮秒祛斑', timing: '2 周内', prob: 78 },
-  { id: 6, name: '周婷婷', phone: '133****2345', project: '玻尿酸填充', timing: '2 周内', prob: 75 },
-  { id: 7, name: '吴静怡', phone: '180****6789', project: '身体塑形', timing: '本月', prob: 71 },
-  { id: 8, name: '孙悦', phone: '186****0123', project: '眼部护理', timing: '本月', prob: 68 },
-  { id: 9, name: '赵雨晴', phone: '188****4567', project: '脱毛年卡', timing: '本月', prob: 64 },
-  { id: 10, name: '郑美玲', phone: '151****8901', project: '头皮养护', timing: '本月', prob: 60 },
-])
+// ---------- 榜单 ----------
+const rows = ref<RepurchaseRow[]>([])
+const listLoading = ref(false)
+const hasBatch = ref(false)
+const running = ref(false)
+const batchBusy = ref(false)
+const actionId = ref<number | null>(null)
+
+const tableRows = computed(() =>
+  rows.value.map((r) => ({ id: r.predictionId, ...r })))
 
 const cols = [
   { key: 'name', label: '客户名', width: '110px' },
@@ -66,11 +95,120 @@ const cols = [
   { key: 'ops', label: '操作', width: '160px', align: 'right' as const },
 ]
 
-const factors = [
-  { rank: 1, title: '历史项目周期吻合', desc: '该客群距上次同类项目消费平均间隔 42 天，当前已达 40 天', weight: 0.38 },
-  { rank: 2, title: '浏览/咨询行为活跃', desc: '近 7 天内查看项目详情 ≥3 次，客服会话提及项目名 2 次', weight: 0.27 },
-  { rank: 3, title: '会员卡余额充足', desc: '会员卡余额 ≥ 推荐项目客单价的 1.2 倍', weight: 0.19 },
-]
+async function loadStats() {
+  try {
+    stats.value = await getRepurchaseStats(period.value)
+  } catch (e) {
+    toast.error('复购统计加载失败：' + errMsg(e))
+  }
+}
+
+async function loadList() {
+  listLoading.value = true
+  try {
+    rows.value = await listRepurchase(period.value, projectId.value)
+    hasBatch.value = true
+  } catch (e) {
+    if (String(errMsg(e)).includes('尚未运行')) {
+      rows.value = []
+      hasBatch.value = false
+    } else {
+      toast.error('复购榜单加载失败：' + errMsg(e))
+    }
+  } finally {
+    listLoading.value = false
+  }
+}
+
+async function doRun() {
+  running.value = true
+  try {
+    const batch = await runRepurchase({ period: period.value })
+    toast.success(`批次 ${batch.batchNo} 已生成，覆盖 ${batch.size} 位客户`)
+    await Promise.all([loadStats(), loadList()])
+  } catch (e) {
+    toast.error('复购预测运行失败：' + errMsg(e))
+  } finally {
+    running.value = false
+  }
+}
+
+async function doFollowup(row: RepurchaseRow) {
+  if (row.followupRegistered) {
+    toast.info('该客户已登记跟进，无需重复操作')
+    return
+  }
+  actionId.value = row.predictionId
+  try {
+    const res = await registerRepurchaseFollowup(row.predictionId)
+    if (res.changed) {
+      row.followupRegistered = true
+      stats.value.followupTotal += 1
+      toast.success('已登记跟进任务（跨域下发 M3-08 见远期规划）')
+    } else {
+      row.followupRegistered = true
+      toast.info('该客户已登记跟进，无需重复操作')
+    }
+  } catch (e) {
+    toast.error('跟进登记失败：' + errMsg(e))
+  } finally {
+    actionId.value = null
+  }
+}
+
+async function doPush(row: RepurchaseRow) {
+  if (row.pushRegistered) {
+    toast.info('该客户已登记推送，无需重复操作')
+    return
+  }
+  actionId.value = row.predictionId
+  try {
+    const res = await registerRepurchasePush(row.predictionId)
+    if (res.changed) {
+      row.pushRegistered = true
+      toast.success('已登记推送任务（真实触达 M5-03 见远期规划）')
+    } else {
+      row.pushRegistered = true
+      toast.info('该客户已登记推送，无需重复操作')
+    }
+  } catch (e) {
+    toast.error('推送登记失败：' + errMsg(e))
+  } finally {
+    actionId.value = null
+  }
+}
+
+async function batchCreate() {
+  if (!hasBatch.value) {
+    toast.warning('当前周期尚未运行复购预测，请先点击「运行预测」')
+    return
+  }
+  batchBusy.value = true
+  try {
+    const res = await batchRepurchaseFollowup(period.value)
+    if (res.changed) {
+      toast.success(`批次 ${res.batchNo} 已批量登记 ${res.affected} 条跟进任务`)
+      await Promise.all([loadStats(), loadList()])
+    } else {
+      toast.info('本批次客户均已登记跟进，无需重复操作')
+    }
+  } catch (e) {
+    toast.error('批量登记失败：' + errMsg(e))
+  } finally {
+    batchBusy.value = false
+  }
+}
+
+// ---------- 推荐依据（真实信号可用 / 行为埋点不可得诚实置灰） ----------
+const factorModel = ref<RepurchaseFactorModel | null>(null)
+
+async function loadFactors() {
+  try {
+    factorModel.value = await getRepurchaseFactors()
+  } catch (e) {
+    toast.error('推荐依据加载失败：' + errMsg(e))
+  }
+}
 
 function probColor(p: number) {
   if (p >= 85) return 'var(--c-danger-fg)'
@@ -78,9 +216,17 @@ function probColor(p: number) {
   return 'var(--c-info-fg)'
 }
 
-function batchCreate() {
-  alert('已批量创建跟进任务至 M3-08，推送任务至 M5-03')
-}
+watch(period, () => {
+  loadStats()
+  loadList()
+})
+watch(projectId, () => loadList())
+
+onMounted(() => {
+  loadStats()
+  loadList()
+  loadFactors()
+})
 </script>
 
 <template>
@@ -95,21 +241,60 @@ function batchCreate() {
         <div class="filters">
           <CSegmented v-model="period" :options="periodOpts" size="sm" />
           <CSelect v-model="projectId" :options="projectOpts" width="150px" />
+          <CButton variant="primary" size="sm" :disabled="running" @click="doRun">
+            <CIcon name="refresh" :size="14" />{{ running ? '预测中…' : '运行预测' }}
+          </CButton>
         </div>
       </template>
 
       <div class="layout">
         <div class="layout__main">
-          <CTable :columns="cols" :rows="rows" row-key="id">
+          <div v-if="running" class="repurchase-state">
+            <CIcon name="loading" :size="28" />
+            <p>正在逐客户调用大模型生成复购概率，通常需数十秒，请勿离开本页…</p>
+          </div>
+          <div v-else-if="listLoading" class="repurchase-state">
+            <CIcon name="loading" :size="28" />
+            <p>正在加载最近一批复购预测…</p>
+          </div>
+          <div v-else-if="!hasBatch" class="repurchase-state">
+            <CIcon name="trend-up" :size="28" />
+            <p>{{ period === 'week' ? '本周' : period === 'month' ? '本月' : '本季' }}尚未运行复购预测，点击右上角「运行预测」生成首批榜单。</p>
+          </div>
+          <div v-else-if="!rows.length" class="repurchase-state">
+            <CIcon name="trend-up" :size="28" />
+            <p>当前项目筛选下暂无预测客户，请切换项目分类查看。</p>
+          </div>
+          <CTable v-else :columns="cols" :rows="tableRows" row-key="id">
+            <template #col-name="{ row }">
+              <div class="cell-name">
+                <span class="cell-name__text">{{ row.customerName }}</span>
+                <CStatusPill v-if="row.level" status="default" dot>{{ row.level }}</CStatusPill>
+              </div>
+            </template>
+            <template #col-project="{ row }">
+              <div class="cell-project">
+                <span class="cell-project__name">{{ row.projectName }}</span>
+                <span class="cell-project__amount">预计客单 ¥{{ yuan(row.expectedAmountFen) }}</span>
+              </div>
+            </template>
             <template #col-timing="{ value }">
               <CStatusPill status="primary" dot>{{ value }}</CStatusPill>
             </template>
             <template #col-prob="{ value }">
               <CProgressBar :value="value" :color="probColor(value)" :height="8" :label="`${value}%`" />
             </template>
-            <template #col-ops>
-              <CButton variant="text" size="sm">建跟进</CButton>
-              <CButton variant="text" size="sm">推送</CButton>
+            <template #col-ops="{ row }">
+              <CButton
+                variant="text" size="sm"
+                :disabled="actionId === row.predictionId || row.followupRegistered"
+                @click="doFollowup(row as RepurchaseRow)"
+              >{{ row.followupRegistered ? '已跟进' : '建跟进' }}</CButton>
+              <CButton
+                variant="text" size="sm"
+                :disabled="actionId === row.predictionId || row.pushRegistered"
+                @click="doPush(row as RepurchaseRow)"
+              >{{ row.pushRegistered ? '已推送' : '推送' }}</CButton>
             </template>
           </CTable>
         </div>
@@ -121,15 +306,29 @@ function batchCreate() {
               <h4>Top 3 推荐依据</h4>
             </div>
             <ol class="factor-list">
-              <li v-for="f in factors" :key="f.rank" class="factor-item">
+              <li
+                v-for="f in (factorModel?.rows ?? [])"
+                :key="f.rank"
+                class="factor-item"
+                :class="{ 'is-unavailable': !f.available }"
+              >
                 <div class="factor-rank">{{ f.rank }}</div>
                 <div class="factor-body">
                   <div class="factor-title">{{ f.title }}</div>
                   <div class="factor-desc">{{ f.desc }}</div>
-                  <CProgressBar :value="Math.round(f.weight * 100)" color="var(--c-purple)" :height="4" :label="`权重 ${(f.weight * 100).toFixed(0)}%`" />
+                  <CProgressBar
+                    :value="Math.round(f.weight * 100)"
+                    :color="f.available ? 'var(--c-purple)' : 'var(--c-border)'"
+                    :height="4"
+                    :label="f.available ? `权重 ${(f.weight * 100).toFixed(0)}%` : '暂无数据'"
+                  />
+                  <div v-if="!f.available && f.unavailableNote" class="factor-unavailable">
+                    <CIcon name="shield" :size="12" />{{ f.unavailableNote }}
+                  </div>
                 </div>
               </li>
             </ol>
+            <div v-if="factorModel?.note" class="factor-model-note">{{ factorModel.modelVersion }} · {{ factorModel.note }}</div>
             <div class="factor-note">
               <CIcon name="shield" :size="12" />
               <span>预测结果仅供参考，实际触达需符合 A1-17 隐私规范。</span>
@@ -139,8 +338,8 @@ function batchCreate() {
       </div>
 
       <template #footer>
-        <CButton variant="primary" @click="batchCreate">
-          <CIcon name="plus" :size="16" />批量建跟进任务
+        <CButton variant="primary" :disabled="running || batchBusy || !hasBatch" @click="batchCreate">
+          <CIcon name="plus" :size="16" />{{ batchBusy ? '登记中…' : '批量建跟进任务' }}
         </CButton>
       </template>
     </CCard>
@@ -222,5 +421,42 @@ function batchCreate() {
   color: var(--c-text-3);
   padding-top: var(--s-sm);
   border-top: 1px dashed var(--c-border);
+}
+
+/* 加载 / 空态（B47 卡2 新增） */
+.repurchase-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-sm);
+  padding: var(--s-lg) 0;
+  color: var(--c-text-3);
+  font-size: var(--t-sm);
+  text-align: center;
+}
+.repurchase-state p { margin: 0; max-width: 380px; }
+
+/* 榜单行内信息（B47 卡2 新增） */
+.cell-name { display: flex; align-items: center; gap: var(--s-xs); }
+.cell-name__text { font-weight: 600; color: var(--c-text); }
+.cell-project { display: flex; flex-direction: column; gap: 2px; }
+.cell-project__amount { font-size: var(--t-xs); color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+
+/* 不可得因子置灰（B47 卡2 新增） */
+.factor-item.is-unavailable .factor-rank { background: var(--c-border); }
+.factor-item.is-unavailable .factor-title { color: var(--c-text-3); }
+.factor-unavailable {
+  display: flex;
+  align-items: center;
+  gap: var(--s-xxs);
+  font-size: var(--t-xs);
+  color: var(--c-text-4);
+  line-height: var(--lh-sm);
+}
+.factor-model-note {
+  font-size: var(--t-xs);
+  color: var(--c-text-3);
+  line-height: var(--lh-sm);
 }
 </style>

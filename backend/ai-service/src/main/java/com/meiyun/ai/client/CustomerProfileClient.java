@@ -97,6 +97,22 @@ public class CustomerProfileClient {
         }
     }
 
+    /**
+     * 会员卡余额批量投影（复购预测「卡余额充足」真实依据）；失败降级空列表。
+     * 复用 finance 同源的 internal:card-balance 投影，返回字段见客户域 CardBalanceDTO。
+     */
+    public List<Map<String, Object>> cardBalances() {
+        try {
+            ResponseEntity<List<Map<String, Object>>> resp = restTemplate.exchange(
+                    customerBaseUrl + "/api/customer/internal/card-balances",
+                    HttpMethod.GET, entity(), LIST_MAP_TYPE);
+            return resp.getBody() == null ? List.of() : resp.getBody();
+        } catch (Exception e) {
+            log.warn("会员卡余额投影拉取失败（降级为空）: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
     private HttpEntity<Void> entity() {
         HttpHeaders headers = new HttpHeaders();
         headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);

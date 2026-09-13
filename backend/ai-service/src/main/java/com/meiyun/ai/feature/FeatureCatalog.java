@@ -9,9 +9,10 @@ public final class FeatureCatalog {
     public record Feature(String code, String name) {
     }
 
-    /** A1Admin 权限矩阵六功能（与前端 features 数组同序）。 */
+    /** A1Admin 权限矩阵功能（与前端 features 数组同序，启动时幂等播种）。 */
     public static final List<Feature> FEATURES = List.of(
             new Feature("profile", "客户画像"),
+            new Feature("repurchase", "复购预测"),
             new Feature("churn", "流失预警"),
             new Feature("scripts", "智能话术"),
             new Feature("scheduling", "智能排班"),
