@@ -3,8 +3,9 @@
  * A1-06 智能话术（验收页）
  * 路由：/ai/scripts
  * 验收：可插入 M4-09 咨询工作台；所有话术经 A1-04 敏感词过滤
+ * B46 卡4 去 mock：话术库/统计真实落库，抽屉内 AI 生成走 scripts invoke 全治理链
  * ============================================================ */
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
@@ -16,6 +17,14 @@ import CDrawer from '@/components/CDrawer.vue'
 import CSelect from '@/components/CSelect.vue'
 import CTextarea from '@/components/CTextarea.vue'
 import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import {
+  listScripts, getScriptStats, generateScript, createScript, updateScript,
+  adoptScript, feedbackScript,
+  type ScriptView, type ScriptStats, type ScriptScene,
+} from '@/api/ai'
+
+const toast = useToast()
 
 const scene = ref('all')
 const keyword = ref('')
@@ -27,74 +36,98 @@ const sceneOptions = [
   { label: '异议处理', value: 'objection' },
 ]
 
+const stats = ref<ScriptStats>({ totalScripts: 0, todayCalls: 0, adoptRatePct: 0, goodRatePct: 0 })
+
 const kpis = computed(() => [
-  { label: '话术总数', icon: 'chat', value: '286', tone: 'purple' as const, trend: '+12', trendUp: true, trendGood: true },
-  { label: '今日调用', icon: 'settings', value: '1,240', tone: 'brand' as const, trend: '+8.4%', trendUp: true, trendGood: true },
-  { label: '采纳率', icon: 'trend-up', value: '68.4%', tone: 'teal' as const, trend: '+2.1pp', trendUp: true, trendGood: true },
-  { label: '好评率', icon: 'trend-up', value: '82%', tone: 'success' as const, trend: '+1.6pp', trendUp: true, trendGood: true },
+  { label: '话术总数', icon: 'chat', value: String(stats.value.totalScripts), tone: 'purple' as const },
+  { label: '今日调用', icon: 'settings', value: stats.value.todayCalls.toLocaleString(), tone: 'brand' as const },
+  { label: '采纳率', icon: 'trend-up', value: `${stats.value.adoptRatePct}%`, tone: 'teal' as const },
+  { label: '好评率', icon: 'trend-up', value: `${stats.value.goodRatePct}%`, tone: 'success' as const },
 ])
 
-interface ScriptCard {
-  id: number
-  scene: 'icebreak' | 'upsell' | 'objection'
-  title: string
-  content: string
-  rating: number
-  adopted: number
-}
+const scripts = ref<ScriptView[]>([])
+const loading = ref(false)
 
-const scripts = ref<ScriptCard[]>([
-  { id: 1, scene: 'icebreak', title: '新客到店欢迎话术', content: '您好，欢迎光临！我是您今天的专属顾问小晴。之前有没有了解过我们门店？我先带您参观一下环境，再根据您的需求做一个免费的皮肤检测，您看可以吗？', rating: 5, adopted: 326 },
-  { id: 2, scene: 'icebreak', title: '老客回访破冰', content: '张姐，好久不见呀！上次您做的水光护理已经过了一个月了，最近皮肤状态怎么样？这周我们新到了一款修复面膜，想邀请您回来体验一下，顺便帮您做个免费复查。', rating: 4, adopted: 218 },
-  { id: 3, scene: 'upsell', title: '疗程升单推荐', content: '李姐，从您这次的检测结果看，单次护理虽然能改善表层问题，但配合 3 次一个小疗程效果会更稳定。我们这个月有疗程 8 折活动，算下来单次比原价省 280 元，而且效果能持续 3 个月以上。', rating: 5, adopted: 412 },
-  { id: 4, scene: 'upsell', title: '会员卡升单', content: '王姐，看您这半年来店里已经消费了 6 次，如果办理我们的钻石卡，今天这次就能直接打 7 折，全年还能享受 4 次免费项目和生日专属礼遇，非常适合您这种高频到店的客户。', rating: 4, adopted: 186 },
-  { id: 5, scene: 'objection', title: '价格异议处理', content: '我特别理解您对价格的考虑。其实我们的项目用的都是进口仪器和院线产品，单次折合下来比自己在家用护肤品更划算，而且有专业老师全程跟踪。您要不先体验一次小疗程，感受一下效果再决定？', rating: 5, adopted: 284 },
-  { id: 6, scene: 'objection', title: '效果质疑应对', content: '您有这样的担心很正常。我们这个项目已经有 2000+ 位客户体验过，满意度 96%，而且签约承诺 28 天无明显改善可退款。我可以给您看一些同肤质客户的前后对比，您参考一下。', rating: 4, adopted: 172 },
-  { id: 7, scene: 'upsell', title: '项目搭配推荐', content: '陈姐，您这次做的补水项目效果很好，但如果搭配一次深层清洁，后续营养吸收会提升 40%。两个项目一起做还能享受组合价，比分开做省 380 元，建议您今天一起体验。', rating: 5, adopted: 251 },
-  { id: 8, scene: 'objection', title: '时间冲突异议', content: '理解您平时比较忙。我们门店营业到晚上 9 点，周末也正常开放，而且这个疗程每次只要 40 分钟。我可以帮您把三次预约都排在您方便的时段，提前一天会再提醒您，不会耽误您太多时间。', rating: 4, adopted: 138 },
-  { id: 9, scene: 'icebreak', title: '电话预约破冰', content: '您好，是刘女士吗？我是 XX 美业的顾问小晴。看到您在小程序上预约了明天下午 3 点的补水护理，提前跟您确认一下时间，并提醒您到店前可以先不要化妆，方便我们做皮肤检测哦。', rating: 5, adopted: 198 },
-])
-
-const sceneLabel: Record<ScriptCard['scene'], { text: string; status: 'primary' | 'success' | 'warning' }> = {
+const sceneLabel: Record<ScriptScene, { text: string; status: 'primary' | 'success' | 'warning' }> = {
   icebreak: { text: '破冰', status: 'primary' },
   upsell: { text: '升单', status: 'success' },
   objection: { text: '异议处理', status: 'warning' },
 }
 
-const filtered = computed(() => {
-  return scripts.value.filter((s) => {
-    const matchScene = scene.value === 'all' || s.scene === scene.value
-    const kw = keyword.value.trim()
-    const matchKw = !kw || s.title.includes(kw) || s.content.includes(kw)
-    return matchScene && matchKw
-  })
-})
-
 function stars(rating: number) {
   return '★'.repeat(rating) + '☆'.repeat(5 - rating)
 }
 
-const toast = useToast()
-
-function insertScript(card: ScriptCard) {
-  card.adopted += 1
-  toast.success(`已插入咨询工作台：${card.title}`)
+async function loadStats() {
+  try {
+    stats.value = await getScriptStats()
+  } catch (e) {
+    toast.error('统计加载失败：' + errMsg(e))
+  }
 }
 
-function feedback(card: ScriptCard) {
-  toast.info(`已反馈「${card.title}」，我们将持续优化该话术`)
+let kwTimer: ReturnType<typeof setTimeout> | null = null
+async function loadList() {
+  loading.value = true
+  try {
+    const res = await listScripts({
+      scene: scene.value === 'all' ? undefined : scene.value,
+      keyword: keyword.value.trim() || undefined,
+      page: 0,
+      size: 200,
+    })
+    scripts.value = res.content
+  } catch (e) {
+    toast.error('话术库加载失败：' + errMsg(e))
+  } finally {
+    loading.value = false
+  }
+}
+
+function switchScene() {
+  loadList()
+}
+function onKeyword() {
+  if (kwTimer) clearTimeout(kwTimer)
+  kwTimer = setTimeout(loadList, 300)
+}
+
+async function insertScript(card: ScriptView) {
+  try {
+    const res = await adoptScript(card.scriptId)
+    card.adoptedCount = res.adoptedCount
+    toast.success(`已插入咨询工作台：${card.title}`)
+    loadStats()
+  } catch (e) {
+    toast.error('插入咨询工作台失败：' + errMsg(e))
+  }
+}
+
+async function feedback(card: ScriptView) {
+  try {
+    const res = await feedbackScript(card.scriptId)
+    card.feedbackCount = res.feedbackCount
+    toast.info(`已反馈「${card.title}」，我们将持续优化该话术`)
+  } catch (e) {
+    toast.error('反馈失败：' + errMsg(e))
+  }
 }
 
 /* ---------- 新增 / 编辑话术抽屉 ---------- */
 const showForm = ref(false)
 const editingId = ref<number | null>(null)
+const saving = ref(false)
+const generating = ref(false)
+const genTopic = ref('')
+const genLogId = ref<number | null>(null)
+const genModelCode = ref<string | null>(null)
 const SCENE_OPTIONS = [
   { value: 'icebreak', label: '破冰' },
   { value: 'upsell', label: '升单' },
   { value: 'objection', label: '异议处理' },
 ]
 function emptyForm() {
-  return { title: '', scene: 'icebreak' as ScriptCard['scene'], content: '' }
+  return { title: '', scene: 'icebreak' as ScriptScene, content: '' }
 }
 const form = ref(emptyForm())
 const canSave = computed(() => form.value.title.trim() && form.value.content.trim())
@@ -102,37 +135,72 @@ const canSave = computed(() => form.value.title.trim() && form.value.content.tri
 function openCreate() {
   editingId.value = null
   form.value = emptyForm()
+  genTopic.value = ''
+  genLogId.value = null
+  genModelCode.value = null
   showForm.value = true
 }
-function openEdit(card: ScriptCard) {
-  editingId.value = card.id
+function openEdit(card: ScriptView) {
+  editingId.value = card.scriptId
   form.value = { title: card.title, scene: card.scene, content: card.content }
+  genTopic.value = ''
+  genLogId.value = null
+  genModelCode.value = null
   showForm.value = true
 }
-function saveForm() {
-  if (!canSave.value) return
-  if (editingId.value === null) {
-    const id = Math.max(0, ...scripts.value.map((s) => s.id)) + 1
-    scripts.value.unshift({
-      id,
-      scene: form.value.scene,
-      title: form.value.title.trim(),
-      content: form.value.content.trim(),
-      rating: 5,
-      adopted: 0,
-    })
-    toast.success('话术已新增，经敏感词过滤后即可使用')
-  } else {
-    const card = scripts.value.find((s) => s.id === editingId.value)
-    if (card) {
-      card.title = form.value.title.trim()
-      card.scene = form.value.scene
-      card.content = form.value.content.trim()
-    }
-    toast.success('话术已更新')
+
+async function aiGenerate() {
+  const topic = genTopic.value.trim()
+  if (!topic) {
+    toast.warning('请先填写想生成的话术主题，如「新客到店欢迎」')
+    return
   }
-  showForm.value = false
+  generating.value = true
+  try {
+    const v = await generateScript({ scene: form.value.scene, topic })
+    form.value.content = v.content
+    if (!form.value.title.trim()) form.value.title = topic.slice(0, 40)
+    genLogId.value = v.invokeLogId
+    genModelCode.value = v.modelCode
+    toast.success('AI 话术已生成，可编辑后保存入库')
+  } catch (e) {
+    toast.error('AI 生成失败：' + errMsg(e))
+  } finally {
+    generating.value = false
+  }
 }
+
+async function saveForm() {
+  if (!canSave.value || saving.value) return
+  saving.value = true
+  const cmd = {
+    scene: form.value.scene,
+    title: form.value.title.trim(),
+    content: form.value.content.trim(),
+    invokeLogId: editingId.value === null ? genLogId.value : null,
+    modelCode: editingId.value === null ? genModelCode.value : null,
+  }
+  try {
+    if (editingId.value === null) {
+      await createScript(cmd)
+      toast.success('话术已新增，经敏感词过滤后即可使用')
+    } else {
+      await updateScript(editingId.value, cmd)
+      toast.success('话术已更新')
+    }
+    showForm.value = false
+    await Promise.all([loadList(), loadStats()])
+  } catch (e) {
+    toast.error('保存失败：' + errMsg(e))
+  } finally {
+    saving.value = false
+  }
+}
+
+onMounted(() => {
+  loadStats()
+  loadList()
+})
 </script>
 
 <template>
@@ -149,10 +217,10 @@ function saveForm() {
             <h3>智能话术库</h3>
           </div>
           <div class="card-head__right">
-            <CSegmented v-model="scene" :options="sceneOptions" size="sm" />
+            <CSegmented v-model="scene" :options="sceneOptions" size="sm" @update:model-value="switchScene" />
             <div class="head-search">
               <CIcon name="search" :size="14" />
-              <CInput v-model="keyword" placeholder="搜索话术标题或内容" />
+              <CInput v-model="keyword" placeholder="搜索话术标题或内容" @update:model-value="onKeyword" />
             </div>
             <CButton variant="primary" @click="openCreate">
               <CIcon name="plus" :size="14" />新增话术
@@ -162,7 +230,7 @@ function saveForm() {
       </template>
 
       <div class="script-grid">
-        <article v-for="card in filtered" :key="card.id" class="script-card">
+        <article v-for="card in scripts" :key="card.scriptId" class="script-card">
           <div class="script-card__head">
             <CStatusPill :status="sceneLabel[card.scene].status" dot>
               {{ sceneLabel[card.scene].text }}
@@ -174,7 +242,7 @@ function saveForm() {
           <div class="script-card__meta">
             <span class="meta-item">
               <CIcon name="check-square" :size="13" />
-              采纳 {{ card.adopted }}
+              采纳 {{ card.adoptedCount }}
             </span>
           </div>
           <div class="script-card__foot">
@@ -188,7 +256,7 @@ function saveForm() {
         </article>
       </div>
 
-      <div v-if="!filtered.length" class="empty">未找到匹配的话术</div>
+      <div v-if="!scripts.length" class="empty">{{ loading ? '加载中…' : '未找到匹配的话术' }}</div>
     </CCard>
 
     <div class="compliance-bar">
@@ -199,6 +267,15 @@ function saveForm() {
     <!-- 新增 / 编辑话术抽屉 -->
     <CDrawer v-model:show="showForm" :title="editingId === null ? '新增话术' : '编辑话术'" size="md">
       <div class="form">
+        <div v-if="editingId === null" class="form__row">
+          <label class="form__label">AI 生成主题</label>
+          <div class="card-head__right">
+            <CInput v-model="genTopic" placeholder="如：新客到店欢迎、疗程升单推荐" @keyup.enter="aiGenerate" />
+            <CButton variant="ghost" :disabled="generating" @click="aiGenerate">
+              <CIcon name="refresh" :size="14" />{{ generating ? 'AI 生成中…' : 'AI 生成话术' }}
+            </CButton>
+          </div>
+        </div>
         <div class="form__row">
           <label class="form__label">话术标题 <span class="req">*</span></label>
           <CInput v-model="form.title" placeholder="如：新客到店欢迎话术" />
@@ -216,8 +293,8 @@ function saveForm() {
       <template #footer>
         <div class="drawer__foot">
           <CButton variant="ghost" @click="showForm = false">取消</CButton>
-          <CButton variant="primary" :disabled="!canSave" @click="saveForm">
-            {{ editingId === null ? '新增话术' : '保存修改' }}
+          <CButton variant="primary" :disabled="!canSave || saving" @click="saveForm">
+            {{ editingId === null ? (saving ? '新增中…' : '新增话术') : (saving ? '保存中…' : '保存修改') }}
           </CButton>
         </div>
       </template>

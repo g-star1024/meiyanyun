@@ -660,3 +660,82 @@ export function getContentStats(): Promise<ContentStats> {
 export function deployContent(id: number): Promise<ContentDeployResult> {
   return client.post(`/ai/content/records/${id}/deploy`).then((r) => r.data)
 }
+
+// -------------------- 智能话术库（B46 卡4） --------------------
+
+export type ScriptScene = 'icebreak' | 'upsell' | 'objection'
+
+export interface ScriptView {
+  scriptId: number
+  scene: ScriptScene
+  title: string
+  content: string
+  source: string
+  invokeLogId: number | null
+  modelCode: string | null
+  rating: number
+  adoptedCount: number
+  feedbackCount: number
+  staffId: string | null
+  staffName: string | null
+  storeCode: string | null
+  createdAt: string | null
+}
+
+export interface ScriptStats {
+  totalScripts: number
+  todayCalls: number
+  adoptRatePct: number
+  goodRatePct: number
+}
+
+export interface ScriptGenView {
+  content: string
+  invokeLogId: number | null
+  modelCode: string | null
+  totalTokens: number | null
+  costFen: number
+}
+
+export interface ScriptActionResult {
+  scriptId: number
+  adoptedCount: number
+  feedbackCount: number
+}
+
+export interface ScriptSaveCmd {
+  scene: ScriptScene
+  title: string
+  content: string
+  invokeLogId?: number | null
+  modelCode?: string | null
+}
+
+export function listScripts(params: { scene?: string; keyword?: string; page: number; size: number }): Promise<PageResult<ScriptView>> {
+  return client.get('/ai/scripts', { params }).then((r) => r.data)
+}
+
+export function getScriptStats(): Promise<ScriptStats> {
+  return client.get('/ai/scripts/stats').then((r) => r.data)
+}
+
+// 话术生成可达 300 字、实测数十秒，超时对齐后端出站读超时 180s
+export function generateScript(cmd: { scene: ScriptScene; topic: string }): Promise<ScriptGenView> {
+  return client.post('/ai/scripts/generate', cmd, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function createScript(cmd: ScriptSaveCmd): Promise<ScriptView> {
+  return client.post('/ai/scripts', cmd).then((r) => r.data)
+}
+
+export function updateScript(id: number, cmd: ScriptSaveCmd): Promise<ScriptView> {
+  return client.post(`/ai/scripts/${id}`, cmd).then((r) => r.data)
+}
+
+export function adoptScript(id: number): Promise<ScriptActionResult> {
+  return client.post(`/ai/scripts/${id}/adopt`).then((r) => r.data)
+}
+
+export function feedbackScript(id: number): Promise<ScriptActionResult> {
+  return client.post(`/ai/scripts/${id}/feedback`).then((r) => r.data)
+}
