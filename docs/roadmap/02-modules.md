@@ -1,0 +1,151 @@
+# 台账分册 · ② 模块清单大表
+
+> 属于美研云整体开发台账分册；索引、状态判定口径与读写规则见 [../DEVELOPMENT-ROADMAP.md](../DEVELOPMENT-ROADMAP.md)（铁律 9 / 10）。
+> 「完成批次」列对应 §③ 时间线（03-timeline.md）；「真实依据」列给出可核验的交付文档或代码位置。
+
+## ② 模块清单大表
+
+> 「完成批次」列对应 §③ 时间线；「真实依据」列给出可核验的交付文档或代码位置。
+
+### 域① 客户与会员（customer-service）
+
+| 模块 | 状态 | 完成批次 | 真实依据 | 缺口 / 备注 |
+|---|---|---|---|---|
+| 客户档案 | ✅ | M4/P3 | 客户视图直连 @/api，交付文档 | — |
+| 客户标签 | ✅ | P5-B23 | DELIVERY-P5-B23，`9fd5664` | 五分类 CRUD、覆盖汇总、防重打标、客户 360 打标/删标、tagId exists 过滤真实闭环；标签自动化规则列 Backlog |
+| 会员等级 | ✅ | P5-B23 | DELIVERY-P5-B23，`9df9e7e` | 五档中文等级、阈值/权益/规则、手工调级、自动升级只升不降、实时人数；定时批处理与自动降级列 Backlog |
+| 积分账户 | ✅ | P5-B23 | DELIVERY-P5-B23，`852d2f2` | 客户 360「档案」tab 流水与人工调分；clientToken 幂等、余额非负、全动作审计；消费自动积分列 Backlog |
+| 积分商城 | ✅ | P5-B23 | DELIVERY-P5-B23，`64e8fe3` | 商品/规则/兑换/双签审核/拒绝/履约/KPI 真实闭环；持久单号、幂等下单、同事务扣积分扣库存 |
+| 撞单合并 | ⬜ | — | business-flows 缺口 | 依赖客户查重规则，Backlog |
+| 公海客户 | ⬜ | — | — | 远期 |
+| 客诉管理 | ⬜ | — | — | 远期 |
+| M3 客户运营平台（旅程/分群/任务/关怀/流失/NPS/导入导出/风控/洞察/设置 10 页） | ⬜ | — | — | **远期独立阶段 M3**，Backlog |
+
+### 域② 预约与接待
+
+| 模块 | 状态 | 完成批次 | 真实依据 | 缺口 / 备注 |
+|---|---|---|---|---|
+| 预约看板 | ✅ | M4 | 视图直连 @/api | — |
+| 新建预约 | ✅ | M4 | 视图直连 @/api | — |
+| 我的工作台 | ✅ | P5-B24/B27/B30 | DELIVERY-P5-B24，`50d694d`；B27 `a08bf4d`；B30 `40a35ad` | 7 项计数真实；B27 摘除「候诊待接待」「病历草稿」两演示项（改 listArrivals(WAITING)/listEmr(DRAFT) 真实计数）；**B30 再摘除「术后回访」「SOP 超期」两演示项**（/api/txn/followup/stats 真实 sopPending/sopOverdue 计数，60s 超期升级 Job 驱动）；仅剩复诊提醒 1 演示项，依赖营销自动化 Flow |
+| 排队候补 | ✅ | P5-B29 | DELIVERY-P5-B29，`b85ee45`、`2e4d010` | arrival_waitlist 新域：WL 单号查库号池、手机号锚定会员/散客快照两态、WAITING→NOTIFIED→FULFILLED/CANCELLED 状态机；号源释放（手工/超时）同事务 FIFO 递补首位+店长站内信幂等（idemKey `WL:<wlNo>:<staffId>`）；/queue 第三卡+候补登记弹层+候补 KPI；超时自动释放见接待台行 |
+| 接待台 | ✅ | P5-B27/B28/B29 | DELIVERY-P5-B27，`759990d`、`a08bf4d`；B28 `cac3f37`；B29 `ae646ed`、`2e4d010` | arrival 独立域：AH 单号/queue_no 本店当日连号/四渠道/WAITING→TRIAGED→CALLING→DONE 五态；分诊（CONSULT/MEDICAL/SERVICE）同事务建 consult_plan 草稿双向回挂、叫号/完成；预约签到同事务自动到店；审计 ARRIVAL 全动作；**B28 改派历史时间线（triage_reassign 同事务追加、正序富化、右栏最小内联改派 UI，同资质候选池剔除当前负责人）**；**B29 候诊超时自动释放（ArrivalAutoReleaseJob 60s 扫描「30min 阈值+10min 宽限」、批 50、系统释放 LEFT 同事务 FIFO 递补、手工释放按钮接真、重载状态防重入、`meiyun.queue.auto-release-enabled` 开关收敛）** |
+| 客情登记 | ✅ | P5-B27/B28/B30 | DELIVERY-P5-B27，`a08bf4d`；B28 `aa87fcb`；B30 `09f590b` | GuestReg 手机号 watch 查重（searchCustomers+hydrate）、真实建档成功后自动 checkIn 到店并跳接待台；**B28 十类扩展字段后端化（customer 加 9 列：年龄/肤质/诉求/过敏史三列/意向项目/意向等级/预算/沟通要点，白名单+过敏互斥，客户 360 档案 tab 有值才显示 kv 回显）**；**B30 建档实时写 ES 已交付**（customer_search_event outbox 只存 customerId+10s 中继 Job 批 50 FIFO，SENT/RETRY/DEAD 三态，连续失败 3 次熔断 30s 降级 DB，显式 mapping name 分词+keyword 子字段，读时 mergeRecentFromDb 融合+DataScope 数据域过滤；**B32 DEAD 事件处置台已交付**（/search-events retry·replay·discard 三动作+全量重建入口，customer:search:admin 仅授 REGION_MGR，`f02384b`/`dbf8158`，见下「检索事件处置台」行）；ES reindex 对账治理（ES110 vs PG100 漂移 10 文档）仍留 Backlog） |
+| 到店核销 | ✅ | P5-B28/B29 | DELIVERY-P5-B28，`8ae7389`；B29 `abbe49e`、`2e4d010` | checkin_record 独立域：CI 单号查库号池、三方式（SCAN/APPOINTMENT/WALKIN）、三态（PENDING/DONE/EXCEPTION）+四异常码（NOT_SELF/ALREADY_DONE/NO_APPOINTMENT/INFO_MISMATCH）、timeline JSON 同事务流水、手机号掩码出域；by-phone 内部目录端点（本店→公海→404）锚定会员/散客快照两态；当日同号 PENDING 幂等；**B29 APPOINTMENT 手机号命中当日预约后同事务四连写（回写 ci.appt_no/wd_no、预约置已到店、自动建到店号 AH、生成 writeoff_desk_task PENDING），核销详情透出勾连单号** |
+| 检索事件处置台 | ✅ | P5-B32 | DELIVERY-P5-B32，`f02384b`、`dbf8158` | /search-events：KPI 四宫格点击筛选/状态·客户ID·事件ID 筛选/左表右详情双栏，retry·replay·discard 三动作状态机（DEAD→PENDING rc 清零、当场重放、丢弃 note≥2 字+处置三字段）+中文 400/404+CUSTOMER_SEARCH_EVENT 四 action 审计+全量重建索引入口；customer_search_event 扩 DISCARDED（ddl-auto）；权限 customer:search:admin（仅 REGION_MGR），无权限菜单隐藏+路由守卫 /no-auth；附修异常处理透传、audit biz_type varchar(32) |
+| 转化漏斗 | ⬜ | — | — | 依赖数据分析 |
+
+### 域③ 咨询与诊疗
+
+| 模块 | 状态 | 完成批次 | 真实依据 | 缺口 / 备注 |
+|---|---|---|---|---|
+| 开方开单 | ✅ | M4/P3 | 视图直连 @/api | — |
+| 咨询工作台 | ✅ | P5-B24 | DELIVERY-P5-B24，`d2d369b` | 方案单草稿保存/接诊真实端点（draft/start），会话区接真实方案单；EMR 独立域列 Backlog |
+| 医师工作台 | ✅ | P5-B24/B30 | DELIVERY-P5-B24，`512990d`；B30 `40a35ad` | treat-start/treat-done 全链路（PAID→TREATING→DONE，术前四项/治疗归档），治疗队列切真；**B30 起 treat-done AFTER_COMMIT 幂等触发术后随访 SOP 排程**（物理事务 REQUIRES_NEW，见术后随访 SOP 行） |
+| EMR 电子病历 | ✅ | P5-B27/B30 | DELIVERY-P5-B27，`759990d`、`a08bf4d`；B30 `5aa1e69`、`fc97d00` | emr_record 独立域：EM 单号查库号池（修订号 源号-R{n}）、DRAFT→SIGNED→ARCHIVED 全状态机、修订 parent_id/version、FIRST_VISIT/TREATMENT 两型；signEmr/treatDone 同事务幂等落病历并回挂 plan.emr_id/treat_emr_id；门店域全见越权 404；全链路网关+浏览器取证（audit 276–300）；**B30 补齐 EMR 模板库（emr_template 新域+集团 4 种子 EMT-SEED-001..004 只读+本店建/停用两态+模板库弹层九段范文，权限 emr:view/create 复用）、列表真分页（默认 20）/stats 后端聚合、ChineseValidationAdvice 框架异常中文 400；附修 fc97d00（JPQL cast(:type as string) 解决 PG 42P18 查询 500）；集团模板运营管理留 Backlog** |
+| 复购提醒 | ✅ | P5-B30 | DELIVERY-P5-B30，`7c922cb` | RepurchaseView 全链路切真：客户 /api/customer/search 真实检索（DataScope 数据域隔离）、目标项目必填+知情同意硬勾选前置、待签核统计实时、客户（预填）/经办/店长三方签核填齐解禁、RP 单号查库序号不回退（冒烟 RP20260911-003194 已还原）、REPURCHASE/CREATE+TRIPLE_SIGN 审计；**ApprovalService 医师/店长/财务多级审批流留 Backlog** |
+| 术后随访 SOP | ✅ | P5-B30/B31 | DELIVERY-P5-B30，`40a35ad`、`fa549d5`；DELIVERY-P5-B31，`3825a48`、`4492da4`、`d130dfc`、`70d2b3e`、`53901f6` | followup_sop_template/node/batch/followup 四表；treat-done AFTER_COMMIT→REQUIRES_NEW 物理事务幂等排程（source_plan_id uk+exists 双幂等），默认 1/3/7/30 天节点（微信/电话），种子 SPT-SEED-001 @Order(62) 仅 seed 库；batch_no 号池 `SOP{yyyyMMdd}-%` maxSeqOfDay 不回退；FollowupSopDueJob 60s 扫描批 50 FIFO 超期升级店长幂等通知（idemKey `SOP-ESC:{followupNo}:{staffId}`，免打扰）；/api/txn/followup 五端点（list/stats/get/complete/skip，followup:view/edit）+工作台两演示项摘除；附修 fa549d5（afterCommit 无活动事务致排程静默丢写）；**B31 纵深增强（不加行）：手工建随访 POST（门店强制取 JWT/客户实名解析/planDate≥serviceDate/method 白名单/sopStage=MANUAL/FOLLOWUP·CREATE 审计）、stats 扩九键（+pending/todayPending/overdue/done/skipped/avgSatisfaction/adverseCount，空库 AVG null 修 getSingleResult 的 d130dfc）、keyword 三字段 OR 模糊+固定排序分页；SOP 侧九端点（模板查改/节点增改停删/重置/批次分页聚合/summary 五键/一键升级），SOP_TEMPLATE 五动作审计，FollowupSopEscalator 抽为 DueJob 与一键升级共享组件（escalate 后 save 防标记丢失）** |
+| 随访工作台 | ✅ | P5-B31 | DELIVERY-P5-B31，`3825a48`、`4492da4` | /followup 整页接真：FollowupView 列表（九键 KPI/keyword/分页/手工建弹层/完成·跳过流转）+ BoardView 流水牌 sopTodos 真库计数；schedulePostOpSop 降 async 空 shim 防前后端重复排程；C 端 /m/followup「陈美玲」2 条演示种子与 submitByCustomer 保留 |
+| SOP 编排 | ✅ | P5-B31 | DELIVERY-P5-B31，`70d2b3e`、`53901f6` | /sop 整页接真：SopManagementView 双 tab（模板节点五动作+增改 dayOffset 0-365/method 白名单/内置可停用可改不可删（删除中文 400）/reset 同构重建；批次看板未完结在前+节点内嵌随访 24 字段）、五键 KPI、超期 warnbar 一键升级（v-perm followup:edit，成功 infobar 静默刷新）；删 SOP mock，router/nav 零改动（既有占位直接接真） |
+| 复诊召回 | ⬜ | — | — | 依赖营销自动化，远期 |
+
+### 域④ 收银与交易（txn-service）— 核心闭环 ✅
+
+| 模块 | 状态 | 完成批次 | 真实依据 | 缺口 / 备注 |
+|---|---|---|---|---|
+| 订单收款 | ✅ | M4/P3 | 网关 200 + 交付文档 | — |
+| 整单划扣 | ✅ | B17 | DELIVERY-P5-B17 | 三路径打通 |
+| 划扣执行台（双签） | ✅ | B17/B18 | WriteoffDeskService 硬闸门 | L1 双签 |
+| 退款（L3 三签） | ✅ | B19 | DELIVERY-P5-B19，fbe65c2 | 店长→区域→财务 |
+| 退卡（冻结/终审） | ✅ | B18/B19/B20 | DELIVERY-P5-B18/B19/B20 | 手续费 RF-REVENUE/IN 收入分录 B20 收口；退卡 SLA 经 B21 实证由无差别 SLA Job 覆盖 |
+| 审批中心 | ✅ | B19/B20/B21 | ApprovalService 状态机，DELIVERY-P5-B20/B21 | SLA/候选过滤 B20 收口；转交/加签目标人硬校验（存在/在职/阶段角色/自转交/重复加签/加签给指派人）+ 详情指派人/会签人展示 B21 收口；REGION 兼岗路由留 Backlog |
+| 会员卡项 / 疗程 | ✅ | B16/B17 | member_card 真实 | — |
+| 卡项目录 | ✅ | B15 | DELIVERY-P5-B15 | — |
+| 支付渠道 | ✅ | P3 | 渠道账实 B12 | — |
+| BOM 异常 | ✅ | B10/B34 | DELIVERY-P5-B34，BomDeductService/InventoryView | **B34 收口**：库存不足 422 `{message,shortages[]}` 结构化贯通（skuCode/skuName/needQty/stockQty/unit）→ detail_json + 审计 shortageLines + 页面缺料明细；附修 exc_id substring 起始位致序号恒为 1 |
+| 疗程跟踪 | ⬜ | — | — | 近线缺口 |
+| 资产转移 / 合同 | ⬜ | — | business-flows 缺口 | Backlog |
+
+### 域⑤ 营销与留存（marketing-service）
+
+| 模块 | 状态 | 完成批次 | 真实依据 | 缺口 / 备注 |
+|---|---|---|---|---|
+| 优惠券 | ✅ | B22 | DELIVERY-P5-B22 | 券模板/发放/核销真实闭环；8 券种网关+浏览器验证 |
+| 精准推送 | ✅ | B22 | DELIVERY-P5-B22，PushService | 写链路四件套：幂等(SHA-256 dedupKey 60s)/审计(PUSH/SEND)/周频控(7天≤3)/违禁词；13 客户真实 |
+| 券核销 | ✅ | B22 | DELIVERY-P5-B22，CouponWriteoffService | 三态(FORGED/DUPLICATE/EXPIRED)+折扣(分)+审计(WRITEOFF/BLOCK)；**B34 修正**门店三级兜底为(登录门店→营销设置配置的兜底门店→/internal/first 首家真实门店→三级落空抛 503)，消灭原硬编码 SST01 幽灵码(core 库无此门店，历史脏数据 WR20260908-000004~000007 为证) |
+| 营销总览 | ✅ | B22 | DELIVERY-P5-B22 | 触达/漏斗/趋势/渠道排行真实；导出报告/订阅周报占位 Backlog |
+| 素材库 | ✅ | B22 | DELIVERY-P5-B22 | 10 素材元数据/标签/授权门店/引用计数；文件二进制(S3/MinIO) Backlog |
+| 海报 | ✅ | B22 | DELIVERY-P5-B22，m5Poster | 推荐人下拉接 listStaff 真实在职员工(19名)；模板/漏斗/佣金真实；图片渲染 Backlog |
+| 直播/短视频 | ✅ | B22 | DELIVERY-P5-B22 | 7 场直播/挂链成交/漏斗真实；开播写接口/成交回写 Backlog |
+| 营销 ROI | ✅ | B22 | DELIVERY-P5-B22，m5Roi | 活动维度 ROI/发券核销统计真实(GET /stats/overview)；渠道区 7 平台+归因模型为外部依赖 Backlog |
+| 渠道业绩 | ✅ | B22 | DELIVERY-P5-B22，m5Channel | 7 渠道卡片/接入状态/对账日真实渲染；外部广告平台(美团/抖音/小红书/大众点评/新氧)数据接入 Backlog |
+| 营销设置 | ✅ | B34/B37 | DELIVERY-P5-B37，`828ac6d`；B34 `9a82af6` | 不在 B22 9 页内；**B34 纵深**：新增「券核销兜底门店」配置项(marketing_cfg.writeoff_fallback_store_code，写入前门店存在性校验中文 400、空白归一 null、同值不写冗余审计)，前端 /m5-settings 审批流分组真实门店下拉；**B37 卡1 收口（2026-09-12，`828ac6d`）**：GET 改独立 ConfigView 与写命令 ConfigCmd 字段/类型完全对称（周频键统一 weeklyPushLimit 废弃旧 weeklyLimit 破坏性改名前后端同卡同步、渠道字段两端同为数组、视图剔除 cfgId/referral*/commissionRate 四个多泄遗留列、旧审计快照 weeklyLimit 读时归一、quota weeklyLimit 独立契约不动），marketing_cfg 全部 12 键（周频/免打扰/节假日豁免/大额券阈值/推送审批层级/默认推送与投放渠道/核销兜底门店）均由 /m5-settings 真实页面+真实端点管理，容器 GET/POST/幂等/硬约束/落库/审计取证，原「缺管理页」「GET/POST 字段名不对称」两条 🔧 理由均消除 |
+| 充值赠金 | ✅ | B18/B26/B35/B37 | DELIVERY-P5-B35/B37，GrantService/InternalGrantController/PaymentService/OrderView/AutoGrantService | B18 账本+发赠金、B26 满赠阶梯/有效期/报表；**B35 收口**：grant_deduction 扣减流水+FIFO 带锁扣减/幂等/超额 422/GRANT_DEDUCT 审计，marketing internal 端点（X-Internal-Token），txn 转发查余额（cashier:view，散客/不可用降级 available:false）+grant 支付（散客 400/同单第二笔 409），收银台「营销赠金」磁贴与混合支付（template/style 零改动）；**B37 卡2 收口（2026-09-12，`7552665`）**：消费满额自动发赠金——AutoGrantJob 5 分钟轮询 txn `/internal/paid-orders`（复刻 B25 AutoPoints 拉取范式，未走 FUND_ENTRY 事件链路）、CONSUME_THRESHOLD 规则 priority 首条命中（一单不叠多档）、双层幂等（idem_key `RULE:{ruleId}:{orderNo}` + source_biz_ref 订单级跨规则锚点）、单行游标 auto_grant_state 日粒度窗口/NULL 首跑全量回填、txn 不可用整轮中止不推进/客户不存在 400 跳过的故障分层、明细 RULE/system + AUTO-GRANT/SYSTEM 汇总双审计，容器真验全量回填扫描 5 发放 4、二轮幂等零新增；**B39 退款回加赠金已闭合（终审联动逆向回加，`5353bd9`，详见 DELIVERY-P5-B39）** |
+| 落地页 / 日历 / 转介绍 | ⬜ | — | business-flows 缺口 | 转介绍到期重分配 Backlog；referral mock 待客户域 M3/营销渠道 |
+| 随访 / SOP / 关怀 / 召回 | ⬜ | — | — | 依赖私域自动化 Flow，远期；术后随访 SOP 引擎及随访工作台/SOP 编排两整页已由 B30/B31 在诊疗域（txn-service）闭合（见域③ 术后随访 SOP/随访工作台/SOP 编排行），本行指营销侧关怀/沉睡唤醒/复诊召回 Flow，仍远期 |
+
+### 域⑥ 财务（finance-service）— 核心闭环 ✅
+
+| 模块 | 状态 | 完成批次 | 真实依据 | 缺口 / 备注 |
+|---|---|---|---|---|
+| 资金台账（fund_entry） | ✅ | B1/P3 | FundEntryService.postEntries 幂等 | — |
+| 三方对账 | ✅ | B6 | DELIVERY-P3-B6 | — |
+| 渠道账实 | ✅ | B12 | DELIVERY-P3-B12 | — |
+| 月结封账 | ✅ | B11 | DELIVERY-P3-B11 | 封账月禁重算 |
+| 成本结转 | ✅ | B8 | CostCarryService（COST 分录） | — |
+| 提成 | ✅ | B9 | DELIVERY-P3-B9 | — |
+| CSV 导出 | ✅ | B7 | DELIVERY-P3-B7 | — |
+| 发票管理 | ✅ | P5-B24 | DELIVERY-P5-B24，`1eaef84` | 发票列表去 mock 接真实端点，发票 CSV 真实导出（/api/finance/export/invoices.csv） |
+| 预算 / 财务设置 | ✅ | P5-B24 | DELIVERY-P5-B24，`1eaef84` | 预算与财务设置页去 mock 切真；进项税抵扣列 Backlog |
+| 税 / 卡余额 / 日结 / 异常 | ✅ | P5-B24 | DELIVERY-P5-B24，`1eaef84`、`dfbe14a` | 资金日报去 mock；卡余额时间线切真（customer-service 内部投影 /internal/cards/{cardNo}/ledger）；通用异常中心列 Backlog |
+| 财务核销 / 预收 | ✅ | P5-B24 | DELIVERY-P5-B24，`dfbe14a` | 核销双签明细切真（txn-service /internal/finance/writeoff-details，X-Internal-Token），卡台账/核销 CSV 导出；预收合规监控列 Backlog |
+| 经营毛利 | ⬜ | — | — | 依赖成本+收入全量，远期 |
+
+### 域⑦ 组织与权限（org-service）— 核心闭环 ✅
+
+| 模块 | 状态 | 完成批次 | 真实依据 | 缺口 / 备注 |
+|---|---|---|---|---|
+| 登录 / JWT | ✅ | M7 | DELIVERY-M7，/api/org/auth/login | — |
+| 员工管理 | ✅ | M7 | staff/staff_role 真实 | — |
+| 角色 RBAC / 权限矩阵 | ✅ | M7/B19 | PermissionMatrix | 角色管理页待补（Backlog） |
+| 房间床位 | ✅ | B13 | DELIVERY-P4-B13 | — |
+| 设备台账 | ✅ | B13 | DELIVERY-P4-B13 | — |
+| 项目 / 品牌 | ✅ | P4 | 主数据真实 | — |
+| 价目表 | ✅ | B14 | DELIVERY-P5-B14 | — |
+| 耗材库存 | ✅ | B8/B13 | 库存真实 | — |
+| 组织树 | ✅ | B33 | DELIVERY-P5-B33，OrgAdminController 三写端点 + T1OrgView 去 mock | 部门层级写闭环真实（仅门店下建部门/编辑三态语义/部门跨店移动联动 store_code+region/启停带停用原因，越权中文 404）；**门店/大区/集团层级写能力与兼岗上级路由留 Backlog**，部门只停用不物理删 |
+| 消息通知中心 | ✅ | B20/B21 | DELIVERY-P5-B20/B21，NotificationController 6 端点 | 系统内通知真实闭环（铃铛/列表/已读）；通知偏好持久化（notify_preference 表 + GET/PUT 端点 + SLA 催办偏好免打扰双向实证）B21 收口；**多渠道（短信/企微/邮件 dev 网关 + SSE 实时推送 + 免打扰 + 失败重试/死信）B26 收口**，真实运营商网关接入留 Backlog |
+| 交接班 | ⬜ | — | — | 近线缺口 |
+| M2 门店运营（排班/工单/日结/申购/报损/绩效/周报/巡检/拓客/唤醒/异常等 13 页） | ⬜ | — | — | **远期独立阶段 M2**，Backlog |
+
+### 域⑧ 平台与基建
+
+| 模块 | 状态 | 完成批次 | 真实依据 | 缺口 / 备注 |
+|---|---|---|---|---|
+| 审计链（audit-service） | ✅ | M7 | 审计落库真实 | — |
+| 字典管理 | ✅ | M7 | 字典端点真实 | — |
+| 国密网关双栈（Go） | ✅ | M7 | 18443/8443 双栈 | — |
+| 测试 / 双栈验证体系 | ✅ | 全程 | 每批 DoD（mvn+vue-tsc+双栈+PG 对账） | — |
+| M1 集团（brand/procurement/marketing 3 页真实） | 🔧 | — | 3 页直连 | 其余 14 页 mock，**远期 M1** |
+| C 端移动端（packages/coupons 2 页真实） | 🔧 | — | mp-uniapp 2 页 | 其余 20 页 mock，**远期移动端** |
+| M1 集团其余 14 页 | ⬜ | — | — | 远期 M1 |
+| T2 数据分析（4 页） | ⬜ | — | — | 远期 T2 |
+| T3 外部集成 | ⬜ | — | — | 远期 T3 |
+| T4 AI 算力（4 页） | ⬜ | — | — | 远期 T4 |
+| A1 · 模型接入（/ai/providers 供应商与模型配置） | ✅ | P5-B42/B43 | DELIVERY-P5-B42，ai-service | 供应商/模型 CRUD、ApiKey AES-GCM 密文落库+掩码回显、真实连通性测试（火山方舟 OpenAI 兼容）、六功能绑定与角色灰度矩阵；B42 末真实 Key 录入后连通待复核项**已由 B43 真实 invoke 成功闭合**（ark-code-latest，497 tokens）；价格口径统一为元/百万 tokens |
+| A1 · AI 网关监控（/ai/gateway 调用日志/KPI） | ✅ | P5-B42/B43/B44 | DELIVERY-P5-B42，A1GatewayView 去 mock；DELIVERY-P5-B43 真实联动；DELIVERY-P5-B44 告警真实化 | KPI/调用日志/账单接 /api/ai/logs* 真实端点；**B43 起 POST /features/{code}/invoke 真实出口贯通，ai_invoke_log 成败全量沉淀，今日调用/成功率/P99/日志全部真实（ark-code-latest 真实 ARK 497 tokens 实证）**；**B44 拦截链接敏感词(400)与三级配额(429)、告警五规则实时评估，告警 tab 与 KPI 活跃告警真实联动** |
+| A1 · AI 管理配置（/ai/admin 全局配置/矩阵/账单） | ✅ | P5-B42/B43 | DELIVERY-P5-B42，A1AdminView 去 mock | 全局配置 GET/PUT、功能角色矩阵、KPI/账单真实；B43 功能绑定抽屉新增真实试运行（invoke 结果/token/费用回显，调用后本月用量实时联动）；**B44 新增第 6 个「配额管理」tab（三级配额 8 行+日/月用量额度+水位三档色+调整抽屉，FEATURE→MODEL→GLOBAL 出站前 429 中文）** |
+| A1 · AI 审批与效果评估（/ai/govern） | ✅ | P5-B42/B45 | DELIVERY-P5-B42，A1GovernView 去 mock；DELIVERY-P5-B45 申请入口+评估实验实体化 | 审批 Spring Page 真分页+状态过滤+通过/驳回决策（MODEL 通过联动 enabled、BINDING 驳回联动 NONE、重复决策 400 中文），REGION_MGR aiGovern:approve；**B45 补 POST /api/ai/approvals apply 申请入口（模型上架/功能绑定两类申请单，AiApplyDrawer 共享抽屉）+审批通过联动 enabled=t（linkage 审计），效果评估/A·B 实验从占位实体化（V18 两表、八端点、北京时间窗口聚合、lift pp、结案冻结，KPI computed 修复）** |
+| A1 · 敏感词检测（/ai/sensitive 词库治理/命中留痕） | ✅ | P5-B46 | DELIVERY-P5-B46，A1SensitiveView 去 mock | 词库 CRUD+命中分页/词类三态过滤/统计/误报标注（SensitiveWordController 六端点）、V19 ai_sensitive_hit 命中落库 CHECK+三索引、六功能出站链 L142 拦截 BANNED/INJECTION 400 中文脱敏、SensitiveHitRecorder REQUIRES_NEW 保证拦截亦独立落库、8 张 AI 表 updated_at 触发器、前端时区工具 datetime.ts |
+| A1 · 智能中心首页（/ai 四 KPI/能力卡/待办告警） | ✅ | P5-B46 卡2 | DELIVERY-P5-B46-2，A1HomeView 去 mock，`8bee59d` | 三权限分组门控（aiGateway:view 并发 logKpi/monthlyBill/listAlerts、aiGovern:view approvals?status=PENDING 取分页 totalElements、aiAdmin:view sensitive/hits/stats），无权限 KPI 显「—」且不发请求杜绝越权 403；12 能力卡 capCalls 按 billMap 仅六功能显本月调用量、敏感词卡显今日拦截，无日志功能诚实隐藏；待办=审批前 5（fmtAgo 相对时间，跳 /ai/govern）+敏感词今日命中条+active 告警前 5，空态文案；datetime.ts 增 fmtAgo；纯前端切真无新端点、样式零改动 |
+| A1 · 内容生成（/ai/content 三渠道生成/落表/下发） | ✅ | P5-B46 卡3 | DELIVERY-P5-B46-3，A1ContentView 去 mock，`609ca2f` | V20 ai_content_record 17 列（channel/status 双 CHECK+三业务索引+updated_at 触发器，DDL-only）；ContentController 四端点（/generate、/records 真分页、/stats 北京日界六指标、/records/{id}/deploy 幂等审计）；公众号 wechat/海报 poster/短信 sms 三渠道差异化系统指令真实调用 ark-code-latest，generate 复用 featureInvokeService.invoke 全治理链（角色/灰度/敏感词 400 脱敏/配额/计费/日志）+InvokeView.logId 精确关联；读超时 60s→180s 三处对齐（yml/LlmClient cause 链识别/前端 axios）；save 后 findById 回读 DB 默认 createdAt；一键登记下发 GENERATED→DEPLOYED 联动采纳率；真实跨渠道推送（微信/短信网关）M5 远期 |
+| A1 · 话术库（/ai/scripts 破冰/跟进/异议三场景生成/落库/采纳反馈） | ✅ | P5-B46 卡4 | DELIVERY-P5-B46-4，A1ScriptsView 去 mock，`46cacc6` | V21 ai_script 15 列（scene icebreak/followup/objection+source MANUAL/AI 双 CHECK、业务索引、updated_at 触发器，DDL-only）；ScriptController 七端点（库真分页+场景/关键词过滤、stats 北京日界四指标、generate、新增/编辑、adopt、feedback）；三场景差异化系统指令真实调用 ark-code-latest，generate 只出站不落库、保存带 invokeLogId 才 source=AI 关联 ai_invoke_log，复用 featureInvokeService.invoke 全治理链（角色/灰度/敏感词 400 脱敏/配额/计费/日志），保存前敏感词兜底；采纳计数/好评差评滚动均分，AI_SCRIPT CREATE/UPDATE/ADOPT/FEEDBACK 全动作审计；create/update 无方法级事务+findById 回读 DB 默认时间戳；真实推送至 M4 工作台/企业微信会话侧边栏为远期 |
+| A1 · 客户画像引擎（/ai/profile 候选搜索/大模型画像/分群标签/权重回看） | ✅ | P5-B47 卡1 | DELIVERY-P5-B47-1，A1ProfileView 去 mock，`c116096` | V22 ai_customer_profile 表（价值分/分群/标签/应用标记/原始 JSON，CHECK+索引+updated_at 触发器，DDL-only）；ProfileController 八端点（客户候选搜索、真实生成、最近画像、历史、stats、特征权重、近 4 周回看、应用到分群）；客户候选/档案上下文/消费指标跨域经 customer-service 内部端点（X-Internal-Token）富化、失败降级空态不阻断；generate 为 feature_code=profile 第七个注册功能，复用 featureInvokeService.invoke 全治理链（角色/灰度/敏感词 400 脱敏/配额/计费/日志）；apply 幂等置位+APPLY_SEGMENT 审计，特征权重 SHAP Top8/效果回看按 ai_invoke_log 北京周边界聚合；真实 ark-code-latest 生成（683 tokens）；修复 RestTemplate 中文 query ISO-8859-1 编码静默返空、周聚合缺上界累计计数两缺陷；画像跨域自动推送分群/标签准确率回流评估体系为远期 |
+| A1 · 复购预测引擎（/ai/repurchase 批次预测/真实推理/登记闭环） | ✅ | P5-B47 卡2 | DELIVERY-P5-B47-2，A1RepurchaseView 去 mock，`fc9f508` | V23 ai_repurchase_prediction 27 列（period week/month/quarter、project_code skin/inject/anti/body/other 双 CHECK、prob 0~100 CHECK、四索引含 followup 部分索引+触发器，DDL-only）；RepurchaseController 八端点（/run 真实批次、/list、/batch、/stats、/factors、/{id}/followup、/{id}/push、/batch-followup，校验/幂等/配额/审计四件套）；复购候选/近期成交信号跨域 txn-service、卡余额跨域 customer-service（X-Internal-Token）失败降级；repurchase 第八功能复用 invoke 全治理链逐客户串行真实 ark-code-latest 推理（RP2026091301/4 人/invoke 25-28/审计 500-503）；无批次中文 404 转引导空态、因子 available=false 诚实置灰；跟进任务真实下发/营销推送真实触达 M3-08·M5-03 远期 |
+| A1 · 流失预警引擎（/ai/churn-model 批次评分/真实推理/干预闭环） | ✅ | P5-B47 卡3 | DELIVERY-P5-B47-3，A1ChurnView 去 mock，`4e05215` | V24 ai_churn_prediction 26 列（batch_no CH 规则/risk_score·risk_level 双 CHECK/四索引含 intervene 部分索引/触发器，DDL-only）；ChurnController 七端点（/run 无 period 最近一批即当前榜、/list?riskLevel、/batch、/stats、/factors、/{id}/intervene、/batch-intervene，四件套）；流失候选/近期消费信号 ai→txn X-Internal-Token 富化（SCAN_LIMIT=3000）失败降级；churn 第九功能复用 invoke 全治理链逐客户串行 ark-code-latest 真实评分、阈值服务端重算（CH2026091301/3 人全 mid 60 分/invoke 30 benchmark 失败留档+31-33 成功/审计 505-507）；客诉/互动两因子诚实置灰；字段撞会员等级名缺陷修复；干预真实下发 M3-10·M2-17·M5-03 远期 |
+| A1 · AI 经营日报（/ai/daily-report 按日生成/多版本/建议采纳/订阅） | ✅ | P5-B47 卡4 | DELIVERY-P5-B47-4，A1DailyView 去 mock，`1282769` | V25 三表 ai_daily_report/ai_daily_suggestion/ai_daily_subscription（建议类别 CHECK core·anomaly·action、subscription staff_id PK+updated_at 触发器，DDL-only）；DailyController 九端点（当日报告/重发生成/history 按日期归并最新版/建议列表/逐条采纳/订阅四渠道读写）；经营指标+前一日基线 ai→txn /api/txn/internal/daily-metrics（X-Internal-Token internal:finance-flow）失败 available=false 降级；daily 第十功能（bindingId=8，角色仅 SUPER_ADMIN/REGION_MGR）复用 invoke 全治理链真实生成核心结论/异常提醒/行动建议三段十条建议，同日重发多版本留存（报告 v1/v2、invoke 34/35：86.9s/4523、118.0s/5801 tokens、cost_fen=0），建议 id=2/9 由 E011 采纳幂等、订阅翻转才审计（审计 508-514）；金额分→元/环比 null 文案/当日 404 静默空态/四渠道置灰；修复 nginx 60s 504（正则 location `~ ^/api/ai/(daily/generate|churn/run)$` 180s 四跳对齐）与 JPA timestamptz UTC 差 8 小时（bjTime）两缺陷；四渠道真实触达 M5-03·M2-17、日报定时生成 Job 远期 |
+| A1 · AI 客服（/ai/chatbot 真实会话/AI 回复/转人工/人工座席） | ✅ | P5-B47 卡5 | DELIVERY-P5-B47-5，A1ChatbotView 去 mock，`405397a` | V26 两表 ai_chat_session（CS 单号/channel CHECK wechat·miniapp·web·h5、status CHECK ACTIVE·AI·HUMAN·CLOSED、转人工四列+触发器，DDL-only）/ai_chat_message（sender CHECK customer·ai·staff、AI 沉淀六列 invoke_log_id/tokens 三量/延迟/模型、双索引+触发器，DDL-only）；ChatbotController 七端点（类级 /api/ai/chatbot+aiChatbot:view：GET /sessions?channel、POST /sessions、GET /sessions/{id}、POST /sessions/{id}/messages 顾客消息携最近 6 轮上下文+顾客称呼、POST /sessions/{id}/transfer 幂等、POST /sessions/{id}/staff-reply 人工座席非人工态 409、GET /stats）；chatbot 继 daily 之后新接线业务功能码（bindingId=9 运行时录入 model_id=1/ALL/enabled）复用 invoke 全治理链真实出站，AI→人工单向状态机翻转后顾客消息落库不触发 AI；三次真实 invoke log37-39（1058/1615/618 tokens、21.9/33.9/14.4s、cost_fen=0），审计 516 CREATE_CHAT_SESSION/517 TRANSFER_HUMAN/518 CREATE_CHAT_SESSION 哈希链连续；真验修复 staffReply 挂方法级事务致 created_at（insertable=false PG now()）一级缓存未回填、人工消息 time="" 一缺陷（去事务+新持久化上下文回读）；三次均 <60s 本卡不改 nginx；转人工工作台 M4-09 真实联动、知识 RAG 增强远期 |
+| A1 · 智能排班（/ai/scheduling 真实员工池/到店指标/规则矩阵/AI 解读/采纳） | ✅ | P5-B47 卡6 | DELIVERY-P5-B47-6，A1SchedulingView 去 mock，`e1bbadf` | V27 两表 ai_scheduling_plan（status CHECK DRAFT·ADOPTED、UK(week_start,store_code,version)、编制三列/cost_fen/zero_arrival/cost_basis_note/AI 五列/采纳三列+触发器，DDL-only）/ai_scheduling_slot（FK CASCADE、shift CHECK MORNING·MIDDLE·EVENING、4 裸码岗位）；SchedulingController 五端点（类级 /api/ai/scheduling+aiScheduling:view：POST /generate、GET /plan?weekStart&storeCode、POST /plans/{id}/adopt 幂等、GET /stats、GET /history）；OrgStaffClient RestTemplate 调 org-service 拉真实在职 4 裸码岗位（店长/咨询师/医生含治疗师/前台含收银）11 人池（5s/10s 超时，故障或空池 502），txn-service daily-metrics 近 14 天真实到店；规则算早/中/晚 3 班×7 天=21 槽需求矩阵与公平轮转（确定性非大模型），scheduling invoke（bindingId=4，B42 起六功能最后占位本卡首次接线）单次 ark-code-latest 仅生成解读 log41/42/44（7354/3917/5647 tokens、70~139s、页面约 125s、cost_fen=0）；到店样本 0 天 zeroArrival 诚实兜底全程标注，工资无数据源→岗位参考班薪 600/540/700/360 每班 6h 估 ¥12,080=1,208,000 分 COST_BASIS_NOTE 标注，M2-03 无现排后端显「无现排对比」诚实态；GENERATE_SCHEDULE/ADOPT_PLAN 双审计 520/521；修复两处旧 6 类岗位文案、零到店/故障分层两口径，nginx 60s→180s 正则补 scheduling/generate；清脏留 plan2 ADOPTED 样板（2026-09-07/11 人/21 槽/gap=0/zeroArrival=true/log42/E011）；M2-03 现排回填对比、员工薪酬真实数据源、客流沉淀后恢复按客流排班、M4-09 排班联动远期 |
+| A1 · AI 知识库（/ai/knowledge 知识条目/词法检索/热搜/引用溯源/反馈） | ✅ | P5-B47 卡7 | DELIVERY-P5-B47-7，A1KnowledgeView 去 mock，`8ac9372` | V28 两表 ai_knowledge_item（15 列 category CHECK project·script·compliance/index_status CHECK PENDING·INDEXED·FAILED/refs_count≥0+3 索引+updated_at 触发器，DDL-only）/ai_knowledge_citation（9 列 FK CASCADE/source_feature CHECK manual_search·scripts·chatbot·content/useful 三态+2 索引，append-only）；KnowledgeController 十端点（类级 /api/ai/knowledge+aiKnowledge:view 三角色：根 GET 列表、/{id}、/stats 九键、/hot 近 30 天 top8、/search?q 词法加权召回、/{id}/citations、POST create/update/reindex/feedback）；KnowledgeService 365 行 PG ILIKE 加权（ORDER BY CASE 标题 0/标签 1/正文 2, refs_count DESC）非语义向量、热搜近 30 天北京时区日界、浏览不写引用显式检索才写 manual_search citation 同事务 refs_count+1、stats usefulRatePct 无反馈 null 显「—」、feedback/reindex 状态翻转才审计幂等、create/update 无方法级事务回读 PG now()；管理/检索面不接 FeatureCatalog 不走绑定配额计费；ai.ts 5 interface+10 函数、A1KnowledgeView 489 行（浏览检索分离/四 KPI/热搜 chips/idxPill 三态 FAILED 重试/溯源抽屉 Promise.all+反馈幂等/词法诚实注脚两处）；审计 525-544 共 20 行 CREATE×6/FEEDBACK×10/UPDATE×2/REINDEX×2 哈希链连续；真验修复 recall nativeQuery 5 处 cast(:keyword as text)、非法 category 400、列表列 key 错配 vector/refs→indexStatus/refsCount、feedbackCitation 返回类型、fat-jar 陈旧 5 项；两业务表验证后清场 0 行审计留存；语义向量 EMBEDDING+pgvector、RAG 联动 scripts·chatbot·content（枚举预留当前仅 manual_search）、pg_trgm/zhparser 分词、附件/版本/审批流/门店可见性隔离、审计静默丢失监测远期 |
+| A1 AI 中心余 1 页（Prompt 编排/Embedding/向量/Agent/效果实验等） | ⬜ | — | — | **远期 A1**，B46 分批：~~真实功能 invoke+调用日志（B43 已闭合）~~、~~配额限流敏感词告警（B44 已闭合）~~、~~审批申请 UI+效果评估/A·B 实体化（B45 已闭合）~~、~~敏感词检测页（B46 卡1 已闭合）~~、~~智能中心首页（B46 卡2 已闭合）~~、~~渠道内容生成（B46 卡3 已闭合）~~、~~话术库（B46 卡4 已闭合）~~、~~客户画像引擎（B47 卡1 已闭合）~~、~~复购预测（B47 卡2 已闭合）~~、~~流失预警（B47 卡3 已闭合）~~、~~AI 经营日报（B47 卡4 已闭合）~~、~~AI 客服（B47 卡5 已闭合）~~、~~智能排班（B47 卡6 已闭合）~~、~~AI 知识库（B47 卡7 已闭合）~~、余页去 mock（已交付 15/15，历史口径余 0 页/实测 nav 中 mock A1 视图 12→7→6→5→4→3→2→1 个（隐私合规），粒度口径差见 DELIVERY-P5-B46 §7）+EMBEDDING/VISION 多能力+多供应商+token 计费账单环比闭环 |
+| 通用页（全局搜索/帮助/403/闭环演示） | ⬜ | — | — | 近线/体验项 |
