@@ -1290,3 +1290,118 @@ export function staffReplyChatbot(id: number, content: string): Promise<ChatbotS
 export function getChatbotStats(): Promise<ChatbotStats> {
   return client.get('/ai/chatbot/stats').then((r) => r.data)
 }
+
+// ============================ A1-08 AI 智能排班（B47 卡6） ============================
+
+export interface SchedulingCmd {
+  weekStart?: string | null
+  storeCode?: string | null
+}
+
+export interface SchedulingForecast {
+  date: string
+  weekday: string
+  forecast: number
+  sampleAvg: number
+  samples: number
+}
+
+export interface SchedulingShiftRow {
+  shiftCode: string
+  shiftName: string
+  shiftTime: string
+  counts: number[]
+}
+
+export interface SchedulingSlot {
+  slotId: number
+  dayIndex: number
+  dayLabel: string
+  shiftCode: string
+  shiftName: string
+  staffId: string
+  staffName: string
+  roleCode: string
+  roleName: string
+  hours: number
+  costFen: number
+  gap: boolean
+}
+
+export interface SchedulingNote {
+  type: string
+  title: string
+  detail: string
+}
+
+export interface SchedulingPlan {
+  planId: number
+  weekStart: string
+  storeCode: string
+  status: string
+  forecastTotal: number
+  slotTotal: number
+  staffPoolCount: number
+  gapSlots: number
+  costFen: number
+  summary: string
+  forecast: SchedulingForecast[]
+  matrix: SchedulingShiftRow[]
+  slots: SchedulingSlot[]
+  notes: SchedulingNote[]
+  modelCode: string | null
+  invokeLogId: number | null
+  totalTokens: number | null
+  llmCostFen: number | null
+  adoptedAt: string | null
+  adoptedBy: string | null
+  createdAt: string | null
+  costBasisNote: string
+  baselineNote: string
+}
+
+export interface SchedulingStats {
+  planCount: number
+  adoptedCount: number
+  weekInvokes: number
+  modelVersion: string
+  modelNote: string
+}
+
+export interface SchedulingHistoryItem {
+  weekStart: string
+  summary: string
+  forecastTotal: number
+  slotTotal: number
+  gapSlots: number
+  costFen: number
+  status: string
+  createdAt: string | null
+}
+
+export interface SchedulingActionResult {
+  changed: boolean
+  planId: number
+  action: string
+}
+
+// 生成方案同步走 scheduling invoke 真实出站（规则矩阵+LLM 解读），耗时对齐后端读超时 180s
+export function generateScheduling(cmd: SchedulingCmd): Promise<SchedulingPlan> {
+  return client.post('/ai/scheduling/generate', cmd, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function getSchedulingPlan(params?: SchedulingCmd): Promise<SchedulingPlan> {
+  return client.get('/ai/scheduling/plan', { params }).then((r) => r.data)
+}
+
+export function adoptSchedulingPlan(id: number): Promise<SchedulingActionResult> {
+  return client.post(`/ai/scheduling/plans/${id}/adopt`).then((r) => r.data)
+}
+
+export function getSchedulingStats(): Promise<SchedulingStats> {
+  return client.get('/ai/scheduling/stats').then((r) => r.data)
+}
+
+export function listSchedulingHistory(storeCode?: string): Promise<SchedulingHistoryItem[]> {
+  return client.get('/ai/scheduling/history', { params: { storeCode } }).then((r) => r.data)
+}
