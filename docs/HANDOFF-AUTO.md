@@ -5,16 +5,16 @@
 > 每闭合一小步立即更新「最近心跳」与「下一步动作」；遇 429 / 模型上限 / 进程中断，在报错当刻刷新本文件落盘。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-14 04:29 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-14 04:38 CST -->
 <!-- MACHINE:BATCH=P5-B47 -->
-<!-- MACHINE:CARD=卡8 隐私合规 /ai/privacy A1PrivacyView (A1-10，A1 最后一个 mock 视图)·步骤3 ✅ 代码全落盘+后端 package/前端 build 双过，进入步骤4 容器重建（04:28 实例续跑） -->
+<!-- MACHINE:CARD=卡8 隐私合规 /ai/privacy A1PrivacyView (A1-10，A1 最后一个 mock 视图)·步骤4 ✅ 部署/V29 applied，步骤5 curl+PG 两轨全绿，进入 Chrome 轨（04:28 实例续跑） -->
 
 - **状态**：ACTIVE
 - **批次 / ROADMAP 落点**：P5-B47 卡8，A1 AI 中心最后一个 mock 视图 **隐私合规页 `/ai/privacy`（A1PrivacyView，A1-10）**；闭合后落账 93→**94/166**（约57%）、⬜71→**70**、域⑧ 19✅2🔧46⬜→**20✅2🔧45⬜**、A1 **15/15 页真实闭环且实测 nav mock 视图 1→0（A1 全去 mock）**。
 - **仓库 / 分支 / HEAD**：`/Users/huluobo/WorkBuddy/2026-08-15-23-51-02/meiyun-platform`，分支 `main`；卡7 feat=`8ac9372`（AI 知识库，01:15 并发实例推送），卡7 docs 提交随本次 02:45 接力落盘（交付文档 DELIVERY-P5-B47-7 + 索引 + 5 分册回写 + 本哨兵改写卡8，同一 `git add -f` docs commit）。
-- **最近心跳**：2026-09-14 04:29 CST（04:28 实例续跑：核对现场无误后，前端 `npm run build` exit 0——vue-tsc 零类型错误、vite 20.29s 打包通过；后端 `mvn -pl ai-service,org-service -am package -DskipTests` 上一实例已 exit 0。步骤3 全闭合，进入步骤4 compose 重建 ai-service + org-service + frontend，并确认 V29 在 flyway_schema_history applied）。
-- **上轮心跳**：2026-09-14 04:16 CST（04:15 实例接管：六册通读、契约复核、写权限定案新增 aiPrivacy:edit、后端 8 新文件+权限两处接线落盘并 package 通过、ai.ts 71 行+A1PrivacyView.vue 453 行重写落盘）。
-- **中断类型**：无（上轮实例疑似达调用上限静默退出，代码已全部落盘，无半成品）。
+- **最近心跳**：2026-09-14 04:38 CST（步骤4 部署 ✅：三镜像重建、ai/org healthy、V29 flyway applied success；步骤5 curl+PG 两轨全绿：401/403 旧 token 快照/403 店长/404/400×4、toggle×2+导出×2 成功、stats 翻转口径正确；PG 审计 545–548 从卡7 544 接续且哈希链连续、payload 合法 jsonb、两 report_hash Python 手工复算完全一致、触发器/经办列/CHECK×3 拦截全验证。注意：JWT perms 是登录快照，已用 E011/meiyun123 重新登录刷新 /tmp/meiyun_token.txt（含 aiPrivacy:edit），店长 token 在 /tmp/meiyun_token_mgr.txt。进入 Chrome 轨）。
+- **上轮心跳**：2026-09-14 04:29 CST（前端 npm run build exit 0 双过，handoff e032596 推送）。
+- **中断类型**：无。
 
 ## 卡7 闭合存档（勿重复，2026-09-14）
 - feat `8ac9372 feat(ai): B47 卡7 AI知识库整页去 mock，接真实 API 三轨真验通过`（9 文件 +1161 行：V28 两表 + domain×2 + Repository×2 + KnowledgeService 365 行 + KnowledgeController 十端点 + ai.ts 5 interface/10 函数 + A1KnowledgeView.vue 489 行）。
@@ -32,8 +32,8 @@
 1. ✅ **读现状（04:15 完成）**：A1PrivacyView.vue 三 tab（mask 8 行 M1-M8 / compliance 8 项 C1-C8 / audit 区间导出+导出历史）+ 四 mock KPI（48 脱敏字段/96% 达标/2 待处理/12840 审计）；路由/nav/aiPrivacy:view 三点就位；数据全部需新建端点（隐私域无既有表）。
 2. ✅ **设计定案（04:16）**：**V29__ai_privacy.sql 已由 03:09 实例落盘并经复核直接沿用**——三表 ai_privacy_mask_rule / ai_privacy_compliance_item / ai_privacy_export，含 updated_at 触发器×2、CHECK、索引，8+8 幂等播种（PM-SEED-07 诊疗记录停用、PC-SEED-07 双脱敏未达标，与 mock M7/C7 一一对应；早期设想的「无 seed」以 V29 实际为准）；写权限**新增 `aiPrivacy:edit`**（超管/区域经理，店长只读）；导出 report_hash = SHA-256(范围头+区间内 audit_log 全链 id/prev_hash/cur_hash/payload 规范化拼接)，ai-service 同库 JdbcTemplate 直查 audit_log；审计 biz_type=AI_PRIVACY，从 id=545 起接续卡7；不接 FeatureCatalog、无 AI 出站。端点：GET /privacy/stats、GET /privacy/mask-rules、POST /privacy/mask-rules/{id}/toggle、GET /privacy/compliance-items、POST /privacy/compliance-items/{id}/toggle、POST /privacy/exports（区间校验中文 400）、GET /privacy/exports。
 3. ✅ **后端复编 + 前端接线（04:28 完成）**：后端 `mvn -pl ai-service,org-service -am package -DskipTests` exit 0（package 非仅 compile，fat-jar 已更新）；`ai.ts` 追加 privacy 组 4 interface/7 函数；A1PrivacyView.vue 272→453 行整页去 mock（style 原样保留、差异收敛在 script/template 适配层；MASK_TYPE_LABEL 修正 mock 的 M5/M6/M7 误标；无 edit 权限只读降级、空态/远程失败 toast 诚实分层；四 KPI 绑真实 stats）。
-4. **build + 部署（铁律 6，进行中）**：`npm run build`（含 vue-tsc）已 exit 0（04:28，20.29s）；**待办：compose 重建 ai-service + org-service（新增 aiPrivacy:edit）+ frontend 静态镜像，确认 V29 applied（flyway_schema_history）**。
-5. **三轨真验（铁律 7）**：curl 经网关端点矩阵（401/400/403/404/成功+写动作幂等/翻转才审计）；PG 查新表/触发器/审计哈希链连续/payload 合法 jsonb；Chrome 验 KPI/区块/动作/空态、console 零 error/warn；token 在 `/tmp/meiyun_token.txt`（E011 冯区域，exp 2026-09-14 06:13:51，过期重新登录）。业务表验证后按惯例清场、审计留存。
+4. ✅ **build + 部署（04:33 完成）**：npm run build exit 0；compose 重建三镜像，ai/org healthy、frontend Started；V29 flyway applied success（0.261s），三表就位、8+8 种子、导出 0 行。
+5. **三轨真验（铁律 7，进行中）**：curl 轨 ✅（401 无 token；旧 token 403 权限快照——已 E011 重登取含 aiPrivacy:edit 新 token；店长 E005 读 200/写 403；404 不存在规则；400×4 倒置/超366天/缺日期/非法 JSON；toggle 规则1+合规项1 真翻转并回读经办；导出 323 条+空区间 0 条；stats 翻转后 8/75%/4/6 口径正确）；PG 轨 ✅（审计 545–548 接续 544 哈希链全连续、payload jsonb 合法、report_hash 双值手工复算一致、updated_at 触发器+经办写入、mask_type/range/count 三 CHECK 拦截）；**Chrome 轨待做**。真验后清场：导出表清空、规则1/合规项1 翻回 true（基线：仅 PM-07/PC-07=false），审计 append-only 留存。
 6. **feat 提交（铁律 8，一卡一 feat）**：代码单卡 `feat(ai): B47 卡8 隐私合规页整页去 mock，接真实 API 三轨真验通过` + push origin main。
 7. **docs 提交（铁律 9/10）**：写 `docs/DELIVERY-P5-B47-8-2026-09-14.md`；回写 5 分册（00 顶部加卡8简报、01 数字 94/166 等、02 加隐私合规行、03 表底加卡8时间线、04 的 A1 汇总行去掉隐私合规并把 mock 轨迹收尾为 0）并通读勾稽；`git add -f docs/DEVELOPMENT-ROADMAP.md docs/roadmap/*.md docs/DELIVERY-P5-B47-8-*.md docs/HANDOFF-AUTO.md` 同一 docs commit + push。
 8. **铁律 9 中文汇报**：含「整体完成度 94/166（约57%），本批新增 1 个；A1 AI 中心 15/15 页全部去 mock、实测 mock 视图清零」。
