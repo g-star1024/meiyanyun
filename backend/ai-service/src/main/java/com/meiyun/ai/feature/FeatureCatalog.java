@@ -18,6 +18,7 @@ public final class FeatureCatalog {
             new Feature("scripts", "智能话术"),
             new Feature("scheduling", "智能排班"),
             new Feature("content", "内容生成"),
+            new Feature("chatbot", "AI 客服"),
             new Feature("govern", "审批评估"));
 
     /** 功能×角色灰度矩阵的五角色（与 A1Admin 角色头一致）。 */

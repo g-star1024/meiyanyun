@@ -1207,3 +1207,86 @@ export function toggleDailySubscription(subscribed: boolean): Promise<DailySubsc
 export function adoptDailySuggestion(id: number): Promise<DailyActionResult> {
   return client.post(`/ai/daily/suggestions/${id}/adopt`).then((r) => r.data)
 }
+
+// ============================ A1-07 AI 客服 ============================
+
+export interface ChatbotSession {
+  sessionId: number
+  sessionNo: string
+  customerName: string
+  channel: 'ai' | 'human'
+  lastMessage: string
+  lastSender: 'customer' | 'ai' | 'staff'
+  unreadCount: number
+  transferred: boolean
+  time: string
+}
+
+export interface ChatbotMessage {
+  messageId: number
+  from: 'customer' | 'ai' | 'staff'
+  content: string
+  time: string
+  invokeLogId: number | null
+  modelCode: string | null
+  totalTokens: number | null
+  costFen: number | null
+  latencyMs: number | null
+}
+
+export interface ChatbotSessionDetail {
+  session: ChatbotSession
+  messages: ChatbotMessage[]
+}
+
+export interface ChatbotStats {
+  sessionCount: number
+  aiResolvedCount: number
+  transferredCount: number
+  messageCount: number
+  aiReplyCount: number
+  aiResolveRate: number | null
+  transferRate: number | null
+  avgLatencyMs: number | null
+  sessionDeltaPct: number | null
+  messageDeltaPct: number | null
+  weekInvokes: number
+  modelVersion: string
+  modelNote: string
+}
+
+export interface ChatbotActionResult {
+  changed: boolean
+  sessionId: number
+  action: string
+}
+
+export function getChatbotSessions(channel?: string): Promise<ChatbotSession[]> {
+  return client.get('/ai/chatbot/sessions', { params: { channel } }).then((r) => r.data)
+}
+
+export function createChatbotSession(cmd: { customerName: string; firstMessage?: string }): Promise<ChatbotSessionDetail> {
+  // 首条消息会触发真实模型出站，耗时对齐后端读超时 180s
+  return client.post('/ai/chatbot/sessions', cmd, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function getChatbotSession(id: number): Promise<ChatbotSessionDetail> {
+  return client.get(`/ai/chatbot/sessions/${id}`).then((r) => r.data)
+}
+
+export function sendChatbotMessage(id: number, content: string): Promise<ChatbotSessionDetail> {
+  // AI 接待会话会同步走 invoke 全治理链真实出站，耗时对齐后端读超时 180s
+  return client.post(`/ai/chatbot/sessions/${id}/messages`, { content }, { timeout: 180000 }).then((r) => r.data)
+}
+
+export function transferChatbot(id: number): Promise<ChatbotActionResult> {
+  return client.post(`/ai/chatbot/sessions/${id}/transfer`).then((r) => r.data)
+}
+
+export function staffReplyChatbot(id: number, content: string): Promise<ChatbotSessionDetail> {
+  return client.post(`/ai/chatbot/sessions/${id}/staff-reply`, { content }).then((r) => r.data)
+}
+
+export function getChatbotStats(): Promise<ChatbotStats> {
+  return client.get('/ai/chatbot/stats').then((r) => r.data)
+}
