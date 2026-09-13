@@ -3,8 +3,10 @@
  * A1-17 隐私合规 — 红线页
  * 路由 /ai/privacy
  * 红线：全站隐私字段脱敏，AI 数据本地隔离，等保三级认证，审计日志 append-only 不可篡改
+ * B47 卡8 去 mock：脱敏规则/等保台账/合规报告导出全部走 /api/ai/privacy 真实端点，
+ * 报告哈希为后端对区间内 audit_log 全链规范化后的真实 SHA-256（空区间 audit_count=0）
  * ============================================================ */
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CKpi from '@/components/CKpi.vue'
@@ -12,6 +14,27 @@ import CStatusPill from '@/components/CStatusPill.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import CTable from '@/components/CTable.vue'
 import CIcon from '@/components/CIcon.vue'
+import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
+import { errMsg } from '@/stores/m5Coupon'
+import { fmtDateTimeSec } from '@/utils/datetime'
+import {
+  getPrivacyStats,
+  listPrivacyMaskRules,
+  togglePrivacyMaskRule,
+  listPrivacyComplianceItems,
+  togglePrivacyComplianceItem,
+  listPrivacyExports,
+  createPrivacyExport,
+  type PrivacyMaskRule,
+  type PrivacyComplianceItem,
+  type PrivacyExport,
+  type PrivacyStats,
+} from '@/api/ai'
+
+const toast = useToast()
+const auth = useAuthStore()
+const canEdit = computed(() => auth.can('aiPrivacy:edit'))
 
 type Tab = 'mask' | 'compliance' | 'audit'
 
@@ -22,6 +45,17 @@ const tabOptions = [
   { label: '审计导出', value: 'audit' },
 ]
 
+const MASK_TYPE_LABEL: Record<string, string> = {
+  phone: '手机号',
+  idcard: '身份证',
+  name: '姓名',
+  amount: '金额',
+  bankcard: '银行卡',
+  address: '地址',
+  medical: '诊疗记录',
+  email: '邮箱',
+}
+
 // 脱敏配置
 const maskColumns = [
   { key: 'field', label: '字段名' },
@@ -31,32 +65,37 @@ const maskColumns = [
   { key: 'actions', label: '操作', align: 'right' as const, width: 120 },
 ]
 
-const maskRows = ref([
-  { id: 'M1', field: '手机号', module: 'M3 客户中心', rule: '手机号', status: 'enabled' },
-  { id: 'M2', field: '身份证号', module: 'M3 客户中心', rule: '身份证', status: 'enabled' },
-  { id: 'M3', field: '真实姓名', module: 'M3 客户中心', rule: '姓名', status: 'enabled' },
-  { id: 'M4', field: '消费金额', module: 'M6 财务中心', rule: '金额', status: 'enabled' },
-  { id: 'M5', field: '银行卡号', module: 'M6 财务中心', rule: '身份证', status: 'enabled' },
-  { id: 'M6', field: '联系地址', module: 'M3 客户中心', rule: '姓名', status: 'enabled' },
-  { id: 'M7', field: '诊疗记录', module: 'M4 咨询工作台', rule: '姓名', status: 'disabled' },
-  { id: 'M8', field: '佣金金额', module: 'M6 财务中心', rule: '金额', status: 'enabled' },
-])
+interface MaskRow {
+  id: number
+  field: string
+  module: string
+  rule: string
+  status: 'enabled' | 'disabled'
+  raw: PrivacyMaskRule
+}
+
+const maskRows = ref<MaskRow[]>([])
+const busyMaskId = ref<number | null>(null)
 
 // 等保三级清单
-const complianceItems = ref([
-  { id: 'C1', label: '安全物理环境 — 机房访问控制、防火防水', checked: true },
-  { id: 'C2', label: '安全通信网络 — 国密 TLS 1.3 强制加密', checked: true },
-  { id: 'C3', label: '安全区域边界 — 入侵检测 / 访问控制列表', checked: true },
-  { id: 'C4', label: '安全计算环境 — 身份鉴别、权限最小化', checked: true },
-  { id: 'C5', label: '安全管理中心 — 集中审计、集中管控', checked: true },
-  { id: 'C6', label: 'AI 数据本地隔离 — 训练数据不出域', checked: true },
-  { id: 'C7', label: '隐私字段全站脱敏 — 展示层 / 接口层双脱敏', checked: false },
-  { id: 'C8', label: '审计日志 append-only — WORM 存储、不可篡改', checked: true },
-])
+interface ComplianceRow {
+  id: number
+  label: string
+  checked: boolean
+  raw: PrivacyComplianceItem
+}
+
+const complianceItems = ref<ComplianceRow[]>([])
+const busyCompId = ref<number | null>(null)
 
 // 审计导出
-const exportFrom = ref('2026-08-01')
-const exportTo = ref('2026-08-26')
+function bjDateString(d: Date): string {
+  const bj = new Date(d.getTime() + 8 * 3600 * 1000)
+  return bj.toISOString().slice(0, 10)
+}
+const exportFrom = ref(bjDateString(new Date(Date.now() - 7 * 86400 * 1000)))
+const exportTo = ref(bjDateString(new Date()))
+const exporting = ref(false)
 
 const exportColumns = [
   { key: 'time', label: '导出时间' },
@@ -65,12 +104,23 @@ const exportColumns = [
   { key: 'hash', label: '哈希值 (SHA-256)' },
 ]
 
-const exportRows = ref([
-  { id: 'E1', time: '2026-08-26 10:32:14', range: '2026-08-19 ~ 2026-08-25', operator: '张管理', hash: 'a3f7b9c2...e8d1' },
-  { id: 'E2', time: '2026-08-19 09:15:08', range: '2026-08-12 ~ 2026-08-18', operator: '张管理', hash: 'b7e2c4f1...a9d3' },
-  { id: 'E3', time: '2026-08-12 09:20:42', range: '2026-08-05 ~ 2026-08-11', operator: '李审计', hash: 'c9a1d8e3...f4b2' },
-  { id: 'E4', time: '2026-08-05 10:05:30', range: '2026-07-29 ~ 2026-08-04', operator: '张管理', hash: 'd2f4a6b8...c7e5' },
-])
+interface ExportRow {
+  id: number
+  time: string
+  range: string
+  operator: string
+  hash: string
+  fullHash: string
+}
+
+const exportRows = ref<ExportRow[]>([])
+
+const stats = ref<PrivacyStats>({ maskFieldCount: 0, compliancePct: 0, pendingCount: 0, auditCount: 0 })
+const loading = ref(false)
+
+function shortHash(h: string): string {
+  return h.length > 16 ? `${h.slice(0, 8)}...${h.slice(-4)}` : h
+}
 
 function statusPill(s: string) {
   return s === 'enabled'
@@ -78,28 +128,130 @@ function statusPill(s: string) {
     : { status: 'disabled' as const, label: '停用' }
 }
 
-function toggleMask(row: Record<string, any>) {
-  row.status = row.status === 'enabled' ? 'disabled' : 'enabled'
+async function loadStats() {
+  try {
+    stats.value = await getPrivacyStats()
+  } catch (e) {
+    toast.error('统计加载失败：' + errMsg(e))
+  }
 }
 
-function toggleCompliance(item: typeof complianceItems.value[0]) {
-  item.checked = !item.checked
+async function loadMaskRules() {
+  const rules = await listPrivacyMaskRules()
+  maskRows.value = rules.map((r) => ({
+    id: r.ruleId,
+    field: r.fieldLabel,
+    module: r.moduleName,
+    rule: MASK_TYPE_LABEL[r.maskType] ?? r.maskType,
+    status: r.enabled ? 'enabled' : 'disabled',
+    raw: r,
+  }))
 }
 
-function exportReport() {
-  alert('正在导出合规报告 ' + exportFrom.value + ' ~ ' + exportTo.value + '，文件将追加审计哈希')
+async function loadComplianceItems() {
+  const items = await listPrivacyComplianceItems()
+  complianceItems.value = items.map((i) => ({
+    id: i.itemId,
+    label: i.label,
+    checked: i.checked,
+    raw: i,
+  }))
+}
+
+async function loadExports() {
+  const page = await listPrivacyExports(0, 20)
+  exportRows.value = page.content.map((e: PrivacyExport): ExportRow => ({
+    id: e.exportId,
+    time: fmtDateTimeSec(e.createdAt),
+    range: `${e.rangeFrom} ~ ${e.rangeTo}（${e.auditCount} 条审计）`,
+    operator: e.staffName ?? '系统',
+    hash: shortHash(e.reportHash),
+    fullHash: e.reportHash,
+  }))
+}
+
+async function loadAll() {
+  loading.value = true
+  try {
+    await Promise.all([loadMaskRules(), loadComplianceItems(), loadExports()])
+  } catch (e) {
+    toast.error('隐私合规数据加载失败：' + errMsg(e))
+  } finally {
+    loading.value = false
+  }
+  void loadStats()
+}
+
+async function toggleMask(row: MaskRow) {
+  if (!canEdit.value || busyMaskId.value !== null) return
+  busyMaskId.value = row.id
+  try {
+    const updated = await togglePrivacyMaskRule(row.id)
+    row.status = updated.enabled ? 'enabled' : 'disabled'
+    row.raw = updated
+    toast.success(updated.enabled ? `已启用脱敏规则：${row.field}` : `已停用脱敏规则：${row.field}`)
+    void loadStats()
+  } catch (e) {
+    toast.error('脱敏规则启停失败：' + errMsg(e))
+  } finally {
+    busyMaskId.value = null
+  }
+}
+
+async function toggleCompliance(item: ComplianceRow) {
+  if (!canEdit.value || busyCompId.value !== null) return
+  busyCompId.value = item.id
+  try {
+    const updated = await togglePrivacyComplianceItem(item.id)
+    item.checked = updated.checked
+    item.raw = updated
+    toast.success(updated.checked ? '已标记达标：' + item.label : '已取消达标标记：' + item.label)
+    void loadStats()
+  } catch (e) {
+    toast.error('达标状态更新失败：' + errMsg(e))
+  } finally {
+    busyCompId.value = null
+  }
+}
+
+async function exportReport() {
+  if (!canEdit.value || exporting.value) return
+  if (!exportFrom.value || !exportTo.value) {
+    toast.info('请先选择导出的开始与结束日期')
+    return
+  }
+  if (exportTo.value < exportFrom.value) {
+    toast.error('结束日期不能早于开始日期')
+    return
+  }
+  exporting.value = true
+  try {
+    const res = await createPrivacyExport(exportFrom.value, exportTo.value)
+    toast.success(`合规报告已导出并追加审计哈希，区间覆盖审计 ${res.auditCount} 条`)
+    await loadExports()
+    void loadStats()
+  } catch (e) {
+    toast.error('导出合规报告失败：' + errMsg(e))
+  } finally {
+    exporting.value = false
+  }
 }
 
 const complianceCheckedCount = computed(() => complianceItems.value.filter((i) => i.checked).length)
+const auditCountText = computed(() => stats.value.auditCount.toLocaleString('zh-CN'))
+
+onMounted(() => {
+  void loadAll()
+})
 </script>
 
 <template>
   <div class="a1-privacy">
     <div class="a1-privacy__kpis">
-      <CKpi label="脱敏字段" value="48" tone="purple" icon="settings" />
-      <CKpi label="合规项达标" value="96%" tone="success" icon="check-square" />
-      <CKpi label="待处理" value="2" tone="warning" icon="check-square" />
-      <CKpi label="审计记录" value="12,840" tone="brand" icon="check-square" />
+      <CKpi label="脱敏字段" :value="String(stats.maskFieldCount)" tone="purple" icon="settings" />
+      <CKpi label="合规项达标" :value="stats.compliancePct + '%'" tone="success" icon="check-square" />
+      <CKpi label="待处理" :value="String(stats.pendingCount)" tone="warning" icon="check-square" />
+      <CKpi label="审计记录" :value="auditCountText" tone="brand" icon="check-square" />
     </div>
 
     <!-- 红线提示条 -->
@@ -121,7 +273,12 @@ const complianceCheckedCount = computed(() => complianceItems.value.filter((i) =
 
       <!-- 脱敏配置 -->
       <div v-if="tab === 'mask'">
-        <CTable :columns="maskColumns" :rows="maskRows" row-key="id">
+        <CTable
+          :columns="maskColumns"
+          :rows="maskRows"
+          row-key="id"
+          :empty-text="loading ? '加载中…' : '暂无脱敏规则'"
+        >
           <template #col-rule="{ value }">
             <CStatusPill status="info">{{ value }}</CStatusPill>
           </template>
@@ -131,9 +288,16 @@ const complianceCheckedCount = computed(() => complianceItems.value.filter((i) =
             </CStatusPill>
           </template>
           <template #col-actions="{ row }">
-            <CButton size="sm" variant="text" @click="toggleMask(row)">
-              {{ row.status === 'enabled' ? '停用' : '启用' }}
+            <CButton
+              v-if="canEdit"
+              size="sm"
+              variant="text"
+              :disabled="busyMaskId !== null"
+              @click="toggleMask(row as unknown as MaskRow)"
+            >
+              {{ (row as unknown as MaskRow).status === 'enabled' ? '停用' : '启用' }}
             </CButton>
+            <span v-else class="field-label">只读</span>
           </template>
         </CTable>
       </div>
@@ -149,6 +313,7 @@ const complianceCheckedCount = computed(() => complianceItems.value.filter((i) =
             v-for="item in complianceItems"
             :key="item.id"
             class="check-item"
+            :style="canEdit ? undefined : 'cursor: default'"
             @click="toggleCompliance(item)"
           >
             <span class="checkbox" :class="{ 'is-checked': item.checked }">
@@ -167,24 +332,40 @@ const complianceCheckedCount = computed(() => complianceItems.value.filter((i) =
         <div class="audit__form">
           <div class="audit__field">
             <label class="field-label">开始日期</label>
-            <input v-model="exportFrom" type="date" class="date-input" />
+            <input
+              v-model="exportFrom"
+              type="date"
+              class="date-input"
+              :disabled="!canEdit"
+            />
           </div>
           <div class="audit__field">
             <label class="field-label">结束日期</label>
-            <input v-model="exportTo" type="date" class="date-input" />
+            <input
+              v-model="exportTo"
+              type="date"
+              class="date-input"
+              :disabled="!canEdit"
+            />
           </div>
-          <CButton variant="primary" @click="exportReport">
+          <CButton v-if="canEdit" variant="primary" :disabled="exporting" @click="exportReport">
             <CIcon name="export" :size="14" />
-            导出合规报告
+            {{ exporting ? '导出中…' : '导出合规报告' }}
           </CButton>
+          <span v-else class="field-label">当前角色仅可查看导出记录，导出需 aiPrivacy:edit 权限</span>
         </div>
 
         <div class="audit__divider"></div>
 
         <h4 class="section-title">最近导出记录</h4>
-        <CTable :columns="exportColumns" :rows="exportRows" row-key="id">
-          <template #col-hash="{ value }">
-            <code class="hash-code">{{ value }}</code>
+        <CTable
+          :columns="exportColumns"
+          :rows="exportRows"
+          row-key="id"
+          :empty-text="loading ? '加载中…' : '暂无导出记录，选择日期区间后导出首份合规报告'"
+        >
+          <template #col-hash="{ row }">
+            <code class="hash-code" :title="(row as unknown as ExportRow).fullHash">{{ (row as unknown as ExportRow).hash }}</code>
           </template>
         </CTable>
       </div>

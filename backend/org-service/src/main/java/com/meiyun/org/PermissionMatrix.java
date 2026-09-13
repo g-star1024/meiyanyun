@@ -289,6 +289,7 @@ public final class PermissionMatrix {
             "monitor:rule:create",
             "monitor:rule:edit",
             "aiAdmin:edit",
+            "aiPrivacy:edit",
             "aiGovern:approve",
             "customer:search:admin",
             "complaint:create",
@@ -593,6 +594,7 @@ public final class PermissionMatrix {
                 "monitor:rule:create",
                 "monitor:rule:edit",
                 "aiAdmin:edit",
+                "aiPrivacy:edit",
                 "aiGovern:approve",
                 "customer:search:admin"
         ));

@@ -1520,3 +1520,72 @@ export function feedbackCitation(
     .post(`/ai/knowledge/citations/${citationId}/feedback`, { useful })
     .then((r) => r.data)
 }
+
+// ============================ A1-10 隐私合规（B47 卡8） ============================
+
+export interface PrivacyMaskRule {
+  ruleId: number
+  ruleCode: string
+  fieldLabel: string
+  moduleName: string
+  maskType: string
+  enabled: boolean
+  staffName: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface PrivacyComplianceItem {
+  itemId: number
+  itemCode: string
+  label: string
+  checked: boolean
+  staffName: string | null
+  createdAt: string | null
+  updatedAt: string | null
+}
+
+export interface PrivacyExport {
+  exportId: number
+  rangeFrom: string
+  rangeTo: string
+  auditCount: number
+  reportHash: string
+  staffName: string | null
+  createdAt: string | null
+}
+
+export interface PrivacyStats {
+  maskFieldCount: number
+  compliancePct: number
+  pendingCount: number
+  auditCount: number
+}
+
+export function getPrivacyStats(): Promise<PrivacyStats> {
+  return client.get('/ai/privacy/stats').then((r) => r.data)
+}
+
+export function listPrivacyMaskRules(): Promise<PrivacyMaskRule[]> {
+  return client.get('/ai/privacy/mask-rules').then((r) => r.data)
+}
+
+export function togglePrivacyMaskRule(ruleId: number): Promise<PrivacyMaskRule> {
+  return client.post(`/ai/privacy/mask-rules/${ruleId}/toggle`).then((r) => r.data)
+}
+
+export function listPrivacyComplianceItems(): Promise<PrivacyComplianceItem[]> {
+  return client.get('/ai/privacy/compliance-items').then((r) => r.data)
+}
+
+export function togglePrivacyComplianceItem(itemId: number): Promise<PrivacyComplianceItem> {
+  return client.post(`/ai/privacy/compliance-items/${itemId}/toggle`).then((r) => r.data)
+}
+
+export function listPrivacyExports(page = 0, size = 20): Promise<PageResult<PrivacyExport>> {
+  return client.get('/ai/privacy/exports', { params: { page, size } }).then((r) => r.data)
+}
+
+export function createPrivacyExport(rangeFrom: string, rangeTo: string): Promise<PrivacyExport> {
+  return client.post('/ai/privacy/exports', { rangeFrom, rangeTo }).then((r) => r.data)
+}
