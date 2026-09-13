@@ -5,16 +5,16 @@
 > 每闭合一小步立即更新「最近心跳」与「下一步动作」；遇 429 / 模型上限 / 进程中断，在报错当刻刷新本文件落盘。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-14 03:09 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-14 04:16 CST -->
 <!-- MACHINE:BATCH=P5-B47 -->
-<!-- MACHINE:CARD=卡8 隐私合规 /ai/privacy A1PrivacyView (A1-10，A1 最后一个 mock 视图)·步骤1 进行中（03:09 实例接管，心跳停滞23分钟） -->
+<!-- MACHINE:CARD=卡8 隐私合规 /ai/privacy A1PrivacyView (A1-10，A1 最后一个 mock 视图)·步骤2 设计定案/步骤3 后端实现（04:15 实例接管，心跳停滞66分钟；六册已读、V29 经复核直接沿用） -->
 
 - **状态**：ACTIVE
 - **批次 / ROADMAP 落点**：P5-B47 卡8，A1 AI 中心最后一个 mock 视图 **隐私合规页 `/ai/privacy`（A1PrivacyView，A1-10）**；闭合后落账 93→**94/166**（约57%）、⬜71→**70**、域⑧ 19✅2🔧46⬜→**20✅2🔧45⬜**、A1 **15/15 页真实闭环且实测 nav mock 视图 1→0（A1 全去 mock）**。
 - **仓库 / 分支 / HEAD**：`/Users/huluobo/WorkBuddy/2026-08-15-23-51-02/meiyun-platform`，分支 `main`；卡7 feat=`8ac9372`（AI 知识库，01:15 并发实例推送），卡7 docs 提交随本次 02:45 接力落盘（交付文档 DELIVERY-P5-B47-7 + 索引 + 5 分册回写 + 本哨兵改写卡8，同一 `git add -f` docs commit）。
-- **最近心跳**：2026-09-14 02:45 CST（02:33 实例已完成卡7 交付文档落盘；本 02:45 接力实例完成 5 分册回写与通读勾稽——01 七处数字/口径全改、旧值零残留，00/02/03/04 一致，并在 04 表尾补登 KB-DOC-7「审计静默丢失监测」观察项 Backlog——同一 docs commit 提交推送，随后把哨兵改写为本卡8）。
-- **上轮心跳**：2026-09-14 02:33 CST（02:33 实例接管卡7 步骤8，落盘交付文档 `docs/DELIVERY-P5-B47-7-2026-09-13.md` 135 行）。
-- **中断类型**：无。
+- **最近心跳**：2026-09-14 04:16 CST（04:15 实例接管：六册已通读勾稽、A1PrivacyView.vue 272 行与 V29 109 行契约复核完毕、卡7 Knowledge 全套范本读完；写权限定案**新增 `aiPrivacy:edit`**——仿 aiAdmin:edit 归属授超管/区域经理、店长只读，需改 org-service PermissionMatrix 两处（SUPER_ADMIN ~291 行段、REGION_MGR ~595 行段）并重建 org-service，前端 auth.ts REGION_MGR 集补码；进入步骤3 后端三包文件实现）。
+- **上轮心跳**：2026-09-14 03:09 CST（03:09 实例接管卡8 步骤1，V29__ai_privacy.sql 三表+触发器+8+8 幂等播种落盘，untracked 沿用；随后心跳停滞）。
+- **中断类型**：无（03:09 实例疑似达调用上限静默退出，无半成品代码，仅 V29 untracked）。
 
 ## 卡7 闭合存档（勿重复，2026-09-14）
 - feat `8ac9372 feat(ai): B47 卡7 AI知识库整页去 mock，接真实 API 三轨真验通过`（9 文件 +1161 行：V28 两表 + domain×2 + Repository×2 + KnowledgeService 365 行 + KnowledgeController 十端点 + ai.ts 5 interface/10 函数 + A1KnowledgeView.vue 489 行）。
@@ -29,10 +29,10 @@
 - 若页面所需能力依赖尚不存在的跨服务数据（如全站个人数据请求工单流）或需用户拍板合规口径，按用户指令第 7 步：哨兵记录阻塞原因保持 ACTIVE（注明等待用户），不擅自造数/不伪造闭环。
 
 ## 下一步动作（严格按序，接力会话照做）
-1. **读现状**：通读 `A1PrivacyView.vue` 全文（mock 了哪些 KPI/区块/动作）、路由 meta 与 nav 文案、权限矩阵 `aiPrivacy:view` 三角色归属；对照 DELIVERY-P5-B47 系列与 02-modules 域⑧ 口径，确定本页真实数据从哪些既有表/服务来（敏感词命中、审计、模型/功能治理等），列出「可直接接真」与「需新建端点/表」两类。
-2. **设计（铁律 1 三处一致）**：如需新表走共享 Flyway 链下一个版本号（当前 AI 侧到 **V28**，新表为 V29，DDL-only 无 seed、CHECK/索引/updated_at 触发器齐）；后端 ai-service 加 Controller/Service/Repository，类级 `/api/ai/privacy`+`@RequirePerm("aiPrivacy:view")`，写动作另挂 edit 权限并全动作审计；管理检索面不接 FeatureCatalog、不走模型绑定配额计费（与卡7 同口径），除非页面确有 AI 出站。
+1. ✅ **读现状（04:15 完成）**：A1PrivacyView.vue 三 tab（mask 8 行 M1-M8 / compliance 8 项 C1-C8 / audit 区间导出+导出历史）+ 四 mock KPI（48 脱敏字段/96% 达标/2 待处理/12840 审计）；路由/nav/aiPrivacy:view 三点就位；数据全部需新建端点（隐私域无既有表）。
+2. ✅ **设计定案（04:16）**：**V29__ai_privacy.sql 已由 03:09 实例落盘并经复核直接沿用**——三表 ai_privacy_mask_rule / ai_privacy_compliance_item / ai_privacy_export，含 updated_at 触发器×2、CHECK、索引，8+8 幂等播种（PM-SEED-07 诊疗记录停用、PC-SEED-07 双脱敏未达标，与 mock M7/C7 一一对应；早期设想的「无 seed」以 V29 实际为准）；写权限**新增 `aiPrivacy:edit`**（超管/区域经理，店长只读）；导出 report_hash = SHA-256(范围头+区间内 audit_log 全链 id/prev_hash/cur_hash/payload 规范化拼接)，ai-service 同库 JdbcTemplate 直查 audit_log；审计 biz_type=AI_PRIVACY，从 id=545 起接续卡7；不接 FeatureCatalog、无 AI 出站。端点：GET /privacy/stats、GET /privacy/mask-rules、POST /privacy/mask-rules/{id}/toggle、GET /privacy/compliance-items、POST /privacy/compliance-items/{id}/toggle、POST /privacy/exports（区间校验中文 400）、GET /privacy/exports。
 3. **后端复编 + 前端接线（铁律 5 真实 API）**：`mvn -pl ai-service -am package -DskipTests`（务必 package 非仅 compile，避免 fat-jar 陈旧）；`frontend/src/api/ai.ts` 补 privacy 接口组，A1PrivacyView.vue 整页去 mock，样式主体零改动、差异收敛在 script 适配层；空态/无权限/远程失败诚实分层。
-4. **build（铁律 6）**：`npm run build`（含 vue-tsc）exit 0；compose 重建 ai-service + frontend 静态镜像，确认 V29（若有）applied。
+4. **build（铁律 6）**：`npm run build`（含 vue-tsc）exit 0；compose 重建 **ai-service + org-service（新增 aiPrivacy:edit）** + frontend 静态镜像，确认 V29 applied（flyway_schema_history）。
 5. **三轨真验（铁律 7）**：curl 经网关端点矩阵（401/400/403/404/成功+写动作幂等/翻转才审计）；PG 查新表/触发器/审计哈希链连续/payload 合法 jsonb；Chrome 验 KPI/区块/动作/空态、console 零 error/warn；token 在 `/tmp/meiyun_token.txt`（E011 冯区域，exp 2026-09-14 06:13:51，过期重新登录）。业务表验证后按惯例清场、审计留存。
 6. **feat 提交（铁律 8，一卡一 feat）**：代码单卡 `feat(ai): B47 卡8 隐私合规页整页去 mock，接真实 API 三轨真验通过` + push origin main。
 7. **docs 提交（铁律 9/10）**：写 `docs/DELIVERY-P5-B47-8-2026-09-14.md`；回写 5 分册（00 顶部加卡8简报、01 数字 94/166 等、02 加隐私合规行、03 表底加卡8时间线、04 的 A1 汇总行去掉隐私合规并把 mock 轨迹收尾为 0）并通读勾稽；`git add -f docs/DEVELOPMENT-ROADMAP.md docs/roadmap/*.md docs/DELIVERY-P5-B47-8-*.md docs/HANDOFF-AUTO.md` 同一 docs commit + push。
