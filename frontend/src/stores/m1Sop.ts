@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { shDateStr } from '@/utils/datetime'
 
 // 标准作业 SOP：流程模板库 + 门店执行任务 + 步骤勾选
 export type SopCategory = 'MEDICAL' | 'SERVICE' | 'SAFETY' | 'HYGIENE' | 'MANAGEMENT' | 'TRAINING'
@@ -158,7 +159,7 @@ export const useM1SopStore = defineStore('m1Sop', () => {
 
   function startTask(id: string) {
     const t = tasks.value.find((x) => x.id === id)
-    if (t && t.status === 'PENDING') { t.status = 'IN_PROGRESS'; t.startedAt = new Date().toISOString().slice(0, 10) }
+    if (t && t.status === 'PENDING') { t.status = 'IN_PROGRESS'; t.startedAt = shDateStr() }
   }
   function toggleStep(taskId: string, stepId: string) {
     const t = tasks.value.find((x) => x.id === taskId)
@@ -171,7 +172,7 @@ export const useM1SopStore = defineStore('m1Sop', () => {
     const t = tasks.value.find((x) => x.id === id)
     if (!t) return
     t.status = 'DONE'
-    t.completedAt = new Date().toISOString().slice(0, 10)
+    t.completedAt = shDateStr()
     t.note = note
     // 补齐所有步骤
     const tmpl = template(t.templateId)
@@ -190,7 +191,7 @@ export const useM1SopStore = defineStore('m1Sop', () => {
       code: input.code || `SOP-${input.category[0]}-${String(idx).padStart(3, '0')}`,
       version: 'v1.0',
       status: 'DRAFT',
-      updatedAt: new Date().toISOString().slice(0, 10),
+      updatedAt: shDateStr(),
     }
     templates.value.unshift(t)
     return t

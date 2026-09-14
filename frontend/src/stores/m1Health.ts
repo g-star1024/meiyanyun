@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { shDateStr } from '@/utils/datetime'
 
 // 健康度巡检：门店多维指标评分 + 异常整改任务
 export type Dimension = 'SAFETY' | 'SERVICE' | 'FINANCE' | 'COMPLIANCE' | 'STAFF' | 'EQUIPMENT'
@@ -160,7 +161,7 @@ export const useM1HealthStore = defineStore('m1Health', () => {
     if (!it) return
     it.status = 'RESOLVED'
     it.resolution = resolution
-    it.resolvedAt = new Date().toISOString().slice(0, 10)
+    it.resolvedAt = shDateStr()
   }
   function ignoreIssue(id: string) {
     const it = issues.value.find((x) => x.id === id)
@@ -176,8 +177,8 @@ export const useM1HealthStore = defineStore('m1Health', () => {
       ...s,
       score: Math.max(40, Math.min(98, s.score - openHigh * 8 - openMid * 3 + (openHigh + openMid === 0 ? 4 : 0))),
     }))
-    t.lastCheckedAt = new Date().toISOString().slice(0, 10)
-    t.nextCheckAt = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10)
+    t.lastCheckedAt = shDateStr()
+    t.nextCheckAt = shDateStr(new Date(Date.now() + 7 * 86400000))
     t.inspector = inspector
   }
 

@@ -16,6 +16,7 @@ import { useToast } from '@/composables/useToast'
 import { searchCustomers, createCustomer, type CustomerDTO } from '@/api/customer'
 import { listStores, listStaff, type Staff } from '@/api/org'
 import { createAppointment, crossCheck, type AppointmentView } from '@/api/appointment'
+import { shDateStr } from '@/utils/datetime'
 
 const router = useRouter()
 const toast = useToast()
@@ -142,14 +143,14 @@ async function loadRecent(customerId: string) {
 function isoDate(offset: number) {
   const d = new Date()
   d.setDate(d.getDate() + offset)
-  return d.toISOString().slice(0, 10)
+  return shDateStr(d)
 }
 const dateOptions = computed(() => {
   const out: { label: string; value: string }[] = []
   const wk = ['周日', '周一', '周二', '周三', '周四', '周五', '周六']
   for (let i = 0; i < 7; i++) {
     const d = new Date(); d.setDate(d.getDate() + i)
-    const v = d.toISOString().slice(0, 10)
+    const v = shDateStr(d)
     out.push({ label: `${v.slice(5)} ${i === 0 ? '今天' : i === 1 ? '明天' : wk[d.getDay()]}`, value: v })
   }
   return out

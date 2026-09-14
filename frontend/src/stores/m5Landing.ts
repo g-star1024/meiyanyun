@@ -9,6 +9,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type LandingStatus = 'DRAFT' | 'PUBLISHED' | 'OFFLINE'
 export type LandingTemplate = 'NEWBIE' | 'PROJECT' | 'FESTIVAL' | 'MEMBER' | 'BRAND'
@@ -18,7 +19,7 @@ let _id = 0
 function nextId(p: string) { _id += 1; return `${p}-${Date.now().toString(36)}-${_id}` }
 function dayOffset(n: number) {
   const d = new Date(); d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+  return shDateStr(d)
 }
 
 export interface LandingBlock {

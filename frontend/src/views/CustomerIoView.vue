@@ -12,6 +12,7 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import { useCustomerIoStore, type ImportStatus, type ExportScope } from '@/stores/customerio'
+import { shDateStr } from '@/utils/datetime'
 
 const store = useCustomerIoStore()
 onMounted(() => store.seed())
@@ -45,8 +46,8 @@ function handleUpload() {
   // 模拟用户选了一个文件
   const total = 100 + Math.floor(Math.random() * 200)
   const failed = Math.random() < 0.3 ? Math.floor(Math.random() * 8) + 1 : 0
-  store.createImport(`客户名单_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`, total, failed)
-  uploadName.value = `客户名单_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.xlsx`
+  store.createImport(`客户名单_${shDateStr().replace(/-/g, '')}.xlsx`, total, failed)
+  uploadName.value = `客户名单_${shDateStr().replace(/-/g, '')}.xlsx`
   uploadTotal.value = total
   setTimeout(() => { uploadName.value = ''; uploadTotal.value = 0 }, 2500)
 }

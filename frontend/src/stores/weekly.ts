@@ -7,6 +7,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type WeeklyStatus = 'DRAFT' | 'SUBMITTED'
 
@@ -160,8 +161,8 @@ export const useWeeklyStore = defineStore('weekly', () => {
     const report: WeeklyReport = {
       id: nextId('wk'),
       weekNo,
-      startDate: nextStart.toISOString().slice(0, 10),
-      endDate: nextEnd.toISOString().slice(0, 10),
+      startDate: shDateStr(nextStart),
+      endDate: shDateStr(nextEnd),
       revenue: 0,
       prevRevenue: last?.revenue ?? 0,
       footfall: 0,

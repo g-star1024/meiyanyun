@@ -9,6 +9,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type ContractType = 'COURSE' | 'STORED_VALUE' | 'PACKAGE' | 'SERVICE'
 export type ContractStatus = 'DRAFT' | 'EFFECTIVE' | 'COMPLETED' | 'TERMINATED'
@@ -96,7 +97,7 @@ export const useContractStore = defineStore('contract', () => {
       type: input.type || 'COURSE',
       title: input.title,
       storeId: auth.user.storeId,
-      signDate: input.signDate || new Date().toISOString().slice(0, 10),
+      signDate: input.signDate || shDateStr(),
       totalAmount: input.totalAmount,
       orders: input.orders || [],
       assetIds: input.assetIds || [],
@@ -217,7 +218,7 @@ export const useContractStore = defineStore('contract', () => {
         type: s.type,
         title: s.title,
         storeId: 'store-jingan',
-        signDate: new Date(now - daysAgo * 86400000).toISOString().slice(0, 10),
+        signDate: shDateStr(new Date(now - daysAgo * 86400000)),
         totalAmount: s.totalAmount,
         orders: s.orders || [],
         assetIds: s.assetIds || [],

@@ -24,6 +24,7 @@ import { useStoreContext } from '@/stores/storeContext'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import { exportCostCsv } from '@/api/finance'
+import { shDateStr } from '@/utils/datetime'
 
 const store = useFinCostStore()
 const carry = useFinCarryStore()
@@ -98,7 +99,7 @@ async function exportCsv() {
   const blob = new Blob(['﻿' + head + rows], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `成本分析-${new Date().toISOString().slice(0, 10)}.csv`
+  a.download = `成本分析-${shDateStr()}.csv`
   a.click()
   URL.revokeObjectURL(a.href)
 }

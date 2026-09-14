@@ -7,6 +7,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 // ---- 类型 ----
 export type SourceType = 'MYSQL' | 'POSTGRES' | 'KAFKA' | 'API' | 'LOG' | 'THIRD_PARTY'
@@ -82,7 +83,7 @@ export const useT2DataCollectStore = defineStore('t2DataCollect', () => {
   const errorSources = computed(() => sources.value.filter((s) => s.status === 'ERROR').length)
   const totalRows = computed(() => sources.value.reduce((s, x) => s + x.totalRows, 0))
   const todayRows = computed(() => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = shDateStr()
     return jobs.value
       .filter((j) => j.startedAt.slice(0, 10) === today)
       .reduce((s, j) => s + j.rowsSynced, 0)

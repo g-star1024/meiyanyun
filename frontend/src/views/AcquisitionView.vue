@@ -16,6 +16,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useAcquisitionStore, type AcquisitionCampaign, type AcqType } from '@/stores/acquisition'
 import { ACQUISITION_STATUS, dictPill } from '@/config/dictionary'
 import { ALL_STAFF } from '@/config/staff'
+import { shDateStr } from '@/utils/datetime'
 
 const auth = useAuthStore()
 const store = useAcquisitionStore()
@@ -76,7 +77,7 @@ function fmtDate(iso: string) {
 const showForm = ref(false)
 function todayStr(offsetDays = 0) {
   const d = new Date(Date.now() + offsetDays * 86400_000)
-  return d.toISOString().slice(0, 10)
+  return shDateStr(d)
 }
 const form = ref({
   name: '',

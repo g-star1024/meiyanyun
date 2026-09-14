@@ -4,6 +4,7 @@ import { useM1MarketingStore } from '@/stores/m1Marketing'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
 import { checkSensitive } from '@/composables/useSensitiveWords'
+import { shDateStr } from '@/utils/datetime'
 
 // ============================================================
 // M5-09/10 会员日/节日营销 store
@@ -49,12 +50,12 @@ function nextId(p: string) {
   return `${p}-${Date.now().toString(36)}-${_id}`
 }
 function todayStr() {
-  return new Date().toISOString().slice(0, 10)
+  return shDateStr()
 }
 function isoFromOffset(day: number) {
   const d = new Date()
   d.setDate(d.getDate() + day)
-  return d.toISOString().slice(0, 10)
+  return shDateStr(d)
 }
 
 export const NODE_TYPE_LABEL: Record<NodeType, string> = {

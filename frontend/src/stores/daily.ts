@@ -9,6 +9,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type DailyStatus = 'DRAFT' | 'SUBMITTED'
 export type DailyTodoKind = 'TASK' | 'CUSTOMER' | 'ISSUE'
@@ -61,7 +62,7 @@ export const useDailyStore = defineStore('daily', () => {
 
   const drafts = computed(() => reports.value.filter((r) => r.status === 'DRAFT'))
   const submitted = computed(() => reports.value.filter((r) => r.status === 'SUBMITTED'))
-  const todayDate = () => new Date().toISOString().slice(0, 10)
+  const todayDate = () => shDateStr()
 
   const todayReport = computed<DailyReport | null>(() => {
     return reports.value.find((r) => r.date === todayDate()) ?? null
@@ -181,7 +182,7 @@ export const useDailyStore = defineStore('daily', () => {
     if (seeded) return
     seeded = true
     const today = todayDate()
-    const yest = new Date(Date.now() - 86400_000).toISOString().slice(0, 10)
+    const yest = shDateStr(new Date(Date.now() - 86400_000))
 
     // 昨日已提交日报
     const yHourly = [6, 4, 9, 7, 11, 13, 10, 14, 18, 15, 9, 5]

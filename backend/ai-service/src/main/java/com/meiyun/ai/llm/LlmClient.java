@@ -2,6 +2,8 @@ package com.meiyun.ai.llm;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
@@ -24,6 +26,8 @@ public class LlmClient {
     public record ChatResult(String content, int promptTokens, int completionTokens, int totalTokens) {
     }
 
+    private static final Logger log = LoggerFactory.getLogger(LlmClient.class);
+
     private final int connectTimeout;
     private final int readTimeout;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -38,6 +42,17 @@ public class LlmClient {
     public ChatResult chat(String baseUrl, String apiKey, String model,
                            List<Map<String, String>> messages,
                            Double temperature, Integer maxTokens) {
+        return chat(baseUrl, apiKey, model, messages, temperature, maxTokens, false);
+    }
+
+    /**
+     * @param lenient 宽松模式（连通性 ping 用）：跳过 finish_reason 检测——
+     *                ping 只用 8 tokens，推理模型的 reasoning tokens 必然烧光额度，
+     *                空回答/截断在 ping 语义下不代表故障。
+     */
+    private ChatResult chat(String baseUrl, String apiKey, String model,
+                            List<Map<String, String>> messages,
+                            Double temperature, Integer maxTokens, boolean lenient) {
         String url = normalizeBaseUrl(baseUrl) + "/chat/completions";
         Map<String, Object> body = new java.util.LinkedHashMap<>();
         body.put("model", model);
@@ -72,8 +87,18 @@ public class LlmClient {
             if (resp == null || !resp.hasNonNull("choices")) {
                 throw new IllegalStateException("供应商返回缺少 choices 字段");
             }
-            JsonNode message = resp.path("choices").path(0).path("message");
-            String content = message.path("content").asText("");
+            JsonNode choice = resp.path("choices").path(0);
+            String content = choice.path("message").path("content").asText("");
+            String finishReason = choice.path("finish_reason").asText("");
+            if (!lenient && "length".equals(finishReason)) {
+                if (content.isBlank()) {
+                    throw new IllegalStateException("模型返回为空：max_tokens=" + maxTokens
+                            + " 的输出额度已耗尽（推理模型的 reasoning tokens 同样占用 max_tokens 额度，"
+                            + "请调大该模型的 maxTokens 配置）");
+                }
+                log.warn("模型 {} 输出触达 max_tokens={} 上限被截断（finish_reason=length），返回内容可能不完整",
+                        model, maxTokens);
+            }
             JsonNode usage = resp.path("usage");
             return new ChatResult(
                     content,
@@ -105,10 +130,10 @@ public class LlmClient {
         return false;
     }
 
-    /** 连通性测试：一次最短往返 ping。 */
+    /** 连通性测试：一次最短往返 ping（宽松模式，8 tokens 被推理模型烧光不报故障）。 */
     public ChatResult ping(String baseUrl, String apiKey, String model) {
         return chat(baseUrl, apiKey, model,
-                List.of(Map.of("role", "user", "content", "ping")), 0.0, 8);
+                List.of(Map.of("role", "user", "content", "ping")), 0.0, 8, true);
     }
 
     private RestClient client() {

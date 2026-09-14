@@ -14,6 +14,7 @@ import { useAuthStore } from '@/stores/auth'
 import {
   FIELD_GROUPS, FIELD_ACCESS_LABEL, FIELD_ACCESS_ORDER, fieldAccessOf,
 } from '@/config/fieldRbac'
+import { shDateStr } from '@/utils/datetime'
 
 const rbac = useT1RbacStore()
 const auth = useAuthStore()
@@ -96,7 +97,7 @@ function exportMatrix() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `权限矩阵_${new Date().toISOString().slice(0, 10)}.csv`
+  a.download = `权限矩阵_${shDateStr()}.csv`
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)

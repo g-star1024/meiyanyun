@@ -18,6 +18,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
 import { useFinCarryStore } from '@/stores/finCarry'
 import { getSettlements, postSettlement, exportSettlementCsv, type SettlementPeriod } from '@/api/finance'
+import { shDateStr } from '@/utils/datetime'
 
 const auth = useAuthStore()
 const storeCtx = useStoreContext()
@@ -38,9 +39,7 @@ const storeOptions = computed(() => [
 ])
 
 function todayShanghai(): string {
-  const now = new Date()
-  const utc = now.getTime() + now.getTimezoneOffset() * 60000
-  return new Date(utc + 8 * 3600000).toISOString().slice(0, 10)
+  return shDateStr()
 }
 function monthShanghai(): string {
   return todayShanghai().slice(0, 7)

@@ -20,6 +20,7 @@ import {
   type AppointmentView, type BoardStats,
 } from '@/api/appointment'
 import { useStoreContext } from '@/stores/storeContext'
+import { shDateStr } from '@/utils/datetime'
 
 const router = useRouter()
 const toast = useToast()
@@ -42,7 +43,7 @@ function dateParam(): string | undefined {
   if (dateRange.value === 'ALL') return undefined
   const d = new Date()
   if (dateRange.value === 'TOMORROW') d.setDate(d.getDate() + 1)
-  return d.toISOString().slice(0, 10)
+  return shDateStr(d)
 }
 
 /* ---------- 数据 ---------- */

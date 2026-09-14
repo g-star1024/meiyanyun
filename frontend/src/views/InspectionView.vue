@@ -19,6 +19,7 @@ import {
   type InspectionType,
 } from '@/stores/inspection'
 import { INSPECTION_STATUS, RECTIFY_STATUS, dictPill } from '@/config/dictionary'
+import { shDateStr } from '@/utils/datetime'
 
 const auth = useAuthStore()
 const store = useInspectionStore()
@@ -69,7 +70,7 @@ const form = ref({
   store: '静安旗舰店',
   type: 'ENV' as InspectionType,
   inspector: '陈野',
-  inspectedAt: new Date().toISOString().slice(0, 10),
+  inspectedAt: shDateStr(),
   items: defaultItems.map((name) => ({ name, score: 8, note: '' })),
 })
 function setScore(idx: number, delta: number) {
@@ -88,7 +89,7 @@ function submitForm() {
     showForm.value = false
     form.value = {
       store: '静安旗舰店', type: 'ENV', inspector: '陈野',
-      inspectedAt: new Date().toISOString().slice(0, 10),
+      inspectedAt: shDateStr(),
       items: defaultItems.map((name) => ({ name, score: 8, note: '' })),
     }
     selectedId.value = o.id

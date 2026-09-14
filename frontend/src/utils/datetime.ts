@@ -30,3 +30,25 @@ export function fmtAgo(iso?: string | null): string {
   if (day < 30) return `${day} 天前`
   return fmtDateTime(iso, true)
 }
+
+const SHANGHAI_DATE_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
+
+const SHANGHAI_TIME_FMT = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Shanghai',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+})
+
+export function shDateStr(d: Date = new Date()): string {
+  return SHANGHAI_DATE_FMT.format(d)
+}
+
+export function shDateTimeStr(d: Date = new Date()): string {
+  return `${shDateStr(d)} ${SHANGHAI_TIME_FMT.format(d)}`
+}

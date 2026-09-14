@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { shDateTimeStr } from '@/utils/datetime'
 
 // 报表中心：报表模板 + 生成历史 + 数据预览
 export type ReportCategory = 'REVENUE' | 'CUSTOMER' | 'OPERATION' | 'FINANCE' | 'COMPLIANCE' | 'STAFF'
@@ -126,7 +127,7 @@ export const useM1ReportStore = defineStore('m1Report', () => {
     const id = 'J' + String(jobSeq++).padStart(2, '0')
     const job: ReportJob = {
       id, templateId, templateName: tpl.name, category: tpl.category, period,
-      status: 'GENERATING', format, createdAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+      status: 'GENERATING', format, createdAt: shDateTimeStr(),
       createdBy: '当前用户',
     }
     jobs.value.unshift(job)

@@ -25,6 +25,7 @@ import {
 } from '@/stores/m5Calendar'
 import { useM1MarketingStore } from '@/stores/m1Marketing'
 import { useAuthStore } from '@/stores/auth'
+import { shDateStr } from '@/utils/datetime'
 
 const store = useM5CalendarStore()
 const m1 = useM1MarketingStore()
@@ -153,7 +154,7 @@ function openSchedule(node: CalendarNode) {
   form.startDate = node.date
   const end = new Date(node.date)
   end.setDate(end.getDate() + 2)
-  form.endDate = end.toISOString().slice(0, 10)
+  form.endDate = shDateStr(end)
   form.channels = ['WECOM']
   form.copyText = ''
   form.estimatedRevenue = 50000

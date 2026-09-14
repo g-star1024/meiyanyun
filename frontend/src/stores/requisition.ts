@@ -7,6 +7,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type RequisitionStatus = 'DRAFT' | 'SUBMITTING' | 'APPROVED' | 'RECEIVED' | 'REJECTED'
 
@@ -113,7 +114,7 @@ export const useRequisitionStore = defineStore('requisition', () => {
     const seq = list.value.length + 1
     const r: Requisition = {
       id: nextId('rq'),
-      rqNo: `RQ-${now.toISOString().slice(0, 10).replace(/-/g, '')}-${String(seq).padStart(3, '0')}`,
+      rqNo: `RQ-${shDateStr(now).replace(/-/g, '')}-${String(seq).padStart(3, '0')}`,
       applicant: input.applicant || auth.user.name,
       purpose: input.purpose,
       remark: input.remark,

@@ -19,6 +19,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
 import { getTripartite, exportTripartiteCsv, type TripartiteResult,
   importChannelBills, getChannelReconcile, type ChannelReconcileResult, type ChannelBillImportResult } from '@/api/finance'
+import { shDateStr } from '@/utils/datetime'
 
 const fin = useFinanceCoreStore()
 const auth = useAuthStore()
@@ -202,9 +203,7 @@ const activeTab = ref<'outbox' | 'tripartite' | 'channel'>('outbox')
 
 function todayShanghai(): string {
   // 与后端一致：Asia/Shanghai 自然日，避免 toISOString 的 UTC 偏移
-  const now = new Date()
-  const utc = now.getTime() + now.getTimezoneOffset() * 60000
-  return new Date(utc + 8 * 3600000).toISOString().slice(0, 10)
+  return shDateStr()
 }
 function yuan(v: number | null | undefined): string {
   if (v == null) return '—'
@@ -373,7 +372,7 @@ function exportReport() {
   const blob = new Blob(['\uFEFF' + head + rows], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `对账报告-${new Date().toISOString().slice(0, 10)}.csv`
+  a.download = `对账报告-${shDateStr()}.csv`
   a.click()
   URL.revokeObjectURL(a.href)
 }

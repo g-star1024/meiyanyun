@@ -17,7 +17,7 @@ import CIcon from '@/components/CIcon.vue'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
 import { errMsg } from '@/stores/m5Coupon'
-import { fmtDateTimeSec } from '@/utils/datetime'
+import { fmtDateTimeSec, shDateStr } from '@/utils/datetime'
 import {
   getPrivacyStats,
   listPrivacyMaskRules,
@@ -89,12 +89,8 @@ const complianceItems = ref<ComplianceRow[]>([])
 const busyCompId = ref<number | null>(null)
 
 // 审计导出
-function bjDateString(d: Date): string {
-  const bj = new Date(d.getTime() + 8 * 3600 * 1000)
-  return bj.toISOString().slice(0, 10)
-}
-const exportFrom = ref(bjDateString(new Date(Date.now() - 7 * 86400 * 1000)))
-const exportTo = ref(bjDateString(new Date()))
+const exportFrom = ref(shDateStr(new Date(Date.now() - 7 * 86400 * 1000)))
+const exportTo = ref(shDateStr())
 const exporting = ref(false)
 
 const exportColumns = [

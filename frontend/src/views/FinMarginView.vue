@@ -9,6 +9,7 @@ import CSelect from '@/components/CSelect.vue'
 import CBarChart from '@/components/CBarChart.vue'
 import { useFinMarginStore } from '@/stores/finMargin'
 import { useAuthStore } from '@/stores/auth'
+import { shDateStr } from '@/utils/datetime'
 
 const store = useFinMarginStore()
 const auth = useAuthStore()
@@ -45,7 +46,7 @@ function exportCsv() {
   const blob = new Blob(['\uFEFF' + head + rows], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `毛利报表-${new Date().toISOString().slice(0, 10)}.csv`
+  a.download = `毛利报表-${shDateStr()}.csv`
   a.click()
   URL.revokeObjectURL(a.href)
 }

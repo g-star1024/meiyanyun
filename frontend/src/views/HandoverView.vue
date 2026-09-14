@@ -17,6 +17,7 @@ import {
   type Handover, type HandoverShift, type HandoverTodo,
 } from '@/stores/handover'
 import { HANDOVER_STATUS, dictPill } from '@/config/dictionary'
+import { shDateStr } from '@/utils/datetime'
 
 const handover = useHandoverStore()
 onMounted(() => handover.seed())
@@ -159,7 +160,7 @@ function doSendBack() {
 const showForm = ref(false)
 const newHo = ref({
   shift: 'MORNING' as HandoverShift,
-  date: new Date().toISOString().slice(0, 10),
+  date: shDateStr(),
   toName: '',
 })
 function createHo() {
@@ -171,7 +172,7 @@ function createHo() {
   })
   if (h) {
     showForm.value = false
-    newHo.value = { shift: 'MORNING', date: new Date().toISOString().slice(0, 10), toName: '' }
+    newHo.value = { shift: 'MORNING', date: shDateStr(), toName: '' }
     selectedId.value = h.id
     tab.value = 'DRAFT'
   }

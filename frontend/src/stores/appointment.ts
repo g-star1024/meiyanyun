@@ -8,6 +8,7 @@ import { ref, computed } from 'vue'
 import type { Appointment, ApptStatus } from '@/types/domain'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 const STORE_ID = 'store-jingan'
 
@@ -36,7 +37,7 @@ export const useAppointmentStore = defineStore('appointment', () => {
   function seed() {
     if (seeded) return
     seeded = true
-    const today = new Date().toISOString().slice(0, 10)
+    const today = shDateStr()
     const seeds: Array<Partial<Appointment> & { timeSlot: string; status: ApptStatus }> = [
       { customerId: 'C-201', timeSlot: '09:30', status: 'ARRIVED', source: '小程序', project: '光子嫩肤', consultantId: 'staff-lin' },
       { customerId: 'C-202', timeSlot: '10:00', status: 'CONFIRMED', source: '电话', project: '热玛吉面诊', consultantId: 'staff-lin', doctorId: 'staff-gu' },

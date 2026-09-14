@@ -14,6 +14,7 @@ import CDonutChart from '@/components/CDonutChart.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import { useFinanceCoreStore } from '@/stores/financeCore'
 import { useAuthStore } from '@/stores/auth'
+import { shDateStr } from '@/utils/datetime'
 
 const fin = useFinanceCoreStore()
 const auth = useAuthStore()
@@ -106,7 +107,7 @@ function exportReport() {
   const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `预收款监管报告-${new Date().toISOString().slice(0, 10)}.csv`
+  a.download = `预收款监管报告-${shDateStr()}.csv`
   a.click()
   URL.revokeObjectURL(a.href)
 }

@@ -10,6 +10,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type HandoverShift = 'MORNING' | 'EVENING' | 'FULL'
 export type HandoverStatus = 'DRAFT' | 'SUBMITTED' | 'CONFIRMED'
@@ -96,7 +97,7 @@ export const useHandoverStore = defineStore('handover', () => {
   const pendingCount = computed(() => submitted.value.length)
   /** 今日已交接笔数 */
   const todayConfirmed = computed(() => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = shDateStr()
     return confirmed.value.filter((h) => h.date.slice(0, 10) === today).length
   })
   /** 未完成待跟进事项总数（已交接单中的未勾选项） */
@@ -232,8 +233,8 @@ export const useHandoverStore = defineStore('handover', () => {
   function seed() {
     if (seeded) return
     seeded = true
-    const today = new Date().toISOString().slice(0, 10)
-    const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    const today = shDateStr()
+    const yesterday = shDateStr(new Date(Date.now() - 86400000))
 
     const seedDefs: Array<{
       shift: HandoverShift; date: string; status: HandoverStatus

@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useM1MarketingStore } from '@/stores/m1Marketing'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
+import { shDateStr, shDateTimeStr } from '@/utils/datetime'
 
 // ============================================================
 // M5 营销核心 store
@@ -23,7 +24,7 @@ let _id = 0
 function nextId(p: string) { _id += 1; return `${p}-${Date.now().toString(36)}-${_id}` }
 function dayOffset(n: number) {
   const d = new Date(); d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+  return shDateStr(d)
 }
 
 export interface PushBatch {
@@ -127,7 +128,7 @@ export const useM5CoreStore = defineStore('m5Core', () => {
       return
     }
     b.status = 'SENT'
-    b.sentAt = new Date().toISOString().slice(0, 16).replace('T', ' ')
+    b.sentAt = shDateTimeStr()
     // 模拟到达/点击/转化
     b.delivered = Math.round(b.reach * 0.96)
     b.clicked = Math.round(b.delivered * 0.18)

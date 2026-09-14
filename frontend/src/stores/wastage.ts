@@ -7,6 +7,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type WastageStatus = 'DRAFT' | 'SUBMITTING' | 'APPROVED' | 'REJECTED'
 export type WastageReason = 'BROKEN' | 'EXPIRED' | 'INVENTORY_LOSS' | 'OTHER'
@@ -123,7 +124,7 @@ export const useWastageStore = defineStore('wastage', () => {
     const seq = list.value.length + 1
     const w: Wastage = {
       id: nextId('ws'),
-      wsNo: `WS-${now.toISOString().slice(0, 10).replace(/-/g, '')}-${String(seq).padStart(3, '0')}`,
+      wsNo: `WS-${shDateStr(now).replace(/-/g, '')}-${String(seq).padStart(3, '0')}`,
       itemName: input.itemName,
       spec: input.spec,
       qty: Number(input.qty),

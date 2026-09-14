@@ -6,6 +6,7 @@ import { useAppointmentStore } from '@/stores/appointment'
 import { usePointsStore } from '@/stores/points'
 import { usePricelistStore } from '@/stores/pricelist'
 import CIcon from '@/components/CIcon.vue'
+import { shDateStr } from '@/utils/datetime'
 
 const route = useRoute()
 const router = useRouter()
@@ -22,7 +23,7 @@ const timeSlots = ['10:00', '11:00', '13:00', '14:00', '15:00', '16:00', '17:00'
 const form = ref({
   project: (route.query.project as string) || '',
   store: stores[0],
-  date: new Date().toISOString().slice(0, 10),
+  date: shDateStr(),
   slot: '',
   note: '',
 })

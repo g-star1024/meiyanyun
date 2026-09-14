@@ -8,6 +8,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 // ---- 类型 ----
 export type TicketSource = 'M2-08' | 'M2-10' | 'M2-18' | 'M4' | 'MANUAL' | 'SYSTEM'
@@ -132,7 +133,7 @@ export const useT3WorkorderStore = defineStore('t3Workorder', () => {
     () => tickets.value.filter((t) => t.status !== 'CLOSED' && t.status !== 'RESOLVED' && calcSlaStatus(t.dueAt) === 'OVERDUE').length,
   )
   const resolvedToday = computed(() => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = shDateStr()
     return tickets.value.filter(
       (t) => t.resolvedAt && t.resolvedAt.slice(0, 10) === today,
     ).length

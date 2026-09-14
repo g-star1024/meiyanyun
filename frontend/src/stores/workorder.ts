@@ -7,6 +7,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type WorkOrderType = 'REPAIR' | 'INSPECTION' | 'CUSTOMER' | 'CONSULT'
 export type WorkOrderStatus = 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'ESCALATED'
@@ -108,7 +109,7 @@ export const useWorkOrderStore = defineStore('workorder', () => {
     const seq = orders.value.length + 1
     const o: WorkOrder = {
       id: nextId('wo'),
-      woNo: `WO-${now.toISOString().slice(0, 10).replace(/-/g, '')}-${String(seq).padStart(3, '0')}`,
+      woNo: `WO-${shDateStr(now).replace(/-/g, '')}-${String(seq).padStart(3, '0')}`,
       type: input.type,
       title: input.title,
       description: input.description,

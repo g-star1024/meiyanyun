@@ -6,6 +6,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type AcqType = 'TRIAL' | 'GROUP' | 'REFERRAL'
 export type AcqStatus = 'ONGOING' | 'ENDED' | 'DRAFT'
@@ -102,7 +103,7 @@ export const useAcquisitionStore = defineStore('acquisition', () => {
       : new Date(start.getTime() + 30 * 86400_000)
     const c: AcquisitionCampaign = {
       id: nextId('aq'),
-      no: `AQ-${now.toISOString().slice(0, 10).replace(/-/g, '')}-${String(campaigns.value.length + 1).padStart(3, '0')}`,
+      no: `AQ-${shDateStr(now).replace(/-/g, '')}-${String(campaigns.value.length + 1).padStart(3, '0')}`,
       name: input.name.trim(),
       type: input.type,
       exposure: 0,

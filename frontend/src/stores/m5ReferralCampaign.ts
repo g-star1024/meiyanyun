@@ -11,6 +11,7 @@ import { computed, ref } from 'vue'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
 import { useReferralStore, type RewardType } from '@/stores/referral'
+import { shDateStr } from '@/utils/datetime'
 
 export type CampaignStatus = 'ONGOING' | 'ENDED' | 'DRAFT'
 
@@ -18,7 +19,7 @@ let _id = 0
 function nextId(p: string) { _id += 1; return `${p}-${Date.now().toString(36)}-${_id}` }
 function dayOffset(n: number) {
   const d = new Date(); d.setDate(d.getDate() + n)
-  return d.toISOString().slice(0, 10)
+  return shDateStr(d)
 }
 
 export interface InviteCampaign {

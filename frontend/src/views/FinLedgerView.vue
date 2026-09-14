@@ -15,6 +15,7 @@ import CKpi from '@/components/CKpi.vue'
 import { useFinanceCoreStore, SUBJECT_LABEL, type LedgerEntry } from '@/stores/financeCore'
 import { useAuthStore } from '@/stores/auth'
 import { exportLedgerCsv } from '@/api/finance'
+import { shDateStr } from '@/utils/datetime'
 
 const fin = useFinanceCoreStore()
 const auth = useAuthStore()
@@ -109,7 +110,7 @@ async function exportCsv() {
   const blob = new Blob(['\uFEFF' + head + rows], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
-  a.download = `收支流水-${new Date().toISOString().slice(0, 10)}.csv`
+  a.download = `收支流水-${shDateStr()}.csv`
   a.click()
   URL.revokeObjectURL(a.href)
 }

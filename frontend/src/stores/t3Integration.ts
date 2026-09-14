@@ -9,6 +9,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 // ---- 类型 ----
 export type ConnectorType =
@@ -279,7 +280,7 @@ export const useT3IntegrationStore = defineStore('t3Integration', () => {
       id: nextId('rec'),
       connectorId: connectorId || 'ALL',
       connectorName: connectorId ? (getConnector(connectorId)?.name ?? '未知') : '全部连接器',
-      date: new Date().toISOString().slice(0, 10),
+      date: shDateStr(),
       totalCount: total,
       matchedCount: matched,
       pendingCount: pending,

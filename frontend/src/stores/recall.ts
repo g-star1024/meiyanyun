@@ -11,6 +11,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { shDateStr } from '@/utils/datetime'
 
 export type RecallMethod = 'PHONE' | 'WECHAT' | 'SMS' | 'IN_STORE'
 export type RecallStatus = 'PENDING' | 'NOTIFIED' | 'CONFIRMED' | 'BOOKED' | 'SKIPPED'
@@ -88,7 +89,7 @@ export const useRecallStore = defineStore('recall', () => {
   })
   /** 今日待提醒 */
   const todayPending = computed(() => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = shDateStr()
     return pending.value.filter((r) => r.dueDate.slice(0, 10) === today)
   })
   /** 即将到期（未来 3 天内待提醒） */
@@ -247,7 +248,7 @@ export const useRecallStore = defineStore('recall', () => {
     if (seeded) return
     seeded = true
     const today = new Date()
-    const iso = (d: Date) => d.toISOString().slice(0, 10)
+    const iso = (d: Date) => shDateStr(d)
     const dayShift = (n: number) => { const d = new Date(today); d.setDate(d.getDate() + n); return iso(d) }
 
     type Seed = Partial<Recall> & {

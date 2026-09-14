@@ -31,6 +31,7 @@ import {
   type FollowupViewDTO, type FollowupStats,
   type SopNodeDTO, type SopBatchDTO, type SopSummaryDTO,
 } from '@/api/followup'
+import { shDateStr } from '@/utils/datetime'
 
 export type FollowupMethod = 'PHONE' | 'WECHAT' | 'IN_STORE'
 export type FollowupStatus = 'PENDING' | 'DONE' | 'SKIPPED'
@@ -261,7 +262,7 @@ export const useFollowupStore = defineStore('followup', () => {
   })
   /** 今日待回访 */
   const todayPending = computed(() => {
-    const today = new Date().toISOString().slice(0, 10)
+    const today = shDateStr()
     return pending.value.filter((f) => f.planDate.slice(0, 10) === today)
   })
 
@@ -612,7 +613,7 @@ export const useFollowupStore = defineStore('followup', () => {
     if (seeded) return
     seeded = true
     const today = new Date()
-    const iso = (d: Date) => d.toISOString().slice(0, 10)
+    const iso = (d: Date) => shDateStr(d)
     const dayShift = (n: number) => { const d = new Date(today); d.setDate(d.getDate() + n); return iso(d) }
 
     const seedData: Array<Partial<Followup> & {

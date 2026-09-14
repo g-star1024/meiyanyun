@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useStoreContext } from '@/stores/storeContext'
 import { listConsumables, type ConsumableDTO } from '@/api/consumable'
+import { shDateStr } from '@/utils/datetime'
 
 // ============================================================
 // 采购供应链 store（M1 集团管控 / 采购供应链）
@@ -94,7 +95,7 @@ export interface GoodsReceipt {
 let _cid = 0
 function cid(p: string) { _cid += 1; return `${p}-${Date.now().toString(36)}-${_cid}` }
 function now() { return new Date().toISOString() }
-function day(n: number) { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10) }
+function day(n: number) { const d = new Date(); d.setDate(d.getDate() + n); return shDateStr(d) }
 
 const r2 = (v: number) => Math.round(v * 100) / 100
 
