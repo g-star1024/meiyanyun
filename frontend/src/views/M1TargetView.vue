@@ -10,7 +10,7 @@
     <div class="tg__body">
       <CCard title="目标分解（集团 → 区域 → 门店）" padding="none" class="tg__tree">
         <div class="tree">
-          <div v-for="g in tg.groupLines" :key="g.id" class="tree-node tree-node--group">
+          <div v-for="g in treeRoots" :key="g.id" class="tree-node tree-node--group">
             <div class="trow" :class="{ 'is-active': selId === g.id }" @click="selId = g.id">
               <span class="trow__name"><CIcon name="org" :size="14" /> {{ g.ownerName }}</span>
               <span class="trow__metric">{{ METRIC_LABEL[g.metric] }} · {{ g.periodLabel }}</span>
@@ -143,6 +143,8 @@ watch(sel, (l) => { if (l) editVal.value = l.currentValue }, { immediate: true }
 function line(id: string) { return tg.lines.find((l) => l.id === id) }
 const groupTargets = computed(() => tg.groupLines)
 const standaloneMetrics = computed(() => tg.groupLines.filter((g) => g.metric !== 'REVENUE' || g.ownerType !== 'GROUP' || !g.children))
+// 主树根：仅 REVENUE 主线（有 children 的集团目标），独立指标由下方 standaloneMetrics 渲染，避免重复
+const treeRoots = computed(() => tg.groupLines.filter((g) => !standaloneMetrics.value.includes(g)))
 const achievedCount = computed(() => tg.lines.filter((l) => tg.progress(l) >= 100 && l.approval === 'APPROVED').length)
 
 function applyVal() { if (sel.value) tg.updateProgress(sel.value.id, editVal.value) }
