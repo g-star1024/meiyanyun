@@ -3,16 +3,22 @@ import { computed, ref } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useStoreContext } from '@/stores/storeContext'
 import { listConsumables, type ConsumableDTO } from '@/api/consumable'
+import {
+  listSuppliers, listPurchaseOrders,
+  submitPurchaseOrder, approvePurchaseOrder, rejectPurchaseOrder,
+  cancelPurchaseOrder, receivePurchaseOrder,
+  type SupplierDTO, type PurchaseOrderDTO,
+} from '@/api/procurement'
 import { shDateStr } from '@/utils/datetime'
 
 // ============================================================
 // 采购供应链 store（M1 集团管控 / 采购供应链）
-// B5 数据口径（诚实降级）：
-// - 库存 Inventory 行：权威源为 store-service /stores/consumables 真实耗材台账
-//   （集团视角不传 storeCode，后端按数据域返回可见门店全集；只读投影，本页不写库）。
-//   API 不可用或空库时回落本地演示数据（demo=true）。
-// - 供应商 Supplier / 采购订单 PO / 审批 / 入库工作流：后端暂无供应商/PO 实体，
-//   维持本地演示状态机（workflowDemo=true），数据不落库，仅演示审批流转交互。
+// B49 卡5 全量接真（诚实降级）：
+// - 供应商 Supplier / 采购订单 PO / 审批 / 收货工作流：权威源 store-service
+//   /stores/suppliers + /stores/purchase-orders（六态状态机，收货联动耗材库存）。
+//   集团视角不传 storeCode，后端按数据域返回可见门店全集。
+// - 库存 Inventory 行：权威源 /stores/consumables 真实耗材台账。
+// - 任一路径 API 不可用或空库，对应区块回落本地演示数据（demo / workflowDemo=true）。
 // ============================================================
 
 export type PoStatus = 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'PARTIAL' | 'RECEIVED' | 'CANCELLED'
@@ -98,6 +104,7 @@ function now() { return new Date().toISOString() }
 function day(n: number) { const d = new Date(); d.setDate(d.getDate() + n); return shDateStr(d) }
 
 const r2 = (v: number) => Math.round(v * 100) / 100
+const nz = (s: string | null | undefined) => s ?? ''
 
 export const useM1ProcurementStore = defineStore('m1Procurement', () => {
   const settings = useSettingsStore()
@@ -110,7 +117,7 @@ export const useM1ProcurementStore = defineStore('m1Procurement', () => {
   const loaded = ref(false)
   /** 库存行是否为本地演示数据（真实台账不可用/空库回落） */
   const demo = ref(false)
-  /** 供应商/PO/审批工作流是否为演示状态机（后端暂无实体，恒为 true） */
+  /** 供应商/PO/审批工作流是否为演示状态机（真实端点不可用/空库回落） */
   const workflowDemo = ref(true)
 
   // ---- 派生 ----
@@ -150,70 +157,99 @@ export const useM1ProcurementStore = defineStore('m1Procurement', () => {
     return items.reduce((s, it) => s + it.qty * it.unitPrice, 0)
   }
 
-  // ---- 采购单操作（演示工作流：仅改本地状态，不落库） ----
-  function submit(id: string) {
-    const o = order(id)
-    if (!o || o.status !== 'DRAFT') return
-    o.status = 'SUBMITTED'
-    o.totalAmount = calcTotal(o.items)
-    o.signTier = tierFor(o.totalAmount)
-  }
-  function approve(id: string, approver: string) {
-    const o = order(id)
-    if (!o || !canTransit(o, 'APPROVED')) return
-    o.status = 'APPROVED'; o.approver = approver; o.approvedAt = now()
-  }
-  function reject(id: string) {
-    const o = order(id)
-    if (!o || !canTransit(o, 'DRAFT')) return
-    o.status = 'DRAFT'
-  }
-  function cancel(id: string) {
-    const o = order(id)
-    if (!o || !canTransit(o, 'CANCELLED')) return
-    o.status = 'CANCELLED'
+  // ---- DTO → view 模型映射 ----
+  function mapSupplier(s: SupplierDTO): Supplier {
+    const out: Supplier = {
+      id: String(s.id),
+      code: s.code,
+      name: s.name,
+      contact: nz(s.contact),
+      phone: nz(s.phone),
+      paymentTerms: s.paymentTerms,
+      qualified: s.qualified,
+      status: s.status,
+    }
+    if (s.remark) out.remark = s.remark
+    return out
   }
 
-  // 入库（演示）：按行累加 receivedQty，写本地库存行与 receipt；真实入库请走库存页「入库」
-  function receive(id: string, items: { sku: string; qty: number }[], receiver: string, note?: string) {
-    const o = order(id)
-    if (!o || !(o.status === 'APPROVED' || o.status === 'PARTIAL')) return
-    let totalQty = 0, totalAmount = 0
-    for (const r of items) {
-      const line = o.items.find((it) => it.sku === r.sku)
-      if (!line) continue
-      const remain = line.qty - line.receivedQty
-      const q = Math.min(r.qty, remain)
-      if (q <= 0) continue
-      line.receivedQty += q
-      totalQty += q
-      totalAmount += q * line.unitPrice
-      // 写库存（按 sku + 门店 找现有行累加，否则新建）
-      const inv = inventory.value.find((i) => i.sku === line.sku && i.storeName === o.storeName)
-      if (inv) {
-        inv.onHand += q
-        inv.value = r2(inv.onHand * line.unitPrice)
-      } else {
-        inventory.value.push({
-          id: cid('inv'), sku: line.sku, name: line.name, brand: line.brand, storeName: o.storeName,
-          unit: line.unit, onHand: q, safety: 5, value: r2(q * line.unitPrice),
-          batchNo: `B${Date.now().toString(36).toUpperCase()}`,
-        })
-      }
+  function mapPo(p: PurchaseOrderDTO): PurchaseOrder {
+    const storeName = p.storeName
+      || ctx.stores.find((s) => s.storeCode === p.storeCode)?.storeName
+      || p.storeCode
+    const out: PurchaseOrder = {
+      id: String(p.id),
+      poNo: p.poNo,
+      supplierId: String(p.supplierId),
+      storeId: p.storeCode,
+      storeName,
+      status: p.status,
+      items: p.items.map((it) => ({
+        sku: it.skuCode,
+        name: it.name,
+        brand: nz(it.brand),
+        unit: it.unit,
+        qty: it.qty,
+        receivedQty: it.receivedQty,
+        unitPrice: r2(Number(it.unitPriceYuan) || 0),
+      })),
+      totalAmount: r2(Number(p.totalYuan) || 0),
+      signTier: p.signTier,
+      expectDate: nz(p.expectDate),
+      createdAt: p.createdAt,
     }
-    if (totalQty > 0) {
-      receipts.value.unshift({
-        id: cid('gr'), poId: o.id, poNo: o.poNo, receivedAt: now(), receiver,
-        qty: totalQty, amount: totalAmount, note,
-      })
-    }
-    // 更新状态
-    const allReceived = o.items.every((it) => it.receivedQty >= it.qty)
-    const anyReceived = o.items.some((it) => it.receivedQty > 0)
-    o.status = allReceived ? 'RECEIVED' : anyReceived ? 'PARTIAL' : 'APPROVED'
+    if (p.approver) out.approver = p.approver
+    if (p.approvedAt) out.approvedAt = p.approvedAt
+    if (p.remark) out.remark = p.remark
+    return out
   }
 
-  // 调整安全库存（演示工作流下仅改本地；真实台账无此写端点）
+  // ---- 真实数据拉取 ----
+  async function reloadInventory() {
+    const resp = await listConsumables()
+    const list = resp.data ?? []
+    inventory.value = list.map((c) => {
+      const storeName = ctx.stores.find((s) => s.storeCode === c.storeCode)?.storeName || c.storeCode
+      return mapInventory(c, storeName)
+    })
+    demo.value = false
+  }
+
+  async function reloadWorkflow() {
+    const [supResp, poResp] = await Promise.all([listSuppliers(), listPurchaseOrders()])
+    suppliers.value = (supResp.data ?? []).map(mapSupplier)
+    orders.value = (poResp.data ?? []).map(mapPo)
+    receipts.value = []
+    workflowDemo.value = false
+  }
+
+  // ---- 采购单操作（真实状态机；成功后重拉保证与后端一致） ----
+  async function submit(id: string) {
+    await submitPurchaseOrder(id)
+    await reloadWorkflow()
+  }
+  async function approve(id: string, approver: string, _note?: string) {
+    void approver
+    await approvePurchaseOrder(id)
+    await reloadWorkflow()
+  }
+  async function reject(id: string, note?: string) {
+    await rejectPurchaseOrder(id, note)
+    await reloadWorkflow()
+  }
+  async function cancel(id: string, note?: string) {
+    await cancelPurchaseOrder(id, note)
+    await reloadWorkflow()
+  }
+
+  // 收货入库：后端逐 SKU 联动耗材库存（移动均价 + PURCHASE 流水），成功后 PO 与库存一并重拉
+  async function receive(id: string, items: { sku: string; qty: number }[], _receiver: string, note?: string) {
+    await receivePurchaseOrder(id, items.map((it) => ({ skuCode: it.sku, qty: it.qty })), note)
+    const results = await Promise.allSettled([reloadWorkflow(), reloadInventory()])
+    results.forEach((r) => { if (r.status === 'rejected') console.error('[m1Procurement] 收货后刷新失败', r.reason) })
+  }
+
+  // 安全库存：真实台账暂无写端点（领用/报损/调整须走 txn 双签），仅本地视图调整不落库
   function setSafety(invId: string, safety: number) {
     const inv = inventory.value.find((i) => i.id === invId)
     if (inv) inv.safety = Math.max(0, safety)
@@ -236,28 +272,24 @@ export const useM1ProcurementStore = defineStore('m1Procurement', () => {
     }
   }
 
-  // ---- seed：库存拉真实台账；供应商/PO 填演示数据 ----
+  // ---- seed：供应商/PO + 库存各拉真实端点；任一失败/空库对应区块回落演示 ----
   let seeding: Promise<void> | null = null
   function seed(force = false): Promise<void> {
     if (seeding && !force) return seeding
     if (loaded.value && !force) return Promise.resolve()
     seeding = (async () => {
+      await ctx.loadStores().catch(() => undefined)
       loadWorkflowDemo()
+      loadInventoryDemo()
       try {
-        await ctx.loadStores()
-        // 集团采购视角：不传 storeCode，后端按数据域返回可见门店全集
-        const resp = await listConsumables()
-        const list = resp.data ?? []
-        if (list.length > 0) {
-          inventory.value = list.map((c) => {
-            const storeName = ctx.stores.find((s) => s.storeCode === c.storeCode)?.storeName || c.storeCode
-            return mapInventory(c, storeName)
-          })
-          demo.value = false
-        } else {
-          loadInventoryDemo()
-          demo.value = true
-        }
+        await reloadWorkflow()
+      } catch (e) {
+        console.error('[m1Procurement] 加载供应商/采购单失败，工作流回落本地演示数据', e)
+        loadWorkflowDemo()
+        workflowDemo.value = true
+      }
+      try {
+        await reloadInventory()
       } catch (e) {
         console.error('[m1Procurement] 加载耗材台账失败，库存回落本地演示数据', e)
         loadInventoryDemo()
@@ -269,7 +301,7 @@ export const useM1ProcurementStore = defineStore('m1Procurement', () => {
   }
   void seed()
 
-  // ---- 演示数据（后端无实体/不可用回落） ----
+  // ---- 演示数据（真实端点不可用/空库回落） ----
   function loadWorkflowDemo() {
     suppliers.value = [
       { id: cid('sup'), code: 'SUP-001', name: '艾尔建信息咨询(上海)有限公司', contact: '王磊', phone: '13800001111', paymentTerms: 30, qualified: true, status: 'ACTIVE' },
