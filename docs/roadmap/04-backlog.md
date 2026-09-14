@@ -127,3 +127,6 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | M1 采购 /m1-procurement 组合域列表按请求头上下文过滤、未强制校验门店归属（越权访问观察项） | B49 卡5 三轨真验（权限三角断言） | 修复=列表查询补 store_id 强制过滤+越权用例补强 | B49 批末或 B50 首卡 |
 | ai-service pg-ai seed 库 Flyway V17-V29 脚本悬置（未纳入部署链路，表结构已在镜像内建） | B49 批前侦察 | seed 库版本化时对齐共享版本链 | 后续批次（seed 库版本化专项） |
 | M1 数据大屏成交流时间显示 UTC 原文未转 Asia/Shanghai | B49 卡7 三轨真验（Chrome 轨观察项，详见 DELIVERY-P5-B49 §卡7） | m1Screen.ts `paidAt.slice(11,16)` 直接截取 UTC 字符串（页面「16:32」实为北京时间 00:32）；修复=复用 utils/datetime.ts 时区工具转 Asia/Shanghai | B49 批末或 B50 首卡 |
+| M1 目标管理 REVENUE 实际值自动聚合 RevenueMonthly（首卡收窄手工维护） | B49 卡8 新增（详见 DELIVERY-P5-B49 §卡8） | target 域 progress 当前经 PUT /{id}/progress 手工维护；REVENUE 类目标实际值可由 revenue_monthly 月报按 ownerType 三级自动聚合回写，依赖月报覆盖率（当前仅 7 行 5 店）与聚合投影落地 | 后续批次（目标域增强） |
+| M1 目标管理 REJECTED 终态不可再提交 | B49 卡8 新增（详见 DELIVERY-P5-B49 §卡8） | 状态机当前 REJECTED 为终态（submit 仅 DRAFT→PENDING）；业务上驳回后通常允许修改重报，需 REJECTED→DRAFT 回转或允许直接再提交，涉状态机扩展与审计口径 | 后续批次（目标域增强） |
+| target 列表行级 DataScope 未收窄（有 target:view 即可读全量） | B49 卡8 三轨真验（权限三角断言） | 列表查询未按登录人数据域收窄 ownerType=REGION/STORE 行（区域岗应仅见本域）；修复=BizTargetService 列表补 DataScope 行级过滤+越权用例补强 | B49 批末或 B50 首卡 |
