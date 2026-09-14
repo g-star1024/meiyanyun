@@ -116,7 +116,7 @@ const auth = useAuthStore()
 onMounted(() => h.seed())
 
 const canEdit = computed(() => auth.can('health:edit') || auth.isSuper)
-const selId = ref('T01')
+const selId = ref('SST01')
 const sel = computed(() => h.tenants.find((t) => t.tenantId === selId.value))
 const tenantIssues = computed(() => h.issues.filter((i) => i.tenantId === selId.value))
 

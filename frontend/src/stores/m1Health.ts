@@ -1,6 +1,21 @@
+// 健康度巡检（M1 集团屏 /m1-health · B49 卡10 接真）
+// 数据源：store-service health 域——门店六维评分 GET /api/stores/health/checks
+//   （health_check 头 + health_score 六维行，种子栈 5 店 SST01-SST05）；
+//   整改任务 GET /api/stores/health/issues（health_issue 表，种子 7 条四态齐备，
+//   id 镜像 mock 字面量 I01-I07）。
+// 写路径：开始处理/解决/忽略 POST /issues/{id}/start|resolve|ignore（后端状态机
+//   门控+同事务写 HEALTH_ISSUE 审计，成功后重拉任务列表同步状态）；
+//   重新巡检 POST /checks/{storeCode}/rerun（rerun 算法服务端化：未决 HIGH×8+
+//   MID×3 扣分、无未决 +4、clamp 40-98、日期滚动 +7d，inspector 后端从登录
+//   上下文取，前端传参仅兼容契约），返回整行局部替换。
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { shDateStr } from '@/utils/datetime'
+import {
+  getChecks, getIssues, startIssue as apiStart, resolveIssue as apiResolve,
+  ignoreIssue as apiIgnore, rerunCheck, type TenantHealthDTO, type HealthIssueDTO,
+} from '@/api/health'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
 
 // 健康度巡检：门店多维指标评分 + 异常整改任务
 export type Dimension = 'SAFETY' | 'SERVICE' | 'FINANCE' | 'COMPLIANCE' | 'STAFF' | 'EQUIPMENT'
@@ -49,6 +64,12 @@ export const DIM_ICON: Record<Dimension, string> = {
   COMPLIANCE: 'scan', STAFF: 'customer', EQUIPMENT: 'box',
 }
 
+const DIMS = Object.keys(DIM_LABEL) as Dimension[]
+
+function weightOf(d: Dimension): number {
+  return d === 'SAFETY' || d === 'COMPLIANCE' ? 2 : 1
+}
+
 function overall(scores: MetricScore[]): number {
   const totalW = scores.reduce((s, x) => s + x.weight, 0)
   return Math.round(scores.reduce((s, x) => s + x.score * x.weight, 0) / totalW)
@@ -66,77 +87,57 @@ export const ISSUE_STATUS_LABEL: Record<IssueStatus, string> = {
   OPEN: '待处理', PROCESSING: '处理中', RESOLVED: '已解决', IGNORED: '已忽略',
 }
 
-function mkTenants(): TenantHealth[] {
-  const dims = (vals: Record<Dimension, number>): MetricScore[] =>
-    (Object.keys(DIM_LABEL) as Dimension[]).map((d) => ({
-      dimension: d, score: vals[d], weight: d === 'SAFETY' || d === 'COMPLIANCE' ? 2 : 1,
-    }))
-  return [
-    {
-      tenantId: 'T01', tenantName: '杭州西湖旗舰院', region: '华东区',
-      scores: dims({ SAFETY: 92, SERVICE: 88, FINANCE: 90, COMPLIANCE: 95, STAFF: 86, EQUIPMENT: 84 }),
-      lastCheckedAt: '2026-08-24', nextCheckAt: '2026-08-31', inspector: '王质控',
-    },
-    {
-      tenantId: 'T02', tenantName: '上海静安分院', region: '华东区',
-      scores: dims({ SAFETY: 78, SERVICE: 82, FINANCE: 65, COMPLIANCE: 88, STAFF: 72, EQUIPMENT: 70 }),
-      lastCheckedAt: '2026-08-23', nextCheckAt: '2026-08-30', inspector: '李质控',
-    },
-    {
-      tenantId: 'T03', tenantName: '北京朝阳分院', region: '华北区',
-      scores: dims({ SAFETY: 62, SERVICE: 75, FINANCE: 58, COMPLIANCE: 70, STAFF: 68, EQUIPMENT: 55 }),
-      lastCheckedAt: '2026-08-22', nextCheckAt: '2026-08-26', inspector: '张质控',
-    },
-    {
-      tenantId: 'T04', tenantName: '广州天河分院', region: '华南区',
-      scores: dims({ SAFETY: 88, SERVICE: 90, FINANCE: 82, COMPLIANCE: 91, STAFF: 85, EQUIPMENT: 80 }),
-      lastCheckedAt: '2026-08-24', nextCheckAt: '2026-08-31', inspector: '陈质控',
-    },
-    {
-      tenantId: 'T05', tenantName: '成都高新分院', region: '西南区',
-      scores: dims({ SAFETY: 85, SERVICE: 80, FINANCE: 76, COMPLIANCE: 84, STAFF: 78, EQUIPMENT: 90 }),
-      lastCheckedAt: '2026-08-20', nextCheckAt: '2026-08-27', inspector: '赵质控',
-    },
-  ]
+/** 后端 scores int[]（按 DIMS 序）→ MetricScore[]。 */
+function toTenant(d: TenantHealthDTO): TenantHealth {
+  return {
+    tenantId: d.tenantId,
+    tenantName: d.tenantName,
+    region: d.region,
+    scores: DIMS.map((dim, i) => ({ dimension: dim, score: d.scores[i] ?? 0, weight: weightOf(dim) })),
+    lastCheckedAt: d.lastCheckedAt,
+    nextCheckAt: d.nextCheckAt,
+    inspector: d.inspector,
+  }
 }
 
-function mkIssues(): HealthIssue[] {
-  return [
-    { id: 'I01', tenantId: 'T03', tenantName: '北京朝阳分院', dimension: 'EQUIPMENT', severity: 'HIGH',
-      title: '热玛吉设备超期未校准', detail: '设备编号 RMJ-003 上次校准 2026-05-10，已超期 107 天，存在治疗安全隐患。',
-      status: 'OPEN', assignee: '张院长', dueAt: '2026-08-27', createdAt: '2026-08-22' },
-    { id: 'I02', tenantId: 'T03', tenantName: '北京朝阳分院', dimension: 'FINANCE', severity: 'HIGH',
-      title: '应收账款周转异常', detail: '应收账款周转天数 62 天，超出集团红线 45 天，逾期款占比 28%。',
-      status: 'PROCESSING', assignee: '刘财务', dueAt: '2026-08-30', createdAt: '2026-08-22' },
-    { id: 'I03', tenantId: 'T02', tenantName: '上海静安分院', dimension: 'STAFF', severity: 'MEDIUM',
-      title: '主诊医师配比不足', detail: '在岗主诊医师 3 人，按日均客流 80 人标准需 5 人，已启动招聘。',
-      status: 'PROCESSING', assignee: '李院长', dueAt: '2026-09-15', createdAt: '2026-08-23' },
-    { id: 'I04', tenantId: 'T02', tenantName: '上海静安分院', dimension: 'EQUIPMENT', severity: 'MEDIUM',
-      title: '消毒记录不完整', detail: '8 月有 3 天高温高压消毒记录缺失生物监测结果。',
-      status: 'OPEN', assignee: '王护士长', dueAt: '2026-08-28', createdAt: '2026-08-23' },
-    { id: 'I05', tenantId: 'T03', tenantName: '北京朝阳分院', dimension: 'SAFETY', severity: 'HIGH',
-      title: '急救药品近效期', detail: '肾上腺素 2 支、硝酸甘油 1 支将在 15 天内到期，需立即更换。',
-      status: 'OPEN', assignee: '张院长', dueAt: '2026-08-26', createdAt: '2026-08-24' },
-    { id: 'I06', tenantId: 'T05', tenantName: '成都高新分院', dimension: 'SERVICE', severity: 'LOW',
-      title: '客户满意度环比下降', detail: '7 月满意度 91% 降至 88%，主要投诉集中在等待时长。',
-      status: 'RESOLVED', assignee: '赵院长', createdAt: '2026-08-15',
-      resolvedAt: '2026-08-22', resolution: '已增加周末排班，增开 2 间治疗室分流。' },
-    { id: 'I07', tenantId: 'T04', tenantName: '广州天河分院', dimension: 'COMPLIANCE', severity: 'MEDIUM',
-      title: '广告素材备案滞后', detail: '3 条线上推广素材上线前未完成医疗广告审查备案。',
-      status: 'PROCESSING', assignee: '陈运营', dueAt: '2026-08-29', createdAt: '2026-08-24' },
-  ]
+function toIssue(d: HealthIssueDTO): HealthIssue {
+  return {
+    id: d.id,
+    tenantId: d.tenantId,
+    tenantName: d.tenantName,
+    dimension: d.dimension as Dimension,
+    severity: d.severity as Severity,
+    title: d.title,
+    detail: d.detail,
+    status: d.status as IssueStatus,
+    assignee: d.assignee ?? undefined,
+    dueAt: d.dueAt ?? undefined,
+    createdAt: d.createdAt,
+    resolvedAt: d.resolvedAt ?? undefined,
+    resolution: d.resolution ?? undefined,
+  }
 }
 
 export const useM1HealthStore = defineStore('m1Health', () => {
+  const toast = useToast()
   const tenants = ref<TenantHealth[]>([])
   const issues = ref<HealthIssue[]>([])
   const seeded = ref(false)
+  const loading = ref(false)
 
-  function seed() {
-    if (seeded.value) return
-    tenants.value = mkTenants()
-    issues.value = mkIssues()
-    seeded.value = true
+  async function seed(force = false) {
+    if (seeded.value && !force) return
+    loading.value = true
+    try {
+      const [checksResp, issuesResp] = await Promise.all([getChecks(), getIssues()])
+      tenants.value = (checksResp.data ?? []).map(toTenant)
+      issues.value = (issuesResp.data ?? []).map(toIssue)
+      seeded.value = true
+    } catch (e) {
+      toast.error(errMsg(e, '健康度数据加载失败'))
+    } finally {
+      loading.value = false
+    }
   }
 
   const overallScore = computed(() => {
@@ -152,38 +153,59 @@ export const useM1HealthStore = defineStore('m1Health', () => {
   function scoreOf(t: TenantHealth): number { return overall(t.scores) }
   function statusOf(t: TenantHealth): CheckStatus { return scoreStatus(scoreOf(t)) }
 
-  function startIssue(id: string) {
-    const it = issues.value.find((x) => x.id === id)
-    if (it && it.status === 'OPEN') it.status = 'PROCESSING'
+  /** 任务列表重拉（写操作响应不带实体，状态变更以服务端为准全量同步）。 */
+  async function refreshIssues() {
+    try {
+      const resp = await getIssues()
+      issues.value = (resp.data ?? []).map(toIssue)
+    } catch (e) {
+      toast.error(errMsg(e, '整改任务刷新失败'))
+    }
   }
-  function resolveIssue(id: string, resolution: string) {
-    const it = issues.value.find((x) => x.id === id)
-    if (!it) return
-    it.status = 'RESOLVED'
-    it.resolution = resolution
-    it.resolvedAt = shDateStr()
+
+  async function startIssue(id: string) {
+    try {
+      await apiStart(id)
+      toast.success('已开始处理')
+    } catch (e) {
+      toast.error(errMsg(e, '操作失败'))
+    }
+    await refreshIssues()
   }
-  function ignoreIssue(id: string) {
-    const it = issues.value.find((x) => x.id === id)
-    if (it && (it.status === 'OPEN' || it.status === 'PROCESSING')) it.status = 'IGNORED'
+  async function resolveIssue(id: string, resolution: string) {
+    try {
+      await apiResolve(id, resolution)
+      toast.success('整改已解决')
+    } catch (e) {
+      toast.error(errMsg(e, '解决提交失败'))
+    }
+    await refreshIssues()
   }
-  // 重新巡检：根据未解决的严重问题动态重算分数（模拟）
-  function rerun(tenantId: string, inspector: string) {
-    const t = tenants.value.find((x) => x.tenantId === tenantId)
-    if (!t) return
-    const openHigh = issues.value.filter((i) => i.tenantId === tenantId && i.severity === 'HIGH' && (i.status === 'OPEN' || i.status === 'PROCESSING')).length
-    const openMid = issues.value.filter((i) => i.tenantId === tenantId && i.severity === 'MEDIUM' && (i.status === 'OPEN' || i.status === 'PROCESSING')).length
-    t.scores = t.scores.map((s) => ({
-      ...s,
-      score: Math.max(40, Math.min(98, s.score - openHigh * 8 - openMid * 3 + (openHigh + openMid === 0 ? 4 : 0))),
-    }))
-    t.lastCheckedAt = shDateStr()
-    t.nextCheckAt = shDateStr(new Date(Date.now() + 7 * 86400000))
-    t.inspector = inspector
+  async function ignoreIssue(id: string) {
+    try {
+      await apiIgnore(id)
+      toast.success('已忽略')
+    } catch (e) {
+      toast.error(errMsg(e, '操作失败'))
+    }
+    await refreshIssues()
+  }
+  // 重新巡检：算法服务端化（inspector 由后端从登录上下文取，前端传参仅兼容契约），
+  // 返回门店整行局部替换。
+  async function rerun(tenantId: string, _inspector: string) {
+    try {
+      const resp = await rerunCheck(tenantId)
+      const updated = toTenant(resp.data)
+      const i = tenants.value.findIndex((x) => x.tenantId === updated.tenantId)
+      if (i >= 0) tenants.value.splice(i, 1, updated)
+      toast.success('重新巡检完成')
+    } catch (e) {
+      toast.error(errMsg(e, '重新巡检失败'))
+    }
   }
 
   return {
-    tenants, issues, seeded, seed,
+    tenants, issues, seeded, loading, seed,
     overallScore, healthyCount, warningCount, criticalCount, openIssues, highRiskIssues,
     scoreOf, statusOf, startIssue, resolveIssue, ignoreIssue, rerun,
   }
