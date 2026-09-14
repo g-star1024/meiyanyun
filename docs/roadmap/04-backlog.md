@@ -130,3 +130,5 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | M1 目标管理 REVENUE 实际值自动聚合 RevenueMonthly（首卡收窄手工维护） | B49 卡8 新增（详见 DELIVERY-P5-B49 §卡8） | target 域 progress 当前经 PUT /{id}/progress 手工维护；REVENUE 类目标实际值可由 revenue_monthly 月报按 ownerType 三级自动聚合回写，依赖月报覆盖率（当前仅 7 行 5 店）与聚合投影落地 | 后续批次（目标域增强） |
 | M1 目标管理 REJECTED 终态不可再提交 | B49 卡8 新增（详见 DELIVERY-P5-B49 §卡8） | 状态机当前 REJECTED 为终态（submit 仅 DRAFT→PENDING）；业务上驳回后通常允许修改重报，需 REJECTED→DRAFT 回转或允许直接再提交，涉状态机扩展与审计口径 | 后续批次（目标域增强） |
 | target 列表行级 DataScope 未收窄（有 target:view 即可读全量） | B49 卡8 三轨真验（权限三角断言） | 列表查询未按登录人数据域收窄 ownerType=REGION/STORE 行（区域岗应仅见本域）；修复=BizTargetService 列表补 DataScope 行级过滤+越权用例补强 | B49 批末或 B50 首卡 |
+| M1 合规 impersonate 真实身份切换（org-service 会话置换） | B49 卡9 新增（详见 DELIVERY-P5-B49 §卡9） | 卡9 收窄为仅审计留痕真实化（start/end 经 POST /api/audit append 真实落库），activeSession 保持前端内存单会话；真实身份切换需 org-service 会话置换与权限重签，与「超管 Impersonate」平台批同项合并评估 | 平台批 |
+| 审计真实客户端 IP 采集（网关注入 X-Real-IP→audit append 链路） | B49 卡9 新增 | 现 RECHECK/impersonate 审计 ip 如实写 "web"（浏览器取不到真实客户端 IP）；需网关侧采集 X-Real-IP 透传至 audit append 链路 | 平台批 |
