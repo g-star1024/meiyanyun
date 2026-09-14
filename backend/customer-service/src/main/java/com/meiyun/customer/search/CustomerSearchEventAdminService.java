@@ -194,6 +194,14 @@ public class CustomerSearchEventAdminService {
                 "{\"indexed\":" + indexed + ",\"index\":\"meiyun-customer\"}");
     }
 
+    /** 手动对账留痕：记录 diff 计数与补写数量（铁律 3 审计）。 */
+    public void auditReconcile(CustomerSearchService.ReconcileResult r, String operator) {
+        audit.record(BIZ_TYPE, "RECONCILE", operator, "RECONCILE",
+                "{\"pg\":" + r.pgCount() + ",\"es\":" + r.esCount()
+                        + ",\"missing\":" + r.missing().size() + ",\"orphan\":" + r.orphan().size()
+                        + ",\"fixed\":" + r.fixed() + "}");
+    }
+
     // ==================== 内部 ====================
 
     private CustomerSearchEvent requireEvent(Long eventId) {

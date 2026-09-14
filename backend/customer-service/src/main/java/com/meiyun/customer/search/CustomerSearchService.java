@@ -16,10 +16,13 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -198,6 +201,60 @@ public class CustomerSearchService {
             recordFailure();
             log.warn("ES 全量索引异常，降级为 DB：{}", e.getMessage());
             return all.size();
+        }
+    }
+
+    /** PG↔ES 文档级对账结果：missing=PG 有 ES 无（本轮已自动补齐 fixed 个）；orphan=ES 有 PG 无（仅报告）。 */
+    public record ReconcileResult(int pgCount, int esCount, List<String> missing, List<String> orphan, int fixed) {}
+
+    /**
+     * 文档级对账：以 PG customer 表为权威源 diff ES 索引。
+     * missing（PG 有 ES 无，多为补偿体系上线前的静默丢失）逐条 upsert 自动补齐；
+     * orphan（ES 有 PG 无，含 seed 栈共享索引的 SC* 文档）仅报告不自动删，人工确认后处置。
+     * ES 不可达时抛 IllegalStateException（调用方转 503）——对账必须读真 ES，不静默降级。
+     */
+    public ReconcileResult reconcile() {
+        List<Customer> all = customerRepo.findAll();
+        Set<String> esIds = fetchAllEsIds();
+        Set<String> pgIds = new HashSet<>();
+        List<String> missing = new ArrayList<>();
+        int fixed = 0;
+        for (Customer c : all) {
+            pgIds.add(c.getCustomerId());
+            if (!esIds.contains(c.getCustomerId())) {
+                missing.add(c.getCustomerId());
+                if (upsert(c) == UpsertResult.SENT) fixed++;
+            }
+        }
+        List<String> orphan = new ArrayList<>();
+        for (String id : esIds) {
+            if (!pgIds.contains(id)) orphan.add(id);
+        }
+        missing.sort(null);
+        orphan.sort(null);
+        return new ReconcileResult(pgIds.size(), esIds.size(), missing, orphan, fixed);
+    }
+
+    /** 拉取 ES 全量文档 _id（size=10000 封顶，联调期数据量足够；失败抛异常不降级，保证对账读的是真 ES）。 */
+    private Set<String> fetchAllEsIds() {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(esEndpoint + "/" + INDEX + "/_search?size=10000&_source=false"))
+                    .GET()
+                    .timeout(Duration.ofSeconds(10))
+                    .build();
+            HttpResponse<String> resp = sendRaw(req);
+            if (resp.statusCode() != 200) {
+                throw new IllegalStateException("ES 对账拉取失败 status=" + resp.statusCode());
+            }
+            Set<String> ids = new HashSet<>();
+            json.readTree(resp.body()).path("hits").path("hits")
+                    .forEach(h -> ids.add(h.path("_id").asText()));
+            return ids;
+        } catch (IllegalStateException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("ES 对账拉取异常: " + e.getMessage(), e);
         }
     }
 

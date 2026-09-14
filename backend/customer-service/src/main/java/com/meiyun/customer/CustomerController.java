@@ -9,7 +9,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
@@ -409,6 +411,27 @@ public class CustomerController {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("indexed", n);
         m.put("index", "meiyun-customer");
+        return m;
+    }
+
+    /** 手动对账：PG 与 ES 文档级 diff，缺失自动补齐、孤儿仅报告（04-backlog ES reindex 观察项治理）。 */
+    @PostMapping("/search/reconcile")
+    @RequirePerm("customer:search:admin")
+    public Map<String, Object> reconcile() {
+        CustomerSearchService.ReconcileResult r;
+        try {
+            r = searchService.reconcile();
+        } catch (IllegalStateException e) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, e.getMessage());
+        }
+        searchEventAdmin.auditReconcile(r, DataScope.currentActor());
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("pgCount", r.pgCount());
+        m.put("esCount", r.esCount());
+        m.put("missing", r.missing());
+        m.put("orphanCount", r.orphan().size());
+        m.put("orphanSample", r.orphan().stream().limit(20).toList());
+        m.put("fixed", r.fixed());
         return m;
     }
 
