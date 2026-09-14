@@ -4,16 +4,16 @@
     <div class="ov__kpis">
       <div class="kpi kpi--hero">
         <div class="kpi__l">本月集团营收</div>
-        <div class="kpi__v">{{ ov.kpis.revenue.value.toLocaleString() }}<span class="u">{{ ov.kpis.revenue.unit }}</span></div>
-        <div class="kpi__trend" :class="ov.kpis.revenue.delta >= 0 ? 'up' : 'down'">
-          <CIcon :name="ov.kpis.revenue.delta >= 0 ? 'trend-up' : 'trend-down'" :size="14" />
-          环比 {{ Math.abs(ov.kpis.revenue.delta) }}%
+        <div class="kpi__v">{{ heroValue }}<span class="u">{{ ov.kpis.revenue.unit }}</span></div>
+        <div v-if="heroDelta != null" class="kpi__trend" :class="heroDelta >= 0 ? 'up' : 'down'">
+          <CIcon :name="heroDelta >= 0 ? 'trend-up' : 'trend-down'" :size="14" />
+          环比 {{ Math.abs(heroDelta) }}%
         </div>
       </div>
       <div v-for="k in subKpis" :key="k.label" class="kpi">
         <div class="kpi__l">{{ k.label }}</div>
         <div class="kpi__v">{{ k.value }}</div>
-        <div class="kpi__trend" :class="k.delta >= 0 ? 'up' : 'down'">
+        <div v-if="k.delta != null" class="kpi__trend" :class="k.delta >= 0 ? 'up' : 'down'">
           <CIcon :name="k.delta >= 0 ? 'trend-up' : 'trend-down'" :size="14" />
           {{ Math.abs(k.delta) }}%
         </div>
@@ -56,6 +56,7 @@
     <CCard title="门店营收排行" padding="none">
       <CTable :columns="rankCols" :rows="rankRows" row-key="id" />
     </CCard>
+    <p class="ov-footnote">数据源：GET /api/finance/group-overview（revenue_monthly 月报，金额「分」→万元）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。顶部 hero=最新月报月集团合计；「各区域营收」「门店营收排行」=全期累计；新客/复购/满意度/治疗人次/活跃客户暂无月度数据源显「—」；月报仅 2026-07、2026-09 两期且不相邻，环比/同比不可比不显。</p>
   </div>
 </template>
 
@@ -68,14 +69,18 @@ import CTable from '@/components/CTable.vue'
 import { useM1OverviewStore } from '@/stores/m1Overview'
 
 const ov = useM1OverviewStore()
-onMounted(() => ov.seed())
+onMounted(() => ov.load())
 
+const heroValue = computed(() => ov.kpis.revenue.value?.toLocaleString() ?? '—')
+const heroDelta = computed(() => ov.kpis.revenue.delta)
+const numOrDash = (v: number | null) => v?.toLocaleString() ?? '—'
+const pctOrDash = (v: number | null) => (v == null ? '—' : v + '%')
 const subKpis = computed(() => [
-  { label: '本月新客', icon: 'customer', value: ov.kpis.newCustomers.value.toLocaleString() + ov.kpis.newCustomers.unit, delta: ov.kpis.newCustomers.delta },
-  { label: '复购率', icon: 'trend-up', value: ov.kpis.repurchase.value + '%', delta: ov.kpis.repurchase.delta },
-  { label: '客户满意度', icon: 'customer', value: ov.kpis.satisfaction.value + '%', delta: ov.kpis.satisfaction.delta },
-  { label: '治疗人次', icon: 'customer', value: ov.kpis.procedureCount.value.toLocaleString() + ov.kpis.procedureCount.unit, delta: ov.kpis.procedureCount.delta },
-  { label: '活跃客户', icon: 'customer', value: ov.kpis.activeCustomers.value.toLocaleString() + ov.kpis.activeCustomers.unit, delta: ov.kpis.activeCustomers.delta },
+  { label: '本月新客', icon: 'customer', value: numOrDash(ov.kpis.newCustomers.value), delta: ov.kpis.newCustomers.delta },
+  { label: '复购率', icon: 'trend-up', value: pctOrDash(ov.kpis.repurchase.value), delta: ov.kpis.repurchase.delta },
+  { label: '客户满意度', icon: 'customer', value: pctOrDash(ov.kpis.satisfaction.value), delta: ov.kpis.satisfaction.delta },
+  { label: '治疗人次', icon: 'customer', value: numOrDash(ov.kpis.procedureCount.value), delta: ov.kpis.procedureCount.delta },
+  { label: '活跃客户', icon: 'customer', value: numOrDash(ov.kpis.activeCustomers.value), delta: ov.kpis.activeCustomers.delta },
 ])
 
 const revItems = computed(() => ov.revenueChart.labels.map((l, i) => ({ label: l, values: [ov.revenueChart.items[0].values[i]] })))
@@ -93,9 +98,9 @@ const rankCols = [
 const rankRows = computed(() => ov.storeRanks.map((s) => ({
   id: s.id, name: s.name, region: s.region,
   revenue: s.revenue.toLocaleString(),
-  growth: (s.growth >= 0 ? '+' : '') + s.growth + '%',
-  customers: s.customers.toLocaleString(),
-  satisfaction: s.satisfaction + '%',
+  growth: s.growth == null ? '—' : (s.growth >= 0 ? '+' : '') + s.growth + '%',
+  customers: s.customers?.toLocaleString() ?? '—',
+  satisfaction: s.satisfaction == null ? '—' : s.satisfaction + '%',
 })))
 </script>
 
@@ -128,6 +133,7 @@ const rankRows = computed(() => ov.storeRanks.map((s) => ({
 .alert--low { background: var(--c-brand-secondary); }
 .alert__text { font-size: var(--t-sm); line-height: 1.6; }
 .alert__time { font-size: 10px; color: var(--c-text-3); margin-top: var(--s-xs); }
+.ov-footnote { margin: 0; font-size: var(--t-xs); color: var(--c-text-4, var(--c-text-3)); line-height: 1.6; }
 @media (max-width: 900px) {
   .ov__row, .ov__row:last-of-type { grid-template-columns: 1fr; }
 }

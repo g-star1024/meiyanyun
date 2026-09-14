@@ -62,7 +62,7 @@
                 <td v-for="s in cmp.selectedStores" :key="s.id" class="cmptable__cell">
                   <div class="bar-cell">
                     <div class="bar-cell__fill" :style="{ width: barWidth(s.id, m.key) + '%', background: colorOf(s.id) }" />
-                    <span class="bar-cell__v">{{ cmp.value(s.id, m.key) }}</span>
+                    <span class="bar-cell__v">{{ cmp.value(s.id, m.key) ?? '—' }}</span>
                   </div>
                 </td>
               </tr>
@@ -75,6 +75,7 @@
         </CCard>
       </div>
     </div>
+    <p class="cmp-footnote">数据源：GET /api/finance/group-overview（revenue_monthly 月报）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。统一按「已出月报门店数最多月份」（并列取最新）对比；仅营收/毛利率有月报数据源，其余 4 项暂无数据源显「—」（雷达对应轴贴地）；综合得分按有源指标权重归一（营收 62.5%、毛利率 37.5%）；基准列为管理基准，非真实统计。</p>
   </div>
 </template>
 
@@ -84,7 +85,7 @@ import CCard from '@/components/CCard.vue'
 import { useM1CompareStore } from '@/stores/m1Compare'
 
 const cmp = useM1CompareStore()
-onMounted(() => {})
+onMounted(() => cmp.load())
 
 const COLORS = ['var(--c-series-1)', 'var(--c-series-2)', 'var(--c-series-3)', 'var(--c-series-4)', 'var(--c-series-5)']
 function colorOf(id: string) {
@@ -118,6 +119,7 @@ function barWidth(storeId: string, metricKey: string) {
   const range = cmp.metricRange(metricKey)
   if (range.max === range.min) return 50
   const v = cmp.value(storeId, metricKey)
+  if (v == null) return 0
   return Math.round(((v - range.min) / (range.max - range.min)) * 70 + 30)
 }
 </script>
@@ -166,5 +168,6 @@ function barWidth(storeId: string, metricKey: string) {
 .bar-cell__fill { position: absolute; left: 0; top: 50%; transform: translateY(-50%); height: 22px; border-radius: 4px; opacity: .35; }
 .bar-cell__v { position: relative; font-weight: 600; font-variant-numeric: tabular-nums; }
 .cmptable__total td, .cmptable__total th { background: var(--c-brand-soft); border-bottom: none; font-weight: 600; }
+.cmp-footnote { margin: 0; font-size: var(--t-xs); color: var(--c-text-4, var(--c-text-3)); line-height: 1.6; }
 @media (max-width: 900px) { .cmp__body { grid-template-columns: 1fr; } }
 </style>

@@ -12,9 +12,12 @@ import org.springframework.web.bind.annotation.*;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * finance-service（M6 数据财务）——只读视图 + 对账人工写。
@@ -167,6 +170,45 @@ public class FinanceController {
         }
         return revRepo.findAll(spec,
                 Sort.by(Sort.Order.asc("periodMonth"), Sort.Order.asc("storeCode")));
+    }
+
+    /**
+     * 集团多店经营概览（B49 卡4，M1 集团屏跨店例外域，铁律 -1-D）：GET /api/finance/group-overview。
+     * 基于 revenue_monthly 全量行（数据域逐行收敛，区域域只见本区门店），返回三段：
+     * months（有月报的月份升序，yyyy-MM-dd 月初）、rows（门店×月明细，同 /revenue 口径，金额「分」）、
+     * monthTotals（按月合计 revenue/cost/grossProfit + storeCount 当月已出月报门店数）。
+     * 门店名称/大区由前端 join /api/stores（org 域），本端点不跨域 join。
+     */
+    @GetMapping("/group-overview")
+    public Map<String, Object> groupOverview() {
+        Specification<RevenueMonthly> spec = DataScope.storeSpec("storeCode");
+        List<RevenueMonthly> rows = revRepo.findAll(spec,
+                Sort.by(Sort.Order.asc("periodMonth"), Sort.Order.asc("storeCode")));
+        Map<String, long[]> totals = new LinkedHashMap<>();
+        Map<String, Set<String>> storeSet = new LinkedHashMap<>();
+        for (RevenueMonthly r : rows) {
+            String pm = r.getPeriodMonth().toString();
+            long[] t = totals.computeIfAbsent(pm, k -> new long[3]);
+            t[0] += r.getRevenue();
+            t[1] += r.getCost();
+            t[2] += r.getGrossProfit();
+            storeSet.computeIfAbsent(pm, k -> new HashSet<>()).add(r.getStoreCode());
+        }
+        List<Map<String, Object>> monthTotals = new ArrayList<>();
+        for (Map.Entry<String, long[]> e : totals.entrySet()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("periodMonth", e.getKey());
+            m.put("revenue", e.getValue()[0]);
+            m.put("cost", e.getValue()[1]);
+            m.put("grossProfit", e.getValue()[2]);
+            m.put("storeCount", storeSet.get(e.getKey()).size());
+            monthTotals.add(m);
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("months", new ArrayList<>(totals.keySet()));
+        resp.put("rows", rows);
+        resp.put("monthTotals", monthTotals);
+        return resp;
     }
 
     /**

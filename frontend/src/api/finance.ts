@@ -56,6 +56,22 @@ export interface RevenueMonthly {
   grossRate: number
 }
 
+/** 集团概览月合计（B49 卡4，金额「分」；storeCount=当月已出月报门店数） */
+export interface GroupMonthTotal {
+  periodMonth: string // yyyy-MM-01
+  revenue: number // 分
+  cost: number
+  grossProfit: number
+  storeCount: number
+}
+
+/** 集团多店经营概览（B49 卡4 · M1 集团屏跨店例外域）：月份列表 + 门店×月明细 + 月合计 */
+export interface GroupOverviewView {
+  months: string[] // yyyy-MM-01 升序
+  rows: RevenueMonthly[]
+  monthTotals: GroupMonthTotal[]
+}
+
 // ============================================================
 // 读时聚合（P3 第一批）：台账流水 / 会员卡余额
 // 后端 finance-service 跨 txn/customer/store 聚合，金额已换算为「元」
@@ -373,6 +389,9 @@ export const exportInvoiceCsv = async (params?: {
 
 export const getRevenue = (storeCode?: string, month?: string) =>
   client.get<RevenueMonthly[]>('/finance/revenue', { params: { storeCode, month } })
+
+/** 集团多店经营概览（M1 集团屏；数据域逐行收敛，区域域只见本区门店，金额「分」） */
+export const listGroupOverview = () => client.get<GroupOverviewView>('/finance/group-overview')
 
 /** 台账流水（finance 读时聚合 txn 订单/退款/划扣，金额「元」） */
 export const getLedger = (params?: { storeCode?: string; from?: string; to?: string }) =>

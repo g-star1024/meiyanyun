@@ -1,7 +1,13 @@
+// 指标矩阵（M1 集团屏 /m1-matrix）——B49 卡4 接真（铁律 -1-D 跨店例外域，只读）。
+// 数据源：GET /api/finance/group-overview（revenue_monthly）+ GET /api/stores（门店名录）。
+// 口径：11 项指标全保留（target 为管理基准值，非 mock）；仅「营收(万元)/毛利率(%)」有月报数据源，
+//   其余 9 项及全部 mom/yoy 暂无月度聚合数据源 → null 显「—」（已入 Backlog）；
+//   periods=有月报的真实月份，默认选中「已出月报门店数最多的月份」（并列取最新，随数据域而定）。
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { listGroupOverview, type GroupOverviewView } from '@/api/finance'
+import { listStores, type Store } from '@/api/org'
 
-// 指标矩阵：多维指标 × 门店，含同环比与热力
 export type MetricGroup = 'FINANCE' | 'CUSTOMER' | 'OPERATION' | 'STAFF'
 export interface MatrixMetric {
   key: string
@@ -9,16 +15,16 @@ export interface MatrixMetric {
   group: MetricGroup
   unit: string
   higherBetter: boolean
-  /** 目标值（用于达成率热力） */
+  /** 目标值（用于达成率热力，管理基准非 mock） */
   target: number
 }
 
 export interface MetricCell {
   metricKey: string
   storeId: string
-  value: number
-  mom: number // 环比 %
-  yoy: number // 同比 %
+  value: number | null // 无数据源 → null 显「—」
+  mom: number | null // 环比 %：月报月份不相邻不可比 → null
+  yoy: number | null // 同比 %：无去年同期数据 → null
 }
 
 export const GROUP_LABEL: Record<MetricGroup, string> = {
@@ -39,43 +45,52 @@ export const METRICS: MatrixMetric[] = [
   { key: 'staffSat', label: '员工满意度', group: 'STAFF', unit: '%', higherBetter: true, target: 85 },
 ]
 
-const STORES = [
-  { id: 'T01', name: '杭州西湖', region: '华东' },
-  { id: 'T02', name: '上海静安', region: '华东' },
-  { id: 'T03', name: '北京朝阳', region: '华北' },
-  { id: 'T04', name: '广州天河', region: '华南' },
-  { id: 'T05', name: '成都高新', region: '西南' },
-]
-
-// 模拟数据
-function rand(seed: number, min: number, max: number) {
-  const x = Math.sin(seed) * 10000
-  return min + (x - Math.floor(x)) * (max - min)
-}
-function buildCells(): MetricCell[] {
-  const cells: MetricCell[] = []
-  METRICS.forEach((m, mi) => {
-    STORES.forEach((s, si) => {
-      const base = m.target * rand(mi * 7 + si * 13 + 1, 0.7, 1.2)
-      cells.push({
-        metricKey: m.key, storeId: s.id, value: Math.round(base * 10) / 10,
-        mom: Math.round(rand(mi * 3 + si * 5, -8, 20) * 10) / 10,
-        yoy: Math.round(rand(mi * 5 + si * 9, -5, 30) * 10) / 10,
-      })
-    })
-  })
-  return cells
-}
+interface MatrixStore { id: string; name: string; region: string }
 
 export const useM1MatrixStore = defineStore('m1Matrix', () => {
-  const seeded = ref(false)
-  const stores = ref(STORES)
-  const cells = ref<MetricCell[]>([])
+  const ov = ref<GroupOverviewView | null>(null)
+  const storeList = ref<Store[]>([])
+  const loaded = ref(false)
+  const loading = ref(false)
+  const error = ref('')
   const activeGroup = ref<MetricGroup | 'ALL'>('ALL')
-  const period = ref('2026-08')
+  const period = ref('')
   const selectedCell = ref<{ metricKey: string; storeId: string } | null>(null)
 
-  function seed() { if (!seeded.value) { cells.value = buildCells(); seeded.value = true } }
+  const stores = computed<MatrixStore[]>(() =>
+    storeList.value.map((s) => ({ id: s.storeCode, name: s.storeName, region: s.region ?? '—' })))
+
+  // 有月报的真实月份（yyyy-MM 升序）
+  const periods = computed(() => (ov.value?.months ?? []).map((m) => m.slice(0, 7)))
+
+  // 默认期：已出月报门店数最多的月份（并列取最新）
+  const defaultPeriod = computed(() => {
+    let best = ''
+    let bestN = -1
+    for (const t of ov.value?.monthTotals ?? []) {
+      if (t.storeCount >= bestN) { bestN = t.storeCount; best = t.periodMonth.slice(0, 7) }
+    }
+    return best
+  })
+
+  // 当前期单元格：营收/毛利率填真，其余指标 null；mom/yoy 均 null
+  const cells = computed<MetricCell[]>(() => {
+    const rows = ov.value?.rows ?? []
+    const p = period.value
+    const out: MetricCell[] = []
+    for (const m of METRICS) {
+      for (const s of stores.value) {
+        const r = rows.find((x) => x.storeCode === s.id && x.periodMonth.slice(0, 7) === p)
+        let v: number | null = null
+        if (r) {
+          if (m.key === 'revenue') v = Math.round((r.revenue / 1e6) * 10) / 10 // 分 → 万元
+          else if (m.key === 'grossMargin') v = Math.round(Number(r.grossRate) * 1000) / 10 // 小数 → %
+        }
+        out.push({ metricKey: m.key, storeId: s.id, value: v, mom: null, yoy: null })
+      }
+    }
+    return out
+  })
 
   const visibleMetrics = computed(() =>
     activeGroup.value === 'ALL' ? METRICS : METRICS.filter((m) => m.group === activeGroup.value))
@@ -84,24 +99,24 @@ export const useM1MatrixStore = defineStore('m1Matrix', () => {
     return cells.value.find((c) => c.metricKey === metricKey && c.storeId === storeId)
   }
   function metric(key: string) { return METRICS.find((m) => m.key === key)! }
-  function store(id: string) { return stores.value.find((s) => s.id === id)! }
+  function store(id: string) { return stores.value.find((s) => s.id === id) }
 
-  // 热力：基于达成率（考虑方向）返回 0-1 强度
+  // 热力：基于达成率（考虑方向）返回 0-1 强度；无数据（null）→ 0（淡底色不误导）
   function heat(metricKey: string, storeId: string): number {
     const m = metric(metricKey)
     const c = cell(metricKey, storeId)
-    if (!c || !m.target) return 0
+    if (!c || c.value == null || !m.target) return 0
     const ratio = c.value / m.target
     const score = m.higherBetter ? ratio : 2 - ratio // 越低越好：value/target 越小越好
     return Math.max(0, Math.min(1, (score - 0.65) / 0.6)) // 0.65~1.25 映射 0~1，拉开层次
   }
 
-  const periods = ['2026-06', '2026-07', '2026-08']
   const selectedDetail = computed(() => {
     if (!selectedCell.value) return null
     const c = cell(selectedCell.value.metricKey, selectedCell.value.storeId)
-    if (!c) return null
-    return { cell: c, metric: metric(c.metricKey), store: store(c.storeId) }
+    const st = c ? store(c.storeId) : undefined
+    if (!c || !st) return null
+    return { cell: c, metric: metric(c.metricKey), store: st }
   })
 
   function select(metricKey: string, storeId: string) {
@@ -110,8 +125,26 @@ export const useM1MatrixStore = defineStore('m1Matrix', () => {
     else selectedCell.value = { metricKey, storeId }
   }
 
+  async function load(force = false) {
+    if (loaded.value && !force) return
+    loading.value = true
+    error.value = ''
+    try {
+      const [g, s] = await Promise.all([listGroupOverview(), listStores()])
+      ov.value = g.data
+      storeList.value = s.data || []
+      if (!period.value || !periods.value.includes(period.value)) period.value = defaultPeriod.value
+      loaded.value = true
+    } catch (e) {
+      error.value = e instanceof Error ? e.message : '指标矩阵加载失败'
+      loaded.value = false
+    } finally {
+      loading.value = false
+    }
+  }
+
   return {
-    stores, cells, activeGroup, period, selectedCell, periods,
-    seed, visibleMetrics, cell, metric, store, heat, selectedDetail, select,
+    stores, cells, activeGroup, period, selectedCell, periods, loaded, loading, error,
+    load, visibleMetrics, cell, metric, store, heat, selectedDetail, select,
   }
 })

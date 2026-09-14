@@ -35,7 +35,7 @@
                       :class="{ 'is-selected': isSel(m.key, s.id), 'is-strong': textDark(m.key, s.id) }"
                       :style="{ background: bg(m.key, s.id) }"
                       @click="mx.select(m.key, s.id)">
-                    <span class="cell__v">{{ mx.cell(m.key, s.id)?.value }}</span>
+                    <span class="cell__v">{{ mx.cell(m.key, s.id)?.value ?? '—' }}</span>
                     <span class="cell__mom" :class="momCls(m.key, s.id)">{{ momText(m.key, s.id) }}</span>
                   </td>
                 </tr>
@@ -61,7 +61,7 @@
               </div>
               <span class="det__unit">{{ mx.selectedDetail.metric.unit }}</span>
             </div>
-            <div class="det__value">{{ mx.selectedDetail.cell.value }}</div>
+            <div class="det__value">{{ mx.selectedDetail.cell.value ?? '—' }}</div>
             <div class="det__grid">
               <div class="dblk">
                 <div class="dblk__l">目标值</div>
@@ -69,23 +69,19 @@
               </div>
               <div class="dblk">
                 <div class="dblk__l">达成率</div>
-                <div class="dblk__v" :class="achievementCls">{{ achievementRate }}%</div>
+                <div class="dblk__v" :class="achievementCls">{{ achievementRateText }}</div>
               </div>
               <div class="dblk">
                 <div class="dblk__l">环比</div>
-                <div class="dblk__v" :class="mx.selectedDetail.cell.mom >= 0 ? 'up' : 'down'">
-                  {{ mx.selectedDetail.cell.mom >= 0 ? '+' : '' }}{{ mx.selectedDetail.cell.mom }}%
-                </div>
+                <div class="dblk__v" :class="selMomCls">{{ selMomText }}</div>
               </div>
               <div class="dblk">
                 <div class="dblk__l">同比</div>
-                <div class="dblk__v" :class="mx.selectedDetail.cell.yoy >= 0 ? 'up' : 'down'">
-                  {{ mx.selectedDetail.cell.yoy >= 0 ? '+' : '' }}{{ mx.selectedDetail.cell.yoy }}%
-                </div>
+                <div class="dblk__v" :class="selYoyCls">{{ selYoyText }}</div>
               </div>
             </div>
             <div class="det__bar">
-              <CProgressBar :value="Math.min(100, achievementRate)" :color="achievementColor" :height="10" :show-label="false" />
+              <CProgressBar :value="Math.min(100, achievementRate ?? 0)" :color="achievementColor" :height="10" :show-label="false" />
               <div class="det__bar-marks"><span>0</span><span>目标</span><span>超额</span></div>
             </div>
             <div class="det__hint">{{ hint }}</div>
@@ -97,6 +93,7 @@
         </div>
       </CCard>
     </div>
+    <p class="mx-footnote">数据源：GET /api/finance/group-overview（revenue_monthly 月报）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。默认周期=已出月报门店数最多月份（并列取最新）；11 项指标仅「营收/毛利率」有月报数据源，其余暂无数据源显「—」；月报月份不相邻，环比/同比不可比不显；目标值为管理基准非真实统计；热力色按达成率渲染，无数据单元格不着色。</p>
   </div>
 </template>
 
@@ -110,7 +107,7 @@ import { useM1MatrixStore, GROUP_LABEL,
   type MetricGroup, type MatrixMetric } from '@/stores/m1Matrix'
 
 const mx = useM1MatrixStore()
-onMounted(() => mx.seed())
+onMounted(() => mx.load())
 
 const groupOptions = [
   { label: '全部', value: 'ALL' },
@@ -119,7 +116,7 @@ const groupOptions = [
   { label: '运营', value: 'OPERATION' },
   { label: '人效', value: 'STAFF' },
 ]
-const periodOptions = mx.periods.map((p) => ({ label: p, value: p }))
+const periodOptions = computed(() => mx.periods.map((p) => ({ label: p, value: p })))
 
 const groupKeys = computed<MetricGroup[]>(() => {
   const all: MetricGroup[] = ['FINANCE', 'CUSTOMER', 'OPERATION', 'STAFF']
@@ -148,31 +145,46 @@ function bg(metricKey: string, storeId: string) {
 }
 function momText(metricKey: string, storeId: string) {
   const c = mx.cell(metricKey, storeId)
-  if (!c) return ''
+  if (!c || c.mom == null) return ''
   return (c.mom >= 0 ? '▲' : '▼') + Math.abs(c.mom) + '%'
 }
 function momCls(metricKey: string, storeId: string) {
   const m = mx.metric(metricKey)
   const c = mx.cell(metricKey, storeId)
-  if (!c) return ''
+  if (!c || c.mom == null) return ''
   const positive = m.higherBetter ? c.mom >= 0 : c.mom <= 0
   return positive ? 'up' : 'down'
 }
 
-const achievementRate = computed(() => {
-  if (!mx.selectedDetail) return 0
+const selMomText = computed(() => {
+  const v = mx.selectedDetail?.cell.mom
+  return v == null ? '—' : (v >= 0 ? '+' : '') + v + '%'
+})
+const selMomCls = computed(() => ((mx.selectedDetail?.cell.mom ?? 0) >= 0 ? 'up' : 'down'))
+const selYoyText = computed(() => {
+  const v = mx.selectedDetail?.cell.yoy
+  return v == null ? '—' : (v >= 0 ? '+' : '') + v + '%'
+})
+const selYoyCls = computed(() => ((mx.selectedDetail?.cell.yoy ?? 0) >= 0 ? 'up' : 'down'))
+const achievementRate = computed<number | null>(() => {
+  if (!mx.selectedDetail) return null
   const { cell: c, metric: m } = mx.selectedDetail
+  if (c.value == null || !m.target) return null
   const ratio = m.higherBetter ? c.value / m.target : m.target / c.value
+  if (!Number.isFinite(ratio)) return null
   return Math.round(ratio * 100)
 })
+const achievementRateText = computed(() => (achievementRate.value == null ? '—' : achievementRate.value + '%'))
 const achievementCls = computed(() => {
   const r = achievementRate.value
+  if (r == null) return ''
   if (r >= 100) return 'up'
   if (r >= 85) return ''
   return 'down'
 })
 const achievementColor = computed(() => {
   const r = achievementRate.value
+  if (r == null) return 'var(--c-brand)'
   if (r >= 100) return 'var(--c-success-fg)'
   if (r >= 85) return 'var(--c-brand)'
   return 'var(--c-danger-fg)'
@@ -181,6 +193,7 @@ const hint = computed(() => {
   if (!mx.selectedDetail) return ''
   const r = achievementRate.value
   const m = mx.selectedDetail.metric
+  if (r == null) return `${m.label}暂无本期数据，目标值为管理基准`
   if (r >= 100) return `${m.label}已达成目标，表现优异`
   if (r >= 85) return `${m.label}接近目标，继续保持`
   if (m.higherBetter) return `${m.label}落后目标，需重点关注`
@@ -234,5 +247,6 @@ const hint = computed(() => {
 .det__hint { font-size: var(--t-sm); color: var(--c-text-2); padding-top: var(--s-md); border-top: 1px solid var(--c-border); line-height: 1.6; }
 .empty { text-align: center; color: var(--c-text-3); padding: var(--s-xxl) var(--s-md); }
 .empty p { margin-top: var(--s-md); font-size: var(--t-sm); }
+.mx-footnote { margin: 0; font-size: var(--t-xs); color: var(--c-text-4, var(--c-text-3)); line-height: 1.6; }
 @media (max-width: 900px) { .mx__body { grid-template-columns: 1fr; } }
 </style>
