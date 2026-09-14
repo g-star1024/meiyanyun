@@ -11,7 +11,10 @@ spring:
     driver-class-name: org.postgresql.Driver
   jpa:
     hibernate:
-      ddl-auto: update
+      # B48 卡3 收口 update→validate：18 张域表已全部 Flyway 纳管（V11-V14），
+      # 实体与现网物理结构一致（历史表本由 JPA 建出、push_type 手工 ALTER 与实体 length=16 对齐），
+      # 启动校验替代自动建表/补列，杜绝 schema 静默漂移；后续结构变更一律走新 Flyway 迁移。
+      ddl-auto: validate
     properties:
       hibernate:
         jdbc:
@@ -22,7 +25,7 @@ spring:
     enabled: true
     locations: classpath:db/migration
     # 现网 marketing 域表历史全部由 JPA ddl-auto=update 建出：baseline-version=0 标记历史基线，
-    # V11 起新增/校准走迁移；DDL 全部 CREATE TABLE IF NOT EXISTS，迁移后 Hibernate update no-op。
+    # V11 起新增/校准走迁移；DDL 全部 CREATE TABLE IF NOT EXISTS，迁移后 Hibernate validate 仅校验不改表。
     baseline-on-migrate: true
     baseline-version: 0
     baseline-description: "JPA 自动建表基线"
