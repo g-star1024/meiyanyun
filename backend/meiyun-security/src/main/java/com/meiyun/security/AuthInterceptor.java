@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.method.HandlerMethod;
-import org.springframework.web.servlet.HandlerInterceptor;
+import org.springframework.web.servlet.AsyncHandlerInterceptor;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -18,9 +18,11 @@ import java.util.Map;
  * 1. 服务间内部调用携带 X-Internal-Token 且与配置一致时，按系统身份（"*" 全权限）放行；
  * 2. 否则从 Authorization: Bearer &lt;token&gt; 解析 JWT，写入 {@link SecurityContext}；
  * 3. 方法/类上有 {@link RequirePerm} 时校验权限码，无 token → 401，有权限不足 → 403；
- * 4. 公共路径（public-paths，如 /api/org/auth/login）与 OPTIONS 预检直接放行。
+ * 4. 公共路径（public-paths，如 /api/org/auth/login）与 OPTIONS 预检直接放行；
+ * 5. 请求线程归还线程池前一律清理 SecurityContext（同步 afterCompletion；异步 afterConcurrentHandlingStarted；
+ *    403 拒绝后即时清理），杜绝 ThreadLocal 身份残留串给后续复用线程的请求。
  */
-public class AuthInterceptor implements HandlerInterceptor {
+public class AuthInterceptor implements AsyncHandlerInterceptor {
 
     public static final String INTERNAL_TOKEN_HEADER = "X-Internal-Token";
 
@@ -77,6 +79,7 @@ public class AuthInterceptor implements HandlerInterceptor {
                         return true;
                     }
                 }
+                SecurityContext.clear();
                 writeError(response, HttpServletResponse.SC_FORBIDDEN,
                         "无操作权限：需要 " + String.join(" 或 ", require.value()));
                 return false;
@@ -88,6 +91,17 @@ public class AuthInterceptor implements HandlerInterceptor {
     @Override
     public void afterCompletion(HttpServletRequest request, HttpServletResponse response,
                                 Object handler, Exception ex) {
+        SecurityContext.clear();
+    }
+
+    /**
+     * 异步（SSE 等）请求专用清理：异步处理一旦启动，请求线程即刻归还 Tomcat 线程池，
+     * afterCompletion 延后到异步结束才在其他线程执行；若不在此清理，ThreadLocal 身份将
+     * 残留在线程上串给后续复用该线程的请求（B49 卡7 三轨真验抓到的越权/串身份 P0）。
+     */
+    @Override
+    public void afterConcurrentHandlingStarted(HttpServletRequest request, HttpServletResponse response,
+                                               Object handler) {
         SecurityContext.clear();
     }
 

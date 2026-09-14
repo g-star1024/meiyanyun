@@ -13,9 +13,12 @@
         <div class="skpi__value">
           <span v-if="k.prefix" class="skpi__prefix">{{ k.prefix }}</span>{{ k.value.toLocaleString() }}<span class="skpi__unit">{{ k.unit }}</span>
         </div>
-        <div class="skpi__delta" :class="k.delta >= 0 ? 'up' : 'down'">
-          <CIcon :name="k.delta >= 0 ? 'trend-up' : 'trend-down'" :size="13" />
-          {{ Math.abs(k.delta) }}% 较昨日
+        <div class="skpi__delta" :class="k.delta == null ? '' : k.delta >= 0 ? 'up' : 'down'">
+          <template v-if="k.delta == null">— 较昨日</template>
+          <template v-else>
+            <CIcon :name="k.delta >= 0 ? 'trend-up' : 'trend-down'" :size="13" />
+            {{ Math.abs(k.delta) }}% 较昨日
+          </template>
         </div>
       </div>
     </section>
@@ -52,10 +55,11 @@
                     :stroke-dasharray="d.len + ' ' + (circ - d.len)"
                     :stroke-dashoffset="-d.offset"
                     transform="rotate(-90 100 100)" />
-            <text x="100" y="96" text-anchor="middle" class="pie__total">100%</text>
+            <text x="100" y="96" text-anchor="middle" class="pie__total">{{ scr.categoryShare.length ? '100%' : '—' }}</text>
             <text x="100" y="114" text-anchor="middle" class="pie__sub">营收构成</text>
           </svg>
           <div class="legend">
+            <div v-if="!scr.categoryShare.length" class="panel__empty">今日暂无营收数据</div>
             <div v-for="d in scr.categoryShare" :key="d.name" class="legend__row">
               <i :style="{ background: d.color }" /><span>{{ d.name }}</span><b>{{ d.value }}%</b>
             </div>
@@ -66,10 +70,11 @@
       <section class="panel">
         <div class="panel__h">门店营收排行（万元）</div>
         <div class="panel__b">
+          <div v-if="!scr.storeRanks.length" class="panel__empty">今日暂无成交</div>
           <div v-for="(s, i) in scr.storeRanks" :key="s.name" class="rank-row">
             <span class="rank-row__no" :class="'no--' + (i+1)">{{ i + 1 }}</span>
             <span class="rank-row__name">{{ s.name }}</span>
-            <div class="rank-row__bar"><i :style="{ width: (s.value / 40 * 100) + '%' }" /></div>
+            <div class="rank-row__bar"><i :style="{ width: (s.value / maxRank * 100) + '%' }" /></div>
             <span class="rank-row__v">{{ s.value }}</span>
           </div>
         </div>
@@ -82,6 +87,7 @@
         <span class="live"><i />LIVE</span>
       </div>
       <div class="stream">
+        <div v-if="!scr.realtime.length" class="panel__empty panel__empty--stream">等待今日首笔成交…</div>
         <div v-for="o in scr.realtime" :key="o.id" class="stream__row">
           <span class="stream__time">{{ o.time }}</span>
           <span class="stream__store">{{ o.store }}</span>
@@ -92,6 +98,11 @@
         </div>
       </div>
     </section>
+
+    <!-- 页脚：口径注（后端 overview 下发） -->
+    <footer v-if="scr.notes.length" class="scr__notes">
+      <span v-for="(n, i) in scr.notes" :key="i">{{ n }}</span>
+    </footer>
   </div>
 </template>
 
@@ -102,20 +113,35 @@ import { useM1ScreenStore } from '@/stores/m1Screen'
 
 const scr = useM1ScreenStore()
 let clock: ReturnType<typeof setInterval>
+let refresher: ReturnType<typeof setInterval>
 onMounted(() => {
   scr.tick()
-  clock = setInterval(() => { scr.tick(); if (Math.random() > 0.5) scr.pushOrder() }, 3000)
+  scr.fetchOverview()
+  scr.connectStream()
+  clock = setInterval(() => scr.tick(), 1000)
+  refresher = setInterval(() => scr.fetchOverview(), 30000)
 })
-onUnmounted(() => clearInterval(clock))
+onUnmounted(() => {
+  clearInterval(clock)
+  clearInterval(refresher)
+  scr.disconnectStream()
+})
 
-const stepX = 430 / (scr.hourly.length - 1)
-const maxV = computed(() => Math.max(...scr.hourly.map((h) => h.v)))
+const stepX = computed(() => (scr.hourly.length > 1 ? 430 / (scr.hourly.length - 1) : 0))
+const maxV = computed(() => {
+  const m = Math.max(0, ...scr.hourly.map((h) => h.v))
+  return m > 0 ? m : 1
+})
 const points = computed(() => scr.hourly.map((h, i) => ({
-  x: 40 + i * stepX,
+  x: 40 + i * stepX.value,
   y: 170 - (h.v / maxV.value) * 140,
 })))
 const linePoints = computed(() => points.value.map((p) => p.x + ',' + p.y).join(' '))
 const areaPoints = computed(() => `40,170 ${linePoints.value} 470,170`)
+const maxRank = computed(() => {
+  const top = scr.storeRanks[0]?.value || 0
+  return top > 0 ? top : 1
+})
 
 // 环形图分段
 const circ = 2 * Math.PI * 70
@@ -197,6 +223,10 @@ const donutSegs = computed(() => {
 .stream__item { color: #c5d2f0; }
 .stream__ch { color: #6b8aff; }
 .stream__amt { color: #ff9ec0; font-weight: 700; text-align: right; }
+
+.panel__empty { color: #6b7fa8; font-size: var(--t-xs); padding: 10px 0; }
+.panel__empty--stream { grid-column: 1 / -1; }
+.scr__notes { display: flex; flex-wrap: wrap; gap: 3px 18px; font-size: 10px; color: #6b7fa8; }
 
 @media (max-width: 1200px) {
   .scr__kpis { grid-template-columns: repeat(3, 1fr); }

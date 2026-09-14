@@ -15,6 +15,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -88,6 +89,32 @@ public class CustomerDirectoryClient {
             log.error("手机号反查客户 customer 调用异常: {}", e.getMessage());
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
                     "到店登记失败：无法连接客户服务，请稍后重试（本次未保存登记单）");
+        }
+    }
+
+    /**
+     * 批量取客户姓名（B49 卡7 大屏成交流富化）：GET /api/customer/name-map?ids=...。
+     * 读侧富化容错口径：任何失败仅 log.warn 并返回空 Map（客户名降级为空串），
+     * 与 {@link #findByPhone} 登记主链路「customer 不可用即 502 回滚」口径不同——
+     * 大屏推送不阻塞、不重试，下一轮轮询自愈。
+     */
+    public Map<String, String> nameMap(List<String> customerIds) {
+        if (customerIds == null || customerIds.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            String url = UriComponentsBuilder.fromHttpUrl(customerBaseUrl + "/api/customer/name-map")
+                    .queryParam("ids", customerIds)
+                    .toUriString();
+            @SuppressWarnings("unchecked")
+            Map<String, String> body = restTemplate.exchange(
+                    url, HttpMethod.GET, new HttpEntity<>(headers), Map.class).getBody();
+            return body == null ? Map.of() : body;
+        } catch (Exception e) {
+            log.warn("大屏成交流富化取客户姓名失败（降级为空名，下轮自愈）: {}", e.getMessage());
+            return Map.of();
         }
     }
 

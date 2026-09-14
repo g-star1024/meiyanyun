@@ -1,73 +1,116 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
+import { getScreenOverview, screenStreamUrl, type ScreenOrderPaidDto } from '@/api/screen'
+import { listStores } from '@/api/org'
 
-// 数据大屏：集团经营实时看板（深色大屏专用，演示数据）
-export interface ScreenKpi { label: string; value: number; unit: string; delta: number; prefix?: string }
+// 数据大屏：集团经营实时看板（B49 卡7 已切真）
+// 口径：overview 30s 重取为 KPI/图表唯一数据来源；SSE 仅驱动实时成交流顶插（>8 pop），不累加 KPI。
+export interface ScreenKpi { label: string; value: number; unit: string; delta: number | null; prefix?: string }
 export interface RealtimeOrder {
   id: string; store: string; customer: string; item: string; amount: number; time: string; channel: string
+}
+
+const CATEGORY_COLORS = ['#ff6b9e', '#6b8aff', '#2ed4bf', '#ffcb47', '#8b5cf6', '#ff8f6b']
+// 与收银台 pay_method 落库值对齐
+const PAY_METHOD_LABEL: Record<string, string> = {
+  cash: '现金', card: '刷卡', wxpay: '微信', alipay: '支付宝', balance: '余额',
+}
+
+function maskName(name: string): string {
+  if (!name) return ''
+  return name.length <= 1 ? name : name[0] + '**'
 }
 
 export const useM1ScreenStore = defineStore('m1Screen', () => {
   const now = ref(new Date())
   function tick() { now.value = new Date() }
 
-  const kpis = computed<ScreenKpi[]>(() => [
-    { label: '今日营收', value: 1286400, unit: '元', delta: 12.6, prefix: '¥' },
-    { label: '今日到店', value: 486, unit: '人', delta: 8.3 },
-    { label: '今日成交单', value: 312, unit: '单', delta: 5.1 },
-    { label: '客单价', value: 4123, unit: '元', delta: 3.2, prefix: '¥' },
-    { label: '在院治疗', value: 47, unit: '人', delta: -2.4 },
-    { label: '今日预约', value: 218, unit: '人', delta: 15.7 },
-  ])
+  const kpis = ref<ScreenKpi[]>([])
+  const hourly = ref<{ h: string; v: number }[]>([])
+  const categoryShare = ref<{ name: string; value: number; color: string }[]>([])
+  const storeRanks = ref<{ name: string; value: number }[]>([])
+  const notes = ref<string[]>([])
+  const realtime = ref<RealtimeOrder[]>([])
 
-  // 实时营收（按小时）
-  const hourly = computed(() => [
-    { h: '09', v: 86 }, { h: '10', v: 142 }, { h: '11', v: 205 }, { h: '12', v: 168 },
-    { h: '13', v: 186 }, { h: '14', v: 268 }, { h: '15', v: 312 }, { h: '16', v: 285 },
-  ])
-
-  // 项目品类占比
-  const categoryShare = computed(() => [
-    { name: '注射美容', value: 38, color: '#ff6b9e' },
-    { name: '皮肤光电', value: 27, color: '#6b8aff' },
-    { name: '手术整形', value: 18, color: '#2ed4bf' },
-    { name: '口腔美容', value: 11, color: '#ffcb47' },
-    { name: '其他', value: 6, color: '#8b5cf6' },
-  ])
-
-  const storeRanks = computed(() => [
-    { name: '杭州西湖旗舰院', value: 38.6, target: 100 },
-    { name: '广州天河分院', value: 32.1, target: 100 },
-    { name: '上海静安分院', value: 26.8, target: 100 },
-    { name: '北京朝阳分院', value: 18.4, target: 100 },
-    { name: '成都高新分院', value: 12.7, target: 100 },
-  ])
-
-  const realtime = ref<RealtimeOrder[]>([
-    { id: 'O8821', store: '杭州西湖旗舰院', customer: '王**', item: '热玛吉FLX面部', amount: 26800, time: '16:42', channel: '美团' },
-    { id: 'O8820', store: '上海静安分院', customer: '李**', item: '玻尿酸1ml', amount: 3980, time: '16:38', channel: '新氧' },
-    { id: 'O8819', store: '广州天河分院', customer: '陈**', item: '光子嫩肤年卡', amount: 9800, time: '16:31', channel: '到店' },
-    { id: 'O8818', store: '北京朝阳分院', customer: '张**', item: '水光针套餐', amount: 5680, time: '16:20', channel: '抖音' },
-    { id: 'O8817', store: '杭州西湖旗舰院', customer: '刘**', item: '肉毒素除皱', amount: 2980, time: '16:05', channel: '老客' },
-    { id: 'O8816', store: '成都高新分院', customer: '赵**', item: '皮秒祛斑', amount: 6800, time: '15:58', channel: '美团' },
-  ])
-
-  function pushOrder() {
-    const stores = ['杭州西湖旗舰院', '上海静安分院', '广州天河分院', '北京朝阳分院', '成都高新分院']
-    const items = ['热玛吉FLX', '玻尿酸填充', '光子嫩肤', '水光针', '肉毒素', '皮秒激光', '果酸焕肤']
-    const channels = ['美团', '新氧', '抖音', '到店', '老客']
-    const surnames = ['周', '吴', '郑', '孙', '钱', '冯']
-    const o: RealtimeOrder = {
-      id: 'O' + (8822 + Math.floor(Math.random() * 100)),
-      store: stores[Math.floor(Math.random() * stores.length)],
-      customer: surnames[Math.floor(Math.random() * surnames.length)] + '**',
-      item: items[Math.floor(Math.random() * items.length)],
-      amount: [2980, 3980, 5680, 6800, 9800, 26800][Math.floor(Math.random() * 6)],
-      time: new Date().toTimeString().slice(0, 5),
-      channel: channels[Math.floor(Math.random() * channels.length)],
+  // 门店名前端 join（/api/stores，集团聚合通道）；失败保持 null 下轮重试，展示降级为 storeCode
+  let storeNameMap: Record<string, string> | null = null
+  async function ensureStoreNames() {
+    if (storeNameMap) return
+    try {
+      const resp = await listStores()
+      const map: Record<string, string> = {}
+      for (const s of resp.data || []) map[s.storeCode] = s.storeName
+      storeNameMap = map
+    } catch {
+      storeNameMap = null
     }
-    realtime.value.unshift(o)
-    if (realtime.value.length > 8) realtime.value.pop()
+  }
+  const storeName = (code: string) => storeNameMap?.[code] || code
+
+  async function fetchOverview() {
+    try {
+      await ensureStoreNames()
+      const { data } = await getScreenOverview()
+      kpis.value = data.kpis.map((k) => ({
+        label: k.label,
+        value: k.fen ? k.value / 100 : k.value,
+        unit: k.unit,
+        delta: k.deltaPct,
+        prefix: k.fen ? '¥' : undefined,
+      }))
+      // 营业时段 09-21 渲染（后端 0-23 全量；分→万元，一位小数）
+      hourly.value = data.hourly
+        .filter((h) => h.hour >= '09' && h.hour <= '21')
+        .map((h) => ({ h: h.hour, v: Math.round(h.amountFen / 1000) / 10 }))
+      categoryShare.value = data.categoryShare.map((c, i) => ({
+        name: c.name,
+        value: c.pct,
+        color: CATEGORY_COLORS[i % CATEGORY_COLORS.length],
+      }))
+      storeRanks.value = data.storeRanks.map((s) => ({
+        name: storeName(s.storeCode),
+        value: Math.round(s.amountFen / 1000) / 10,
+      }))
+      notes.value = data.notes
+    } catch {
+      // 快照重取失败沿用旧值，下轮自愈
+    }
+  }
+
+  let es: EventSource | null = null
+  const seenPaymentIds = new Set<string>()
+
+  function connectStream() {
+    if (es) return
+    es = new EventSource(screenStreamUrl())
+    es.addEventListener('order-paid', (ev: MessageEvent) => {
+      try {
+        const p = JSON.parse(ev.data as string) as ScreenOrderPaidDto
+        if (seenPaymentIds.has(p.paymentId)) return
+        if (seenPaymentIds.size > 1000) seenPaymentIds.clear()
+        seenPaymentIds.add(p.paymentId)
+        realtime.value.unshift({
+          id: p.paymentId,
+          store: storeName(p.storeCode),
+          customer: maskName(p.customerName),
+          item: p.item,
+          amount: p.amountFen / 100,
+          time: (p.paidAt || '').slice(11, 16),
+          channel: PAY_METHOD_LABEL[p.payMethod] || p.payMethod,
+        })
+        if (realtime.value.length > 8) realtime.value.pop()
+      } catch {
+        // 单条负载异常丢弃，不影响流
+      }
+    })
+    es.onerror = () => {
+      // EventSource 浏览器侧自动重连，无需手工干预
+    }
+  }
+
+  function disconnectStream() {
+    es?.close()
+    es = null
   }
 
   const timeStr = computed(() => {
@@ -76,5 +119,8 @@ export const useM1ScreenStore = defineStore('m1Screen', () => {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   })
 
-  return { now, kpis, hourly, categoryShare, storeRanks, realtime, timeStr, tick, pushOrder }
+  return {
+    now, kpis, hourly, categoryShare, storeRanks, notes, realtime, timeStr,
+    tick, fetchOverview, connectStream, disconnectStream,
+  }
 })

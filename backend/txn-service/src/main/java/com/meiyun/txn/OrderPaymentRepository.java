@@ -4,6 +4,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
@@ -21,4 +22,7 @@ public interface OrderPaymentRepository extends JpaRepository<OrderPayment, Stri
     @Query(value = "select coalesce(max(cast(substring(payment_id from 12) as bigint)),0) "
             + "from order_payment where payment_id like :prefix", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);
+
+    /** 大屏成交流扇出轮询（B49 卡7）：取指定时刻之后的收款流水（时间正序）。 */
+    List<OrderPayment> findByCreatedAtAfterOrderByCreatedAtAsc(OffsetDateTime since);
 }
