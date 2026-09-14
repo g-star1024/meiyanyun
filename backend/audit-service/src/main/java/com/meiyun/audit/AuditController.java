@@ -4,10 +4,12 @@ import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -50,6 +52,32 @@ public class AuditController {
     @RequirePerm("audit:view")
     public List<AuditLog> list() {
         return auditService.findAll();
+    }
+
+    /**
+     * 审计日志分页检索（M1 集团审计日志页）：bizType/actor 精确过滤、created_at 时间范围、
+     * keyword 模糊匹配单号/动作/操作人/载荷，按 id 倒序。既有 GET /api/audit 全链端点契约不变。
+     */
+    @GetMapping("/page")
+    @RequirePerm("audit:view")
+    public AuditService.PageResult page(
+            @RequestParam(required = false) String bizType,
+            @RequestParam(required = false) String actor,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime from,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) OffsetDateTime to,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return auditService.search(bizType, actor, keyword, from, to, page, size);
+    }
+
+    /** 审计统计面：总数/近 24h/操作人数/模块分布（页面 KPI 卡与模块过滤器同源）。 */
+    @GetMapping("/facets")
+    @RequirePerm("audit:view")
+    public Map<String, Object> facets() {
+        return auditService.facets();
     }
 
     /** outbox 对账监测：状态计数 + 按来源服务聚合 + 最近失败明细。 */

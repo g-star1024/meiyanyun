@@ -5,78 +5,78 @@ import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
-import {
-  useM1AuditStore, type AuditEntry, type AuditModule, type AuditRisk,
-} from '@/stores/m1Audit'
+import { useM1AuditStore, type AuditLogRow } from '@/stores/m1Audit'
 
 const au = useM1AuditStore()
-onMounted(() => au.seed())
+onMounted(() => au.init())
 
-const kw = ref('')
-const fModule = ref<AuditModule | ''>('')
-const fRisk = ref<AuditRisk | ''>('')
-const fResult = ref<'' | 'SUCCESS' | 'FAILED'>('')
+const selectedId = ref<number | null>(null)
+const selected = computed(() => au.items.find((e) => e.id === selectedId.value) ?? null)
+function select(e: AuditLogRow) { selectedId.value = e.id }
 
-const filtered = computed(() => au.logs.filter((e) => {
-  if (fModule.value && e.module !== fModule.value) return false
-  if (fRisk.value && e.risk !== fRisk.value) return false
-  if (fResult.value && e.result !== fResult.value) return false
-  if (kw.value) {
-    const q = kw.value.trim()
-    if (!`${e.actor} ${e.action} ${e.target} ${e.detail}`.includes(q)) return false
-  }
-  return true
-}))
-
-const selectedId = ref('')
-const selected = computed(() => au.logs.find((e) => e.id === selectedId.value))
-function select(e: AuditEntry) { selectedId.value = e.id }
-
-function riskTone(r: AuditRisk) { return r === 'HIGH' ? 'danger' : r === 'MEDIUM' ? 'warning' : 'disabled' }
-function resultTone(r: string) { return r === 'SUCCESS' ? 'success' : 'danger' }
 function fmtTime(iso: string) {
   const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
   return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 function relTime(iso: string) {
-  const h = (Date.now() - new Date(iso).getTime()) / 3600000
-  if (h < 1) return Math.round(h * 60) + '分钟前'
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const h = (Date.now() - t) / 3600000
+  if (h < 1) return Math.max(1, Math.round(h * 60)) + '分钟前'
   if (h < 24) return Math.round(h) + '小时前'
   return Math.round(h / 24) + '天前'
 }
+function payloadDigest(payload: string): string {
+  const s = (payload || '').replace(/\s+/g, ' ').trim()
+  return s.length > 48 ? s.slice(0, 48) + '…' : s || '—'
+}
+function prettyPayload(payload: string): string {
+  try {
+    return JSON.stringify(JSON.parse(payload), null, 2)
+  } catch {
+    return payload
+  }
+}
+function shortHash(h: string) { return h ? h.slice(0, 10) : '—' }
 
-const modules = Object.keys(au.MODULE_LABEL) as AuditModule[]
-const hasFilter = computed(() => fModule.value || fRisk.value || fResult.value || kw.value)
-function resetFilter() { fModule.value = ''; fRisk.value = ''; fResult.value = ''; kw.value = '' }
+const hasFilter = computed(() =>
+  au.filters.bizType || au.filters.actor || au.filters.keyword || au.filters.from || au.filters.to)
+function applyFilter() { au.search(0) }
+function resetFilter() { au.resetFilters() }
+
+const chainTone = computed(() => {
+  if (!au.verify) return 'disabled'
+  return au.verify.ok ? 'success' : 'danger'
+})
+const chainText = computed(() => {
+  if (!au.verify) return '校验中…'
+  return au.verify.ok ? `完整 · ${au.verify.total} 条` : `断链 #${au.verify.brokenAtId}`
+})
 </script>
 
 <template>
   <div class="au-page">
     <div class="au-kpis">
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="order" :size="20" /></div><div class="kpi__body"><div class="kpi__label">审计记录总数</div><div class="kpi__value">{{ au.stats.total }}</div></div></div>
-      <div class="kpi kpi--danger"><div class="kpi__icon"><CIcon name="alert" :size="20" /></div><div class="kpi__body"><div class="kpi__label">高风险操作</div><div class="kpi__value">{{ au.stats.high }}</div></div></div>
-      <div class="kpi kpi--warning"><div class="kpi__icon"><CIcon name="clock" :size="20" /></div><div class="kpi__body"><div class="kpi__label">近24小时</div><div class="kpi__value">{{ au.stats.last24 }}</div></div></div>
-      <div class="kpi kpi--info"><div class="kpi__icon"><CIcon name="user" :size="20" /></div><div class="kpi__body"><div class="kpi__label">操作人数 / 失败</div><div class="kpi__value">{{ au.stats.actors }}<span class="kpi__sub kpi__sub--danger">{{ au.stats.failed }} 失败</span></div></div></div>
+      <div class="kpi kpi--warning"><div class="kpi__icon"><CIcon name="clock" :size="20" /></div><div class="kpi__body"><div class="kpi__label">近24小时新增</div><div class="kpi__value">{{ au.stats.last24 }}</div></div></div>
+      <div class="kpi kpi--info"><div class="kpi__icon"><CIcon name="user" :size="20" /></div><div class="kpi__body"><div class="kpi__label">操作人数（含系统）</div><div class="kpi__value">{{ au.stats.actors }}</div></div></div>
+      <div class="kpi kpi--danger kpi--clickable" title="点击重新巡检哈希链" @click="au.checkChain()"><div class="kpi__icon"><CIcon name="shield" :size="20" /></div><div class="kpi__body"><div class="kpi__label">哈希链完整性</div><div class="kpi__value kpi__value--sm"><CStatusPill :status="chainTone" dot>{{ chainText }}</CStatusPill></div></div></div>
     </div>
 
     <CCard padding="md">
       <div class="au-filter">
-      <select v-model="fModule" class="sel">
+      <select v-model="au.filters.bizType" class="sel" @change="applyFilter">
         <option value="">全部模块</option>
-        <option v-for="m in modules" :key="m" :value="m">{{ au.MODULE_LABEL[m] }}</option>
+        <option v-for="b in au.facets?.bizTypes ?? []" :key="b.bizType" :value="b.bizType">
+          {{ au.bizLabel(b.bizType) }}（{{ b.count }}）
+        </option>
       </select>
-      <select v-model="fRisk" class="sel">
-        <option value="">全部风险</option>
-        <option value="HIGH">高风险</option>
-        <option value="MEDIUM">中风险</option>
-        <option value="LOW">常规</option>
-      </select>
-      <select v-model="fResult" class="sel">
-        <option value="">全部结果</option>
-        <option value="SUCCESS">成功</option>
-        <option value="FAILED">失败</option>
-      </select>
-      <CInput v-model="kw" placeholder="搜索操作人/动作/对象/详情" />
+      <input v-model="au.filters.actor" class="sel sel--input" placeholder="操作人工号" @keyup.enter="applyFilter" />
+      <input v-model="au.filters.from" type="datetime-local" class="sel" title="起始时间" @change="applyFilter" />
+      <input v-model="au.filters.to" type="datetime-local" class="sel" title="截止时间" @change="applyFilter" />
+      <CInput v-model="au.filters.keyword" placeholder="搜索单号/动作/载荷" @keyup.enter="applyFilter" />
+      <CButton variant="text" size="sm" @click="applyFilter">查询</CButton>
       <CButton v-if="hasFilter" variant="text" size="sm" @click="resetFilter">清除筛选</CButton>
       </div>
     </CCard>
@@ -85,20 +85,31 @@ function resetFilter() { fModule.value = ''; fRisk.value = ''; fResult.value = '
       <CCard padding="none" class="au-list">
         <div class="table-wrap">
           <table class="dt">
-            <thead><tr><th>时间</th><th>操作人</th><th>模块</th><th>动作</th><th>对象</th><th>风险</th><th>结果</th></tr></thead>
+            <thead><tr><th>时间</th><th>操作人</th><th>模块</th><th>动作</th><th>业务单号</th><th>载荷摘要</th><th>链哈希</th></tr></thead>
             <tbody>
-              <tr v-for="e in filtered" :key="e.id" :class="{ 'row--active': selectedId === e.id, 'row--fail': e.result === 'FAILED', 'row--high': e.risk === 'HIGH' && e.result === 'SUCCESS' }" @click="select(e)">
-                <td class="mono"><div>{{ fmtTime(e.at) }}</div><div class="sub">{{ relTime(e.at) }}</div></td>
-                <td><div class="cell-name">{{ e.actor }}</div><div class="sub">{{ e.actorRole }}</div></td>
-                <td><span class="mod-tag">{{ au.MODULE_LABEL[e.module] }}</span></td>
-                <td>{{ e.action }}</td>
-                <td class="target">{{ e.target }}</td>
-                <td><CStatusPill :status="riskTone(e.risk)" dot>{{ au.RISK_LABEL[e.risk] }}</CStatusPill></td>
-                <td><CStatusPill :status="resultTone(e.result)" dot>{{ e.result === 'SUCCESS' ? '成功' : '失败' }}</CStatusPill></td>
+              <tr v-for="e in au.items" :key="e.id" :class="{ 'row--active': selectedId === e.id, 'row--high': au.isSensitive(e.action) }" @click="select(e)">
+                <td class="mono"><div>{{ fmtTime(e.createdAt) }}</div><div class="sub">{{ relTime(e.createdAt) }}</div></td>
+                <td><div class="cell-name">{{ au.displayActor(e.actor) }}</div><div class="sub">{{ e.actor }}</div></td>
+                <td><span class="mod-tag">{{ au.bizLabel(e.bizType) }}</span></td>
+                <td>{{ e.action }}<CStatusPill v-if="au.isSensitive(e.action)" status="warning" dot>敏感</CStatusPill></td>
+                <td class="mono target">{{ e.txnNo || '—' }}</td>
+                <td class="target" :title="e.payload">{{ payloadDigest(e.payload) }}</td>
+                <td class="mono" :title="e.curHash">{{ shortHash(e.curHash) }}</td>
               </tr>
-              <tr v-if="filtered.length === 0"><td colspan="7" class="empty-cell">无匹配审计记录</td></tr>
+              <tr v-if="!au.loading && au.items.length === 0"><td colspan="7" class="empty-cell">{{ au.error || '无匹配审计记录' }}</td></tr>
+              <tr v-if="au.loading"><td colspan="7" class="empty-cell">加载中…</td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="au-pager">
+          <span class="au-pager__info">第 {{ au.page + 1 }} / {{ au.totalPages }} 页 · 共 {{ au.total }} 条</span>
+          <select class="sel sel--sm" :value="au.size" @change="au.setSize(Number(($event.target as HTMLSelectElement).value))">
+            <option :value="20">20 条/页</option>
+            <option :value="50">50 条/页</option>
+            <option :value="100">100 条/页</option>
+          </select>
+          <CButton variant="text" size="sm" :disabled="au.page <= 0 || au.loading" @click="au.search(au.page - 1)">上一页</CButton>
+          <CButton variant="text" size="sm" :disabled="au.page >= au.totalPages - 1 || au.loading" @click="au.search(au.page + 1)">下一页</CButton>
         </div>
       </CCard>
 
@@ -106,31 +117,26 @@ function resetFilter() { fModule.value = ''; fRisk.value = ''; fResult.value = '
         <div class="ad-head">
           <div>
             <div class="ad-action">{{ selected.action }}</div>
-            <div class="ad-time"><CIcon name="clock" :size="13" /> {{ new Date(selected.at).toLocaleString('zh-CN') }} · {{ relTime(selected.at) }}</div>
+            <div class="ad-time"><CIcon name="clock" :size="13" /> {{ new Date(selected.createdAt).toLocaleString('zh-CN') }} · {{ relTime(selected.createdAt) }}</div>
           </div>
-          <CStatusPill :status="resultTone(selected.result)" dot>{{ selected.result === 'SUCCESS' ? '成功' : '失败' }}</CStatusPill>
+          <CStatusPill v-if="au.isSensitive(selected.action)" status="warning" dot>敏感操作</CStatusPill>
         </div>
         <div class="ad-body">
-          <div class="ad-row"><span class="lbl">操作人</span><span class="val"><b>{{ selected.actor }}</b>（{{ selected.actorRole }}）</span></div>
-          <div class="ad-row"><span class="lbl">所属模块</span><span class="val"><span class="mod-tag">{{ au.MODULE_LABEL[selected.module] }}</span></span></div>
-          <div class="ad-row"><span class="lbl">操作对象</span><span class="val mono">{{ selected.target }}</span></div>
-          <div class="ad-row"><span class="lbl">风险等级</span><span class="val"><CStatusPill :status="riskTone(selected.risk)" dot>{{ au.RISK_LABEL[selected.risk] }}</CStatusPill></span></div>
-          <div class="ad-row"><span class="lbl">来源 IP</span><span class="val mono">{{ selected.ip }}</span></div>
-
-          <div v-if="selected.before || selected.after" class="ad-diff">
-            <div v-if="selected.before" class="diff diff--before"><span class="diff__tag">变更前</span>{{ selected.before }}</div>
-            <div class="diff-arrow"><CIcon name="chevron-right" :size="16" /></div>
-            <div v-if="selected.after" class="diff diff--after"><span class="diff__tag">变更后</span>{{ selected.after }}</div>
-          </div>
+          <div class="ad-row"><span class="lbl">操作人</span><span class="val"><b>{{ au.displayActor(selected.actor) }}</b>（{{ selected.actor }}）</span></div>
+          <div class="ad-row"><span class="lbl">所属模块</span><span class="val"><span class="mod-tag">{{ au.bizLabel(selected.bizType) }}</span><span class="sub">{{ selected.bizType }}</span></span></div>
+          <div class="ad-row"><span class="lbl">业务单号</span><span class="val mono">{{ selected.txnNo || '—' }}</span></div>
+          <div class="ad-row"><span class="lbl">记录编号</span><span class="val mono">#{{ selected.id }}</span></div>
+          <div class="ad-row"><span class="lbl">当前哈希</span><span class="val mono hash" :title="selected.curHash">{{ selected.curHash }}</span></div>
+          <div class="ad-row"><span class="lbl">前序哈希</span><span class="val mono hash" :title="selected.prevHash">{{ selected.prevHash }}</span></div>
 
           <div class="ad-detail-block">
-            <span class="lbl">操作详情</span>
-            <p>{{ selected.detail }}</p>
+            <span class="lbl">业务载荷（jsonb）</span>
+            <pre class="payload-pre">{{ prettyPayload(selected.payload) }}</pre>
           </div>
         </div>
         <div class="ad-foot">
           <CIcon name="shield" :size="14" />
-          <span>审计日志 append-only，不可删除或修改。高风险操作已同步至集团合规中心。</span>
+          <span>审计日志 append-only，不可删除或修改；「敏感操作」为动作语义的展示层派生口径。</span>
         </div>
       </CCard>
     </div>
@@ -141,6 +147,7 @@ function resetFilter() { fModule.value = ''; fRisk.value = ''; fResult.value = '
 .au-page { display: flex; flex-direction: column; gap: var(--s-md); }
 .au-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-md); }
 .kpi { display: flex; align-items: center; gap: var(--s-md); padding: var(--s-md); border-radius: var(--r-xl); background: var(--c-surface); border: 1px solid var(--c-border-light); }
+.kpi--clickable { cursor: pointer; }
 .kpi__icon { width: 44px; height: 44px; border-radius: var(--r-lg); display: flex; align-items: center; justify-content: center; flex: none; }
 .kpi--brand .kpi__icon { background: var(--c-brand-soft); color: var(--c-brand); }
 .kpi--info .kpi__icon { background: var(--c-info-bg, #EAF2FF); color: var(--c-info-fg); }
@@ -148,14 +155,15 @@ function resetFilter() { fModule.value = ''; fRisk.value = ''; fResult.value = '
 .kpi--warning .kpi__icon { background: var(--c-warning-bg, #FFF5E6); color: var(--c-warning-fg); }
 .kpi__label { font-size: var(--t-xs); color: var(--c-text-3); }
 .kpi__value { font-size: var(--t-xl); font-weight: 700; color: var(--c-text); display: flex; align-items: baseline; gap: 6px; }
-.kpi__sub { font-size: var(--t-xs); font-weight: 400; color: var(--c-text-3); }
-.kpi__sub--danger { color: var(--c-danger-fg); font-weight: 600; }
+.kpi__value--sm { font-size: var(--t-md); }
 
 .au-filter { display: flex; align-items: center; gap: var(--s-sm); flex-wrap: nowrap; overflow-x: auto; }
 .au-filter .sel { flex-shrink: 0; }
-.au-filter > :deep(.cinput) { flex: 1; min-width: 200px; max-width: 320px; }
+.au-filter > :deep(.cinput) { flex: 1; min-width: 160px; max-width: 260px; }
 .au-filter .cbtn { flex-shrink: 0; white-space: nowrap; }
 .sel { height: 36px; padding: 0 12px; border: 1px solid var(--c-border); border-radius: var(--r-md); font-size: var(--t-sm); color: var(--c-text); background: var(--c-surface); }
+.sel--input { width: 120px; }
+.sel--sm { height: 30px; font-size: var(--t-xs); }
 
 .au-main { display: grid; grid-template-columns: 1fr 380px; gap: var(--s-md); align-items: start; }
 .au-list { max-height: calc(100vh - 340px); overflow: auto; }
@@ -166,14 +174,16 @@ function resetFilter() { fModule.value = ''; fRisk.value = ''; fResult.value = '
 .dt tbody tr { cursor: pointer; transition: background .1s; }
 .dt tbody tr:hover { background: var(--c-surface, #f7f8fa); }
 .row--active { background: var(--c-brand-soft) !important; }
-.row--fail { background: var(--c-danger-bg, #FFF0F033); }
-.row--high { border-left: 3px solid var(--c-danger-fg); }
+.row--high { border-left: 3px solid var(--c-warning-fg, #d9822b); }
 .mono { font-family: var(--t-number, monospace); font-size: var(--t-xs); color: var(--c-text-2); }
 .sub { font-size: 11px; color: var(--c-text-3); margin-top: 2px; }
 .cell-name { font-weight: 600; color: var(--c-text); }
 .mod-tag { font-size: 11px; padding: 2px 8px; background: var(--c-brand-soft); color: var(--c-brand); border-radius: var(--r-capsule); white-space: nowrap; }
 .target { font-size: var(--t-xs); color: var(--c-text-2); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .empty-cell { text-align: center; color: var(--c-text-3); padding: var(--s-xl); }
+
+.au-pager { display: flex; align-items: center; gap: var(--s-sm); padding: var(--s-sm) var(--s-md); border-top: 1px solid var(--c-border-light); position: sticky; bottom: 0; background: var(--c-surface); }
+.au-pager__info { font-size: var(--t-xs); color: var(--c-text-3); margin-right: auto; }
 
 .au-detail { position: sticky; top: 0; }
 .ad-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s-md); padding: var(--s-lg); border-bottom: 1px solid var(--c-border-light); }
@@ -182,16 +192,11 @@ function resetFilter() { fModule.value = ''; fRisk.value = ''; fResult.value = '
 .ad-body { padding: var(--s-lg); display: flex; flex-direction: column; gap: var(--s-md); }
 .ad-row { display: flex; align-items: center; gap: var(--s-md); font-size: var(--t-sm); }
 .ad-row .lbl { width: 72px; flex: none; font-size: var(--t-xs); color: var(--c-text-3); }
-.ad-row .val { color: var(--c-text); display: flex; align-items: center; gap: 6px; }
-.ad-diff { display: flex; align-items: stretch; gap: var(--s-sm); margin-top: 4px; }
-.diff { flex: 1; padding: var(--s-sm) var(--s-md); border-radius: var(--r-md); font-size: var(--t-xs); position: relative; padding-top: 22px; }
-.diff--before { background: var(--c-danger-bg, #FFF0F0); color: var(--c-text-2); }
-.diff--after { background: var(--c-success-bg, #f0fbf0); color: var(--c-text-2); }
-.diff__tag { position: absolute; top: 4px; left: 10px; font-size: 10px; font-weight: 700; color: var(--c-text-3); }
-.diff-arrow { display: flex; align-items: center; color: var(--c-text-3); }
+.ad-row .val { color: var(--c-text); display: flex; align-items: center; gap: 6px; min-width: 0; }
+.hash { word-break: break-all; }
 .ad-detail-block { display: flex; flex-direction: column; gap: 4px; }
 .ad-detail-block .lbl { font-size: var(--t-xs); color: var(--c-text-3); }
-.ad-detail-block p { margin: 0; font-size: var(--t-sm); color: var(--c-text); line-height: 1.6; padding: var(--s-sm) var(--s-md); background: var(--c-surface, #f7f8fa); border-radius: var(--r-md); border-left: 3px solid var(--c-brand); }
+.payload-pre { margin: 0; font-size: var(--t-xs); color: var(--c-text); line-height: 1.6; padding: var(--s-sm) var(--s-md); background: var(--c-surface, #f7f8fa); border-radius: var(--r-md); border-left: 3px solid var(--c-brand); max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
 .ad-foot { display: flex; align-items: center; gap: 6px; padding: var(--s-sm) var(--s-lg); border-top: 1px solid var(--c-border-light); font-size: 11px; color: var(--c-text-3); }
 
 @media (max-width: 1024px) {

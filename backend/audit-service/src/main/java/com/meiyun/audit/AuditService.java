@@ -3,6 +3,11 @@ package com.meiyun.audit;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.common.audit.AuditChain;
+import jakarta.persistence.criteria.Predicate;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -11,7 +16,10 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeMap;
 
 /**
@@ -91,6 +99,66 @@ public class AuditService {
 
     public List<AuditLog> findAll() {
         return repository.findAllByOrderByIdAsc();
+    }
+
+    /**
+     * 审计日志分页检索（M1 集团审计日志页）。
+     * <p>过滤：bizType/actor 精确匹配，created_at 时间范围，keyword 模糊匹配
+     * txn_no/action/actor/payload（jsonb cast 为文本）。按 id 倒序（最新在前）。</p>
+     */
+    public PageResult search(String bizType, String actor, String keyword,
+                             OffsetDateTime from, OffsetDateTime to, int page, int size) {
+        int p = Math.max(page, 0);
+        int s = size <= 0 ? 20 : Math.min(size, 200);
+        Specification<AuditLog> spec = (root, q, cb) -> {
+            List<Predicate> ps = new ArrayList<>();
+            if (bizType != null && !bizType.isBlank()) {
+                ps.add(cb.equal(root.get("bizType"), bizType.trim()));
+            }
+            if (actor != null && !actor.isBlank()) {
+                ps.add(cb.equal(root.get("actor"), actor.trim()));
+            }
+            if (from != null) {
+                ps.add(cb.greaterThanOrEqualTo(root.get("createdAt"), from));
+            }
+            if (to != null) {
+                ps.add(cb.lessThanOrEqualTo(root.get("createdAt"), to));
+            }
+            if (keyword != null && !keyword.isBlank()) {
+                String like = "%" + keyword.trim().toLowerCase() + "%";
+                ps.add(cb.or(
+                        cb.like(cb.lower(root.get("txnNo")), like),
+                        cb.like(cb.lower(root.get("action")), like),
+                        cb.like(cb.lower(root.get("actor")), like),
+                        cb.like(cb.lower(root.get("payload").as(String.class)), like)));
+            }
+            return cb.and(ps.toArray(new Predicate[0]));
+        };
+        Page<AuditLog> result = repository.findAll(spec,
+                PageRequest.of(p, s, Sort.by("id").descending()));
+        return new PageResult(result.getContent(), result.getTotalElements(), p, s);
+    }
+
+    /** 稳定分页返回体（不直出 Spring Page，避免序列化结构随版本漂移）。 */
+    public record PageResult(List<AuditLog> items, long total, int page, int size) {
+    }
+
+    /** 审计统计面：总数/近 24h/操作人数/模块分布（页面 KPI 卡与模块过滤器同源）。 */
+    public Map<String, Object> facets() {
+        Long total = jdbcTemplate.queryForObject("SELECT count(*) FROM audit_log", Long.class);
+        Long last24 = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM audit_log WHERE created_at >= now() - interval '24 hours'", Long.class);
+        Long actors = jdbcTemplate.queryForObject(
+                "SELECT count(DISTINCT actor) FROM audit_log", Long.class);
+        List<Map<String, Object>> bizTypes = jdbcTemplate.queryForList(
+                "SELECT biz_type AS \"bizType\", count(*) AS \"count\""
+                        + " FROM audit_log GROUP BY biz_type ORDER BY count(*) DESC, biz_type");
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("total", total == null ? 0 : total);
+        m.put("last24", last24 == null ? 0 : last24);
+        m.put("actors", actors == null ? 0 : actors);
+        m.put("bizTypes", bizTypes);
+        return m;
     }
 
     /**

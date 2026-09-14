@@ -1,87 +1,186 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import {
+  getAuditFacets,
+  pageAuditLogs,
+  verifyAuditChain,
+  type AuditChainVerifyResult,
+  type AuditFacets,
+  type AuditLogRow,
+} from '@/api/audit'
+import { listStaff } from '@/api/org'
+import { useAuthStore } from '@/stores/auth'
 
 // ============================================================
-// 审计日志 store（M1 集团管控 / 审计日志）
-// - 跨模块操作留痕：登录、退款/退卡审批、权限变更、合同签署、病历修改/修订、
-//   资产转移、投诉结案、库存调整、配置变更、数据导出
-// - 不可删除/不可修改（append-only），支持按模块/操作人/风险等级/时间筛选
-// - 高风险操作标红；每条记录含操作人、IP、模块、动作、对象、前后摘要
+// 审计日志 store（M1 集团管控 / 审计日志）—— 接真实 audit-service（B49 卡2）
+// - 数据源：GET /api/audit/page（分页检索）+ /facets（统计）+ /verify（链巡检）
+// - audit_log 为 append-only SHA-256 哈希链，库内无 ip/risk/result 字段：
+//   「敏感操作」为展示层派生口径（动作命中敏感词表），并非库字段
+// - 操作人为工号（或 system / 少量历史中文名），经员工列表解析为姓名显示
 // ============================================================
 
-export type AuditRisk = 'HIGH' | 'MEDIUM' | 'LOW'
-export type AuditModule =
-  | 'AUTH' | 'FINANCE' | 'RBAC' | 'CONTRACT' | 'EMR' | 'ASSET'
-  | 'COMPLAINT' | 'INVENTORY' | 'SETTINGS' | 'DATA' | 'MARKETING'
+export type { AuditLogRow }
 
-export const MODULE_LABEL: Record<AuditModule, string> = {
-  AUTH: '登录鉴权', FINANCE: '财务退款', RBAC: '权限角色', CONTRACT: '合同管理',
-  EMR: '电子病历', ASSET: '客户资产', COMPLAINT: '投诉处理', INVENTORY: '库存采购',
-  SETTINGS: '系统设置', DATA: '数据导出', MARKETING: '营销活动',
+/** bizType → 中文模块标签（覆盖库内真实分布；未映射新值回落显示原值）。 */
+export const BIZTYPE_LABEL: Record<string, string> = {
+  STAFF: '员工管理', ROLE: '角色权限', ORG: '组织机构',
+  CUSTOMER: '客户档案', TAG: '客户标签', LEVEL: '客户等级', CARD: '客户卡项', CARD_CANCEL: '卡项退卡',
+  POINTS: '积分账户', CONSULT: '咨询记录', PLAN: '咨询方案',
+  APPT: '预约管理', ARRIVAL: '到诊接待', CHECKIN: '报到', WAITLIST: '等位队列',
+  EMR: '电子病历', ORDER: '订单', REFUND: '退款', DUAL_SIGN: '双签审批',
+  FUND_ENTRY: '资金流水', FUND_RECONCILE: '资金对账', FUND_ADJUST: '资金调整', FIN_CARRY: '成本结转',
+  COUPON: '优惠券', COUPON_WRITEOFF: '券核销', WRITEOFF: '核销', WDESK: '核销台',
+  GRANT_ISSUE: '赠予发放', GRANT_DEDUCT: '赠予划扣', GRANT_RULE: '赠予规则', GRANT_REFUND: '赠予退回',
+  CAMPAIGN: '营销活动', MALL: '积分商城', MARKETING_CFG: '营销设置', PUSH: '消息推送',
+  CONSUMABLE: '耗材库存', REQUISITION: '耗材领用', BOM: '项目配方',
+  DICT: '数据字典', APPROVAL: '审批流', CONTRA_EXEMPT: '禁忌豁免',
+  REPURCHASE: '复购管理', CUSTOMER_SEARCH_EVENT: '客户搜索',
+  AI_KNOWLEDGE: 'AI 知识库', AI_MODEL: 'AI 模型', AI_FEATURE: 'AI 功能', AI_APPROVAL: 'AI 审批',
+  AI_SCRIPT: 'AI 话术', AI_DAILY_REPORT: 'AI 日报', AI_SENSITIVE_WORD: 'AI 敏感词',
+  AI_EVAL: 'AI 评测', AI_PRIVACY: 'AI 隐私', AI_EXPERIMENT: 'AI 实验',
+  AI_REPURCHASE_PREDICTION: 'AI 复购预测', AI_QUOTA: 'AI 配额', AI_CHURN_PREDICTION: 'AI 流失预测',
+  AI_CHATBOT: 'AI 客服', AI_SCHEDULING: 'AI 排班', AI_CONTENT_RECORD: 'AI 内容',
+  AI_PROVIDER: 'AI 供应商', AI_CUSTOMER_PROFILE: 'AI 客户画像', AI_SENSITIVE_HIT: 'AI 敏感命中',
+  AI_CFG: 'AI 配置', AUDIT_OUTBOX: '审计补偿',
 }
-export const RISK_LABEL: Record<AuditRisk, string> = { HIGH: '高风险', MEDIUM: '中风险', LOW: '常规' }
 
-export interface AuditEntry {
-  id: string
-  at: string
+/**
+ * 敏感操作派生口径（展示层，非库字段）：动作命中删除/停用/驳回/撤销/转移/退款类语义
+ * 的视为敏感操作标红，辅助审计员快速定位高风险行。
+ */
+const SENSITIVE_RE =
+  /DELETE|DISABLE|REVOKE|REJECT|CANCEL|RESET|TRANSFER|REFUND|OFF_SHELF|DEDUCT|关闭|停用|删除|撤销|驳回|退卡|退款|转移|划扣/
+
+export interface AuditFilters {
+  bizType: string
   actor: string
-  actorRole: string
-  module: AuditModule
-  action: string
-  target: string
-  risk: AuditRisk
-  ip: string
-  result: 'SUCCESS' | 'FAILED'
-  before?: string
-  after?: string
-  detail: string
+  keyword: string
+  /** datetime-local 值（YYYY-MM-DDTHH:mm），空串=不限 */
+  from: string
+  to: string
 }
-
-let _cid = 0
-function cid() { _cid += 1; return `aud-${Date.now().toString(36)}-${_cid}` }
-function hoursAgo(h: number) { return new Date(Date.now() - h * 3600000).toISOString() }
 
 export const useM1AuditStore = defineStore('m1Audit', () => {
-  const logs = ref<AuditEntry[]>([])
-  const seeded = ref(false)
+  const auth = useAuthStore()
 
-  function add(e: Omit<AuditEntry, 'id'>) {
-    logs.value.unshift({ ...e, id: cid() })
+  const items = ref<AuditLogRow[]>([])
+  const total = ref(0)
+  const page = ref(0)
+  const size = ref(20)
+  const filters = ref<AuditFilters>({ bizType: '', actor: '', keyword: '', from: '', to: '' })
+
+  const facets = ref<AuditFacets | null>(null)
+  const verify = ref<AuditChainVerifyResult | null>(null)
+  const loading = ref(false)
+  const error = ref('')
+
+  /** 工号 → 姓名缓存（listStaff 一次解析，当前登录人优先取 auth）。 */
+  const nameCache = new Map<string, string>()
+  const namesResolved = ref(false)
+
+  const totalPages = computed(() => Math.max(1, Math.ceil(total.value / size.value)))
+  const stats = computed(() => ({
+    total: facets.value?.total ?? 0,
+    last24: facets.value?.last24 ?? 0,
+    actors: facets.value?.actors ?? 0,
+  }))
+
+  function bizLabel(bizType: string): string {
+    return BIZTYPE_LABEL[bizType] ?? bizType
   }
 
-  const stats = computed(() => {
-    const last24 = logs.value.filter((e) => Date.now() - new Date(e.at).getTime() < 86400000)
-    return {
-      total: logs.value.length,
-      high: logs.value.filter((e) => e.risk === 'HIGH').length,
-      failed: logs.value.filter((e) => e.result === 'FAILED').length,
-      last24: last24.length,
-      actors: new Set(logs.value.map((e) => e.actor)).size,
+  function isSensitive(action: string): boolean {
+    return SENSITIVE_RE.test(action)
+  }
+
+  function displayActor(actor: string): string {
+    if (actor === 'system') return '系统'
+    return nameCache.get(actor) ?? actor
+  }
+
+  /** datetime-local 值 → ISO 带偏移；空串返回 undefined。 */
+  function toIso(v: string): string | undefined {
+    if (!v) return undefined
+    const d = new Date(v)
+    return Number.isNaN(d.getTime()) ? undefined : d.toISOString()
+  }
+
+  async function resolveNames() {
+    if (namesResolved.value) return
+    if (auth.user?.staffId && auth.user?.name) nameCache.set(auth.user.staffId, auth.user.name)
+    try {
+      const { data } = await listStaff()
+      data.forEach((s) => nameCache.set(s.staffId, s.staffName))
+    } catch {
+      // 姓名解析失败回落工号原值，不阻断页面
     }
-  })
-
-  function seed() {
-    if (seeded.value) return
-    const mk = (e: Omit<AuditEntry, 'id'>): AuditEntry => ({ ...e, id: cid() })
-    logs.value = [
-      mk({ at: hoursAgo(0.5), actor: '苏晴', actorRole: '门店店长', module: 'FINANCE', action: '退款审批通过', target: '退款单 RF20260825001', risk: 'HIGH', ip: '10.12.12.7', result: 'SUCCESS', before: '待审批 ¥12,800', after: '已通过（双签）', detail: '客户「周童」热玛吉未消费退款，门店+财务双签通过' }),
-      mk({ at: hoursAgo(1), actor: '周岚', actorRole: '集团管理员', module: 'RBAC', action: '修改角色字段权限', target: '角色「皮肤科护士」', risk: 'MEDIUM', ip: '10.12.21.45', result: 'SUCCESS', before: 'emr.treatment: HIDE', after: 'emr.treatment: READ', detail: '字段级权限调整，即时生效于 15 名护士' }),
-      mk({ at: hoursAgo(2), actor: '顾屿', actorRole: '医生', module: 'EMR', action: '修订病历', target: 'EMR20260818007-R2', risk: 'MEDIUM', ip: '10.12.12.31', result: 'SUCCESS', before: '诊断：面部光老化（v1）', after: '诊断：面部光老化伴色斑（v2）', detail: '已签名病历修订，原版本归档保留，需二次签名' }),
-      mk({ at: hoursAgo(3), actor: '陈野', actorRole: '区域经理', module: 'ASSET', action: '资产转移审批通过', target: '转移单 TR20260824002', risk: 'HIGH', ip: '10.12.34.12', result: 'SUCCESS', before: '赠卡余额 ¥3,200（客户A）', after: '转移至客户B（同门店）', detail: '赠送金转移 ¥3,200，扣减来源、双向流水已记录' }),
-      mk({ at: hoursAgo(4), actor: '夏沫', actorRole: '前台/收银', module: 'AUTH', action: '登录', target: '门店前台终端-03', risk: 'LOW', ip: '10.12.12.10', result: 'SUCCESS', detail: '账号密码登录，门店 静安旗舰店' }),
-      mk({ at: hoursAgo(5), actor: '未知', actorRole: '—', module: 'AUTH', action: '登录失败', target: '账号 qian.jin', risk: 'MEDIUM', ip: '203.0.113.44', result: 'FAILED', detail: '密码错误连续 5 次，账号已临时锁定 30 分钟（异地 IP）' }),
-      mk({ at: hoursAgo(6), actor: '林微', actorRole: '咨询师', module: 'COMPLAINT', action: '投诉结案', target: '投诉 TS20260820003', risk: 'MEDIUM', ip: '10.12.12.22', result: 'SUCCESS', before: '处理中', after: '已关闭（赔付 ¥800）', detail: '客户对效果不满，协商补偿一次光子嫩肤，客户确认满意' }),
-      mk({ at: hoursAgo(8), actor: '钱进', actorRole: '财务', module: 'CONTRACT', action: '合同退款估算', target: '合同 HT20260712009', risk: 'LOW', ip: '10.12.34.18', result: 'SUCCESS', before: '冷静期内（全额退）', after: '超冷静期 12 天，扣违约金 20%', detail: '退款估算 ¥15,840（原 ¥19,800），按合同 penaltyRate 计算' }),
-      mk({ at: hoursAgo(10), actor: '白桥', actorRole: '运营', module: 'MARKETING', action: '活动中止', target: '活动「保妥适拼团8.5折」', risk: 'MEDIUM', ip: '10.12.12.55', result: 'SUCCESS', before: '进行中', after: '已取消', detail: '因供应商限价政策中止，已通知 0 名已下单客户' }),
-      mk({ at: hoursAgo(12), actor: '周岚', actorRole: '集团管理员', module: 'SETTINGS', action: '修改双签阈值', target: '系统设置·L2 阈值', risk: 'HIGH', ip: '10.12.21.45', result: 'SUCCESS', before: 'L2=¥50,000', after: 'L2=¥30,000', detail: '审批层级阈值调整，影响 3 家在途审批单' }),
-      mk({ at: hoursAgo(14), actor: '陈野', actorRole: '区域经理', module: 'DATA', action: '导出经营报表', target: '华东大区 7 月经营明细.xlsx', risk: 'MEDIUM', ip: '10.12.34.12', result: 'SUCCESS', detail: '导出含成本/毛利字段（finance:margin:view），1,284 行' }),
-      mk({ at: hoursAgo(18), actor: '苏晴', actorRole: '门店店长', module: 'INVENTORY', action: '入库登记', target: '采购单 PO20260818003', risk: 'LOW', ip: '10.12.12.7', result: 'SUCCESS', before: '润致娃娃针 库存 12', after: '润致娃娃针 库存 62', detail: '入库 50 支，批次 BHX0825，质检合格' }),
-      mk({ at: hoursAgo(26), actor: '周岚', actorRole: '集团管理员', module: 'AUTH', action: '代操作（impersonate）', target: '苏晴（静安店长）', risk: 'HIGH', ip: '10.12.21.45', result: 'SUCCESS', detail: '开始代操作，理由：处理工单#T20260824 审批异常；会话 47 分钟后结束' }),
-      mk({ at: hoursAgo(30), actor: '顾屿', actorRole: '医生', module: 'EMR', action: '查看敏感信息', target: '客户 138****6677 身份证号', risk: 'MEDIUM', ip: '10.12.12.31', result: 'SUCCESS', detail: '解密查看身份证号（emr:edit 授权），操作已留痕' }),
-      mk({ at: hoursAgo(40), actor: '张强', actorRole: '—', module: 'AUTH', action: '越权访问拦截', target: '/admin/permissions', risk: 'HIGH', ip: '10.12.12.77', result: 'FAILED', detail: '前台角色尝试访问权限矩阵页，缺少 permission:view，已拦截并记录' }),
-    ]
-    seeded.value = true
+    namesResolved.value = true
   }
 
-  return { logs, MODULE_LABEL, RISK_LABEL, stats, add, seed }
+  async function loadFacets() {
+    try {
+      const { data } = await getAuditFacets()
+      facets.value = data
+    } catch (e) {
+      console.error('审计统计加载失败', e)
+    }
+  }
+
+  async function checkChain() {
+    try {
+      const { data } = await verifyAuditChain()
+      verify.value = data
+    } catch (e) {
+      console.error('链巡检失败', e)
+      verify.value = null
+    }
+  }
+
+  /** 检索：p 为目标页（0 起）；filters 变化时调用方应传 0。 */
+  async function search(p = 0) {
+    loading.value = true
+    error.value = ''
+    try {
+      const { data } = await pageAuditLogs({
+        bizType: filters.value.bizType || undefined,
+        actor: filters.value.actor.trim() || undefined,
+        keyword: filters.value.keyword.trim() || undefined,
+        from: toIso(filters.value.from),
+        to: toIso(filters.value.to),
+        page: p,
+        size: size.value,
+      })
+      items.value = data.items
+      total.value = data.total
+      page.value = data.page
+    } catch (e) {
+      error.value = '审计日志加载失败，请稍后重试'
+      console.error('审计日志检索失败', e)
+      items.value = []
+      total.value = 0
+    } finally {
+      loading.value = false
+    }
+  }
+
+  function resetFilters() {
+    filters.value = { bizType: '', actor: '', keyword: '', from: '', to: '' }
+    return search(0)
+  }
+
+  function setSize(n: number) {
+    size.value = n
+    return search(0)
+  }
+
+  /** 页面挂载：统计 + 首页 + 链巡检 + 姓名解析并行。 */
+  async function init() {
+    await Promise.all([loadFacets(), search(0), checkChain(), resolveNames()])
+  }
+
+  return {
+    items, total, page, size, totalPages, filters, facets, verify, loading, error, stats,
+    BIZTYPE_LABEL, bizLabel, isSensitive, displayActor,
+    init, search, resetFilters, setSize, loadFacets, checkChain,
+  }
 })
