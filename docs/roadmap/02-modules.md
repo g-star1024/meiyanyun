@@ -126,10 +126,12 @@
 | 字典管理 | ✅ | M7 | 字典端点真实 | — |
 | 国密网关双栈（Go） | ✅ | M7 | 18443/8443 双栈 | — |
 | 测试 / 双栈验证体系 | ✅ | 全程 | 每批 DoD（mvn+vue-tsc+双栈+PG 对账） | — |
-| M1 集团（brand/procurement/marketing 3 页真实） | 🔧 | — | 3 页直连 | 审计日志 B49 卡2 接真（见下行拆分），其余 13 页 mock，**远期 M1** |
+| M1 集团（brand/procurement/marketing 3 页真实） | 🔧 | — | 3 页直连 | 审计日志 B49 卡2、区域+门店主数据卡3 接真（见下行拆分），其余 11 页 mock，**远期 M1** |
 | C 端移动端（packages/coupons 2 页真实） | 🔧 | — | mp-uniapp 2 页 | 其余 20 页 mock，**远期移动端** |
 | M1 · 审计日志（/m1-audit-log） | ✅ | P5-B49 卡2 | DELIVERY-P5-B49，`43f52ca` | audit-service +GET /page 五过滤服务端分页+/facets 两新端点，原全链 List 端点零改动；KPI/过滤/分页/详情侧栏全真，/verify 如实显历史断链 #380 |
-| M1 集团其余 13 页 | ⬜ | — | — | 远期 M1 |
+| M1 · 区域管理（/m1-region） | ✅ | P5-B49 卡3 | DELIVERY-P5-B49，`494c272` | org/tree+regions/dist 双源只读，六区 KPI/卡体统计全真，写侧收窄 Backlog 只读 |
+| M1 · 门店主数据（/m1-tenant） | ✅ | P5-B49 卡3 | DELIVERY-P5-B49，`494c272` | /api/stores 接真只读（DataScope 随登录人数据域），7 列+动态筛选+KPI 含已关店+三态，写侧收窄只读 |
+| M1 集团其余 11 页 | ⬜ | — | — | 远期 M1 |
 | T2 数据分析（4 页） | ⬜ | — | — | 远期 T2 |
 | T3 外部集成 | ⬜ | — | — | 远期 T3 |
 | T4 AI 算力（4 页） | ⬜ | — | — | 远期 T4 |

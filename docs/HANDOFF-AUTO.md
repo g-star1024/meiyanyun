@@ -4,27 +4,27 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-14 12:43 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-14 13:21 CST -->
 <!-- MACHINE:BATCH=P5-B49 -->
-<!-- MACHINE:CARD=B49 卡3 区域+门店主数据读侧接真（卡2 审计已闭合 feat `43f52ca`；队列：卡3 区域+门店 → 卡4 聚合端点+概览/矩阵/对标 → 卡5 采购补全 → 卡6 SOP → 卡7 大屏 → 卡8+ 全新域五页；分组定案见 DELIVERY-P5-B49 §2.3） -->
+<!-- MACHINE:CARD=B49 卡4 集团聚合端点+概览/矩阵/对标三页接真（卡3 区域+门店已闭合 feat `494c272`；队列：卡4 聚合端点+概览/矩阵/对标 → 卡5 采购补全 → 卡6 SOP → 卡7 大屏 → 卡8+ 全新域五页；分组定案见 DELIVERY-P5-B49 §2.3） -->
 
 ## 当前状态（人读区）
 
 - **批次**：P5-B49（M1 集团管控 14 页批，C 方向）
-- **阶段**：卡0 落账纠错+卡1 侦察+卡2 审计日志接真（feat `43f52ca` 已推送、三轨对账 total=553 一致、批中回写完成）均已闭合，**卡3 区域+门店主数据读侧接真进行中**（后端读侧齐备无需改，前端 m1Region/m1Tenant 两 store 接真去 mock）
+- **阶段**：卡0 落账纠错+卡1 侦察+卡2 审计日志接真（feat `43f52ca` 已推送、三轨对账 total=553 一致、批中回写完成）+卡3 区域+门店主数据读侧接真（feat `494c272` 已推送）均已闭合，**卡4 集团聚合端点+概览/矩阵/对标三页接真进行中**（集团多店对比聚合接口走铁律 -1-D 跨店例外域，前端概览/矩阵/对标三页接真实 API 去 mock）
 - **上一批**：P5-B48 技术债纯还债批四卡全部闭合入库（见文末「P5-B48 闭合存档」）
 
 ## 批概览（B49）
 
-- 入口台账：02-modules L132「| M1 集团其余 13 页 | ⬜ | — | — | 远期 M1 |」（L131 已拆出「M1 · 审计日志 ✅」独立行）
+- 入口台账：02-modules L132「| M1 集团其余 13 页 | ⬜ | — | — | 远期 M1 |」（已拆出 ✅：L131 审计日志、区域管理、门店主数据；余 11 页）
 - 卡1 侦察已确权：17 条 M1 路由=3 真实（采购半真实：仅库存台账接真，供应商/PO 仍 mock）+13 个 M1 专属 mock 页+1 共享 SettingsView；台账「14 页」=13 mock+/m1-settings，三清单详见 DELIVERY-P5-B49 §2
 - 集团多店对比后端聚合：走**跨店例外域（铁律 -1-D）**，禁止在单店域内泄漏跨店查询
 - 完成度影响：B49 起每闭合一页/一组，94/166 完成度递增（B48 纯还债批数字不变系正常）
 
 ## 开工基线
 
-- 代码 HEAD=`43f52ca`（B49 卡2 审计日志接真已推送，工作区干净 = origin/main）
-- docs HEAD=`6957222`（卡2 批中回写已推送）
+- 代码 HEAD=`494c272`（B49 卡3 区域+门店主数据读侧接真已推送：api/org 扩 Store 字段+listStoreRegionDist，两 store 去 mock 只读化，两 view 重写；工作区干净 = origin/main）
+- docs HEAD=`477cac6`（卡3 批中回写 amend 定稿已推送）
 - 后端 19 服务 + 网关全部在线（`bash /tmp/meiyun-health.sh` 复核）；前端 dev http://localhost:8080
 - 登录：curl 通道 POST `https://127.0.0.1:8443/api/org/auth/login`（curl -k，E011/meiyun123=REGION_MGR，token 存 /tmp/meiyun_token.txt，验证前重新登录）；Chrome 通道 http://localhost:8080 手工填表（快捷登录已关闭）
 
@@ -33,8 +33,8 @@
 0. ✅ 卡0 已闭合（纯文档纠错，代码与四 feat 未动）：f2181aa 把卡2 写成「孤儿清理/漂移归零」失实。正确口径（git show 无 delete+commit body+审计 id=567/568+PG customer=13 四重证据）：missing 逐条 upsert 自动补齐 es110→113 二跑幂等；**orphan 仅 diff 清单+log.warn 待人工绝不删除，两轮恒=100（SC* 共享索引拓扑预期）**；「漂移 10」系 seed-only 口径误判，权威源=seed∪core=113。DELIVERY 与哨兵存档卡2 行由 11:38 接力实例先行修正，roadmap 三处（02-modules L33/03-timeline B48 行/04-backlog L76）由本实例补齐，随卡1 侦察落盘一并 docs 提交。
 1. ✅ 卡1 侦察：17 条 M1 路由=3 真实（采购半真实）+13 mock+1 共享 settings；后端 78 Controller 摸排完成；分组序列定案 DELIVERY-P5-B49 §2.3
 2. ✅ 卡2 审计日志 /m1-audit-log 已闭合（feat `43f52ca` 已推送：audit-service +GET /page 五过滤服务端分页+/facets 两新端点，原全链 List 端点零改动；前端 m1Audit store 接真去 seed，三轨对账 total=553 一致；/verify 如实显历史断链 #380，全量断链清单增强已登记 04-backlog 平台治理批）
-2.1. ⬜ 卡3 区域管理+门店主数据 /m1-region+/m1-tenant：后端读侧齐备无需改（写侧维持 Backlog 收窄口径），前端 m1Region/m1Tenant 两 store 接真读视图（org/tree+stores 同源一并闭合）
-2.2. ⬜ 卡4 起：按侦察分组逐页闭合——集团多店对比聚合接口走铁律 -1-D 跨店例外域，前端逐页接真实 API 去 mock
+2.1. ✅ 卡3 区域管理+门店主数据 /m1-region+/m1-tenant 已闭合（feat `494c272` 已推送，6 前端文件 +248/-653）：api/org.ts 扩 Store 四可选字段+StoreRegionDist+listStoreRegionDist（铁律 1 只加不改）；m1Tenant/m1Region 两 store 去 mock/seed/写侧只读化；两 view 重写（门店页 7 列+动态筛选+KPI 含已关店+三态 emptyText+页脚注；区域页 KPI 四卡+六区卡体统计+三态）；domain-home 中性化。三轨真验全绿：build exit 0；curl 三端点与 PG 对账逐区吻合（23=营业18+筹建3+关店2，六区 6/5/4/4/3/1）；Chrome E011 门店页 6 行（华东 DataScope 域收窄正确）、区域页 6 卡 KPI 6/6/23/18、两页 console 零 error 零 warn
+2.2. ⬜ 卡4 集团聚合端点（铁律 -1-D 跨店例外域）+概览/矩阵/对标三页接真去 mock → 卡5 采购补全 → 卡6 SOP → 卡7 大屏 → 卡8+ 五页全新域
 3. ⬜ 每卡：铁律 7 三轨真验（curl+PG/Chrome+构建）→ 铁律 6 构建 → 铁律 8 一卡一 feat commit+push
 4. ⬜ 批中：02-modules L131 逐页翻 ✅、01-dashboard 数字递增、03-timeline 逐卡加行
 5. ⬜ 批末：DELIVERY-P5-B49 + 五分册回写 + docs 原子提交 + 铁律 9 汇报 + 哨兵改 B50
