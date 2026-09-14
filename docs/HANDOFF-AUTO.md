@@ -4,7 +4,7 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 04:08 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-15 04:26 CST -->
 <!-- MACHINE:BATCH=P5-B49 -->
 <!-- MACHINE:CARD=B49 卡9 合规中心 /m1-compliance 整页去 mock 已闭合（feat `b7baee5` 已推送、SecurityContext.currentStaffName() 取操作人微调、种子库 Flyway 历史遗留修复、三轨全绿）→ 卡10 健康度巡检 /m1-health（store-service health 包）待开工 -->
 
