@@ -126,7 +126,7 @@
 | 字典管理 | ✅ | M7 | 字典端点真实 | — |
 | 国密网关双栈（Go） | ✅ | M7 | 18443/8443 双栈 | — |
 | 测试 / 双栈验证体系 | ✅ | 全程 | 每批 DoD（mvn+vue-tsc+双栈+PG 对账） | — |
-| M1 集团（brand/procurement/marketing 3 页真实） | 🔧 | — | 3 页直连 | 审计日志 B49 卡2、区域+门店主数据卡3、概览/矩阵/对标卡4 接真（见下行拆分），其余 8 页 mock，**远期 M1** |
+| M1 集团（brand/procurement/marketing 3 页真实） | 🔧 | — | 3 页直连 | 审计日志 B49 卡2、区域+门店主数据卡3、概览/矩阵/对标卡4、采购补全卡5 接真（见下行拆分），其余 7 页 mock，**远期 M1** |
 | C 端移动端（packages/coupons 2 页真实） | 🔧 | — | mp-uniapp 2 页 | 其余 20 页 mock，**远期移动端** |
 | M1 · 审计日志（/m1-audit-log） | ✅ | P5-B49 卡2 | DELIVERY-P5-B49，`43f52ca` | audit-service +GET /page 五过滤服务端分页+/facets 两新端点，原全链 List 端点零改动；KPI/过滤/分页/详情侧栏全真，/verify 如实显历史断链 #380 |
 | M1 · 区域管理（/m1-region） | ✅ | P5-B49 卡3 | DELIVERY-P5-B49，`494c272` | org/tree+regions/dist 双源只读，六区 KPI/卡体统计全真，写侧收窄 Backlog 只读 |
@@ -134,7 +134,8 @@
 | M1 · 集团经营概览（/m1） | ✅ | P5-B49 卡4 | DELIVERY-P5-B49，`f672a80` | finance-service 新增 GET /finance/group-overview 集团聚合端点（铁律 -1-D 跨店例外域，DataScope.storeSpec("storeCode") LinkedHashMap 聚合 parallel 空安全），hero/KPI/月度趋势全真，null 显「—」不伪造，默认期「已出月报门店数最多月份·并列取最新，随数据域而定」 |
 | M1 · 指标矩阵（/m1-matrix） | ✅ | P5-B49 卡4 | DELIVERY-P5-B49，`f672a80` | 同 group-overview 端点接真，门店×指标矩阵全真，fen2wan 分→万换算、score 权重归一+负截 0，null 显「—」 |
 | M1 · 门店对标（/m1-compare） | ✅ | P5-B49 卡4 | DELIVERY-P5-B49，`f672a80` | 同端点门店横向对比接真，E011 华东域默认期 2026-09 系域收窄正确非 bug（华东仅 ST-SH-001 有月报），脚注 4 处硬编码月份自发现自修复→generic 规则化 |
-| M1 集团其余 8 页 | ⬜ | — | — | 远期 M1 |
+| M1 · 采购管理（/m1-procurement） | ✅ | P5-B49 卡5 | DELIVERY-P5-B49，`a108203` | store-service 新建 procurement 域（供应商+采购单四表+收货），六态状态机/审批阈值三级/库存联动移动均价 1348 分/批次号幂等，view 零改动切真 |
+| M1 集团其余 7 页 | ⬜ | — | — | 远期 M1 |
 | T2 数据分析（4 页） | ⬜ | — | — | 远期 T2 |
 | T3 外部集成 | ⬜ | — | — | 远期 T3 |
 | T4 AI 算力（4 页） | ⬜ | — | — | 远期 T4 |
