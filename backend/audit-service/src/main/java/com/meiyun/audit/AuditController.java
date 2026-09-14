@@ -1,9 +1,12 @@
 package com.meiyun.audit;
 
+import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.Map;
@@ -13,9 +16,11 @@ import java.util.Map;
 public class AuditController {
 
     private final AuditService auditService;
+    private final AuditOutboxRelay outboxRelay;
 
-    public AuditController(AuditService auditService) {
+    public AuditController(AuditService auditService, AuditOutboxRelay outboxRelay) {
         this.auditService = auditService;
+        this.outboxRelay = outboxRelay;
     }
 
     /**
@@ -45,6 +50,30 @@ public class AuditController {
     @RequirePerm("audit:view")
     public List<AuditLog> list() {
         return auditService.findAll();
+    }
+
+    /** outbox 对账监测：状态计数 + 按来源服务聚合 + 最近失败明细。 */
+    @GetMapping("/outbox/stats")
+    @RequirePerm("audit:view")
+    public Map<String, Object> outboxStats() {
+        return outboxRelay.stats();
+    }
+
+    /** outbox 列表（可按 status=PENDING/SENT/DEAD 过滤，最新 100 条）。 */
+    @GetMapping("/outbox")
+    @RequirePerm("audit:view")
+    public List<Map<String, Object>> outboxList(@RequestParam(required = false) String status) {
+        return outboxRelay.list(status);
+    }
+
+    /** 死信人工重投：DEAD→PENDING，并记一条审计（经办人=当前操作员）。 */
+    @PostMapping("/outbox/{id}/retry")
+    @RequirePerm("audit:view")
+    public Map<String, Object> outboxRetry(@PathVariable Long id) {
+        if (!outboxRelay.retryOne(id, DataScope.currentActor())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "outbox 记录不存在或非 DEAD 状态");
+        }
+        return Map.of("id", id, "status", "PENDING");
     }
 
     public record AppendRequest(

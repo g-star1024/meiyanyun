@@ -3,6 +3,7 @@ package com.meiyun.audit;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.common.audit.AuditChain;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -27,9 +28,11 @@ public class AuditService {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AuditRepository repository;
+    private final JdbcTemplate jdbcTemplate;
 
-    public AuditService(AuditRepository repository) {
+    public AuditService(AuditRepository repository, JdbcTemplate jdbcTemplate) {
         this.repository = repository;
+        this.jdbcTemplate = jdbcTemplate;
     }
 
     @Transactional
@@ -39,7 +42,11 @@ public class AuditService {
         if (action == null || action.isBlank()) throw new IllegalArgumentException("action 不可空");
         if (payload == null || payload.isBlank()) throw new IllegalArgumentException("payload 不可空");
 
-        String prevHash = repository.findFirstByOrderByCreatedAtDesc()
+        // 追加串行化：HTTP 直发与 outbox 中继可能并发，二者都先读链尾再落库，
+        // 不加锁会读到同一链尾造成 prev_hash 分叉（验链断链）。事务级 advisory 锁随提交自动释放。
+        jdbcTemplate.execute("SELECT pg_advisory_xact_lock(hashtext('meiyun_audit_append'))");
+
+        String prevHash = repository.findFirstByOrderByIdDesc()
                 .map(AuditLog::getCurHash)
                 .orElse(AuditChain.genesisHash());
 
