@@ -312,8 +312,8 @@ export const MODULE_STATS: Record<string, string> = {
   '/admin/roles': '1 条权限申请待审',
   '/workorders': '2 个工单超 SLA',
   '/integrations': '8 个系统已对接',
-  '/m1-tenant': '6 家门店',
-  '/m1-region': '2 个区域',
+  '/m1-tenant': '门店档案总览',
+  '/m1-region': '六区组织框架',
   '/m1-procurement': '4 单采购在途',
   '/m1-dispatch': '1 个调度任务',
 }

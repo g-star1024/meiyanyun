@@ -105,10 +105,29 @@ export interface PermissionDef {
   description?: string
 }
 
-/** 门店主数据（store-service） */
+/** 门店主数据（store-service）；region/nature/status/openDate 为 B49 卡3 补声明的既有返回字段 */
 export interface Store {
   storeCode: string
   storeName: string
+  /** 大区（中文短名：华东/华南…） */
+  region?: string
+  /** 经营性质（直营/联营） */
+  nature?: string
+  /** 营业状态（中文落库：营业中/筹建中/已关店） */
+  status?: string
+  /** 开业日期 YYYY-MM-DD；筹建中门店为 null */
+  openDate?: string | null
+}
+
+/** 区域门店分布统计（store-service /stores/regions/dist，集团聚合通道） */
+export interface StoreRegionDist {
+  region: string
+  openCnt: number
+  ownCnt: number
+  jointCnt: number
+  buildingCnt: number
+  closedCnt: number
+  total: number
 }
 
 export interface StaffCreatePayload {
@@ -166,6 +185,8 @@ export const listStaff = (params?: string | { storeCode?: string; roleCode?: str
   return client.get<Staff[]>('/org/staff', { params: normalized })
 }
 export const listStores = () => client.get<Store[]>('/stores')
+/** 六区门店分布统计（营业/直营/联营/筹建/关店；DataScope 豁免的集团聚合通道） */
+export const listStoreRegionDist = () => client.get<StoreRegionDist[]>('/stores/regions/dist')
 
 // -------------------- 组织树写（B33） --------------------
 
