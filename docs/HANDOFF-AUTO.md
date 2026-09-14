@@ -24,7 +24,7 @@
 ## 开工基线
 
 - 代码 HEAD=`b7baee5`（B49 卡9 已推送）
-- docs HEAD=`<DOCS_C9>`（卡9 批中回写提交后回填）
+- docs HEAD=`d5d030a`（卡9 批中回写已推送）
 - 后端 19 服务 + 网关全部在线（`bash /tmp/meiyun-health.sh` 复核）；前端 dev http://localhost:8080
 - 登录：curl 通道 POST `https://127.0.0.1:8443/api/org/auth/login`（curl -k，E011/meiyun123=REGION_MGR，token 存 /tmp/meiyun_token.txt，验证前重新登录）；Chrome 通道 http://localhost:8080 手工填表（快捷登录已关闭）
 
