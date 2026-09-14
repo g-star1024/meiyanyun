@@ -1,8 +1,21 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { shDateStr } from '@/utils/datetime'
+import {
+  listSopTemplates, listSopTasks, createSopTemplate, publishSopTemplate,
+  startSopTask, toggleSopStep, completeSopTask,
+  type SopTemplateDTO, type SopTaskDTO,
+} from '@/api/sop'
 
+// ============================================================
 // 标准作业 SOP：流程模板库 + 门店执行任务 + 步骤勾选
+// B49 卡6 全量接真（诚实降级）：
+// - 权威源 store-service /stores/sop（模板三态 DRAFT→PUBLISHED 版本末位+1；
+//   任务 PENDING→IN_PROGRESS→DONE，OVERDUE 后端派生不落库）。
+// - 动作为「乐观本地变更 + 后台同步」：本地即时生效保 view 零改动（同步签名），
+//   服务端返回主体后原位替换为权威值；失败回滚/重拉并 console.error。
+// - API 不可用/空库时回落本地演示数据（demo=true，行为同原 mock store）。
+// ============================================================
 export type SopCategory = 'MEDICAL' | 'SERVICE' | 'SAFETY' | 'HYGIENE' | 'MANAGEMENT' | 'TRAINING'
 export type SopStatus = 'DRAFT' | 'PUBLISHED' | 'ARCHIVED'
 export type TaskStatus = 'PENDING' | 'IN_PROGRESS' | 'DONE' | 'OVERDUE'
@@ -130,16 +143,77 @@ function mkTasks(): SopTask[] {
   ]
 }
 
+// ---- DTO → view 模型映射（服务端 id 即 S%02d / TK%02d / 's'+序号，透传）----
+function mapTemplate(d: SopTemplateDTO): SopTemplate {
+  return {
+    id: d.id,
+    code: d.code,
+    title: d.title,
+    category: d.category,
+    version: d.version,
+    status: d.status,
+    owner: d.owner,
+    updatedAt: d.updatedAt ?? '',
+    applicableStores: d.applicableStores ?? ['ALL'],
+    steps: (d.steps ?? []).map((s) => ({
+      id: s.id,
+      title: s.title,
+      desc: s.desc ?? '',
+      ...(s.requirePhoto ? { requirePhoto: true } : {}),
+    })),
+  }
+}
+
+function mapTask(d: SopTaskDTO): SopTask {
+  const out: SopTask = {
+    id: d.id,
+    templateId: d.templateId,
+    templateTitle: d.templateTitle,
+    category: d.category,
+    tenantId: d.tenantId,
+    tenantName: d.tenantName,
+    assignee: d.assignee,
+    priority: d.priority,
+    dueAt: d.dueAt,
+    status: d.status,
+    completedSteps: d.completedSteps ?? [],
+  }
+  if (d.note) out.note = d.note
+  if (d.startedAt) out.startedAt = d.startedAt
+  if (d.completedAt) out.completedAt = d.completedAt
+  return out
+}
+
 export const useM1SopStore = defineStore('m1Sop', () => {
   const templates = ref<SopTemplate[]>([])
   const tasks = ref<SopTask[]>([])
   const seeded = ref(false)
+  /** 是否为本地演示数据（真实端点不可用/空库回落） */
+  const demo = ref(false)
 
-  function seed() {
-    if (seeded.value) return
-    templates.value = mkTemplates()
-    tasks.value = mkTasks()
-    seeded.value = true
+  // ---- seed：先落演示数据保 UI 不空，再拉真实端点；失败/空库回落演示 ----
+  let seeding: Promise<void> | null = null
+  function seed(): Promise<void> {
+    if (seeding) return seeding
+    if (seeded.value) return Promise.resolve()
+    seeding = (async () => {
+      templates.value = mkTemplates()
+      tasks.value = mkTasks()
+      try {
+        const [tplResp, taskResp] = await Promise.all([listSopTemplates(), listSopTasks()])
+        const tplList = (tplResp.data ?? []).map(mapTemplate)
+        const taskList = (taskResp.data ?? []).map(mapTask)
+        if (tplList.length === 0 && taskList.length === 0) throw new Error('空库')
+        templates.value = tplList
+        tasks.value = taskList
+        demo.value = false
+      } catch (e) {
+        console.error('[m1Sop] 加载 SOP 模板/任务失败，回落本地演示数据', e)
+        demo.value = true
+      }
+      seeded.value = true
+    })()
+    return seeding
   }
 
   const published = computed(() => templates.value.filter((t) => t.status === 'PUBLISHED'))
@@ -157,34 +231,91 @@ export const useM1SopStore = defineStore('m1Sop', () => {
 
   function template(id: string) { return templates.value.find((t) => t.id === id) }
 
+  /** 后台同步：成功用服务端主体原位替换；失败回滚/重拉。 */
+  function syncTask(id: string, p: Promise<{ data: SopTaskDTO }>, rollback: () => void) {
+    p.then((resp) => {
+      const idx = tasks.value.findIndex((x) => x.id === id)
+      if (idx >= 0 && resp.data) tasks.value[idx] = mapTask(resp.data)
+    }).catch((e) => {
+      console.error('[m1Sop] 任务操作失败，已回滚', e)
+      rollback()
+    })
+  }
+
   function startTask(id: string) {
     const t = tasks.value.find((x) => x.id === id)
-    if (t && t.status === 'PENDING') { t.status = 'IN_PROGRESS'; t.startedAt = shDateStr() }
+    if (!t || t.status !== 'PENDING') return
+    t.status = 'IN_PROGRESS'
+    t.startedAt = shDateStr()
+    if (demo.value) return
+    const tid = id
+    syncTask(tid, startSopTask(tid), () => {
+      const cur = tasks.value.find((x) => x.id === tid)
+      if (cur) { cur.status = 'PENDING'; delete cur.startedAt }
+    })
   }
+
   function toggleStep(taskId: string, stepId: string) {
     const t = tasks.value.find((x) => x.id === taskId)
     if (!t || t.status === 'DONE') return
     const idx = t.completedSteps.indexOf(stepId)
     if (idx >= 0) t.completedSteps.splice(idx, 1)
     else t.completedSteps.push(stepId)
+    if (demo.value) return
+    syncTask(taskId, toggleSopStep(taskId, stepId), () => {
+      const cur = tasks.value.find((x) => x.id === taskId)
+      if (!cur) return
+      const i = cur.completedSteps.indexOf(stepId)
+      if (i >= 0) cur.completedSteps.splice(i, 1)
+      else cur.completedSteps.push(stepId)
+    })
   }
+
   function completeTask(id: string, note: string) {
     const t = tasks.value.find((x) => x.id === id)
     if (!t) return
+    const prev = { status: t.status as TaskStatus, completedAt: t.completedAt, note: t.note, steps: [...t.completedSteps] }
     t.status = 'DONE'
     t.completedAt = shDateStr()
     t.note = note
-    // 补齐所有步骤
     const tmpl = template(t.templateId)
     if (tmpl) t.completedSteps = tmpl.steps.map((s) => s.id)
+    if (demo.value) return
+    syncTask(id, completeSopTask(id, note), () => {
+      const cur = tasks.value.find((x) => x.id === id)
+      if (!cur) return
+      cur.status = prev.status
+      cur.completedSteps = prev.steps
+      if (prev.completedAt) cur.completedAt = prev.completedAt
+      else delete cur.completedAt
+      if (prev.note) cur.note = prev.note
+      else delete cur.note
+    })
   }
+
   function publishTemplate(id: string) {
     const t = templates.value.find((x) => x.id === id)
-    if (t && t.status === 'DRAFT') { t.status = 'PUBLISHED'; t.version = t.version.replace(/\d+$/, (n) => String(+n + 1)) }
+    if (!t || t.status !== 'DRAFT') return
+    const prevVersion = t.version
+    t.status = 'PUBLISHED'
+    t.version = t.version.replace(/\d+$/, (n) => String(+n + 1))
+    if (demo.value) return
+    publishSopTemplate(id).then((resp) => {
+      const idx = templates.value.findIndex((x) => x.id === id)
+      if (idx >= 0 && resp.data) templates.value[idx] = mapTemplate(resp.data)
+    }).catch((e) => {
+      console.error('[m1Sop] 模板发布失败，已回滚', e)
+      const cur = templates.value.find((x) => x.id === id)
+      if (cur) { cur.status = 'DRAFT'; cur.version = prevVersion }
+    })
   }
 
   function createTemplate(input: Omit<SopTemplate, 'id' | 'code' | 'version' | 'status' | 'updatedAt'> & { code?: string }): SopTemplate {
-    const idx = templates.value.length + 1
+    const maxNo = templates.value.reduce((m, t) => {
+      const n = Number(t.id.replace(/^S/, ''))
+      return Number.isFinite(n) ? Math.max(m, n) : m
+    }, 0)
+    const idx = maxNo + 1
     const t: SopTemplate = {
       ...input,
       id: `S${String(idx).padStart(2, '0')}`,
@@ -194,11 +325,36 @@ export const useM1SopStore = defineStore('m1Sop', () => {
       updatedAt: shDateStr(),
     }
     templates.value.unshift(t)
+    if (!demo.value) {
+      createSopTemplate({
+        title: input.title,
+        category: input.category,
+        owner: input.owner,
+        applicableStores: input.applicableStores,
+        steps: input.steps.map((s) => ({ title: s.title, desc: s.desc, requirePhoto: s.requirePhoto })),
+      }).then((resp) => {
+        if (!resp.data) return
+        const real = mapTemplate(resp.data)
+        const i = templates.value.findIndex((x) => x.id === t.id)
+        if (real.id === t.id && i >= 0) {
+          templates.value[i] = real
+        } else if (i >= 0) {
+          templates.value[i] = real
+          console.warn('[m1Sop] 新建模板服务端 id 与乐观预测不一致，已按服务端值替换', t.id, '→', real.id)
+        } else {
+          templates.value.unshift(real)
+        }
+      }).catch((e) => {
+        console.error('[m1Sop] 新建模板失败，已移除乐观条目', e)
+        const i = templates.value.findIndex((x) => x.id === t.id)
+        if (i >= 0) templates.value.splice(i, 1)
+      })
+    }
     return t
   }
 
   return {
-    templates, tasks, seeded, seed, published, taskStats, completionRate,
+    templates, tasks, seeded, demo, seed, published, taskStats, completionRate,
     template, startTask, toggleStep, completeTask, publishTemplate, createTemplate,
   }
 })
