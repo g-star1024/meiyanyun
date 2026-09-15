@@ -1,9 +1,12 @@
 package com.meiyun.store.procurement;
 
+import com.meiyun.security.DataScope;
 import com.meiyun.store.Store;
 import com.meiyun.store.StoreRepository;
 import com.meiyun.store.consumable.ConsumableAuditRecorder;
 import com.meiyun.store.consumable.ConsumableService;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -174,12 +177,33 @@ public class PurchaseOrderService {
         return po;
     }
 
-    /** PO 列表（数据域已由 Controller 按 storeCode 收敛）；金额投影为「元」，回填供应商/门店名。 */
+    /**
+     * PO 列表（数据域强制收窄，B50 卡2）。
+     *
+     * <p>以 {@link DataScope#storeSpec} 为不可绕过的查询基座：REGION 无门店参数时自动 IN JWT
+     * stores 名单（原 JPQL {@code cast(null as string) is null} 退化为全量的跨区越权由此闭合）；
+     * Controller 显式门店参仅作叠加谓词，越界参数与数据域取交集自然为空。Controller 传入
+     * {@code "__NONE__"}（显式越界哨兵）短路空列表。金额投影为「元」，回填供应商/门店名。
+     */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> listPurchaseOrders(String storeCode, String status) {
         String sc = isBlank(storeCode) ? null : ("__NONE__".equals(storeCode) ? "__NONE__" : storeCode.trim());
         String st = isBlank(status) ? null : status.trim();
-        List<PurchaseOrder> pos = "__NONE__".equals(sc) ? List.of() : poRepo.search(sc, st);
+        List<PurchaseOrder> pos;
+        if ("__NONE__".equals(sc)) {
+            pos = List.of();
+        } else {
+            Specification<PurchaseOrder> spec = DataScope.storeSpec("storeCode");
+            if (sc != null) {
+                final String fsc = sc;
+                spec = spec.and((root, q, cb) -> cb.equal(root.get("storeCode"), fsc));
+            }
+            if (st != null) {
+                final String fst = st;
+                spec = spec.and((root, q, cb) -> cb.equal(root.get("status"), fst));
+            }
+            pos = poRepo.findAll(spec, Sort.by(Sort.Direction.DESC, "id"));
+        }
         List<Map<String, Object>> out = new ArrayList<>();
         for (PurchaseOrder po : pos) {
             out.add(poRow(po, itemRepo.findByPoIdOrderByLineNoAsc(po.getId())));

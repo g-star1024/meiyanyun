@@ -1,25 +1,23 @@
 package com.meiyun.store.procurement;
 
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
-import java.util.List;
 import java.util.Optional;
 
-/** 采购订单仓库 */
-public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, Long> {
+/**
+ * 采购订单仓库。
+ *
+ * <p>列表查询走 {@link JpaSpecificationExecutor}，由 Service 以 {@code DataScope.storeSpec}
+ * 强制叠加当前登录人数据域（B50 卡2：原 {@code cast(:storeCode as string) is null} 写法在
+ * REGION 多店账号无参时退化为全量，存在跨区越权）。
+ */
+public interface PurchaseOrderRepository extends JpaRepository<PurchaseOrder, Long>,
+        JpaSpecificationExecutor<PurchaseOrder> {
 
     Optional<PurchaseOrder> findByPoNo(String poNo);
-
-    // cast(... as string) 原因同 ConsumableRepository：stringtype=unspecified 下
-    // null 命名参数无类型上下文，PG 无法推断「? is null」/ lower(?) 的参数类型。
-    @Query("select p from PurchaseOrder p where (cast(:storeCode as string) is null "
-            + "or p.storeCode = :storeCode) "
-            + "and (cast(:status as string) is null or p.status = :status) "
-            + "order by p.id desc")
-    List<PurchaseOrder> search(@Param("storeCode") String storeCode,
-                               @Param("status") String status);
 
     /**
      * 当日采购单最大序号（po_no 形如 PO20260914-000001）。
