@@ -40,6 +40,9 @@ public class StoreProjectClient {
 
     private volatile Map<String, String> cache = Map.of();
     private volatile long cacheAt = 0L;
+    /** ACTIVE SKU → durationMin 缓存（P5-B51 卡6，与上方 name→category 缓存同源分立，免动 B49 已验证链路）。 */
+    private volatile Map<String, Integer> durationCache = Map.of();
+    private volatile long durationCacheAt = 0L;
 
     public StoreProjectClient(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
@@ -79,6 +82,47 @@ public class StoreProjectClient {
             log.warn("大屏品类映射刷新失败（沿用缓存/空映射，子项归「其他」）: {}", e.getMessage());
             cacheAt = now;
             return cache;
+        }
+    }
+
+    /**
+     * ACTIVE 态 SKU → durationMin（分钟）映射（P5-B51 卡6：预约 sku_code 外键校验 +
+     * 派单时长真源）。同一 {@code /api/stores/skus} 空参全量数据源；刷新失败沿用旧缓存，
+     * 首次失败返回空 Map——调用方口径：create 校验「查无 SKU 即 400」（与客户/门店外键
+     * 同硬口径），派单时长「查无/为 0 回落 60 分钟」（软降级不阻塞调度主链路）。
+     */
+    public Map<String, Integer> activeSkuDurationMap() {
+        long now = System.currentTimeMillis();
+        if (now - durationCacheAt < CACHE_MS) {
+            return durationCache;
+        }
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            List<Map<String, Object>> rows = restTemplate.exchange(
+                    storeBaseUrl + "/api/stores/skus", HttpMethod.GET, new HttpEntity<>(headers),
+                    new ParameterizedTypeReference<List<Map<String, Object>>>() {
+                    }).getBody();
+            Map<String, Integer> fresh = new HashMap<>();
+            if (rows != null) {
+                for (Map<String, Object> row : rows) {
+                    if (!"ACTIVE".equals(String.valueOf(row.get("status")))) {
+                        continue;
+                    }
+                    Object sku = row.get("sku");
+                    Object dur = row.get("durationMin");
+                    if (sku != null && dur instanceof Number) {
+                        fresh.put(String.valueOf(sku), ((Number) dur).intValue());
+                    }
+                }
+            }
+            durationCache = fresh;
+            durationCacheAt = now;
+            return fresh;
+        } catch (Exception e) {
+            log.warn("SKU 时长映射刷新失败（沿用缓存/空映射，派单时长回落 60 分钟）: {}", e.getMessage());
+            durationCacheAt = now;
+            return durationCache;
         }
     }
 }

@@ -27,6 +27,10 @@ import com.meiyun.txn.audit.AuditRecorder;
  *
  * <p>写链路铁律：外键（客户/门店）经服务间调用校验存在性、来源走枚举白名单、重复提交幂等防重、
  * 所有状态流转落审计链；非法入参一律返回中文 4xx，不裸 500。列表读模型富化客户/门店/医生中文名。
+ *
+ * <p>P5-B51 卡6：创建可选绑标准项目 SKU（product_sku.sku，落 appointment.sku_code 列），
+ * 非空时经 store SKU 目录校验存在且 ACTIVE（与客户/门店外键同硬口径）；调度派单时长
+ * 由 DispatchService 从 SKU duration_min 真源取，未绑定 SKU 回落 60 分钟。
  */
 @RestController
 @RequestMapping("/api/txn/appointment")
@@ -45,15 +49,17 @@ public class AppointmentController {
     private final ApptRefNameResolver names;
     private final AppointmentArrivalService appointmentArrivalService;
     private final DispatchService dispatchService;
+    private final StoreProjectClient storeProjectClient;
 
     public AppointmentController(AppointmentRepository repo, AuditRecorder audit, ApptRefNameResolver names,
                                  AppointmentArrivalService appointmentArrivalService,
-                                 DispatchService dispatchService) {
+                                 DispatchService dispatchService, StoreProjectClient storeProjectClient) {
         this.repo = repo;
         this.audit = audit;
         this.names = names;
         this.appointmentArrivalService = appointmentArrivalService;
         this.dispatchService = dispatchService;
+        this.storeProjectClient = storeProjectClient;
     }
 
     /** 创建预约（含外键/枚举/幂等校验）。 */
@@ -85,11 +91,18 @@ public class AppointmentController {
                     "该客户在 " + cmd.apptDate() + " " + cmd.apptTime() + " 已有未取消的预约");
         }
 
+        // 标准项目 SKU（P5-B51 卡6，可选）：非空时校验存在且 ACTIVE（与客户/门店外键同硬口径）
+        String skuCode = cmd.skuCode() == null || cmd.skuCode().isBlank() ? null : cmd.skuCode().trim();
+        if (skuCode != null && !storeProjectClient.activeSkuDurationMap().containsKey(skuCode)) {
+            throw badRequest("SKU 不存在或已停用: " + skuCode);
+        }
+
         Appointment a = new Appointment();
         a.setApptNo(nextNo());
         a.setCustomerId(cmd.customerId());
         a.setStoreCode(cmd.storeCode());
         a.setProject(cmd.project());
+        a.setSkuCode(skuCode);
         a.setApptDate(cmd.apptDate());
         a.setApptTime(cmd.apptTime());
         a.setDoctor(cmd.doctor());
@@ -97,7 +110,8 @@ public class AppointmentController {
         Appointment saved = repo.save(a);
         String actor = DataScope.currentActor();
         audit.record("APPT", saved.getApptNo(), actor, "CREATE",
-                "{\"project\":\"" + cmd.project() + "\",\"date\":\"" + cmd.apptDate()
+                "{\"project\":\"" + cmd.project() + "\",\"sku\":\"" + (skuCode == null ? "" : skuCode)
+                        + "\",\"date\":\"" + cmd.apptDate()
                         + "\",\"time\":\"" + cmd.apptTime() + "\",\"store\":\"" + cmd.storeCode() + "\"}");
         return toView(saved);
     }
@@ -256,7 +270,7 @@ public class AppointmentController {
                     a.getApptNo(), a.getCustomerId(),
                     a.getCustomerId() == null ? null : custNames.get(a.getCustomerId()),
                     a.getStoreCode(), storeNames.get(a.getStoreCode()),
-                    a.getProject(), a.getApptDate(), a.getApptTime(),
+                    a.getProject(), a.getSkuCode(), a.getApptDate(), a.getApptTime(),
                     a.getDoctor(), a.getDoctor() == null ? null : doctorNames.get(a.getDoctor()),
                     a.getSource(), a.getStatus(), a.getArrivedAt(), a.getCreatedAt()));
         }
@@ -271,11 +285,11 @@ public class AppointmentController {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, msg);
     }
 
-    /** 预约读模型：在实体字段上冗余客户/门店/医生中文名（零英文技术码外露）。 */
+    /** 预约读模型：在实体字段上冗余客户/门店/医生中文名（零英文技术码外露）；skuCode 为绑定的标准项目 SKU（可空）。 */
     public record AppointmentView(
             String apptNo, String customerId, String customerName,
             String storeCode, String storeName,
-            String project, LocalDate apptDate, String apptTime,
+            String project, String skuCode, LocalDate apptDate, String apptTime,
             String doctor, String doctorName,
             String source, String status,
             OffsetDateTime arrivedAt, OffsetDateTime createdAt) {}
@@ -284,6 +298,7 @@ public class AppointmentController {
             String customerId,
             @NotBlank String storeCode,
             @NotBlank String project,
+            String skuCode,
             @NotNull LocalDate apptDate,
             @NotBlank String apptTime,
             String doctor,

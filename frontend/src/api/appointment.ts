@@ -12,6 +12,7 @@ export interface AppointmentView {
   storeCode: string | null
   storeName: string | null
   project: string
+  skuCode: string | null
   apptDate: string
   apptTime: string
   doctor: string | null
@@ -35,6 +36,7 @@ export interface CreateApptCmd {
   customerId: string
   storeCode: string
   project: string
+  skuCode?: string | null
   apptDate: string
   apptTime: string
   doctor?: string | null

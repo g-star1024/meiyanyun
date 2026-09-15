@@ -27,8 +27,9 @@ import java.util.Map;
  * P5-B51 卡4 接真，resourceId=资产编号 assetNo）。
  *
  * <p>待派单 Job = 当日「已预约/已到店」且无派单占用（含 DONE 终态）的预约；已到店排前、到店时间升序。
- * 派单 start 锚定预约 apptTime（不可自由选时），时长固定 60 分钟（project↔SKU 名匹配率 0% 实证，
- * 不伪造真实时长，Backlog）；DOCTOR 资源必须与预约指定医生一致；同资源同日时段重叠拒绝；
+ * 派单 start 锚定预约 apptTime（不可自由选时），时长取预约绑定 SKU 的 duration_min 真源
+ * （P5-B51 卡6；未绑定/未配置/目录不可达回落 60 分钟，不伪造真实时长）；DOCTOR 资源必须与预约
+ * 指定医生一致；同资源同日时段重叠拒绝；
  * 占用状态由预约态派生（已预约=SCHEDULED / 已到店=IN_PROGRESS）。释放为 RELEASED 保留行；
  * 治疗完成由方案单 treatDone AFTER_COMMIT 联动置 DONE（终态回显不占时段，不可释放/再派单）；
  * 预约改期由 {@link #followReschedule} 同事务跟随移动 SCHEDULED 派单（P5-B51 卡5，锚定语义延伸，
@@ -52,7 +53,7 @@ public class DispatchService {
     /** 固定班次（暂无真实排班源，Backlog）。 */
     public static final String WORK_START = "09:00";
     public static final String WORK_END = "20:00";
-    /** 固定派单时长（分钟）。 */
+    /** 默认派单时长（分钟）：预约未绑定 SKU 或 SKU 未配置时长时回落（P5-B51 卡6 前为固定值）。 */
     public static final int DURATION_MIN = 60;
 
     private final DispatchAssignmentRepository assignmentRepo;
@@ -60,6 +61,7 @@ public class DispatchService {
     private final OrgStaffClient orgStaffClient;
     private final StoreRoomClient storeRoomClient;
     private final StoreEquipmentClient storeEquipmentClient;
+    private final StoreProjectClient storeProjectClient;
     private final ApptRefNameResolver names;
     private final AuditRecorder audit;
 
@@ -68,6 +70,7 @@ public class DispatchService {
                            OrgStaffClient orgStaffClient,
                            StoreRoomClient storeRoomClient,
                            StoreEquipmentClient storeEquipmentClient,
+                           StoreProjectClient storeProjectClient,
                            ApptRefNameResolver names,
                            AuditRecorder audit) {
         this.assignmentRepo = assignmentRepo;
@@ -75,6 +78,7 @@ public class DispatchService {
         this.orgStaffClient = orgStaffClient;
         this.storeRoomClient = storeRoomClient;
         this.storeEquipmentClient = storeEquipmentClient;
+        this.storeProjectClient = storeProjectClient;
         this.names = names;
         this.audit = audit;
     }
@@ -162,7 +166,7 @@ public class DispatchService {
             out.add(new JobView(
                     a.getApptNo(), a.getApptNo(),
                     customerName != null ? customerName : "未登记客户",
-                    a.getProject(), DURATION_MIN, a.getApptTime(),
+                    a.getProject(), resolveDurationMin(a), a.getApptTime(),
                     a.getDoctor(), preferredDoctor,
                     "NORMAL", "PENDING", ST_ARRIVED.equals(a.getStatus()),
                     String.valueOf(a.getCreatedAt())));
@@ -172,7 +176,19 @@ public class DispatchService {
 
     // ============================= 写侧 =============================
 
-    /** 派单：start 锚定预约 apptTime，时长 60 分钟，全量校验 + 状态派生 + 审计；DONE 终态预约 422。 */
+    /** 派单时长真源（P5-B51 卡6）：预约绑定 SKU → product_sku.duration_min；未绑定/未配置/目录不可达 → 回落 60 分钟。 */
+    private int resolveDurationMin(Appointment a) {
+        String sku = a.getSkuCode();
+        if (sku != null && !sku.isBlank()) {
+            Integer d = storeProjectClient.activeSkuDurationMap().get(sku);
+            if (d != null && d > 0) {
+                return d;
+            }
+        }
+        return DURATION_MIN;
+    }
+
+    /** 派单：start 锚定预约 apptTime，时长取预约 SKU 的 duration_min 真源（无 SKU 回落 60 分钟），全量校验 + 状态派生 + 审计；DONE 终态预约 422。 */
     @Transactional
     public AssignmentView dispatch(String storeCode, DispatchCmd cmd) {
         String sc = requireStore(storeCode);
@@ -245,14 +261,15 @@ public class DispatchService {
             if (resourceName.isBlank()) resourceName = resourceId;
         }
 
-        // start 锚定预约时段；固定班次 + 固定时长校验。
+        // start 锚定预约时段；班次窗校验 + 时长取 SKU 真源（无 SKU 回落 60 分钟）。
         String start = a.getApptTime();
-        if (start.compareTo(WORK_START) < 0 || plusMinutes(start, DURATION_MIN).compareTo(WORK_END) > 0) {
+        int dur = resolveDurationMin(a);
+        if (start.compareTo(WORK_START) < 0 || plusMinutes(start, dur).compareTo(WORK_END) > 0) {
             throw error(HttpStatus.UNPROCESSABLE_ENTITY,
                     "派单时段 " + start + " 超出班次 " + WORK_START + "-" + WORK_END
                             + "，改期请先在预约管理改期");
         }
-        String end = plusMinutes(start, DURATION_MIN);
+        String end = plusMinutes(start, dur);
 
         // 同资源同日时段重叠（HH:mm 零填充字符串可直接按区间比较）。
         List<DispatchAssignment> own = assignmentRepo
@@ -299,12 +316,13 @@ public class DispatchService {
         List<DispatchAssignment> scheduled = assignmentRepo.findByApptNoAndStatusIn(
                 a.getApptNo(), List.of(DispatchAssignment.ST_SCHEDULED));
         if (scheduled.isEmpty()) return;
-        if (newTime.compareTo(WORK_START) < 0 || plusMinutes(newTime, DURATION_MIN).compareTo(WORK_END) > 0) {
+        int dur = resolveDurationMin(a);
+        if (newTime.compareTo(WORK_START) < 0 || plusMinutes(newTime, dur).compareTo(WORK_END) > 0) {
             throw error(HttpStatus.UNPROCESSABLE_ENTITY,
                     "该预约已派单，新时段 " + newTime + " 超出班次 " + WORK_START + "-" + WORK_END
                             + "，请先释放派单再改期");
         }
-        String end = plusMinutes(newTime, DURATION_MIN);
+        String end = plusMinutes(newTime, dur);
         for (DispatchAssignment asg : scheduled) {
             List<DispatchAssignment> own = assignmentRepo
                     .findByStoreCodeAndBizDateAndResourceTypeAndResourceIdAndStatusIn(

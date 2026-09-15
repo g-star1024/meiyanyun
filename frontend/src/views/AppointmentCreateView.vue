@@ -4,7 +4,7 @@
  * 双路径：搜已有客户 / 新客建档（真实 customer-service）。
  * 预约落 txn-service：来源仅 B端登记/C端小程序/C端App；doctor 为员工工号（后端富化中文名）。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -16,6 +16,7 @@ import { useToast } from '@/composables/useToast'
 import { searchCustomers, createCustomer, type CustomerDTO } from '@/api/customer'
 import { listStores, listStaff, type Staff } from '@/api/org'
 import { createAppointment, crossCheck, type AppointmentView } from '@/api/appointment'
+import { listSkus, type SkuDTO } from '@/api/projectMaster'
 import { shDateStr } from '@/utils/datetime'
 
 const router = useRouter()
@@ -31,7 +32,11 @@ const sourceOptions = [
 ]
 onMounted(async () => {
   // 门店与员工独立容错：门店服务不可用时不拖垮医生下拉（医生来自 org-service）
-  const [storesRes, staffRes] = await Promise.allSettled([listStores(), listStaff()])
+  const [storesRes, staffRes, skusRes] = await Promise.allSettled([
+    listStores(),
+    listStaff(),
+    listSkus({ status: 'ACTIVE' }),
+  ])
   if (storesRes.status === 'fulfilled') {
     storeOptions.value = ((storesRes.value.data as any[]) || []).map((s) => ({
       label: s.storeName || s.storeCode, value: s.storeCode,
@@ -51,6 +56,15 @@ onMounted(async () => {
   } else {
     console.error('[appt-new] 员工列表加载失败', staffRes.reason)
     toast.error('医生数据加载失败')
+  }
+  // 标准项目 SKU（P5-B51 卡6）：失败（如角色无 brand:view 权限 403）仅降级为纯手输项目名，不阻塞预约
+  if (skusRes.status === 'fulfilled') {
+    skuRows = skusRes.value.data || []
+    skuOptions.value = skuRows.map((s) => ({
+      label: `${s.name}（${s.durationMin}分钟）`, value: s.sku,
+    }))
+  } else {
+    console.error('[appt-new] SKU 目录加载失败（降级为手输项目）', skusRes.reason)
   }
 })
 
@@ -165,8 +179,18 @@ const apptDate = ref(isoDate(0))
 const apptTime = ref('10:00')
 const apptProject = ref('')
 const apptDoctor = ref('')
+const apptSku = ref('')
+const skuOptions = ref<{ label: string; value: string }[]>([])
+let skuRows: SkuDTO[] = []
 const apptSource = ref('B端登记')
 const submitting = ref(false)
+
+// 选中 SKU 自动回填项目名（可再手改）；选手输则不回填
+watch(apptSku, (sku) => {
+  if (!sku) return
+  const hit = skuRows.find((s) => s.sku === sku)
+  if (hit) apptProject.value = hit.name
+})
 
 const canSubmit = computed(
   () => !!selectedCustomer.value && !!apptStore.value && !!apptDate.value
@@ -181,6 +205,7 @@ async function submit() {
       customerId: selectedCustomer.value.customerId,
       storeCode: apptStore.value,
       project: apptProject.value.trim(),
+      skuCode: apptSku.value || null,
       apptDate: apptDate.value,
       apptTime: apptTime.value,
       doctor: apptDoctor.value || null,
@@ -299,6 +324,10 @@ function pillOf(status: string) {
             <label class="fld-label">到店时间</label>
             <CSelect v-model="apptTime" :options="timeOptions" width="100%" />
           </div>
+        </div>
+        <div v-if="skuOptions.length" class="fld">
+          <label class="fld-label">标准项目（选填，绑定后派单时长按 SKU 时长）</label>
+          <CSelect v-model="apptSku" :options="[{ label: '手输项目（不绑定 SKU）', value: '' }, ...skuOptions]" width="100%" />
         </div>
         <CInput v-model="apptProject" label="预约项目" placeholder="如：光子嫩肤 / 热玛吉面诊" />
         <div class="fld">

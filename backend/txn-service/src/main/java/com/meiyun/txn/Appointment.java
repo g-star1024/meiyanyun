@@ -30,6 +30,10 @@ public class Appointment {
     @Column(nullable = false, length = 64)
     private String project;
 
+    /** 标准项目 SKU（P5-B51 卡6，product_sku.sku 全局唯一码；可空 = 手输项目名未绑 SKU）。 */
+    @Column(name = "sku_code", length = 40)
+    private String skuCode;
+
     @Column(name = "appt_date", nullable = false)
     private LocalDate apptDate;
 
