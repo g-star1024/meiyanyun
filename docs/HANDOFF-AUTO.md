@@ -3,17 +3,17 @@
 > 用途：铁律 11 自主续跑的唯一事实源。任何接续会话/定时任务先读本文件，再按「开发前 checklist」执行。
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
-<!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 12:45 CST -->
-<!-- MACHINE:BATCH=P5-B50（平台治理/还债批，用户已拍板：先①平台治理后②M1 纵深缺口） -->
-<!-- MACHINE:CARD=P5-B50 卡0 哨兵激活完成，即将进入卡1 链路先行侦察（L127 采购 store_id 越权+L129 大屏 paidAt UTC+L132 target DataScope 三快修只读侦察）。卡序：卡2-4 三快修→卡5 登录页 401 门控（L146）→卡6 /verify 全量断链清单（L122/#380/#520+前端 KPI）→卡7 网关 X-Real-IP 审计 IP（L134）；大项 L133 impersonate/L124 GROUP 账号/L123 验真 UI 白天报用户拍板。B50 纯还债批完成度数字预期不变（108/166）。开工前五分册已全读 -->
+<!-- MACHINE:STATUS=DORMANT -->
+<!-- MACHINE:HEARTBEAT=2026-09-15 17:14 CST -->
+<!-- MACHINE:BATCH=P5-B50 已闭合存档（2026-09-15）；下一指 P5-B51（M1 调度六缺口 04-backlog L140-145，用户已拍板顺序②，开工先侦察数据源就绪度） -->
+<!-- MACHINE:CARD=P5-B50 平台治理/还债批九卡全部闭合：卡2 da3d812（L127）、卡3 cbd6692（L129）、卡4 3a263ab（L132）、卡5 7f08103（L146）、卡6 aecf97f（L122）、卡7 5251306（L134）、卡8a dd4307a（L147）、卡8b 零代码（L124）、卡8c 43f009b（L148）；B49 四项观察项（登录壳四路401/#380全量断链清单/审计真实IP/大屏UTC）全清零；纯还债数字不变 ✅108/166≈65%、🔧1、⬜56，域⑧ 34✅2🔧31⬜；04 九行勾销 L122/L124/L127/L129/L132/L134/L146/L147/L148（L123/L133 保留登记不动工）；DELIVERY-P5-B50-2026-09-15.md 14 章；append-only 留档 prod compliance_check id=1 PRIVACY FAIL、审计 id588/589/590、seed id180-186。代码 HEAD=43f009b，批末 docs 原子提交见 git log。P5-B51 开工：哨兵改 ACTIVE+刷新心跳，铁律 10 全读五分册，逐卡侦察 04 L140-145 六缺口数据源（DEVICE/URGENT/durationMin/DONE/班次表/派单改期），无源继续诚实空态 -->
 
 ## 当前状态（人读区）
 
-- **批次**：P5-B50（平台治理/还债批；用户 2026-09-15 拍板：先①平台治理批，B50 闭合后再做②M1 Backlog 纵深缺口=P5-B51）
-- **阶段**：卡0 哨兵激活（12:45 CST）→ 即将进入卡1 三快修链路先行只读侦察。P5-B49 全 12 卡已闭合存档（见文末「P5-B49 闭合存档」，代码 `0b3dfb0`/docs `05f1593`）。
-- **B50 范围（04-backlog 权威行）**：L127 采购组合域列表越权（补 store_id 强制过滤+越权用例）、L129 大屏 paidAt 直接 slice UTC（复用 utils/datetime.ts 转 Asia/Shanghai）、L132 target 列表行级 DataScope 未收窄（+越权用例）、L146 登录页挂全局壳无 token 四路 401（壳按 token 门控预拉取或登录页不挂壳）、L122 /verify 首处断链即返（实测两处真实断链 #380 2026-09-12 11:49 / #520 2026-09-13 20:01，均早于 B48 `4bfb658` 部署 09-14 09:41；append-only 存量保留，增强返回全量断链清单+前端链完整性 KPI）、L134 审计真实客户端 IP（现 RECHECK/impersonate 审计 ip 写 "web"，Go 网关采集 X-Real-IP 透传 audit append 链路）。
-- **待拍板大项（白天 08:00–22:00 先建议后拍板，不擅自扩范围）**：L133 impersonate 真实身份切换（org-service 会话置换+权限重签，与 L46 超管 Impersonate 合并评估，范围大）、L124 无 GROUP 集团全域账号（组织/权限治理批）、L123 DSAR/consent/哈希验真 UI（远期，可与 L122 验真 UI 评估合并）。非本批：L89 setup-seed-db 保留 audit_log、L128 ai-service seed Flyway V17-V29 悬置。
+- **批次**：P5-B50 平台治理/还债批 **2026-09-15 17:14 已批末闭合存档**（九卡 8 commit+卡8b 零代码）；哨兵 DORMANT
+- **阶段**：九卡全部闭合 push——卡2 `da3d812`（L127 采购越权）、卡3 `cbd6692`（L129 大屏时区）、卡4 `3a263ab`（L132 target 行级 DataScope）、卡5 `7f08103`（L146 登录四门控）、卡6 `aecf97f`（L122 verifyChain 全量断链清单 prod [380,520]）、卡7 `5251306`（L134 真实客户端 IP）、卡8a `dd4307a`（L147 耗材越权+库存 watch）、卡8b 零代码（L124 SE101 GROUP 口径核实）、卡8c `43f009b`（L148 actor 按通道强制）。B49 四项观察项全部清零。批末：04 九行勾销、五分册回写、DELIVERY-P5-B50-2026-09-15.md 已成稿并同批原子提交。
+- **下一指 P5-B51（用户已拍板顺序②）**：M1 调度六缺口（04-backlog L140-145：DEVICE 设备档案 / URGENT 加急源 / durationMin 真实时长 / assignment DONE 完成态 / 医生房间班次表 / 派单时段自由度改期）；多依赖跨域新数据源，**开工逐卡只读侦察数据源就绪度，无源继续诚实空态**，白天先建议后拍板。
+- **保留登记（B50 未动工，随后续批次评估）**：L133 impersonate＝大（JWT act/realSub claim+meiyun-security 全服务回归+前端换 token，与 L46 合并）、L123 报告哈希验真 UI＝中（content_hash+规范化字节口径，DSAR/consent 远期）。非本批：L89 setup-seed-db 保留 audit_log、L128 ai-service seed Flyway V17-V29 悬置。
 - **记账口径**：纯还债批照 B36/B38/B40/B48 先例——完成度数字不变（✅108/166≈65%、⬜56、🔧1、域⑧ 34✅2🔧31⬜），只勾 04-backlog 行、03-timeline 加行、00-history 顶部加简报。
 - **上一批**：P5-B49 M1 集团管控屏批全 12 卡闭合（M1 17/17 全切真，见文末存档）
 
@@ -28,16 +28,20 @@
 ## 下一步动作（B50 卡序列）
 
 0. ✅ 卡0 哨兵激活（本 docs 提交）：五分册全读 → STATUS=ACTIVE、心跳 12:45、BATCH=P5-B50、卡序列落盘
-1. ⬜ 卡1 链路先行只读侦察（铁律 -1，不动代码）：① store-service procurement 列表查询与 resolveReadStoreCode 三段守卫（L127，参照 consumable 端点）；② frontend m1Screen.ts paidAt.slice(11,16) 与 utils/datetime.ts 既有工具（L129，B48 卡4 已推广 56 处）；③ finance-service BizTargetService 列表查询与 DataScope 行级能力（L132）。产出链路映射+精确改法清单后再切卡
-2. ⬜ 卡2 L127：M1 采购组合域列表补 store_id 强制过滤（不信任请求头上下文）+越权用例；curl 跨店头 403/空、本域 200 真验；一卡一 feat commit+push
-3. ⬜ 卡3 L129：数据大屏成交流时间转 Asia/Shanghai（复用 utils/datetime.ts，禁新造格式化）；Chrome 时间与 PG `now()/AT TIME ZONE` 核对零误差；vue-tsc+vite build
-4. ⬜ 卡4 L132：BizTarget 列表补 DataScope 行级过滤（区域岗仅见本域、门店岗仅见本店）+越权用例；curl E011 华东/他域账号四角真验
-5. ⬜ 卡5 L146：CShellDesktop.vue 按 token 有无门控预拉取（无 token 不发 /auth/permissions、/stores×2、/txn/notifications；登录后全 200）；client.ts 401 对 /login 豁免已存在不动；Chrome 无 token 访问 /login console 零 401 截图为证
-6. ⬜ 卡6 L122：audit-service verifyChain 增强——遍历全链返回全量断链清单（brokenAtId 首处口径保留兼容、新增 breaks 数组，#380/#520 两条 PG lag() 对账一致）+前端 M1AuditLogView 链完整性 KPI 展示全量断链；append-only 存量不动
-7. ⬜ 卡7 L134：Go 网关采集 X-Real-IP/X-Forwarded-For 透传至 audit append 链路，审计 ip 字段实证为真实客户端 IP（RECHECK/impersonate 不再写 "web"）；网关镜像双栈部署
-8. ⬜ 大项决策点：L133 impersonate / L124 GROUP 账号 / L123 验真 UI——侦察后白天给「建议+理由」报用户拍板是否纳入本批，不自行决定
+1. ✅ 卡1 链路先行只读侦察（铁律 -1，不动代码）：procurement 三段守卫 / m1Screen paidAt slice / BizTarget DataScope 已完成，改法清单落盘
+2. ✅ 卡2 L127：采购组合域列表 store_id 强制过滤+越权用例（`da3d812`，curl 跨域本域真验）
+3. ✅ 卡3 L129：大屏成交流时间 Asia/Shanghai（`cbd6692`，复用 utils/datetime，Chrome+PG 零误差）
+4. ✅ 卡4 L132：BizTarget 列表 DataScope 行级过滤+越权用例（`3a263ab`，E011 四角真验）
+5. ✅ 卡5 L146：数据层按 token 门控预拉取+登录后补拉+stores inflight 去重（`7f08103`，Chrome 无 token 零请求/登录三路各 1 次 200/硬刷新 200，双栈部署）
+6. ✅ 卡6 L122（`aecf97f`，5 files +201/-8）：verifyChain 遍历全链沿存储 curHash 推进返回全量 breaks（brokenAtId 首处口径保留）；AuditServiceVerifyChainTest 3 用例（篡改+重链同型、断链在下游暴露）；前端断链清单卡。三轨：prod breaks=[380,520]/569、seed []/117
+7. ✅ 卡7 L134（`5251306` 已 push，7 files +364/-7）：Go 网关 router.go clientIPFromRequest/remoteHost+Director 规范化（X-Real-IP=解析客户端、XFF 追加直接对端 peer，直连采 RemoteAddr），router_test.go 9 用例；meiyun-security 新增 ClientIp（XFF 首段→X-Real-IP→remoteAddr→"unknown"）+ClientIpTest 6 用例（JDK 动态代理 fake，零新增依赖）；ComplianceController 注入 HttpServletRequest、ComplianceService.recheck 加 clientIp 参去 "web"，ComplianceServiceRecheckIpTest 2 用例。共 20 测试用例全绿。双栈部署：交叉编译重建 meiyun/gateway:latest 双栈 recreate、audit 胖包 docker cp 双栈重启均 healthy。三轨真验全绿：curl 四场景（经 nginx/直连伪造 XFF 203.0.113.77/无头兜底，seed id180-182、prod id588-589）、PG payload.ip 全部真实非 web、Chrome 浏览器内复检 seed id183 actor=冯区域 ip=192.168.65.1，审计页渲染 121 条「哈希链完整」；seed verify ok total=121 breaks=[]、prod 571 仅历史断链[380,520] 新行均正常延长链。**prod 有临时验真数据需批末记录：meiyun_core.compliance_check 手插 id=1（PRIVACY「L134 平台治理验真临时项」，现 FAIL），审计 id588/589**
+8. 🔄 卡8 平台类小项收口（依据批次授权「各卡平台类小项…开始处理吧」自主口径：小项本批闭合、中大项登记 backlog 不动工）：
+   - ✅ **卡8a 耗材列表/流水越权（同源还债，`dd4307a` 已 push，5 files +179/-39，2026-09-15 16:05 三轨闭合）**：ConsumableRepository/ConsumableMovementRepository 改继承 JpaSpecificationExecutor 删除 `cast null` 全量退化 JPQL；ConsumableService 两列表方法以 DataScope.storeSpec("storeCode") 为基座（"__NONE__" 哨兵短路、显式参叠加、档案 Sort ASC skuCode/流水 Sort DESC id），写路径未动；新增 ConsumableServiceScopeTest 6 用例，store-service 全量 12 绿。双栈 docker cp+restart healthy。三轨：curl seed E011（REGION stores=[SST01,02,06]）档案无参 36→18、越界 SST03=0、本域 SST01=6；流水无参 38→18（5+7+6）、越界=0、本域 SST02=7；无 token 401；prod E011 档案 2/流水 4 均 ST-SH-001。PG 对账 18/18/2 全符。Chrome 库存页切换器仅现在域三店。**附带发现并同批修复前端陈旧缺陷**：InventoryView 漏挂门店切换 watch（OrderView/Writeoff/AppointmentBoard 三页均有范式），切店不重拉耗材/配方/异常；补 watch（inv.seed(true)、STORE 范围 loadBoms(true)、loadExceptions(true)），npm build 过、双栈前端部署，Chrome 实测浦东 SST02（库存90/总值¥16,020）切徐汇 SST01（50/¥5,700/缺货1）无刷新即重拉，四路 XHR 全带新店码 200，console 零告警。
+   - ✅ **卡8b L124 GROUP 全域口径（零代码，2026-09-15 16:20 三轨闭合）**：侦察阶段核实 EXTRA_STAFF SE101 周岚在 meiyun_core/meiyun_seed 双库 staff 均已播种为 SUPER_ADMIN/store_code=null/region=null/在职，登录实测 scope=GROUP、stores=[]、perms=*（AuthController ROLE_SCOPE SUPER_ADMIN→GROUP、resolveVisibleStores GROUP 返空=DataScope 全量）。L124 原文含「增补账号 **或** 明确 SUPER_ADMIN 全量域口径」两路径，既有账号已合格，新增 SE106 既冗余又多一个弱口令账号故不新增。/finance/group-overview（DataScope.storeSpec 基座）三口径真验对齐 PG 基线：seed SE101 全域 7 行/4 店（SST01/02/03/06，8月4店¥1,259,000,000）vs E011 华东 6 行/3 店（SST01/02/06，8月¥260,000,000，差额恰为越界 SST03 的 ¥999,000,000）；prod SE101 全域 7 行/5 店（全 ST-*）vs E011 2 行/仅 ST-SH-001；双栈匿名 401。批末 04 L124 按「明确口径+SE101 真验」勾销。
+   - ✅ **卡8c AuditController actor 自报缺陷（`43f009b` 已 push，1 file +9/-2，2026-09-15 16:26 三轨闭合）**：append 按鉴权通道强制 actor——`"system".equals(DataScope.currentActor())`（X-Internal-Token 系统身份，业务服务已在本地 SecurityContext 代填真实操作人）沿用 req.actor() 且空值兜底 "system"；否则（员工 JWT 直连，合规 impersonate 留痕）强制取 JWT staffId 忽略请求体 actor；AppendRequest.actor 去 @NotBlank。mvn package audit-service 胖包双栈 docker cp+restart healthy。五通道真验（B50_8C_TEST 永久留痕）：T1 伪造 actor=FORGED_E011→PG 落 SE101、T2 不传 actor→SE101、T3 匿名→401、T4 内部 token 代填 E011→沿用 E011（宿主 18084 直连绕网关）、T5 错内部 token→401；prod 同构 P1 伪造 HACK→落 SE101（id590）；seed verifyChain ok total=124 breaks=[]，prod 断链仍仅历史 #380（卡6 已治理为清单展示，新行正常延链）。
+   - 📝 **卡8d backlog 登记（批末回写 04）**：耗材越权新增行并随闭合勾销；L133 impersonate＝大（JWT 自包含被 5+ 服务本地验签，需加 act/realSub claim+meiyun-security 全服务回归+审计 actor 口径全局统一+前端 auth store 换 token，远期独立大项）；L123 报告哈希验真 UI＝中（report_job 加 content_hash 列+生成端 SHA-256+验真端点+前端卡，关键坑 CSV BOM/时间戳致同参数重导字节不同，须先定义规范化字节口径；DSAR/consent 远期不同批）。
 9. ⬜ 每卡：铁律 7 三轨真验（curl 经网关 + PG/Chrome + 构建）→ 铁律 8 一卡一 feat commit 紧跟 push
-10. ⬜ 批末：新建 DELIVERY-P5-B50 + 五分册回写（00 顶部简报/03 表底加卡行/04 勾行/02 备注/01 数字不变勾稽）+ 索引同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B51
+10. ✅ 批末（2026-09-15 17:14）：DELIVERY-P5-B50-2026-09-15.md（14 章 170 行）+ 五分册回写（00 顶部简报/03 表底 P5-B50 全行/04 九行勾销/02 十处挂载备注/01 L18+L36 两处尾接数字不动）+ 同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B51（本提交）
 
 ## 中断恢复指引
 
@@ -45,6 +49,19 @@
 - 心跳 ≥15 分钟且 STATUS=ACTIVE：前实例中断，从「下一步动作」第一个 ⬜ 续跑
 - 429/模型上限：刷新本文件心跳后退出，等每小时定时任务重试
 - 每卡开工前必须重读本文件 + 铁律 10 全读五分册
+
+## P5-B50 闭合存档（2026-09-15）
+
+- **主题**：平台治理/纯还债批（用户拍板顺序①），卡1 只读侦察+卡2–卡8 共九卡全闭合（8 个 feat commit+卡8b 零代码）；B49 登记四项观察项全部清零
+- **完成度**：纯还债批数字一律不变——**✅108/166=约65%、🔧1、⬜56 约34%；域⑧ 34✅ 2🔧 31⬜**
+- 卡2 采购列表越权 `da3d812`（3 files +116/-14，DataScope 基座+越权用例，seed E011 6→4/SST03 消失）；卡3 大屏时区 `cbd6692`（2 files +9/-2，shTimeStr 锚 Asia/Shanghai，05:26Z→13:26）
+- 卡4 target 行级 DataScope `3a263ab`（6 files +206/-5，canReadTarget 四角真验 7/5/5/10）；卡5 登录四门控 `7f08103`（4 files +52/-23，auth/storeContext/CShellDesktop/notification，无 token 零请求）
+- 卡6 哈希链全量断链清单 `aecf97f`（5 files +201/-8，prod breaks=[380,520] 均 B48 修复前历史窗口、seed []/117、卡8c 后 total=124）；卡7 网关真实客户端 IP `5251306`（7 files +364/-7，XFF→X-Real-IP→remoteAddr→unknown，20 单测，合规链路去硬编码 "web"）
+- 卡8a 耗材越权+库存 watch `dd4307a`（5 files +179/-39，两 Repository 删 cast null JPQL，seed 档案 36→18/流水 38→18，InventoryView 切店重拉）；卡8b 零代码（SE101 周岚双库 SUPER_ADMIN/scope=GROUP/stores=[]/perms=* 即合格，不新增 SE106；三口径对账差额恰为越界 SST03 ¥999,000,000）；卡8c actor 按通道强制 `43f009b`（1 file +9/-2，五通道真验，P1 伪造 HACK→SE101）
+- 批末回写：DELIVERY-P5-B50-2026-09-15.md（14 章 170 行）+五分册（00 顶部简报/03 表底全行/04 九行勾销 L122/L124/L127/L129/L132/L134/L146/L147/L148/02 十处挂载/01 L18+L36 尾接数字不动），同批原子 docs 提交
+- **保留登记不动工**：04 L133 impersonate（大，act/realSub+全服务回归+前端换 token，与 L46 合并）、L123 报告哈希验真 UI（中，content_hash+规范化字节口径；DSAR/consent 远期）
+- **append-only 留档（不可删）**：prod meiyun_core.compliance_check 手插 id=1 PRIVACY「L134 平台治理验真临时项」现 FAIL；prod 审计 id588/589（卡7）、id590（卡8c P1 伪造）；seed 审计 id180-182（卡7 curl）、id183（Chrome 冯区域 ip=192.168.65.1）、id184/185/186（B50_8C_TEST T1/T2/T4）
+- **下一批 P5-B51**：M1 调度六缺口（04 L140-145，用户已拍板顺序②）——DEVICE 设备档案/URGENT 加急源/durationMin 真实时长（现 SKU↔project 名匹配率 0%）/assignment DONE 完成态/医生房间班次表（现固定 09:00-20:00）/派单时段自由度改期（start 现锚 apptTime）；多依赖跨域新数据源，开工逐卡只读侦察，无源继续诚实空态
 
 ## P5-B49 闭合存档（2026-09-15）
 
