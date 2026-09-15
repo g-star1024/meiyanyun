@@ -1,5 +1,8 @@
 package com.meiyun.store.consumable;
 
+import com.meiyun.security.DataScope;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -197,13 +200,38 @@ public class ConsumableService {
         return results;
     }
 
-    /** 档案+库存联合视图（金额换算为元）。storeCode 为空取全量（数据域由调用方过滤）。 */
+    /**
+     * 档案+库存联合视图（金额换算为元）。
+     *
+     * <p>数据域强制收窄（B50 卡8，与 L127 采购列表同型）：以 {@link DataScope#storeSpec}
+     * 为不可绕过查询基座，REGION 无门店参时自动 IN JWT stores 名单（原 JPQL {@code null is null}
+     * 退化为全量、区域经理可拉全部门店耗材台账的跨区越权由此闭合）；显式门店/分类/关键词仅作
+     * 叠加谓词，越界参数与数据域取交集自然为空。Controller 传入 {@code "__NONE__"} 哨兵短路空列表。
+     */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> listConsumables(String storeCode, String category, String keyword) {
+        if ("__NONE__".equals(storeCode == null ? null : storeCode.trim())) {
+            return List.of();
+        }
         String sc = isBlank(storeCode) ? null : storeCode.trim();
         String cat = isBlank(category) ? null : category.trim();
         String kw = isBlank(keyword) ? null : "%" + keyword.trim() + "%";
-        List<Consumable> list = consumableRepo.search(sc, cat, kw);
+        Specification<Consumable> spec = DataScope.storeSpec("storeCode");
+        if (sc != null) {
+            final String fsc = sc;
+            spec = spec.and((root, q, cb) -> cb.equal(root.get("storeCode"), fsc));
+        }
+        if (cat != null) {
+            final String fcat = cat;
+            spec = spec.and((root, q, cb) -> cb.equal(root.get("category"), fcat));
+        }
+        if (kw != null) {
+            final String fkw = kw;
+            spec = spec.and((root, q, cb) -> cb.or(
+                    cb.like(cb.lower(root.get("name")), cb.lower(cb.literal(fkw))),
+                    cb.like(cb.lower(root.get("skuCode")), cb.lower(cb.literal(fkw)))));
+        }
+        List<Consumable> list = consumableRepo.findAll(spec, Sort.by(Sort.Direction.ASC, "skuCode"));
         List<Map<String, Object>> out = new ArrayList<>();
         for (Consumable c : list) {
             int qty = stockRepo.findByConsumableId(c.getId()).map(ConsumableStock::getQty).orElse(0);
@@ -228,13 +256,29 @@ public class ConsumableService {
         return out;
     }
 
-    /** 出入库流水视图（金额换算为元）。types 为空默认 PURCHASE/USE/SCRAP。 */
+    /**
+     * 出入库流水视图（金额换算为元）。types 为空默认 PURCHASE/USE/SCRAP。
+     *
+     * <p>数据域强制收窄（B50 卡8，与档案列表同型）：{@link DataScope#storeSpec} 为不可绕过基座，
+     * 越界哨兵 {@code "__NONE__"} 短路空列表，显式门店参叠加；按 id 倒序。
+     */
     @Transactional(readOnly = true)
     public List<Map<String, Object>> listMovements(String storeCode, List<String> types) {
+        if ("__NONE__".equals(storeCode == null ? null : storeCode.trim())) {
+            return List.of();
+        }
         String sc = isBlank(storeCode) ? null : storeCode.trim();
         List<String> useTypes = (types == null || types.isEmpty())
                 ? List.of("PURCHASE", "USE", "SCRAP") : types;
-        List<ConsumableMovement> movements = movementRepo.searchMovements(sc, useTypes);
+        Specification<ConsumableMovement> spec = DataScope.storeSpec("storeCode");
+        Specification<ConsumableMovement> typeSpec = (root, q, cb) -> root.get("moveType").in(useTypes);
+        spec = spec.and(typeSpec);
+        if (sc != null) {
+            final String fsc = sc;
+            spec = spec.and((root, q, cb) -> cb.equal(root.get("storeCode"), fsc));
+        }
+        List<ConsumableMovement> movements =
+                movementRepo.findAll(spec, Sort.by(Sort.Direction.DESC, "id"));
         Map<Long, Consumable> skuMap = new LinkedHashMap<>();
         List<Map<String, Object>> out = new ArrayList<>();
         for (ConsumableMovement m : movements) {

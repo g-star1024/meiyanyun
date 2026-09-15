@@ -1,9 +1,10 @@
 <script setup lang="ts">
 // M2-02 库存耗材：SKU 库存列表 + 安全库存预警 + 出入库流水 + 入库/出库/报损操作。
 // B10：项目配方 BOM（划扣自动扣料配方维护）+ 扣料异常处理（库存不足等失败重试/手工销项）。
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useInventoryStore, type InvCategory } from '@/stores/inventory'
 import { useBomStore } from '@/stores/bom'
+import { useStoreContext } from '@/stores/storeContext'
 import type { ProjectBomDTO } from '@/api/bom'
 import { useAuthStore } from '@/stores/auth'
 import CKpi from '@/components/CKpi.vue'
@@ -20,7 +21,9 @@ const toast = useToast()
 
 const inv = useInventoryStore()
 const auth = useAuthStore()
+const storeCtx = useStoreContext()
 onMounted(() => inv.seed())
+watch(() => storeCtx.currentStoreCode, () => { inv.seed(true) })
 
 const catOptions = [
   { label: '全部分类', value: 'ALL' },
@@ -151,6 +154,10 @@ const bom = useBomStore()
 onMounted(() => {
   bom.loadBoms().catch((e) => console.error('[bom] 配方加载失败', e))
   bom.loadExceptions().catch((e) => console.error('[bom] 扣料异常加载失败', e))
+})
+watch(() => storeCtx.currentStoreCode, () => {
+  if (bom.scope === 'STORE') bom.loadBoms(true).catch((e) => console.error('[bom] 配方加载失败', e))
+  bom.loadExceptions(true).catch((e) => console.error('[bom] 扣料异常加载失败', e))
 })
 
 const bomScopeOptions = [

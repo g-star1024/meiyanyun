@@ -1,29 +1,19 @@
 package com.meiyun.store.consumable;
 
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 
-import java.util.List;
 import java.util.Optional;
 
-/** 耗材档案仓库 */
-public interface ConsumableRepository extends JpaRepository<Consumable, Long> {
-
-    List<Consumable> findByStoreCodeOrderBySkuCodeAsc(String storeCode);
+/**
+ * 耗材档案仓库。
+ *
+ * <p>列表查询走 {@link JpaSpecificationExecutor}，由 Service 以 {@code DataScope.storeSpec}
+ * 强制叠加当前登录人数据域（B50 卡8：原 {@code cast(:storeCode as string) is null} 写法在
+ * REGION 多店账号无参时退化为全量，区域经理可拉全部门店耗材台账，存在跨区越权）。
+ */
+public interface ConsumableRepository extends JpaRepository<Consumable, Long>,
+        JpaSpecificationExecutor<Consumable> {
 
     Optional<Consumable> findByStoreCodeAndSkuCode(String storeCode, String skuCode);
-
-    // 注意：JDBC 连接串带 stringtype=unspecified 时，null 的 String 命名参数没有类型上下文：
-    // ① 直接进 lower(?) 会被推断为 bytea → function lower(bytea) does not exist；
-    // ② 单独出现在「? is null」判空位 → could not determine data type of parameter。
-    // 两处都要显式 cast(... as string)（Hibernate 渲染为 cast(? as text)）强制 varchar 绑定。
-    @Query("select c from Consumable c where (cast(:storeCode as string) is null or c.storeCode = :storeCode) "
-            + "and (cast(:category as string) is null or c.category = :category) "
-            + "and (cast(:kw as string) is null or lower(c.name) like lower(cast(:kw as string)) "
-            + "or lower(c.skuCode) like lower(cast(:kw as string))) "
-            + "order by c.skuCode asc")
-    List<Consumable> search(@Param("storeCode") String storeCode,
-                            @Param("category") String category,
-                            @Param("kw") String keyword);
 }
