@@ -4,9 +4,9 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 22:25 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-15 23:40 CST -->
 <!-- MACHINE:BATCH=P5-B51 M1 调度 Backlog 纵深缺口批（04-backlog L140-145 六缺口，用户 2026-09-15 晚拍板「P5-B51开工吧」=此前顺序②授权落地；多依赖跨域新数据源，先逐卡只读侦察数据源就绪度，无源继续诚实空态） -->
-<!-- MACHINE:CARD=卡6 L142 appointment 加 sku_code 列（用户四项拍板已全部落定：①施工序=按建议序 L143→L140→L145；②L140 范围=同时放开 DEVICE 派单写（读+写全闭环，设备参与时段占用与 409 冲突校验）；③L142 方向=appointment 加 sku_code 列+durationMin 从 SKU 真源取；④无源缺口=都保留诚实空态（L141 URGENT/L144 班次表）。卡5 L145 改期联动已 22:25 全闭合：feat 50a7eb7 已 push，三轨真验全绿——跟随移动/409 冲突回滚/422 班次越界/无派单回归/PG 双轨 audit） -->
+<!-- MACHINE:CARD=批末（用户四项拍板已全部落定：①施工序=按建议序 L143→L140→L145；②L140 范围=同时放开 DEVICE 派单写；③L142 方向=appointment 加 sku_code 列+durationMin 从 SKU 真源取；④无源缺口=都保留诚实空态（L141 URGENT/L144 班次表）。卡6 L142 已 23:40 全闭合：feat 777d456 已 push，7 文件 +130/-18，三轨真验全绿——绑SKU派单14:00→15:30(90min)/未绑回落14:00→15:00/伪SKU 400/PG sku_code 落列/audit payload 含 sku/jobs durationMin=90。环境排障：name-map 空 Map 之谜=seed 栈同网络别名 DNS 轮询，txn recreate 恢复，批末登记上报） -->
 
 ## 当前状态（人读区）
 
