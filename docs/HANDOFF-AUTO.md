@@ -4,14 +4,14 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 20:15 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-15 20:25 CST -->
 <!-- MACHINE:BATCH=P5-B51 M1 调度 Backlog 纵深缺口批（04-backlog L140-145 六缺口，用户 2026-09-15 晚拍板「P5-B51开工吧」=此前顺序②授权落地；多依赖跨域新数据源，先逐卡只读侦察数据源就绪度，无源继续诚实空态） -->
-<!-- MACHINE:CARD=卡1 六缺口数据源只读侦察（铁律 -1-A 链路先行，不动代码）：L140 DEVICE 设备档案（store-service equipment/equipment_maintenance 表+internal 端点+seed 8设备11维保种子）/L141 URGENT 加急源（appointment 优先级列+CHECK）/L142 durationMin 真实时长（appointment 时长/itemCode+SKU↔project 映射现 0%）/L143 assignment DONE 完成态（B27 treat-done/B30 AFTER_COMMIT 事件源联动）/L144 医生房间班次表（现固定 09:00-20:00，B47 卡6 证实 M2-03 无现排后端）/L145 派单时段自由度改期（start 现锚 apptTime，预约改期能力）；铁律 10 全读 6/6 已完成（索引→01→02→04→03→00）；随后卡2 侦察汇报+施工序建议（白天先建议后拍板） -->
+<!-- MACHINE:CARD=卡2 侦察汇报待用户拍板（铁律 -1-C 白天窗口先建议后拍板）：卡1 六缺口只读侦察已全闭合——L140 DEVICE ✅ 数据源就绪（equipment 域完整+seed SST01 8设备11维保，缺 InternalEquipmentController+StoreEquipmentClient 复刻范式）/L141 URGENT ❌ 无源（appointment 无 priority 列）/L142 durationMin 🟡 半就绪（product_sku.duration_min 真实存在但 project↔SKU 名匹配≈0% 缺关联键，三选一待拍板）/L143 DONE ✅ 数据源就绪（dispatch_assignment.appt_no→arrival.appt_no→consult_plan.arrival_id→treatDone 全在 txn 同库，B30 AFTER_COMMIT 先例）/L144 班次表 ❌ 无源（仅 ai_scheduling_* AI 草稿）/L145 改期 🟡 半就绪（reschedule 端点真实存在但不联动 assignment）；建议施工序 ①L143→②L140→③L145→L142 拍板方向→L141/L144 保留诚实空态，等用户拍板后才动工 -->
 
 ## 当前状态（人读区）
 
 - **批次**：P5-B51 M1 调度 Backlog 纵深缺口批 **2026-09-15 20:15 开工**（用户拍板「P5-B51开工吧」）；哨兵 ACTIVE
-- **阶段**：卡1 六缺口数据源只读侦察进行中（铁律 -1-A 链路先行，不动代码）——铁律 10 全读 6/6 已完成（索引→01→02→04→03→00，零跳读）
+- **阶段**：卡1 六缺口只读侦察 **20:25 全闭合**（纯只读零代码改动，docker ps 复核 24 容器双栈全 Up）→ 卡2 侦察汇报待用户拍板（铁律 -1-C 白天窗口先建议后拍板，确认后才动工）——铁律 10 全读 6/6 已完成（索引→01→02→04→03→00，零跳读）
 - **范围（04-backlog L140-145，B49 卡12 登记的 M1 调度六缺口）**：L140 DEVICE 设备档案（GET /resources 三源之一现诚实空态）/ L141 URGENT 加急源（jobs 加急标记无源，前端已删 stats.urgent 死代码）/ L142 durationMin 真实时长（现固定 end=start+60min，SKU↔project 名匹配率 0%）/ L143 assignment DONE 完成态（现仅 SCHEDULED/IN_PROGRESS/RELEASED）/ L144 医生房间班次表（现固定 09:00-20:00）/ L145 派单时段自由度改期（start 现锚 apptTime）。**多依赖跨域新数据源：开工逐卡只读侦察数据源就绪度，有源才施工、无源继续诚实空态**；白天先建议后拍板。
 - **保留登记（不在 B51 范围，随后续批次评估）**：L133 impersonate＝大（JWT act/realSub claim+meiyun-security 全服务回归+前端换 token，与 L46 合并）、L123 报告哈希验真 UI＝中（content_hash+规范化字节口径，DSAR/consent 远期）。非本批：L89 setup-seed-db 保留 audit_log、L128 ai-service seed Flyway V17-V29 悬置。
 - **记账口径**：纵深缺口批以「缺口闭合即勾 04-backlog 行」为记账单位——完成度数字（✅108/166≈65%、⬜56、🔧1、域⑧ 34✅2🔧31⬜）仅当缺口对应功能真实落地才动；侦察无源的行保持登记不动、诚实说明。
@@ -28,14 +28,14 @@
 ## 下一步动作（B51 卡序列）
 
 0. ✅ 卡0 哨兵激活（本 docs 提交）：铁律 10 全读 6/6（索引→01→02→04→03→00）→ STATUS=ACTIVE、心跳 20:15、BATCH=P5-B51、卡序列落盘、基线 HEAD 更新 b7cec03
-1. 🔄 卡1 六缺口数据源只读侦察（铁律 -1-A 链路先行，**不动代码**）：
-   - ⬜ L140 DEVICE：store-service equipment/equipment_maintenance 表结构+行数（`\d`+count）、seed 库「8 设备 11 维保」种子实况（B40 StoreMasterDataInitializer @Order60 门控后仅 seed）、是否已有 internal 设备端点（可复刻 InternalRoomController /api/stores/internal/rooms + X-Internal-Token internal:catalog-read 范式）、B13 交付文档
-   - ⬜ L141 URGENT：appointment 表有无 priority/urgent 列+CHECK 约束；若无源则继续诚实空态（前端 stats.urgent 死代码 B49 卡12 已删）
-   - ⬜ L142 durationMin：appointment 实体 itemCode/时长字段、SKU↔project 映射实况（B49 卡7 StoreProjectClient SKU→品类映射范式；现名匹配率 0% 障碍）
-   - ⬜ L143 DONE：consult_plan/治疗 DONE 事件源（B27 treat-start/treat-done 全链路、B30 treat-done AFTER_COMMIT 幂等随访排程先例）与 dispatch_assignment 联动可行性
-   - ⬜ L144 班次表：真实排班数据源是否存在（ai_scheduling_plan/slot V27 仅 AI 草稿+公平轮转；B47 卡6 证实 M2-03 无现排后端）
-   - ⬜ L145 派单改期：预约域改期能力现状（appointment.source/status CHECK 约束；dispatch start 现锚 apptTime）
-2. ⬜ 卡2 侦察汇报+按数据源就绪度定施工序（**白天 08:00-22:00 先建议后拍板，用户确认后才动工**）；无源缺口继续诚实空态并保留登记
+1. ✅ 卡1 六缺口数据源只读侦察（20:25 全闭合，铁律 -1-A 链路先行，零代码改动）：
+   - ✅ L140 DEVICE **数据源就绪可施工**：B13 equipment 域完整（equipment 表 store_code+asset_no 唯一、category 六类、status 四态 NORMAL/CALIBRATING/REPAIRING/DISABLED、金额分、下次校准/维保日；公开端点 /api/stores/equipments 挂 equipment:view/edit+DataScope）；seed 实证 SST01 8 设备（5N/1C/1R/1D）+11 维保、prod 0/0；**缺 InternalEquipmentController（复刻 InternalRoomController 范式）+txn 侧 StoreEquipmentClient（复刻 StoreRoomClient 软降级）+DispatchService DEVICE 分支**（现 dispatch() 拒绝 DEVICE 写，是否放开待拍板）
+   - ✅ L141 URGENT **无源**：appointment 无 priority/urgent 列（CHECK 仅 source/status）→ 继续诚实空态，或拍板加列（schema 变更+预约 UI 加急开关）
+   - ✅ L142 durationMin **半就绪需拍板**：product_sku.duration_min integer not null 真实存在（90/70/60/45/40/30/15 分钟档），但 appointment.project 12 个中文项目名 vs SKU 品牌商品名 **字面匹配≈0%、无关联键**；选项 (a) appointment 加 sku_code 列 (b) project→SKU 人工映射表 (c) 保持固定 60min 空态；seed appointment 共 166 行
+   - ✅ L143 DONE **数据源完全就绪可施工**：联动链 dispatch_assignment.appt_no→arrival.appt_no→consult_plan.arrival_id→ConsultPlanService.treatDone（L716-766：TREATING→DONE+EM 治疗记录+revision TREAT_DONE+audit+AFTER_COMMIT FollowupScheduler 先例）**全在 txn-service 同服务同库**，事务内直接联动零跨服务；备选语义 ArrivalService.done（接诊完成，语义偏接诊）
+   - ✅ L144 班次表 **无源**：库内仅 ai_scheduling_plan/ai_scheduling_slot（B47 卡6 证实 AI 草稿非现排），无 shift/duty/roster 表 → 继续固定 09:00-20:00 诚实空态
+   - ✅ L145 派单改期 **半就绪**：AppointmentController.reschedule（L101-116，仅已预约态+HH:mm 校验+audit RESCHEDULE）真实存在，**但不联动 dispatch_assignment——改期后 SCHEDULED 派单滞留旧时段**；可施工小项=reschedule 同事务联动释放/跟随 assignment（同服务同库）；自由时段派单为产品决策需拍板
+2. 🔄 卡2 侦察汇报+按数据源就绪度定施工序（**白天 08:00-22:00 先建议后拍板，用户确认后才动工**）；无源缺口继续诚实空态并保留登记——建议序 ①L143 DONE 联动（纯后端同库风险最低）→②L140 DEVICE 接真（范式成熟复刻+前端 tab 接真）→③L145 改期联动（小项）→L142 拍板方向→L141/L144 保留诚实空态
 3. ⬜ 卡3+ 按拍板序施工：每卡铁律 7 三轨真验（curl 经网关+PG/Chrome+构建）→ 铁律 8 一卡一 feat commit 紧跟 push → 哨兵刷新心跳
 4. ⬜ 批末：DELIVERY-P5-B51-2026-09-15.md + 五分册回写（00 顶部简报/03 表底 P5-B51 行/04 已闭合行勾销/02 挂载备注/01 数字仅真实落地才动）+ 同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B52
 
