@@ -9,8 +9,8 @@ import { errMsg } from '@/stores/m5Coupon'
 import { shDateStr } from '@/utils/datetime'
 
 // ============================================================
-// 调度中心 store（M1 集团管控 / 调度中心 · B49 卡12 切真）
-// - 数据源：/api/txn/dispatch（txn 聚合 org 医生 + store 治疗室；DEVICE 无真实源诚实空态）
+// 调度中心 store（M1 集团管控 / 调度中心 · B49 卡12 切真；B51 卡4 DEVICE 接真）
+// - 数据源：/api/txn/dispatch（txn 聚合 org 医生 + store 治疗室 + store NORMAL 态设备）
 // - Job = 当日「已预约/已到店」且无活跃派单的预约（已到店排前），start 锚定 apptTime
 // - Assignment 随 Resource 行内联返回（SCHEDULED/IN_PROGRESS/DONE 回显；RELEASED 保留行不回读）
 // - durationMin 固定 60、priority 全 NORMAL、班次固定 09:00-20:00（无源，见 Backlog）
@@ -103,7 +103,7 @@ function adaptJob(d: DispatchJobDTO): Job {
 function adaptAssignment(d: DispatchAssignmentDTO): Assignment {
   return {
     id: d.id,
-    resourceType: (d.resourceType === 'ROOM' ? 'ROOM' : 'DOCTOR') as ResourceType,
+    resourceType: (d.resourceType === 'ROOM' ? 'ROOM' : d.resourceType === 'DEVICE' ? 'DEVICE' : 'DOCTOR') as ResourceType,
     resourceId: d.resourceId,
     jobId: d.jobId,
     customerName: d.customerName,

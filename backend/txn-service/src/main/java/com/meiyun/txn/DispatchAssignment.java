@@ -17,11 +17,13 @@ import java.time.OffsetDateTime;
 /**
  * 调度派单占用块（P5-B49 卡12 M1 调度中心）。
  *
- * <p>一条记录 = 某门店某日某资源（DOCTOR 医生 / ROOM 治疗室）在一个 HH:mm 时段上对某张预约的占用。
+ * 一条记录 = 某门店某日某资源（DOCTOR 医生 / ROOM 治疗室 / DEVICE 设备）在一个 HH:mm 时段上对
+ * 某张预约的占用。
  * 资源类型/状态为技术码英文存储（前端经字典映射中文，不在界面裸露）；释放采用保留行的状态机
  * （RELEASED + released_at），不物理删除，保证审计与时段历史可追溯；治疗完成由方案单 treatDone
  * AFTER_COMMIT 联动置 DONE + done_at（终态保留行回显时间轴，不再占用时段、不可释放/再派单）。
- * DEVICE 设备无真实台账源，一期不产生派单（空态 + Backlog）。
+ * DEVICE 设备自 P5-B51 卡4 接真：resourceId = 设备资产编号 assetNo（店内唯一），仅 NORMAL 态
+ * 设备可派（经 store 内部端点取数，校准/维修/停用中设备不参与调度）。
  */
 @Entity
 @Table(name = "dispatch_assignment")
@@ -32,6 +34,8 @@ public class DispatchAssignment {
     public static final String RES_DOCTOR = "DOCTOR";
     /** 资源类型：治疗室。 */
     public static final String RES_ROOM = "ROOM";
+    /** 资源类型：设备（resourceId = 设备资产编号 assetNo）。 */
+    public static final String RES_DEVICE = "DEVICE";
 
     /** 状态：已排期（预约尚未到店）。 */
     public static final String ST_SCHEDULED = "SCHEDULED";

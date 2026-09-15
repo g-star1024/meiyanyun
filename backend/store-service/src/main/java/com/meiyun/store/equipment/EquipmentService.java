@@ -69,6 +69,28 @@ public class EquipmentService {
         return toView(mustFind(storeCode, id));
     }
 
+    /**
+     * 调度中心专用轻量清单（P5-B51 卡4）：本店 NORMAL 态设备，仅 id/assetNo/name/category/location/status
+     * 六键，不嵌套维保记录（避免 toView 逐台查记录的 N+1）。设备建档/停用语义归本域，txn 不直读 equipment 表。
+     */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> listDispatchBriefs(String storeCode) {
+        if (isBlank(storeCode)) return List.of();
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Equipment e : eqRepo.search(storeCode.trim(), null, "NORMAL", null)) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("id", e.getId());
+            row.put("storeCode", e.getStoreCode());
+            row.put("assetNo", e.getAssetNo());
+            row.put("name", e.getName());
+            row.put("category", e.getCategory());
+            row.put("location", e.getLocation());
+            row.put("status", e.getStatus());
+            out.add(row);
+        }
+        return out;
+    }
+
     /** 设备建档；金额单位「分」，日期入参为 ISO 字符串（yyyy-MM-dd 或完整 ISO 时间，截前 10 位）。 */
     @Transactional
     public Equipment createEquipment(String storeCode, String assetNo, String name, String brand, String model,

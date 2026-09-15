@@ -23,7 +23,8 @@ import java.util.Map;
  *
  * <p>资源三源：DOCTOR 医生复用 {@link OrgStaffClient#listStaffByRole}（org 不可用软降级空列表）；
  * ROOM 治疗室经 {@link StoreRoomClient} 取 store 内部端点（store 不可用软降级空列表）；
- * DEVICE 设备无真实台账，一期诚实空态（Backlog）。
+ * DEVICE 设备经 {@link StoreEquipmentClient} 取 store 内部端点（仅 NORMAL 态，软降级空列表；
+ * P5-B51 卡4 接真，resourceId=资产编号 assetNo）。
  *
  * <p>待派单 Job = 当日「已预约/已到店」且无派单占用（含 DONE 终态）的预约；已到店排前、到店时间升序。
  * 派单 start 锚定预约 apptTime（不可自由选时），时长固定 60 分钟（project↔SKU 名匹配率 0% 实证，
@@ -56,6 +57,7 @@ public class DispatchService {
     private final AppointmentRepository appointmentRepo;
     private final OrgStaffClient orgStaffClient;
     private final StoreRoomClient storeRoomClient;
+    private final StoreEquipmentClient storeEquipmentClient;
     private final ApptRefNameResolver names;
     private final AuditRecorder audit;
 
@@ -63,19 +65,21 @@ public class DispatchService {
                            AppointmentRepository appointmentRepo,
                            OrgStaffClient orgStaffClient,
                            StoreRoomClient storeRoomClient,
+                           StoreEquipmentClient storeEquipmentClient,
                            ApptRefNameResolver names,
                            AuditRecorder audit) {
         this.assignmentRepo = assignmentRepo;
         this.appointmentRepo = appointmentRepo;
         this.orgStaffClient = orgStaffClient;
         this.storeRoomClient = storeRoomClient;
+        this.storeEquipmentClient = storeEquipmentClient;
         this.names = names;
         this.audit = audit;
     }
 
     // ============================= 读侧 =============================
 
-    /** 资源列表（含当日占用块：活跃 + 已完成 DONE 回显）。type 为空返回全部三类；DEVICE 恒为空列表。 */
+    /** 资源列表（含当日占用块：活跃 + 已完成 DONE 回显）。type 为空返回全部三类；DEVICE 仅 NORMAL 态设备。 */
     @Transactional(readOnly = true)
     public List<ResourceView> resources(String storeCode, String type, LocalDate date) {
         String sc = requireStore(storeCode);
@@ -109,7 +113,20 @@ public class DispatchService {
                         WORK_START, WORK_END, "ON", blocks));
             }
         }
-        // DEVICE：设备档案台账为远期能力，无真实源，返回空列表（前端空态文案 + Backlog）。
+        if (wantType == null || DispatchAssignment.RES_DEVICE.equals(wantType)) {
+            for (Map<String, Object> d : storeEquipmentClient.listNormalEquipments(sc)) {
+                String assetNo = str(d.get("assetNo"));
+                if (assetNo.isBlank()) continue;
+                String devName = str(d.get("name"));
+                List<AssignmentView> blocks = toViews(active.stream()
+                        .filter(a -> DispatchAssignment.RES_DEVICE.equals(a.getResourceType())
+                                && assetNo.equals(a.getResourceId()))
+                        .toList());
+                out.add(new ResourceView(assetNo, DispatchAssignment.RES_DEVICE,
+                        devName.isBlank() ? assetNo : devName, null, null,
+                        WORK_START, WORK_END, "ON", blocks));
+            }
+        }
         return out;
     }
 
@@ -162,8 +179,9 @@ public class DispatchService {
         }
         String resourceType = cmd.resourceType() == null ? "" : cmd.resourceType().trim();
         if (!DispatchAssignment.RES_DOCTOR.equals(resourceType)
-                && !DispatchAssignment.RES_ROOM.equals(resourceType)) {
-            throw error(HttpStatus.BAD_REQUEST, "资源类型仅支持医生或治疗室（设备派单为远期能力）");
+                && !DispatchAssignment.RES_ROOM.equals(resourceType)
+                && !DispatchAssignment.RES_DEVICE.equals(resourceType)) {
+            throw error(HttpStatus.BAD_REQUEST, "资源类型仅支持医生、治疗室或设备");
         }
         String resourceId = cmd.resourceId() == null ? "" : cmd.resourceId().trim();
         if (resourceId.isEmpty()) {
@@ -187,7 +205,7 @@ public class DispatchService {
             throw error(HttpStatus.CONFLICT, "该预约已派单，如需改派请先释放原派单");
         }
 
-        // 资源名校验：医生必须等于预约指定医生；治疗室须在本店在用治疗室清单内。
+        // 资源名校验：医生必须等于预约指定医生；治疗室须在本店在用治疗室清单内；设备须在本店 NORMAL 态清单内。
         String resourceName;
         if (DispatchAssignment.RES_DOCTOR.equals(resourceType)) {
             if (a.getDoctor() == null || a.getDoctor().isBlank()) {
@@ -205,7 +223,7 @@ public class DispatchService {
             if (resourceName == null) {
                 throw error(HttpStatus.NOT_FOUND, "所选医生不存在或已不在职");
             }
-        } else {
+        } else if (DispatchAssignment.RES_ROOM.equals(resourceType)) {
             Map<String, Object> room = storeRoomClient.listTreatmentRooms(sc).stream()
                     .filter(r -> resourceId.equals(str(r.get("roomCode"))))
                     .findFirst().orElse(null);
@@ -213,6 +231,15 @@ public class DispatchService {
                 throw error(HttpStatus.NOT_FOUND, "所选治疗室不存在或已停用");
             }
             resourceName = str(room.get("name"));
+            if (resourceName.isBlank()) resourceName = resourceId;
+        } else {
+            Map<String, Object> device = storeEquipmentClient.listNormalEquipments(sc).stream()
+                    .filter(d -> resourceId.equals(str(d.get("assetNo"))))
+                    .findFirst().orElse(null);
+            if (device == null) {
+                throw error(HttpStatus.NOT_FOUND, "所选设备不存在或不可用（仅正常状态设备可派单）");
+            }
+            resourceName = str(device.get("name"));
             if (resourceName.isBlank()) resourceName = resourceId;
         }
 

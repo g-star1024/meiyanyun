@@ -205,11 +205,8 @@ function utilTone(u: number) {
             </div>
           </div>
         </div>
-        <div v-if="resTab === 'DEVICE' && list.length === 0" class="queue-empty">
-          <CIcon name="info" :size="28" /><p>设备档案为远期能力，暂无设备资源</p>
-        </div>
-        <div v-else-if="list.length === 0 && dp.loaded" class="queue-empty">
-          <CIcon name="check" :size="28" /><p>当前门店当日暂无{{ resTab === 'DOCTOR' ? '在岗医生' : '治疗室' }}资源</p>
+        <div v-if="list.length === 0 && dp.loaded" class="queue-empty">
+          <CIcon name="check" :size="28" /><p>当前门店当日暂无{{ resTab === 'DOCTOR' ? '在岗医生' : resTab === 'ROOM' ? '治疗室' : '可用设备' }}资源</p>
         </div>
         <div class="legend">
           <span><i class="lg lg--info"></i>已排（SCHEDULED）</span>
