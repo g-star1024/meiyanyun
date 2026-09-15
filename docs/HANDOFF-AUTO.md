@@ -4,14 +4,15 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 20:25 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-15 21:30 CST -->
 <!-- MACHINE:BATCH=P5-B51 M1 调度 Backlog 纵深缺口批（04-backlog L140-145 六缺口，用户 2026-09-15 晚拍板「P5-B51开工吧」=此前顺序②授权落地；多依赖跨域新数据源，先逐卡只读侦察数据源就绪度，无源继续诚实空态） -->
-<!-- MACHINE:CARD=卡2 侦察汇报待用户拍板（铁律 -1-C 白天窗口先建议后拍板）：卡1 六缺口只读侦察已全闭合——L140 DEVICE ✅ 数据源就绪（equipment 域完整+seed SST01 8设备11维保，缺 InternalEquipmentController+StoreEquipmentClient 复刻范式）/L141 URGENT ❌ 无源（appointment 无 priority 列）/L142 durationMin 🟡 半就绪（product_sku.duration_min 真实存在但 project↔SKU 名匹配≈0% 缺关联键，三选一待拍板）/L143 DONE ✅ 数据源就绪（dispatch_assignment.appt_no→arrival.appt_no→consult_plan.arrival_id→treatDone 全在 txn 同库，B30 AFTER_COMMIT 先例）/L144 班次表 ❌ 无源（仅 ai_scheduling_* AI 草稿）/L145 改期 🟡 半就绪（reschedule 端点真实存在但不联动 assignment）；建议施工序 ①L143→②L140→③L145→L142 拍板方向→L141/L144 保留诚实空态，等用户拍板后才动工 -->
+<!-- MACHINE:CARD=卡4 L140 DEVICE 接真+放开 DEVICE 派单写（用户四项拍板已全部落定可直接施工：①施工序=按建议序 L143→L140→L145；②L140 范围=同时放开 DEVICE 派单写（读+写全闭环，设备参与时段占用与 409 冲突校验）；③L142 方向=appointment 加 sku_code 列；④无源缺口=都保留诚实空态（L141 URGENT/L144 班次表）。卡3 L143 DONE 联动已 21:30 全闭合：feat 79a8ae4+fix 2714287 已 push，三轨真验 8 项全绿） -->
 
 ## 当前状态（人读区）
 
 - **批次**：P5-B51 M1 调度 Backlog 纵深缺口批 **2026-09-15 20:15 开工**（用户拍板「P5-B51开工吧」）；哨兵 ACTIVE
-- **阶段**：卡1 六缺口只读侦察 **20:25 全闭合**（纯只读零代码改动，docker ps 复核 24 容器双栈全 Up）→ 卡2 侦察汇报待用户拍板（铁律 -1-C 白天窗口先建议后拍板，确认后才动工）——铁律 10 全读 6/6 已完成（索引→01→02→04→03→00，零跳读）
+- **用户四项拍板（持续指导本批施工）**：①施工序=按建议序（L143 DONE→L140 DEVICE→L145 改期）；②L140 同时放开 DEVICE 派单写（读+写全闭环）；③L142 appointment 加 sku_code 列；④L141/L144 都保留诚实空态
+- **阶段**：卡3 L143 DONE 完成态联动 **21:30 全闭合**（8 文件+新建 DispatchCompletion，feat `79a8ae4`+顺手 fix `2714287` 均已 push；三轨真验 8 项全绿）→ **卡4 L140 DEVICE 接真+放开派单写 待开工**
 - **范围（04-backlog L140-145，B49 卡12 登记的 M1 调度六缺口）**：L140 DEVICE 设备档案（GET /resources 三源之一现诚实空态）/ L141 URGENT 加急源（jobs 加急标记无源，前端已删 stats.urgent 死代码）/ L142 durationMin 真实时长（现固定 end=start+60min，SKU↔project 名匹配率 0%）/ L143 assignment DONE 完成态（现仅 SCHEDULED/IN_PROGRESS/RELEASED）/ L144 医生房间班次表（现固定 09:00-20:00）/ L145 派单时段自由度改期（start 现锚 apptTime）。**多依赖跨域新数据源：开工逐卡只读侦察数据源就绪度，有源才施工、无源继续诚实空态**；白天先建议后拍板。
 - **保留登记（不在 B51 范围，随后续批次评估）**：L133 impersonate＝大（JWT act/realSub claim+meiyun-security 全服务回归+前端换 token，与 L46 合并）、L123 报告哈希验真 UI＝中（content_hash+规范化字节口径，DSAR/consent 远期）。非本批：L89 setup-seed-db 保留 audit_log、L128 ai-service seed Flyway V17-V29 悬置。
 - **记账口径**：纵深缺口批以「缺口闭合即勾 04-backlog 行」为记账单位——完成度数字（✅108/166≈65%、⬜56、🔧1、域⑧ 34✅2🔧31⬜）仅当缺口对应功能真实落地才动；侦察无源的行保持登记不动、诚实说明。
@@ -19,7 +20,7 @@
 
 ## 开工基线
 
-- 代码 HEAD=`43f009b`（B50 卡8c 收官）；总 HEAD=`b7cec03`（B50 批末 docs 原子提交），工作区 clean，均已 push origin/main
+- 代码 HEAD=`79a8ae4`（B51 卡3 feat，含顺手 fix `2714287`）；总 HEAD=`79a8ae4`，均已 push origin/main
 - 后端 19 服务 + 网关在线（卡1 开工用 `bash /tmp/meiyun-health.sh` 复核）；正式前端 http://localhost:8080 / 网关 8443；seed 前端 127.0.0.1:18080 / 网关 18443
 - 登录：curl 通道 POST `https://127.0.0.1:8443/api/org/auth/login`（curl -k，E011/meiyun123=REGION_MGR 华东域，token 存 /tmp/meiyun_token.txt，验证前重新登录）；Chrome 通道 http://localhost:8080 手工填表（快捷登录已关闭）
 - 铁律 10 开工读数：索引+00～04 五分册本批开工前已全部整读
@@ -35,9 +36,11 @@
    - ✅ L143 DONE **数据源完全就绪可施工**：联动链 dispatch_assignment.appt_no→arrival.appt_no→consult_plan.arrival_id→ConsultPlanService.treatDone（L716-766：TREATING→DONE+EM 治疗记录+revision TREAT_DONE+audit+AFTER_COMMIT FollowupScheduler 先例）**全在 txn-service 同服务同库**，事务内直接联动零跨服务；备选语义 ArrivalService.done（接诊完成，语义偏接诊）
    - ✅ L144 班次表 **无源**：库内仅 ai_scheduling_plan/ai_scheduling_slot（B47 卡6 证实 AI 草稿非现排），无 shift/duty/roster 表 → 继续固定 09:00-20:00 诚实空态
    - ✅ L145 派单改期 **半就绪**：AppointmentController.reschedule（L101-116，仅已预约态+HH:mm 校验+audit RESCHEDULE）真实存在，**但不联动 dispatch_assignment——改期后 SCHEDULED 派单滞留旧时段**；可施工小项=reschedule 同事务联动释放/跟随 assignment（同服务同库）；自由时段派单为产品决策需拍板
-2. 🔄 卡2 侦察汇报+按数据源就绪度定施工序（**白天 08:00-22:00 先建议后拍板，用户确认后才动工**）；无源缺口继续诚实空态并保留登记——建议序 ①L143 DONE 联动（纯后端同库风险最低）→②L140 DEVICE 接真（范式成熟复刻+前端 tab 接真）→③L145 改期联动（小项）→L142 拍板方向→L141/L144 保留诚实空态
-3. ⬜ 卡3+ 按拍板序施工：每卡铁律 7 三轨真验（curl 经网关+PG/Chrome+构建）→ 铁律 8 一卡一 feat commit 紧跟 push → 哨兵刷新心跳
-4. ⬜ 批末：DELIVERY-P5-B51-2026-09-15.md + 五分册回写（00 顶部简报/03 表底 P5-B51 行/04 已闭合行勾销/02 挂载备注/01 数字仅真实落地才动）+ 同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B52
+2. ✅ 卡2 侦察汇报+四项拍板已落（21:00 用户 AskUserQuestion 拍板：①按建议序开工 ②同时放开 DEVICE 派单写 ③appointment 加 sku_code 列 ④L141/L144 都保留诚实空态）
+3. ✅ 卡3 L143 assignment DONE 完成态联动（**21:30 全闭合**：9 文件 +150/-25 含新建 DispatchCompletion；feat `79a8ae4`+顺手修既有 bug fix `2714287` 均已 push；三轨真验 8 项全绿——PG done_at 列置值/REQUIRES_NEW 日志「置DONE 1条」/resources DONE 回显/jobs 不重现/release 422/再派 422/DONE 不占时段 id=7 同医生同时段派单成功/audit DISPATCH/6/DONE actor=SE004）
+4. 🔄 卡4 L140 DEVICE 接真+放开 DEVICE 派单写（下一卡，四项拍板已授权可直接施工）：新建 InternalEquipmentController（复刻 InternalRoomController 范式）+StoreEquipmentClient（复刻 StoreRoomClient 软降级）+DispatchService resources() DEVICE 分支（NORMAL 态）+dispatch() 放开 DEVICE 写（时段占用+409 冲突同医生/房间）+前端设备 tab 接真（空态文案退役）
+5. ⬜ 卡5 L145 预约改期联动（reschedule 同事务释放/跟随 SCHEDULED 派单，同服务同库）→ 卡6 L142 appointment 加 sku_code 列+durationMin 从 SKU 真源取
+6. ⬜ 批末：DELIVERY-P5-B51-2026-09-15.md + 五分册回写（00 顶部简报/03 表底 P5-B51 行/04 已闭合行勾销/02 挂载备注/01 数字仅真实落地才动）+ 同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B52
 
 ## 中断恢复指引
 
