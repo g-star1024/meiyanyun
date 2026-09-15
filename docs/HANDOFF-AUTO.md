@@ -3,15 +3,15 @@
 > 用途：铁律 11 自主续跑的唯一事实源。任何接续会话/定时任务先读本文件，再按「开发前 checklist」执行。
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
-<!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 10:24 CST -->
-<!-- MACHINE:BATCH=P5-B49 -->
-<!-- MACHINE:CARD=B49 卡12 调度中心 /m1-dispatch 设计定稿已落 DELIVERY（跨三服务侦察全闭合：txn 聚合主服务 dispatch 包 6 文件+store InternalRoomController+前端 3 文件共 10 文件、Job=已预约/已到店且无活跃 assignment、durationMin 固定 60 分钟匹配率 0% 实证、B50 不拆一卡交付）→ 实现开工（txn dispatch 包 → store internal 端点 → 双栈构建部署 → 前端切真 → 三轨真验） -->
+<!-- MACHINE:STATUS=DORMANT -->
+<!-- MACHINE:HEARTBEAT=2026-09-15 11:58 CST -->
+<!-- MACHINE:BATCH=P5-B49（已闭合，下一批 P5-B50） -->
+<!-- MACHINE:CARD=P5-B49 全批 12 卡闭合（M1 集团屏 17/17 全切真收官）。下一批 P5-B50 方向待用户拍板：建议平台治理批（登录页全局壳无 token 四路 401 观察项+历史断链 #380 全量断链清单+M1 Backlog 6 纵深缺口）。开工前重读五分册+文末「P5-B49 闭合存档」 -->
 
 ## 当前状态（人读区）
 
 - **批次**：P5-B49（M1 集团管控 14 页批，C 方向）
-- **阶段**：卡0 落账纠错+卡1 侦察+卡2 审计日志接真（feat `43f52ca` 已推送、三轨对账 total=553 一致、批中回写完成）+卡3 区域+门店主数据读侧接真（feat `494c272` 已推送）+卡4 集团聚合端点+概览/矩阵/对标三页接真（feat `f672a80` 已推送、/finance/group-overview 铁律 -1-D 跨店例外域、三轨真验全绿、E011 华东域默认期 2026-09 域收窄正确非 bug）+卡5 采购补全（feat `a108203` 已推送：store-service 新建 procurement 域 supplier+PO 四表+收货、六态状态机/审批阈值/库存联动移动均价、前端 /m1-procurement view 零改动切真、三轨真验全绿）+卡6 SOP /m1-sop（feat `d4c6453` 已推送：store-service 新建 sop 域模板+步骤+任务三表 ddl-auto 建表+种子、SopController 八端点、/m1-sop 切真实 API、三轨真验全绿）+批中回写+卡7 数据大屏 /m1-screen（feat `815f006` 已推送，13 文件 +848/-79：txn-service 新建 screen 包 5 新 4 改——ScreenController 双端点 overview 六 KPI+SSE stream、ScreenStreamRegistry 同构、ScreenOrderFanoutJob 3s 轮询扇出 order-paid、StoreProjectClient SKU 品类映射 60s 缓存，Repository 只加不改零表结构；前端 api/screen.ts+m1Screen 去 mock+M1ScreenView 接线；真验中修复 P0 SSE 认证串扰 54 样本复验+nginx SSE 缓冲双缺陷；三轨真验全绿）均已闭合，卡8+ 五页侦察已闭合（DELIVERY-P5-B49 §卡8+ 章：目标/合规/健康度/报表/调度五页 mock 域与后端归属全落定）+卡8 目标管理 /m1-target 整页去 mock（feat `1f432a2` 已推送，8 文件 +820/-54：finance-service 新建 target 域 biz_target 表+审批状态机+idemKey 幂等+BIZ_TARGET 审计，TargetController 七端点；前端 api/target.ts+m1Target 重写切真，修复 GROUP 行重复渲染遗留缺陷；三轨真验全绿；批中回写 docs `c8c6e65` 已推送），卡9 合规中心 /m1-compliance 已闭合（audit-service 平铺新增 compliance 域 5 文件+V31、RECHECK 审计八键、SecurityContext.currentStaffName() 取操作人、三轨真验全绿，feat `b7baee5`）+卡10 健康度巡检 /m1-health 已闭合（store-service 新建 health 包 9 文件：health_check 以 store_code 作 PK+health_score 六维行 uk(storeCode,dimension)+health_issue 四态三表 ddl-auto 建表、HealthController 六端点挂 /api/stores/health 网关零改动、rerun 未决高/中危扣分算法服务端化 clamp[40,98] 双向实证、审计复用 ConsumableAuditRecorder、种子 5 头+30 分+7 issue、三轨真验全绿，feat `177a32e`）+卡11 报表中心 /m1-report 已闭合（finance-service 平铺新建 report 域 10 文件：report_template 9 模板+report_job content BYTEA 真实 CSV 落库可重放、ReportController 七端点类级 report:view、ReportAsyncRunner @Async 真实生成异步上下文恢复、R01→FinanceAggregationService.ledger 真实流水门店×支付方式聚合/R02→RevenueMonthlyRepository 直读 join 补区域+环比/R03-R09 七模板 422 收窄、审计复用 FinanceAuditRecorder bizType=REPORT、种子 9 模板+5 job content NULL 不伪造、前端 api/report.ts+m1Report 重写切真 CSV-only、三轨真验全绿含 E012 FINANCE 双权限齐备+PG 对账 2980=3980−1000+retry J90 成功链+audit 验链 ok total=105，feat `01c7af1`）；**卡12 调度中心 /m1-dispatch 待开工（跨三服务最复杂，评估 B50 拆分）**
+- **阶段**：卡0 落账纠错+卡1 侦察+卡2 审计日志接真（feat `43f52ca` 已推送、三轨对账 total=553 一致、批中回写完成）+卡3 区域+门店主数据读侧接真（feat `494c272` 已推送）+卡4 集团聚合端点+概览/矩阵/对标三页接真（feat `f672a80` 已推送、/finance/group-overview 铁律 -1-D 跨店例外域、三轨真验全绿、E011 华东域默认期 2026-09 域收窄正确非 bug）+卡5 采购补全（feat `a108203` 已推送：store-service 新建 procurement 域 supplier+PO 四表+收货、六态状态机/审批阈值/库存联动移动均价、前端 /m1-procurement view 零改动切真、三轨真验全绿）+卡6 SOP /m1-sop（feat `d4c6453` 已推送：store-service 新建 sop 域模板+步骤+任务三表 ddl-auto 建表+种子、SopController 八端点、/m1-sop 切真实 API、三轨真验全绿）+批中回写+卡7 数据大屏 /m1-screen（feat `815f006` 已推送，13 文件 +848/-79：txn-service 新建 screen 包 5 新 4 改——ScreenController 双端点 overview 六 KPI+SSE stream、ScreenStreamRegistry 同构、ScreenOrderFanoutJob 3s 轮询扇出 order-paid、StoreProjectClient SKU 品类映射 60s 缓存，Repository 只加不改零表结构；前端 api/screen.ts+m1Screen 去 mock+M1ScreenView 接线；真验中修复 P0 SSE 认证串扰 54 样本复验+nginx SSE 缓冲双缺陷；三轨真验全绿）均已闭合，卡8+ 五页侦察已闭合（DELIVERY-P5-B49 §卡8+ 章：目标/合规/健康度/报表/调度五页 mock 域与后端归属全落定）+卡8 目标管理 /m1-target 整页去 mock（feat `1f432a2` 已推送，8 文件 +820/-54：finance-service 新建 target 域 biz_target 表+审批状态机+idemKey 幂等+BIZ_TARGET 审计，TargetController 七端点；前端 api/target.ts+m1Target 重写切真，修复 GROUP 行重复渲染遗留缺陷；三轨真验全绿；批中回写 docs `c8c6e65` 已推送），卡9 合规中心 /m1-compliance 已闭合（audit-service 平铺新增 compliance 域 5 文件+V31、RECHECK 审计八键、SecurityContext.currentStaffName() 取操作人、三轨真验全绿，feat `b7baee5`）+卡10 健康度巡检 /m1-health 已闭合（store-service 新建 health 包 9 文件：health_check 以 store_code 作 PK+health_score 六维行 uk(storeCode,dimension)+health_issue 四态三表 ddl-auto 建表、HealthController 六端点挂 /api/stores/health 网关零改动、rerun 未决高/中危扣分算法服务端化 clamp[40,98] 双向实证、审计复用 ConsumableAuditRecorder、种子 5 头+30 分+7 issue、三轨真验全绿，feat `177a32e`）+卡11 报表中心 /m1-report 已闭合（finance-service 平铺新建 report 域 10 文件：report_template 9 模板+report_job content BYTEA 真实 CSV 落库可重放、ReportController 七端点类级 report:view、ReportAsyncRunner @Async 真实生成异步上下文恢复、R01→FinanceAggregationService.ledger 真实流水门店×支付方式聚合/R02→RevenueMonthlyRepository 直读 join 补区域+环比/R03-R09 七模板 422 收窄、审计复用 FinanceAuditRecorder bizType=REPORT、种子 9 模板+5 job content NULL 不伪造、前端 api/report.ts+m1Report 重写切真 CSV-only、三轨真验全绿含 E012 FINANCE 双权限齐备+PG 对账 2980=3980−1000+retry J90 成功链+audit 验链 ok total=105，feat `01c7af1`）；**卡12 调度中心 /m1-dispatch 已闭合（P5-B49 收官，feat `0b3dfb0` 已推送，10 文件 +964/-99：txn-service 平铺新建 dispatch 域 6 文件——DispatchAssignment 实体 ddl-auto 建表/Repository/DispatchController 挂 /api/txn/dispatch 四端点/DispatchDataInitializer @Order(86) 空表门控/DispatchService 353 行/StoreRoomClient 70 行读侧软降级，store-service InternalRoomController 36 行 X-Internal-Token，org-service 零改动复用 OrgStaffClient；四端点 resources 三源聚合/jobs 已预约+已到店无活跃占用/dispatch 写侧 60min 锚定 apptTime 改派 422/重叠 409/重复 409/release；审计 bizType=DISPATCH；权限零改动预置 dispatch:view/edit；前端 api/dispatch.ts+m1Dispatch 重写+M1DispatchView 接线，删 urgentJobs/stats.urgent 死代码；三轨真验全绿四角 E011 通/E002 双 403/无端 401/SE101·E014 通；M1 集团屏 17/17 全切真 3 真实+14 已切真+0 mock，M1 批目标达成；notification 登录页四路 401 登记观察项不扩大修复；批末回写 docs `05f1593` 已推送）**。**P5-B49 全批 12 卡闭合，下一批 P5-B50 方向待用户拍板（建议平台治理批）**
 - **上一批**：P5-B48 技术债纯还债批四卡全部闭合入库（见文末「P5-B48 闭合存档」）
 
 ## 批概览（B49）
@@ -23,8 +23,8 @@
 
 ## 开工基线
 
-- 代码 HEAD=`01c7af1`（B49 卡11 已推送）
-- docs HEAD=`d3866fc`（卡12 设计定稿已推送）
+- 代码 HEAD=`0b3dfb0`（B49 卡12 收官已推送）
+- docs HEAD=`05f1593`（卡12 交付章+五分册批末回写已推送）
 - 后端 19 服务 + 网关全部在线（`bash /tmp/meiyun-health.sh` 复核）；前端 dev http://localhost:8080
 - 登录：curl 通道 POST `https://127.0.0.1:8443/api/org/auth/login`（curl -k，E011/meiyun123=REGION_MGR，token 存 /tmp/meiyun_token.txt，验证前重新登录）；Chrome 通道 http://localhost:8080 手工填表（快捷登录已关闭）
 
@@ -45,7 +45,7 @@
 2.10. ✅ 卡11 报表中心 /m1-report 整页去 mock 已闭合：finance-service 平铺新建 report 域 10 文件（report_template 9 模板+report_job content BYTEA 真实 CSV 落库可重放、ReportController 挂 /api/finance/report 类级 report:view 七端点 templates/jobs/subscribe/generate/retry/download/preview、ReportAsyncRunner @Async 真实生成异步上下文恢复 asyncRunner 显式传 SecurityContext、ReportDataInitializer 种子 9 模板+5 job content NULL 不伪造）；R01→FinanceAggregationService.ledger 真实流水门店×支付方式聚合（PG 对账微信支付净额 2980=3980−1000/支付宝 6800/现金 12800）、R02→RevenueMonthlyRepository 直读 join 补区域+环比（项目品类维度收窄）、R03-R09 七模板 422 收窄登记 backlog（前端常驻 gen--note 提示块非 toast）；审计复用 FinanceAuditRecorder bizType=REPORT；前端 api/report.ts 新建+m1Report 重写切真（剔双 setTimeout 改真实 POST+1s×10 轮询、剔假 preview/mock blob download、format 仅 CSV），feat `01c7af1`（13 文件 +1241/-162，commit 消息 typo bob→blob 已登记 DELIVERY 如实标注清单第 16 项）；三轨真验全绿（curl 权限四角 E011 200/E002 403/无端 401/超管 SE101·E014 通+E012 FINANCE report:view+report:export 双权限齐备全通与卡9/卡10 写 403 不同如实标注、PG 数值对账、retry J90 FAILED→GENERATING→READY 成功链、audit 验链 ok:true total:105、Chrome 9 模板卡/R01+R02 真实 preview/J03 种子 content NULL download 404 toast MutationObserver 实证/真实 CSV 195B text/csv/R03 常驻 gen--note/E002 路由守卫 403 重定向 /no-auth?need=report:view+集团治理菜单整组隐藏 console 零 error/warn、mvn 全绿 45M+vue-tsc+vite build 双栈）；Backlog 新登记 5 项（R03-R09 数据源/XLSX·PDF 导出/R02 区域+品类维度/mapPayMethod transfer 直通/R02 毛利率 % 格式化）；feat `01c7af1` 已推送 → 卡12 调度中心（跨三服务最复杂，评估 B50 拆分）
 3. ⬜ 每卡：铁律 7 三轨真验（curl+PG/Chrome+构建）→ 铁律 6 构建 → 铁律 8 一卡一 feat commit+push
 4. ⬜ 批中：02-modules M1 区逐页翻 ✅、01-dashboard 数字递增、03-timeline 逐卡加行
-5. ⬜ 批末：DELIVERY-P5-B49 + 五分册回写 + docs 原子提交 + 铁律 9 汇报 + 哨兵改 B50
+5. ✅ 批末：DELIVERY-P5-B49 卡12 章 + 五分册回写 + docs 原子提交（`05f1593`）+ 铁律 9 汇报 + 哨兵改 DORMANT/B50——P5-B49 全批闭合（✅108/166=约65%、M1 17/17 全切真）
 
 ## 中断恢复指引
 
@@ -53,6 +53,21 @@
 - 心跳 ≥15 分钟且 STATUS=ACTIVE：前实例中断，从「下一步动作」第一个 ⬜ 续跑
 - 429/模型上限：刷新本文件心跳后退出，等每小时定时任务重试
 - 每卡开工前必须重读本文件 + 铁律 10 全读五分册
+
+## P5-B49 闭合存档（2026-09-15）
+
+- **主题**：M1 集团管控屏接真批（C 方向），卡0 落账纠错+卡1 侦察+卡2–卡12 共 12 卡全闭合；M1 集团屏 **17/17 全切真**（3 真实页+14 已切真页+0 mock，M1 批目标达成）
+- **完成度**：批初 94/166=约57% → 批末 **✅108/166=约65%、⬜56、🔧1**；域⑧ 平台与基建 34✅ 2🔧 31⬜
+- 卡2 审计日志 `43f52ca`（total=553 三轨对账；orphan 只 warn 不删、两轮恒=100 共享索引拓扑；卡0 已纠 f2181aa 失实）
+- 卡3 区域+门店主数据 `494c272`（6 前端文件 +248/-653）；卡4 集团聚合三页 `f672a80`（跨店例外域 -1-D GET /finance/group-overview，8 文件 +407/-154）
+- 卡5 采购补全 `a108203`（procurement 四表六态状态机/审批阈值/移动均价，15 文件 +1425/-80）；卡6 SOP `d4c6453`（sop 三表八端点，11 文件 +1283/-10）
+- 卡7 数据大屏 `815f006`（screen 包 overview+SSE，修复 SSE 认证串扰+nginx 缓冲双缺陷，13 文件 +848/-79）
+- 卡8 目标管理 `1f432a2`（biz_target 五指标×三级×四态+idemKey 幂等，8 文件 +820/-54）；卡9 合规中心 `b7baee5`（compliance 域+V31+RECHECK 八键）
+- 卡10 健康度巡检 `177a32e`（health 三表、clamp[40,98] 扣分服务端化，12 文件 +808/-90）；卡11 报表中心 `01c7af1`（report 域 BYTEA CSV 异步、R01/R02 真实聚合，13 文件 +1241/-162）
+- 卡12 调度中心 `0b3dfb0`（收官，10 文件 +964/-99 跨 txn/store/org 三服务：dispatch_assignment ddl-auto、四端点 resources/jobs/dispatch/release、改派 422/重叠 409/重复 409、权限预置零改动、前端删 urgentJobs 死代码；三轨真验四角全绿）
+- 批末回写：DELIVERY-P5-B49-2026-09-14.md 卡12 设计章+交付章（L461-537）+五分册（history/dashboard/modules/timeline/backlog）docs `05f1593`（6 文件 79+/10-，17/17 收官口径全册统一，历史卡 1/17…13/17 记录保留）
+- **Backlog 净增**：卡12 新登记 6 纵深缺口（DEVICE 设备档案域/URGENT 加急源/durationMin 真实时长/DONE 完成态/班次表/派单时段自由度，建议远期 M1）+1 观察项（登录页 CShellDesktop 全局壳无 token 四路 401 console 噪音，既有现象非卡12 引入，建议平台治理批修复=壳按 token 门控预拉取）；另历史卡累计 backlog 见 04-backlog
+- **下一批 P5-B50 候选方向（待用户拍板）**：①平台治理批（登录页 401 观察项+卡2 历史断链 #380 全量断链清单增强+各卡登记的平台类小项）；②M1 Backlog 纵深缺口（DEVICE/URGENT/durationMin 等，业务纵深但多数依赖跨域新数据源）；③其他用户指定方向
 
 ## P5-B48 闭合存档（2026-09-14）
 
