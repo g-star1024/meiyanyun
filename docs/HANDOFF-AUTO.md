@@ -4,16 +4,17 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-16 05:10 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-16 06:11 CST -->
 <!-- MACHINE:BATCH=P5-B52 -->
-<!-- MACHINE:CARD=卡1 seed 栈服务别名加 seed- 前缀（用户 2026-09-16 凌晨拍板：优先处理 seed 栈 DNS 轮询串扰隐患，方案②seed 容器服务别名加 seed- 前缀；另拍板卡2 派单自由时段开放） -->
+<!-- MACHINE:CARD=卡2 M1 派单自由时段（DispatchCmd 可选 start）——代码+双栈部署已完成（前实例 05:58-06:08），接力会话 06:11 接管，待三轨五分支真验+commit+docs -->
 
 ## 当前状态（人读区）
 
 - **批次**：P5-B52（**2026-09-16 05:10 开工**）——卡1 seed 栈别名层纵深加固（用户拍板方案②服务别名加 seed- 前缀）+卡2 M1 调度派单自由时段开放（start 不锚定 apptTime，产品决策已拍板开放）+卡3 批末落账；哨兵 ACTIVE
 - **用户拍板（原文照录）**：「1、优先处理 seed 栈 DNS 轮询串扰隐患，②seed 容器服务别名加 seed- 前缀；2、M1 调度派单自由时段（start 不锚定 apptTime）：卡5 已闭合改期联动半项，此半项属产品决策，开放；3、完成后开工 P5-B52」
 - **用户四项拍板（持续指导本批施工）**：①施工序=按建议序（L143 DONE→L140 DEVICE→L145 改期）；②L140 同时放开 DEVICE 派单写（读+写全闭环）；③L142 appointment 加 sku_code 列；④L141/L144 都保留诚实空态
-- **阶段**：卡0 哨兵激活（05:10）；卡1 侦察已闭合待施工——运行态双网已隔离（10-_meiyun 15 容器 / meiyun-seed_seed-net 14 容器零跨网附着），别名前缀系纵深加固非现网故障修复；另实证两连带点须一并处理（见下一步卡1）
+- **阶段**：卡0 哨兵激活（05:10）；**卡1 已全闭合**（`0ea8983` 05:45 commit+已 push origin/main，a-f 六子步含三轨真验均在提交说明留证）；**卡2 代码+构建+双栈部署已由前实例完成（05:57 dist / 05:58 txn 镜像，双栈 frontend/txn 均已换载），中断于三轨真验前（哨兵未回写、五文件未提交）**；接力会话 06:11 法医鉴识（git show/diff+docker 现场）后接管，从卡2 三轨五分支真验续跑
+- **接力法医结论（06:05-06:11）**：HEAD=`0ea8983` 已 push；工作区 5 个未提交文件=卡2 全链路五环节代码且已审阅完整（Controller javadoc 透传/Service HHMM 校验+空回落+班次 422+重叠 409 复用/DispatchCmd record 加 start；api start?/store 请求体透传+dispatch 签名带 start/view slotClick 带 slot+全空闲格可点+文案，style 零改）；frontend/dist 05:57 构建物已含「可自由选时」、txn-service:latest 05:58:40 镜像在跑；无活跃 mvn/compose 进程、哨兵 mtime 停 05:12、心跳停滞 ≥15 分钟→确认前实例中断非并发；docker CLI 在 `/Applications/Docker.app/Contents/Resources/bin/docker`（本会话 PATH 无系统命令须绝对路径）
 - **本批范围**：卡1（04 新增登记行②）seed 栈 10 个 compose 服务键加 `seed-` 前缀根治别名层串扰，连带①frontend nginx 裸别名 `gateway` 改 envsubst 模板（双栈共享镜像，默认 gateway 保 app 栈零影响、seed 注入 meiyun-seed-gateway）②顺带修 seed marketing 崩溃（Exited(1) 31h，Flyway V11-14 pending 乱序，application.yml 缺 out-of-order:true，B38 audit 同款修法）；卡2（04 L146）派单自由时段（DispatchCmd 增可选 start，复用 409/422/审计；前端格子点击带 slot 时段）；卡3 批末落账。
 - **保留登记（不在 B51 范围，随后续批次评估）**：L133 impersonate＝大（JWT act/realSub claim+meiyun-security 全服务回归+前端换 token，与 L46 合并）、L123 报告哈希验真 UI＝中（content_hash+规范化字节口径，DSAR/consent 远期）。非本批：L89 setup-seed-db 保留 audit_log、L128 ai-service seed Flyway V17-V29 悬置。
 - **记账口径**：纵深缺口批以「缺口闭合即勾 04-backlog 行」为记账单位——完成度数字（✅108/166≈65%、⬜56、🔧1、域⑧ 34✅2🔧31⬜）仅当缺口对应功能真实落地才动；侦察无源的行保持登记不动、诚实说明。
@@ -21,8 +22,8 @@
 
 ## 开工基线
 
-- 代码 HEAD=`0c43981`（P5-B51 批末 docs 提交）；总 HEAD=`0c43981`，已 push origin/main；工作区仅本哨兵未提交修改
-- 后端 19 服务 + 网关在线（卡1 开工用 `bash /tmp/meiyun-health.sh` 复核）；正式前端 http://localhost:8080 / 网关 8443；seed 前端 127.0.0.1:18080 / 网关 18443；**seed marketing Exited(1) 待卡1 修复**
+- 代码 HEAD=`0ea8983`（P5-B52 卡1 fix(seed) 提交，05:45），已 push origin/main（ls-remote 核对一致）；工作区=卡2 五文件未提交（DispatchController/DispatchService/dispatch.ts/m1Dispatch.ts/M1DispatchView.vue）+本哨兵
+- 后端 19 服务 + 网关在线（双栈 25 容器 06:10 全 healthy/Up）；正式前端 http://localhost:8080 / 网关 8443；seed 前端 127.0.0.1:18080 / 网关 18443；**卡2 双栈已换载**：txn-service 镜像 05:58:40、seed-txn 同镜像 05:58 起、双 frontend dist 05:57 已 docker cp（dist 含「可自由选时」实证）
 - 登录：curl 通道 POST `https://127.0.0.1:8443/api/org/auth/login`（curl -k，E011/meiyun123=REGION_MGR 华东域，token 存 /tmp/meiyun_token.txt，验证前重新登录）；Chrome 通道 http://localhost:8080 手工填表（快捷登录已关闭）
 - 铁律 10 开工读数：索引+00～04 五分册本批开工前已全部整读
 - docs 提交坑：`docs/` 被 .gitignore 整体忽略；已跟踪文档用 `git add -u docs/`，仅新增 docs 文件用 `git add -f`；Grep 工具对 docs 超长中文行失效，用 shell `grep -rn` 或 Read
@@ -30,15 +31,13 @@
 ## 下一步动作（B52 卡序列）
 
 0. ✅ 卡0 哨兵激活+侦察（05:11）：六册开工前已读齐；实证双网运行态已隔离（10-_meiyun 15 容器 / meiyun-seed_seed-net 14 容器零跨网附着，别名前缀系别名层纵深加固非现网抢修）+seed marketing Exited(1)（Flyway V11-14 乱序 pending，缺 out-of-order:true）+frontend nginx 4 处裸别名 gateway；卡2 全链路五环节锚定（Controller 透传零改/Service L265 start 锚定+record L451/api 类型/store 请求体漏传 start/view 格子不带 slot）
-1. ⬜ 卡1 seed 栈别名层纵深（**施工中**）：
-   - a. `docker-compose.seed.yml` 十服务键加 `seed-` 前缀（customer/txn/audit/store/org/finance/marketing/ai-service/gateway/frontend）；container_name 与 env 内 URL 全部不动（后端互访走容器名零影响）；仅两处 depends_on 同步（gateway→seed-ai-service、frontend→seed-gateway）；frontend 注入 `GATEWAY_UPSTREAM=meiyun-seed-gateway`
-   - b. frontend nginx 模板化：`nginx.conf` 4 处 `proxy_pass https://gateway:8443` → 模板 `${GATEWAY_UPSTREAM}`，Dockerfile 改 COPY 到 `/etc/nginx/templates/default.conf.template`（官方 entrypoint envsubst；envsubst 不支持 `:-` 默认值，故 app compose frontend 显式注入 `GATEWAY_UPSTREAM=gateway`）；$host 等 nginx 运行时变量不在 env 中不会被误替换
-   - c. marketing `application.yml` 补 `spring.flyway.out-of-order: true`（B38 audit 先例，V11-14 全 CREATE TABLE IF NOT EXISTS 幂等）；`mvn -pl marketing-service clean package -DskipTests`（必要时 -am）→ app compose 重建 marketing-service+frontend 镜像
-   - d. seed 栈 down→up（项目名 meiyun-seed）→ `bash scripts/seed-network-connect.sh` 中间件重接；双栈 frontend 重新部署
-   - e. 三轨真验：8443 持续 core M00x 数据/18443 持续 seed SC 数据；正式栈 txn name-map 零空 Map；seed 网内裸别名 `gateway` 不可解析而 `seed-gateway` 可解析（getent hosts/nslookup 实证）；seed marketing Up 且 V11-V14 补应用（flyway_schema_history）；双栈前端 /api 与 /healthz 200
-   - f. 一卡一 commit+push
-2. ⬜ 卡2 M1 派单自由时段（用户拍板产品决策开放）：DispatchCmd 增可选 `start`（空回落 apptTime 保回归），班次 422/重叠 409/审计 DISPATCH 全复用；api 类型加 start?、store 请求体透传 start、view 格子点击带 slot 且放开可点格（不再限定 apptTime 格）、文案改「班次内任意空闲时段」，样式 class 零改动；三轨真验（自由时段派单成功/越班次 422/重叠 409/空 start 回归 apptTime/审计 payload 含 start）；commit+push
-3. ⬜ 卡3 批末：DELIVERY-P5-B52+五分册回写（03 表底新增 P5-B52 行、04 勾销自由时段行+seed 别名行）+哨兵 DORMANT/B53+原子 docs 提交 push+铁律 9 汇报
+1. ✅ 卡1 seed 栈别名层纵深（**已闭合 `0ea8983` 05:45，已 push**；a 十服务键 seed- 前缀+两处 depends_on+b nginx envsubst 模板 4 处 proxy_pass+Dockerfile COPY templates+双栈 GATEWAY_UPSTREAM 注入+c marketing out-of-order:true+新增 V32 schema drift ALTER 幂等补列+d seed down/up+网络重接+双栈部署+e 三轨真验全绿（双向 DNS 隔离/双栈 nginx 上游/8080+18080 200/seed V11-14+V32）+f commit+push）——接力会话已复核提交内容与运行态，不重做
+2. 🔄 卡2 M1 派单自由时段（**接力接管点**）：代码五环节前实例已写完且已审阅、双栈已构建部署（txn 镜像 05:58/dist 05:57），**剩余**：
+   - a. 三轨五分支真验（curl 经网关）：①自由时段 start=14:00 派单成功 200 落库 start=14:00；②越班次 start=08:00/20:00→422 中文「超出班次」；③同资源同时段重叠→409；④不传/空 start→回落 apptTime 回归；⑤格式非法 start=9:60→422「HH:mm」；PG 轨查 dispatch_assignment 落库+审计 DISPATCH payload 含 start
+   - b. Chrome 轨：M1DispatchView 选单→点非预约时段空闲格派单成功、冲突格 toast 中文提示
+   - c. 五文件 feat commit（建议 `feat(dispatch): 派单支持班次内自由时段（DispatchCmd 可选 start，缺省回落 apptTime）`）+push
+   - d. 心跳随验随更
+3. ⬜ 卡3 批末：DELIVERY-P5-B52+五分册回写（00 顶部简报、02 M1 调度行尾接、03 表底新增 P5-B52 行、04 勾销 L146 自由时段+L147 seed 别名串扰、01 数字勾稽不变）+哨兵推进（队列全闭合置 DONE）+原子 docs 提交 push+铁律 9 汇报（✅108/166≈65%、🔧1、⬜56，纯纵深批新增 0 模块）
 
 ## 中断恢复指引
 
