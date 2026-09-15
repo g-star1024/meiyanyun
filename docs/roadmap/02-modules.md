@@ -126,7 +126,7 @@
 | 字典管理 | ✅ | M7 | 字典端点真实 | — |
 | 国密网关双栈（Go） | ✅ | M7 | 18443/8443 双栈 | — |
 | 测试 / 双栈验证体系 | ✅ | 全程 | 每批 DoD（mvn+vue-tsc+双栈+PG 对账） | — |
-| M1 集团（brand/procurement/marketing 3 页真实） | 🔧 | — | 3 页直连 | 审计日志 B49 卡2、区域+门店主数据卡3、概览/矩阵/对标卡4、采购补全卡5、标准作业SOP卡6、数据大屏卡7、目标管理卡8、合规中心卡9、健康度巡检卡10 接真（见下行拆分），其余 2 页 mock，**远期 M1** |
+| M1 集团（brand/procurement/marketing 3 页真实） | 🔧 | — | 3 页直连 | 审计日志 B49 卡2、区域+门店主数据卡3、概览/矩阵/对标卡4、采购补全卡5、标准作业SOP卡6、数据大屏卡7、目标管理卡8、合规中心卡9、健康度巡检卡10、报表中心卡11 接真（见下行拆分），其余 1 页 mock，**远期 M1** |
 | C 端移动端（packages/coupons 2 页真实） | 🔧 | — | mp-uniapp 2 页 | 其余 20 页 mock，**远期移动端** |
 | M1 · 审计日志（/m1-audit-log） | ✅ | P5-B49 卡2 | DELIVERY-P5-B49，`43f52ca` | audit-service +GET /page 五过滤服务端分页+/facets 两新端点，原全链 List 端点零改动；KPI/过滤/分页/详情侧栏全真，/verify 如实显历史断链 #380 |
 | M1 · 区域管理（/m1-region） | ✅ | P5-B49 卡3 | DELIVERY-P5-B49，`494c272` | org/tree+regions/dist 双源只读，六区 KPI/卡体统计全真，写侧收窄 Backlog 只读 |
@@ -140,7 +140,8 @@
 | M1 · 目标管理（/m1-target） | ✅ | P5-B49 卡8 | DELIVERY-P5-B49，`1f432a2` | finance-service 新建 target 域（biz_target 表 metric 五枚举×ownerType 三级×approval 四态+审批状态机+idemKey 幂等+BIZ_TARGET 审计留痕），TargetController 七端点（列表四过滤/新建/进度/提交/批准/驳回），种子 10 行三级分解树四态覆盖；前端 api/target.ts+m1Target 重写切真，修复 GROUP 行重复渲染遗留缺陷，三轨真验全绿 |
 | M1 · 合规中心（/m1-compliance） | ✅ | P5-B49 卡9 | DELIVERY-P5-B49，`b7baee5` | audit-service 平铺新增 5 文件+V31 迁移（compliance_check 表 category 六枚举×status 四态 CHECK），GET /checks 类级 compliance:view+POST /checks/{id}/recheck 方法级 compliance:edit（body={pass 必填,remark?}），同事务 RECHECK 审计（bizType=COMPLIANCE、payload 八键、risk=FAIL→HIGH/PASS→LOW、ip "web"），audit_log 不扩列；取操作人 SecurityContext.currentStaffName() 中文姓名；ComplianceDataInitializer @Order(45) 种子 12 条照 mock+6 条审计真实写入保哈希链；前端 api/compliance.ts+m1Compliance 重写切真（impersonate 仅审计留痕真实化收窄，view 零改动），curl 权限四角+PG 验链+Chrome 三轨真验全绿 |
 | M1 · 健康度巡检（/m1-health） | ✅ | P5-B49 卡10 | DELIVERY-P5-B49，`177a32e` | store-service 新建 health 包 9 文件（三表 ddl-auto：health_check store_code 作 PK+health_score 六维行 uk(storeCode,dimension)+health_issue 状态机），六端点挂 /api/stores/health 网关零改动，rerun 未决高/中危扣分算法服务端化（clamp[40,98] 双向实证）+复用 ConsumableAuditRecorder 落审计，种子 5 头+30 分+7 issue；前端 api/health.ts+m1Health 重写切真+M1HealthView selId 一行微调，curl 权限四角+PG+Chrome 三轨真验全绿 |
-| M1 集团其余 2 页 | ⬜ | — | — | 远期 M1 |
+| M1 · 报表中心（/m1-report） | ✅ | P5-B49 卡11 | DELIVERY-P5-B49，`01c7af1` | finance-service 平铺新建 report 域 10 文件（report_template 9 模板+report_job content BYTEA 真实 CSV 落库可重放），ReportController 挂 /api/finance/report 类级 report:view 七端点（templates/jobs/subscribe/generate/retry/download/preview），ReportAsyncRunner @Async 真实生成；R01→FinanceAggregationService.ledger 真实流水门店×支付方式聚合、R02→RevenueMonthlyRepository 直读 join 补区域+环比（项目品类维度收窄）、R03-R09 七模板 422 收窄登记 backlog；种子 9 模板+5 job content NULL 不伪造；审计复用 FinanceAuditRecorder bizType=REPORT；前端 api/report.ts+m1Report 重写切真（剔双 setTimeout 改真实 POST+1s×10 轮询、剔假 preview/mock blob download、format 仅 CSV），三轨真验全绿 |
+| M1 集团其余 1 页（调度中心） | ⬜ | — | — | 远期 M1（跨三服务最复杂，B50 拆分候选） |
 | T2 数据分析（4 页） | ⬜ | — | — | 远期 T2 |
 | T3 外部集成 | ⬜ | — | — | 远期 T3 |
 | T4 AI 算力（4 页） | ⬜ | — | — | 远期 T4 |

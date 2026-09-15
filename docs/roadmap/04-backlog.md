@@ -132,3 +132,8 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | target 列表行级 DataScope 未收窄（有 target:view 即可读全量） | B49 卡8 三轨真验（权限三角断言） | 列表查询未按登录人数据域收窄 ownerType=REGION/STORE 行（区域岗应仅见本域）；修复=BizTargetService 列表补 DataScope 行级过滤+越权用例补强 | B49 批末或 B50 首卡 |
 | M1 合规 impersonate 真实身份切换（org-service 会话置换） | B49 卡9 新增（详见 DELIVERY-P5-B49 §卡9） | 卡9 收窄为仅审计留痕真实化（start/end 经 POST /api/audit append 真实落库），activeSession 保持前端内存单会话；真实身份切换需 org-service 会话置换与权限重签，与「超管 Impersonate」平台批同项合并评估 | 平台批 |
 | 审计真实客户端 IP 采集（网关注入 X-Real-IP→audit append 链路） | B49 卡9 新增 | 现 RECHECK/impersonate 审计 ip 如实写 "web"（浏览器取不到真实客户端 IP）；需网关侧采集 X-Real-IP 透传至 audit append 链路 | 平台批 |
+| M1 报表 R03-R09 七模板数据源待建（现 422 收窄，前端常驻 gen--note 提示块） | P5-B49 卡11 | 各域业务表/聚合服务就绪后逐一接真 | 远期 M1 |
+| M1 报表 XLSX·PDF 导出格式（首卡 CSV-only，ReportCsvBuilder 单格式） | P5-B49 卡11 | 生成引擎（POI/PDF）选型评估 | 远期 M1 |
+| M1 报表 R02 区域+项目品类维度扩展（现 RevenueMonthlyRepository 直读，区域 join 已补、品类收窄） | P5-B49 卡11 | revenue_monthly 维度字段补齐 | 远期 M1 |
+| mapPayMethod transfer 渠道直通（现归「其他」保守口径，影响 R01 支付方式分布） | P5-B49 卡11 | 支付渠道枚举扩充与历史口径确认 | 远期 M1 |
+| R02 毛利率 % 格式化（gross_rate 小数输出 vs 表头（%）） | P5-B49 卡11 | 前端或 SQL 层统一 ×100 口径 | 远期 M1 |
