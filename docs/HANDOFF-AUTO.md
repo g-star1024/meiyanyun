@@ -3,16 +3,16 @@
 > 用途：铁律 11 自主续跑的唯一事实源。任何接续会话/定时任务先读本文件，再按「开发前 checklist」执行。
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
-<!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 23:40 CST -->
-<!-- MACHINE:BATCH=P5-B51 M1 调度 Backlog 纵深缺口批（04-backlog L140-145 六缺口，用户 2026-09-15 晚拍板「P5-B51开工吧」=此前顺序②授权落地；多依赖跨域新数据源，先逐卡只读侦察数据源就绪度，无源继续诚实空态） -->
-<!-- MACHINE:CARD=批末（用户四项拍板已全部落定：①施工序=按建议序 L143→L140→L145；②L140 范围=同时放开 DEVICE 派单写；③L142 方向=appointment 加 sku_code 列+durationMin 从 SKU 真源取；④无源缺口=都保留诚实空态（L141 URGENT/L144 班次表）。卡6 L142 已 23:40 全闭合：feat 777d456 已 push，7 文件 +130/-18，三轨真验全绿——绑SKU派单14:00→15:30(90min)/未绑回落14:00→15:00/伪SKU 400/PG sku_code 落列/audit payload 含 sku/jobs durationMin=90。环境排障：name-map 空 Map 之谜=seed 栈同网络别名 DNS 轮询，txn recreate 恢复，批末登记上报） -->
+<!-- MACHINE:STATUS=DORMANT -->
+<!-- MACHINE:HEARTBEAT=2026-09-16 00:15 CST -->
+<!-- MACHINE:BATCH=P5-B52（下一批方向待用户拍板，候选见文末 P5-B51 闭合存档） -->
+<!-- MACHINE:CARD=—（P5-B51 已于 2026-09-16 00:15 批末全闭合：四卡 feat `79a8ae4`+fix `2714287`/`86d4a65`/`50a7eb7`/`777d456` 均 push，DELIVERY-P5-B51+五分册回写+同批原子 docs 提交完成，哨兵转 DORMANT，详见文末闭合存档） -->
 
 ## 当前状态（人读区）
 
-- **批次**：P5-B51 M1 调度 Backlog 纵深缺口批 **2026-09-15 20:15 开工**（用户拍板「P5-B51开工吧」）；哨兵 ACTIVE
+- **批次**：无 ACTIVE 批次（P5-B51 M1 调度 Backlog 纵深缺口批 **2026-09-15 20:15 开工、2026-09-16 00:15 批末全闭合**，见文末存档）；哨兵 DORMANT
 - **用户四项拍板（持续指导本批施工）**：①施工序=按建议序（L143 DONE→L140 DEVICE→L145 改期）；②L140 同时放开 DEVICE 派单写（读+写全闭环）；③L142 appointment 加 sku_code 列；④L141/L144 都保留诚实空态
-- **阶段**：卡3 L143 DONE 完成态联动 **21:30 全闭合**（8 文件+新建 DispatchCompletion，feat `79a8ae4`+顺手 fix `2714287` 均已 push；三轨真验 8 项全绿）→ **卡4 L140 DEVICE 接真+放开派单写 待开工**
+- **阶段**：批末已闭合——卡3/4/5/6 四卡全绿（feat `79a8ae4`+fix `2714287`/`86d4a65`/`50a7eb7`/`777d456` 均 push，三轨真验全绿）+DELIVERY-P5-B51+五分册回写+同批原子 docs 提交+铁律 9 汇报全部完成；下一批方向待用户拍板
 - **范围（04-backlog L140-145，B49 卡12 登记的 M1 调度六缺口）**：L140 DEVICE 设备档案（GET /resources 三源之一现诚实空态）/ L141 URGENT 加急源（jobs 加急标记无源，前端已删 stats.urgent 死代码）/ L142 durationMin 真实时长（现固定 end=start+60min，SKU↔project 名匹配率 0%）/ L143 assignment DONE 完成态（现仅 SCHEDULED/IN_PROGRESS/RELEASED）/ L144 医生房间班次表（现固定 09:00-20:00）/ L145 派单时段自由度改期（start 现锚 apptTime）。**多依赖跨域新数据源：开工逐卡只读侦察数据源就绪度，有源才施工、无源继续诚实空态**；白天先建议后拍板。
 - **保留登记（不在 B51 范围，随后续批次评估）**：L133 impersonate＝大（JWT act/realSub claim+meiyun-security 全服务回归+前端换 token，与 L46 合并）、L123 报告哈希验真 UI＝中（content_hash+规范化字节口径，DSAR/consent 远期）。非本批：L89 setup-seed-db 保留 audit_log、L128 ai-service seed Flyway V17-V29 悬置。
 - **记账口径**：纵深缺口批以「缺口闭合即勾 04-backlog 行」为记账单位——完成度数字（✅108/166≈65%、⬜56、🔧1、域⑧ 34✅2🔧31⬜）仅当缺口对应功能真实落地才动；侦察无源的行保持登记不动、诚实说明。
@@ -40,8 +40,8 @@
 3. ✅ 卡3 L143 assignment DONE 完成态联动（**21:30 全闭合**：9 文件 +150/-25 含新建 DispatchCompletion；feat `79a8ae4`+顺手修既有 bug fix `2714287` 均已 push；三轨真验 8 项全绿——PG done_at 列置值/REQUIRES_NEW 日志「置DONE 1条」/resources DONE 回显/jobs 不重现/release 422/再派 422/DONE 不占时段 id=7 同医生同时段派单成功/audit DISPATCH/6/DONE actor=SE004）
 4. ✅ 卡4 L140 DEVICE 接真+放开 DEVICE 派单写（**22:05 全闭合**：8 文件 +179/-21 含新建 InternalEquipmentController+StoreEquipmentClient；feat `86d4a65` 已 push；三轨真验全绿——读侧 resources?type=DEVICE 返回 5 台 NORMAL（校准/停用/维修 3 台过滤）、写侧派 EQ-L001 成功 id=8 SCHEDULED、同设备同时段 409「皮秒激光治疗仪 在 14:00-15:00 已有排单」、派校准中 EQ-R002 404「所选设备不存在或不可用（仅正常状态设备可派单）」、resources 占用块回显 14:00-15:00 唐玉兰、PG dispatch_assignment DEVICE 行+audit_log DISPATCH payload resourceType=DEVICE 双落库；设计期规避两坑——EquipmentService.toView 维保记录 N+1 改轻量 listDispatchBriefs、前端 adaptAssignment 二元映射会把 DEVICE 错映射 DOCTOR 改显式三态）
 5. ✅ 卡5 L145 预约改期联动（**22:25 全闭合**：2 文件 +56/-3；feat `50a7eb7` 已 push；三轨真验全绿——改期 000007→16:00 派单 id=8 跟随 16:00-17:00 resources 回显/改期 16:30 与既有排单重叠 409「皮秒激光治疗仪 在新时段 16:30-17:30 与已有排单 16:00-17:00 冲突」且预约回滚仍 14:30/改期 19:30 越班次 422/改期 17:30 成功跟随 EQ-L001 双块/无派单预约改期回归 200/PG 两行派单 bizDate+start/end 跟随正确+audit 双轨 RESCHEDULE×3+RESCHEDULE_FOLLOW×2（拒绝两次无 FOLLOW 记录））
-6. 🔄 卡6 L142 appointment 加 sku_code 列（下一卡，拍板已授权：schema 变更+预约创建选 SKU+durationMin 从 SKU duration_min 真源取，替代固定 60min；seed appointment 共 166 行存量）
-7. ⬜ 批末：DELIVERY-P5-B51-2026-09-15.md + 五分册回写（00 顶部简报/03 表底 P5-B51 行/04 已闭合行勾销/02 挂载备注/01 数字仅真实落地才动）+ 同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B52
+6. ✅ 卡6 L142 appointment 加 sku_code 列（**23:40 全闭合**：7 文件 +130/-18；feat `777d456` 已 push；三轨真验全绿——绑 SKU 派单 14:00→15:30（90min 真源）/未绑回落 14:00→15:00/伪 SKU 400/PG sku_code 落列/audit payload 含 sku/jobs durationMin=90）
+7. ✅ 批末（**2026-09-16 00:15 已闭合**：DELIVERY-P5-B51-2026-09-15.md 13 章 + 五分册回写（00 顶部简报+B50 降级上一批/03 表底 P5-B51 行/04 四行勾销 L140/L142/L143/L145+两行保留登记 L141/L144+两行新增登记/02 调度行尾接+新建预约行挂卡6/01 L18+L36 尾接数字不动）+ 同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B52）
 
 ## 中断恢复指引
 
@@ -49,6 +49,21 @@
 - 心跳 ≥15 分钟且 STATUS=ACTIVE：前实例中断，从「下一步动作」第一个 ⬜ 续跑
 - 429/模型上限：刷新本文件心跳后退出，等每小时定时任务重试
 - 每卡开工前必须重读本文件 + 铁律 10 全读五分册
+
+## P5-B51 闭合存档（2026-09-16）
+
+- **主题**：M1 调度 Backlog 纵深缺口批（04-backlog L140-145 六缺口，用户 2026-09-15 晚拍板「P5-B51开工吧」=顺序②授权落地），卡1 只读侦察+卡2 四项拍板+卡3–卡6 四卡施工全闭合（4 feat+1 fix 共 5 commit 均 push）
+- **完成度**：纯纵深批数字一律不变——**✅108/166=约65%、🔧1、⬜56 约34%；域⑧ 34✅ 2🔧 31⬜**（同 B44/B45/B50 先例：均既有 ✅ 模块纵深挂载，无新页面、无模块状态跃迁、无 🔧 成因消解）
+- 卡3 L143 assignment DONE 完成态联动 `79a8ae4`（9 files +150/-25，新建 DispatchCompletion AFTER_COMMIT REQUIRES_NEW 同服务同库联动 ConsultPlanService.treatDone——TREATING→DONE+EM 治疗记录+revision+audit+FollowupScheduler 先例；终态 422、isSlotBusy 排除 DONE 不占时段）+顺手 fix `2714287`（预约号 22P02 既有 bug）；三轨真验 8 项全绿
+- 卡4 L140 DEVICE 接真+放开派单写 `86d4a65`（8 files +179/-21，store-service 新建 InternalEquipmentController 复刻 InternalRoomController 范式+txn StoreEquipmentClient 软降级；读侧 resources?type=DEVICE 真实 5 台 NORMAL（校准/维修/停用过滤）、写侧派 EQ-L001 成功 id=8/仅 NORMAL 404/同时段 409；「设备档案无源诚实空态」闭合为读+写全闭环）
+- 卡5 L145 预约改期联动 `50a7eb7`（2 files +56/-3，reschedule 同事务 followReschedule——SCHEDULED 派单跟随新时段/重叠 409 预约回滚/越班次 422/audit 双轨 RESCHEDULE+RESCHEDULE_FOLLOW；自由时段派单系产品决策未施工，转 04 新登记行）
+- 卡6 L142 appointment 加 sku_code 列 `777d456`（7 files +130/-18，schema 变更+创建选 SKU 403 降级+activeSkuDurationMap 60s 缓存+伪 SKU 400+resolveDurationMin 三消费点统一：绑 SKU 按 duration_min 真源 90 分钟实证/未绑回落 60min，替代原固定 end+60min）
+- 批末回写：DELIVERY-P5-B51-2026-09-15.md（13 章）+五分册（00 顶部简报+B50 降级上一批/03 表底 P5-B51 行/04 四行勾销 L140/L142/L143/L145+两行保留登记 L141/L144+两行新增登记/02 调度行尾接+新建预约行挂卡6/01 L18+L36 尾接数字不动），同批原子 docs 提交
+- **用户四项拍板（2026-09-15 晚，均已照办）**：①按建议序开工（L143→L140→L145→L142）②同时放开 DEVICE 派单写（读+写全闭环）③appointment 加 sku_code 列（schema 变更+durationMin 从 SKU 真源取）④L141 URGENT/L144 班次表都保留诚实空态（appointment 无 priority/urgent 列、库内无 shift/duty/roster 表，04 保留登记）
+- **新增登记两项（待用户拍板）**：①M1 调度派单自由时段（start 不锚定 apptTime，产品决策）；②seed 栈与正式栈同 Docker 网络+同名服务别名致 DNS 轮询串扰（环境治理——seed 库客户号 SC 前缀，查 M002 → 200 空 Map，间歇性空数据而非报错；建议①seed 栈迁移独立 Docker 网络或②seed 容器服务别名加 seed- 前缀）
+- **append-only 留档（不可删）**：dispatch id=6/7（卡3 DONE 链）、id=8（卡4 DEVICE+卡5 改期跟随）、预约 000007 改期链（卡5）、AP20260915-000001~000005+dispatch id=1/2+audit CREATE×4（卡6）
+- **环境排障留档**：name-map 空 Map 之谜=seed 栈同网络别名 DNS 轮询，txn recreate 恢复
+- **下一批 P5-B52 候选方向（待用户拍板）**：①04-backlog 存量纵深（L141 URGENT 加列/L144 班次表/派单自由时段——均需产品决策）；②seed 栈网络隔离环境治理；③L133 impersonate 大项（JWT act/realSub claim+meiyun-security 全服务回归+前端换 token）；④其他用户指定方向
 
 ## P5-B50 闭合存档（2026-09-15）
 
