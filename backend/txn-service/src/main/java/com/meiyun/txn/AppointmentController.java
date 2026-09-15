@@ -8,6 +8,7 @@ import jakarta.validation.constraints.NotNull;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -43,13 +44,16 @@ public class AppointmentController {
     private final AuditRecorder audit;
     private final ApptRefNameResolver names;
     private final AppointmentArrivalService appointmentArrivalService;
+    private final DispatchService dispatchService;
 
     public AppointmentController(AppointmentRepository repo, AuditRecorder audit, ApptRefNameResolver names,
-                                 AppointmentArrivalService appointmentArrivalService) {
+                                 AppointmentArrivalService appointmentArrivalService,
+                                 DispatchService dispatchService) {
         this.repo = repo;
         this.audit = audit;
         this.names = names;
         this.appointmentArrivalService = appointmentArrivalService;
+        this.dispatchService = dispatchService;
     }
 
     /** 创建预约（含外键/枚举/幂等校验）。 */
@@ -98,15 +102,21 @@ public class AppointmentController {
         return toView(saved);
     }
 
-    /** 改期（已预约态才可改）。 */
+    /**
+     * 改期（已预约态才可改）。P5-B51 卡5：同事务联动调度中心——该预约的 SCHEDULED 派单跟随
+     * 移动到新日期时段（派单 start 锚定 apptTime 语义延伸）；新时段越出班次或与同资源活跃
+     * 占用冲突时整体回滚拒绝改期，派单不再滞留旧时段。
+     */
     @PostMapping("/{no}/reschedule")
     @RequirePerm("appointment:edit")
+    @Transactional
     public AppointmentView reschedule(@PathVariable String no, @RequestBody @Valid RescheduleCmd cmd) {
         Appointment a = getActive(no);
         if (!cmd.apptTime().matches("^([01]\\d|2[0-3]):[0-5]\\d$")) {
             throw badRequest("到店时间格式应为 HH:mm（如 10:30）: " + cmd.apptTime());
         }
         String oldDate = String.valueOf(a.getApptDate()) + " " + a.getApptTime();
+        dispatchService.followReschedule(a, cmd.apptDate(), cmd.apptTime());
         a.setApptDate(cmd.apptDate());
         a.setApptTime(cmd.apptTime());
         Appointment saved = repo.save(a);

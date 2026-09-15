@@ -30,7 +30,9 @@ import java.util.Map;
  * 派单 start 锚定预约 apptTime（不可自由选时），时长固定 60 分钟（project↔SKU 名匹配率 0% 实证，
  * 不伪造真实时长，Backlog）；DOCTOR 资源必须与预约指定医生一致；同资源同日时段重叠拒绝；
  * 占用状态由预约态派生（已预约=SCHEDULED / 已到店=IN_PROGRESS）。释放为 RELEASED 保留行；
- * 治疗完成由方案单 treatDone AFTER_COMMIT 联动置 DONE（终态回显不占时段，不可释放/再派单）。
+ * 治疗完成由方案单 treatDone AFTER_COMMIT 联动置 DONE（终态回显不占时段，不可释放/再派单）；
+ * 预约改期由 {@link #followReschedule} 同事务跟随移动 SCHEDULED 派单（P5-B51 卡5，锚定语义延伸，
+ * 新时段越出班次或与同资源活跃占用冲突则拒绝改期；已到店预约不可改期，IN_PROGRESS 不会进入跟随）。
  */
 @Service
 public class DispatchService {
@@ -283,6 +285,47 @@ public class DispatchService {
         audit.record("DISPATCH", String.valueOf(saved.getId()), DataScope.currentActor(), "DISPATCH",
                 jsonPayload(saved));
         return toView(saved);
+    }
+
+    /**
+     * 改期跟随（P5-B51 卡5）：预约改期时同事务把其 SCHEDULED 派单移动到新日期时段
+     * （派单 start 锚定 apptTime 的既有语义延伸，跨日改期 bizDate 一并跟随）。
+     * 新时段越出固定班次窗 → 422；与同资源活跃占用重叠（排除自身）→ 409；
+     * 任一校验失败抛异常，由调用方事务整体回滚，预约与派单不产生中间态。
+     * 每条跟随的派单记 audit RESCHEDULE_FOLLOW（调度域动作调度域审计）。
+     */
+    @Transactional
+    public void followReschedule(Appointment a, LocalDate newDate, String newTime) {
+        List<DispatchAssignment> scheduled = assignmentRepo.findByApptNoAndStatusIn(
+                a.getApptNo(), List.of(DispatchAssignment.ST_SCHEDULED));
+        if (scheduled.isEmpty()) return;
+        if (newTime.compareTo(WORK_START) < 0 || plusMinutes(newTime, DURATION_MIN).compareTo(WORK_END) > 0) {
+            throw error(HttpStatus.UNPROCESSABLE_ENTITY,
+                    "该预约已派单，新时段 " + newTime + " 超出班次 " + WORK_START + "-" + WORK_END
+                            + "，请先释放派单再改期");
+        }
+        String end = plusMinutes(newTime, DURATION_MIN);
+        for (DispatchAssignment asg : scheduled) {
+            List<DispatchAssignment> own = assignmentRepo
+                    .findByStoreCodeAndBizDateAndResourceTypeAndResourceIdAndStatusIn(
+                            asg.getStoreCode(), newDate, asg.getResourceType(), asg.getResourceId(), ACTIVE);
+            for (DispatchAssignment ex : own) {
+                if (ex.getId().equals(asg.getId())) continue;
+                if (newTime.compareTo(ex.getEndTime()) < 0 && ex.getStartTime().compareTo(end) < 0) {
+                    throw error(HttpStatus.CONFLICT,
+                            asg.getResourceName() + " 在新时段 " + newTime + "-" + end
+                                    + " 与已有排单 " + ex.getStartTime() + "-" + ex.getEndTime()
+                                    + " 冲突，请先释放派单或改到其他时段");
+                }
+            }
+            asg.setBizDate(newDate);
+            asg.setStartTime(newTime);
+            asg.setEndTime(end);
+            DispatchAssignment saved = assignmentRepo.save(asg);
+            audit.record("DISPATCH", String.valueOf(saved.getId()), DataScope.currentActor(),
+                    "RESCHEDULE_FOLLOW", jsonPayload(saved));
+            log.info("改期跟随：派单 id={} 预约 {} 移至 {} {}-{}", saved.getId(), a.getApptNo(), newDate, newTime, end);
+        }
     }
 
     /** 释放派单：仅活跃态可释放 → RELEASED + released_at 保留行；重复释放/DONE 终态 422。 */
