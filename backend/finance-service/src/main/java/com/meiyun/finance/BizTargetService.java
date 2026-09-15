@@ -1,6 +1,7 @@
 package com.meiyun.finance;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.meiyun.security.DataScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -50,6 +51,8 @@ public class BizTargetService {
     public List<Map<String, Object>> list(String ownerType, String metric, String period, String approval) {
         List<Map<String, Object>> out = new ArrayList<>();
         for (BizTarget t : targetRepo.findAllByOrderByIdAsc()) {
+            // B50 卡4（L132）：集团→区域→门店三级行级数据域收窄，防 REGION/STORE 账号越权看他域目标
+            if (!DataScope.canReadTarget(t.getOwnerType(), t.getOwnerId(), t.getOwnerName())) continue;
             if (ownerType != null && !ownerType.isBlank() && !ownerType.equals(t.getOwnerType())) continue;
             if (metric != null && !metric.isBlank() && !metric.equals(t.getMetric())) continue;
             if (period != null && !period.isBlank() && !period.equals(t.getPeriod())) continue;

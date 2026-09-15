@@ -19,7 +19,7 @@
               <CStatusPill :status="approvalTone(g.approval)">{{ APPROVAL_LABEL[g.approval] }}</CStatusPill>
             </div>
             <div class="tree-children">
-              <div v-for="rid in g.children || []" :key="rid" class="tree-node tree-node--region">
+              <div v-for="rid in visibleChildren(g.children)" :key="rid" class="tree-node tree-node--region">
                 <div class="trow trow--child" :class="{ 'is-active': selId === rid }" @click="selId = rid">
                   <span class="trow__name">{{ line(rid)?.ownerName }}</span>
                   <span class="trow__metric">{{ line(rid) ? METRIC_LABEL[line(rid)!.metric] : '' }}</span>
@@ -27,7 +27,7 @@
                   <span class="trow__pct">{{ line(rid) ? tg.progress(line(rid)!) : 0 }}%</span>
                 </div>
                 <div class="tree-children">
-                  <div v-for="sid in line(rid)?.children || []" :key="sid" class="tree-node tree-node--store">
+                  <div v-for="sid in visibleChildren(line(rid)?.children)" :key="sid" class="tree-node tree-node--store">
                     <div class="trow trow--child trow--store" :class="{ 'is-active': selId === sid }" @click="selId = sid">
                       <span class="trow__name">{{ line(sid)?.ownerName }}</span>
                       <CProgressBar v-if="line(sid)" :value="tg.progress(line(sid)!)" :show-label="false" :color="progressColor(tg.progress(line(sid)!))" :height="5" class="trow__bar" />
@@ -141,6 +141,9 @@ const editVal = ref(0)
 watch(sel, (l) => { if (l) editVal.value = l.currentValue }, { immediate: true })
 
 function line(id: string) { return tg.lines.find((l) => l.id === id) }
+function visibleChildren(ids?: string[]) {
+  return (ids ?? []).filter((id) => !!line(id))
+}
 const groupTargets = computed(() => tg.groupLines)
 const standaloneMetrics = computed(() => tg.groupLines.filter((g) => g.metric !== 'REVENUE' || g.ownerType !== 'GROUP' || !g.children))
 // 主树根：仅 REVENUE 主线（有 children 的集团目标），独立指标由下方 standaloneMetrics 渲染，避免重复

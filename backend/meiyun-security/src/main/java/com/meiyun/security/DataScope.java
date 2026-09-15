@@ -114,6 +114,44 @@ public final class DataScope {
         return u.storeCode() != null && u.storeCode().equals(dataStoreCode);
     }
 
+    /**
+     * 集团经营目标（biz_target）三级归属行级可读判定（GROUP/REGION/STORE）。
+     *
+     * <p>目标是「集团总目标 → 区域分解 → 门店分解」树，任一数据域登录人都需看到 GROUP 总目标行，
+     * 再按层级收窄：
+     * <ul>
+     *   <li>GROUP 归属行：有登录上下文即可见（集团总目标各域共享）；</li>
+     *   <li>REGION 归属行：REGION 域按所属大区中文（ownerName 含 region，兼容「华东区/华东大区」）；
+     *       GROUP/BRAND 全见；STORE/SELF 不见区域行；</li>
+     *   <li>STORE 归属行：ownerId 为真实门店编码，复用 {@link #canReadStore(String)} 门店域判定。</li>
+     * </ul>
+     * 无登录上下文（服务间匿名）开放，与门店域语义一致。
+     */
+    public static boolean canReadTarget(String ownerType, String ownerId, String ownerName) {
+        LoginUser u = SecurityContext.get();
+        if (u == null) {
+            return true;
+        }
+        if (u.isSuper() || SCOPE_GROUP.equals(u.scope()) || SCOPE_BRAND.equals(u.scope())) {
+            return true;
+        }
+        if ("GROUP".equals(ownerType)) {
+            return true;
+        }
+        if ("REGION".equals(ownerType)) {
+            if (!SCOPE_REGION.equals(u.scope())) {
+                return false;
+            }
+            String region = u.region();
+            return region != null && !region.isBlank()
+                    && ownerName != null && ownerName.contains(region);
+        }
+        if ("STORE".equals(ownerType)) {
+            return canReadStore(ownerId);
+        }
+        return false;
+    }
+
     /** 单条数据（带门店 + 归属人）是否可读：SELF 域需归属人为本人。 */
     public static boolean canReadOwned(String dataStoreCode, String ownerStaffId) {
         if (!canReadStore(dataStoreCode)) {

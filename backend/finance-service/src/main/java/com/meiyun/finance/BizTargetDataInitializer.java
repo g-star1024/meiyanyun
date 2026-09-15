@@ -18,7 +18,7 @@ import java.util.List;
  * 目标管理域种子（B49 卡8，DELIVERY-P5-B49 §卡8）：biz_target 为空时幂等播种。
  *
  * <p>照前端 m1Target mock 全量 10 行：G1 集团营收年度 38000/23800 万元（children 三区域）、
- * G1-E 华东 18000/11900（children T01-R 杭州 10000/6800 + T02-R 上海静安 8000/5100）、
+ * G1-E 华东 18000/11900（children T01-R SST06 杭州西湖店 10000/6800 + T02-R SST01 上海徐汇店 8000/5100）、
  * G1-N 华北 11000/5900、G1-S 华南 9000/6000、G2 新客 Q3 4200/1980 人、
  * G3 复购率 Q3 45/41 % PENDING、G4 满意度 2026-08 95/93 %、
  * G5 华南治疗人次 Q3 3000/0 人次 DRAFT——覆盖审批中/草稿两样本态。
@@ -65,9 +65,9 @@ public class BizTargetDataInitializer implements ApplicationRunner {
                 "11000", "5900", "万元", 40, "APPROVED", null, now));
         rows.add(target("G1-S", "R-SOUTH", "华南区", "REGION", "REVENUE", "YEAR", "2026年度",
                 "9000", "6000", "万元", 40, "APPROVED", null, now));
-        rows.add(target("T01-R", "T01", "杭州西湖旗舰院", "STORE", "REVENUE", "YEAR", "2026年度",
+        rows.add(target("T01-R", "SST06", "杭州西湖店", "STORE", "REVENUE", "YEAR", "2026年度",
                 "10000", "6800", "万元", 40, "APPROVED", null, now));
-        rows.add(target("T02-R", "T02", "上海静安分院", "STORE", "REVENUE", "YEAR", "2026年度",
+        rows.add(target("T02-R", "SST01", "上海徐汇店", "STORE", "REVENUE", "YEAR", "2026年度",
                 "8000", "5100", "万元", 40, "APPROVED", null, now));
         // 独立集团指标
         rows.add(target("G2", "GROUP", "美云集团", "GROUP", "NEW_CUSTOMER", "QUARTER", "2026-Q3",
