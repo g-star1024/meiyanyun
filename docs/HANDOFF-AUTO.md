@@ -4,9 +4,9 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 09:12 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-15 10:24 CST -->
 <!-- MACHINE:BATCH=P5-B49 -->
-<!-- MACHINE:CARD=B49 卡11 报表中心 /m1-report 已闭合（feat `01c7af1` 已推送：finance 平铺 report 域 10 文件 report_template 9 模板+report_job content BYTEA 真实 CSV 落库可重放、七端点、R01/R02 真实聚合 R03-R09 422 收窄、E012 双权限齐备、三轨真验全绿）→ 卡12 调度中心 /m1-dispatch 待开工（跨三服务最复杂，评估 B50 拆分） -->
+<!-- MACHINE:CARD=B49 卡12 调度中心 /m1-dispatch 设计定稿已落 DELIVERY（跨三服务侦察全闭合：txn 聚合主服务 dispatch 包 6 文件+store InternalRoomController+前端 3 文件共 10 文件、Job=已预约/已到店且无活跃 assignment、durationMin 固定 60 分钟匹配率 0% 实证、B50 不拆一卡交付）→ 实现开工（txn dispatch 包 → store internal 端点 → 双栈构建部署 → 前端切真 → 三轨真验） -->
 
 ## 当前状态（人读区）
 
