@@ -55,8 +55,8 @@
               <span v-for="m in sel.metrics" :key="m" class="chip">{{ m }}</span></div>
           </div>
 
-          <!-- 生成 -->
-          <div v-if="canExport" class="gen">
+          <!-- 生成（首卡收窄：仅 R01/R02 真实生成，仅 CSV；XLSX/PDF 与其余模板已登记 backlog） -->
+          <div v-if="canExport && supported" class="gen">
             <div class="gen__row">
               <label>统计周期</label>
               <CSelect v-model="period" :options="periodOptions" />
@@ -64,16 +64,19 @@
             <div class="gen__row">
               <label>导出格式</label>
               <div class="fmts">
-                <button v-for="f in (['XLSX','PDF','CSV'] as const)" :key="f"
-                        :class="{ 'is-active': fmt === f }" @click="fmt = f">{{ FORMAT_LABEL[f] }}</button>
+                <button v-for="f in (['CSV','XLSX','PDF'] as const)" :key="f"
+                        :class="{ 'is-active': fmt === f }" :disabled="f !== 'CSV'"
+                        :title="f !== 'CSV' ? '已登记 backlog，首卡仅支持 CSV' : ''"
+                        @click="fmt = f">{{ FORMAT_LABEL[f] }}</button>
               </div>
             </div>
             <CButton variant="primary" @click="doGen"><CIcon name="export" :size="14" /> 生成报表</CButton>
           </div>
+          <div v-else-if="canExport" class="gen gen--note">该模板数据源待建，已登记 backlog，暂不支持在线生成与预览。</div>
 
           <!-- 数据预览 -->
           <div v-if="previewData" class="preview">
-            <div class="preview__h">数据预览（示例）</div>
+            <div class="preview__h">数据预览（真实数据 · 前 50 行）</div>
             <CTable :columns="previewCols" :rows="previewRows" />
           </div>
 
@@ -104,7 +107,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
@@ -113,30 +116,63 @@ import CTable from '@/components/CTable.vue'
 import CSelect from '@/components/CSelect.vue'
 import CKpi from '@/components/CKpi.vue'
 import { useM1ReportStore, CAT_LABEL, STATUS_LABEL, FORMAT_LABEL,
-  type ReportStatus, type ExportFormat } from '@/stores/m1Report'
+  type ReportStatus, type ExportFormat, type ReportJob, type ReportPreview } from '@/stores/m1Report'
 import { useAuthStore } from '@/stores/auth'
 
 const PERIOD_LABEL: Record<string, string> = { DAY: '日报', WEEK: '周报', MONTH: '月报', QUARTER: '季报', YEAR: '年报', RANGE: '自定义' }
 
 const rp = useM1ReportStore()
 const auth = useAuthStore()
-onMounted(() => rp.seed())
+onMounted(() => { void rp.seed() })
 
 const canExport = computed(() => auth.can('report:export') || auth.isSuper)
 
 const selId = ref('R02')
 const sel = computed(() => rp.templates.find((t) => t.id === selId.value))
-const period = ref('2026-08')
-const fmt = ref<ExportFormat>('XLSX')
-const periodOptions = [
-  { label: '今日 (2026-08-25)', value: '2026-08-25' },
-  { label: '本周 (W34)', value: '2026-W34' },
-  { label: '本月 (2026-08)', value: '2026-08' },
-  { label: '上月 (2026-07)', value: '2026-07' },
-  { label: '本季度 (2026-Q3)', value: '2026-Q3' },
-]
+// 首卡收窄：仅 R01/R02 真实生成（其余模板后端 422「数据源待建」，已登记 backlog）
+const supported = computed(() => !!sel.value && rp.isSupported(sel.value.id))
 
-const previewData = computed(() => sel.value ? rp.preview(sel.value.id) : null)
+const period = ref('')
+const fmt = ref<ExportFormat>('CSV')
+
+// 统计周期按模板周期类型动态生成（日报=近 7 天 yyyy-MM-dd，月报=近 6 月 yyyy-MM，与后端校验口径对齐）
+function fmtLocalDate(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const periodOptions = computed(() => {
+  const opts: { label: string; value: string }[] = []
+  const now = new Date()
+  if (sel.value?.period === 'DAY') {
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(now)
+      d.setDate(d.getDate() - i)
+      const v = fmtLocalDate(d)
+      opts.push({ label: i === 0 ? `今日 (${v})` : v, value: v })
+    }
+  } else if (sel.value?.period === 'MONTH') {
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      const v = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+      opts.push({ label: i === 0 ? `本月 (${v})` : v, value: v })
+    }
+  }
+  return opts
+})
+
+// 数据预览：真实接口（不支持/期段非法 → null 不渲染）；seq 守卫防快速切换模板时串台
+const previewData = ref<ReportPreview | null>(null)
+let previewSeq = 0
+async function loadPreview() {
+  const mySeq = ++previewSeq
+  previewData.value = null
+  const t = sel.value
+  if (!t || !rp.isSupported(t.id)) return
+  const data = await rp.preview(t.id, period.value || undefined)
+  if (mySeq === previewSeq) previewData.value = data
+}
+watch(sel, () => { period.value = periodOptions.value[0]?.value || '' })
+watch([sel, period], () => { void loadPreview() })
+
 const previewCols = computed<{ key: string; label: string; align: 'left' | 'right' }[]>(() =>
   previewData.value ? previewData.value.headers.map((h, i) => ({ key: 'c' + i, label: h, align: i === 0 ? 'left' as const : 'right' as const })) : [])
 const previewRows = computed(() => previewData.value ? previewData.value.rows.map((r) => { const o: Record<string, string | number> = {}; r.forEach((v, i) => (o['c' + i] = v)); return o }) : [])
@@ -145,13 +181,14 @@ const selJobs = computed(() => rp.jobs.filter((j) => j.templateId === selId.valu
 const readyJobs = computed(() => rp.jobs.filter((j) => j.status === 'READY').length)
 const failedJobs = computed(() => rp.jobs.filter((j) => j.status === 'FAILED').length)
 
-function doGen() { if (sel.value) rp.generate(sel.value.id, period.value, fmt.value) }
-function download(j: { templateName: string; period: string; format: ExportFormat }) {
-  // 模拟下载
-  const blob = new Blob([`${j.templateName} ${j.period}`], { type: 'text/plain' })
+function doGen() { if (sel.value) void rp.generate(sel.value.id, period.value, fmt.value) }
+// 真实下载：blob + Content-Disposition 文件名另存（历史种子行 content=NULL 由 store toast 提示）
+async function download(j: ReportJob) {
+  const res = await rp.download(j.id)
+  if (!res) return
   const a = document.createElement('a')
-  a.href = URL.createObjectURL(blob)
-  a.download = `${j.templateName}_${j.period}.${j.format.toLowerCase()}`
+  a.href = URL.createObjectURL(res.blob)
+  a.download = res.filename
   a.click()
   URL.revokeObjectURL(a.href)
 }
@@ -198,6 +235,9 @@ void CAT_LABEL
 .fmts button { border: 1px solid var(--c-border); background: var(--c-surface); padding: var(--s-xs) var(--s-md); border-radius: var(--r-sm); font-size: var(--t-sm); cursor: pointer; transition: all .15s; }
 .fmts button:hover { border-color: var(--c-brand); }
 .fmts button.is-active { border-color: var(--c-brand); background: var(--c-brand-soft); color: var(--c-brand); }
+.fmts button:disabled { opacity: .45; cursor: not-allowed; }
+.fmts button:disabled:hover { border-color: var(--c-border); }
+.gen--note { color: var(--c-text-2); font-size: var(--t-sm); }
 .preview { margin-bottom: var(--s-lg); }
 .preview__h { font-weight: 600; font-size: var(--t-sm); margin-bottom: var(--s-sm); }
 .jobs__h { font-weight: 600; font-size: var(--t-sm); margin-bottom: var(--s-xs); padding-top: var(--s-md); border-top: 1px solid var(--c-border); }
