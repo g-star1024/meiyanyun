@@ -1,16 +1,22 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import * as api from '@/api/dispatch'
+import type {
+  DispatchResourceDTO, DispatchJobDTO, DispatchAssignmentDTO, DispatchResourceType,
+} from '@/api/dispatch'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { shDateStr } from '@/utils/datetime'
 
 // ============================================================
-// 调度中心 store（M1 集团管控 / 调度中心）
-// - Resource 调度资源：医生 / 治疗室 / 设备，有班次时段
-// - Job 待派单：已预约但未分配医生/时段/房间的工单
-// - Assignment 排班/派单：resource × 时段上的占用块（关联预约）
-// - 派单 dispatch：把 pending job 派给某资源的某时段；释放 release
-// - 资源利用率 = 已占用时长 / 可用时长
+// 调度中心 store（M1 集团管控 / 调度中心 · B49 卡12 切真）
+// - 数据源：/api/txn/dispatch（txn 聚合 org 医生 + store 治疗室；DEVICE 无真实源诚实空态）
+// - Job = 当日「已预约/已到店」且无活跃派单的预约（已到店排前），start 锚定 apptTime
+// - Assignment 随 Resource 行内联返回（仅 SCHEDULED/IN_PROGRESS；RELEASED 保留行不回读）
+// - durationMin 固定 60、priority 全 NORMAL、班次固定 09:00-20:00（无源，见 Backlog）
 // ============================================================
 
-export type ResourceType = 'DOCTOR' | 'ROOM' | 'DEVICE'
+export type ResourceType = DispatchResourceType
 export const RES_TYPE_LABEL: Record<ResourceType, string> = { DOCTOR: '医生', ROOM: '治疗室', DEVICE: '设备' }
 
 export interface Resource {
@@ -30,25 +36,26 @@ export interface Job {
   customerName: string
   itemName: string
   durationMin: number
+  apptTime: string
+  preferredDoctorId?: string
   preferredDoctor?: string
-  priority: 'NORMAL' | 'URGENT'
+  priority: 'NORMAL'
   status: 'PENDING' | 'ASSIGNED'
+  arrived: boolean
   createdAt: string
 }
 
 export interface Assignment {
   id: string
+  resourceType: ResourceType
   resourceId: string
   jobId: string
   customerName: string
   itemName: string
   start: string // "10:00"
   end: string
-  status: 'SCHEDULED' | 'IN_PROGRESS' | 'DONE'
+  status: 'SCHEDULED' | 'IN_PROGRESS'
 }
-
-let _cid = 0
-function cid(p: string) { _cid += 1; return `${p}-${Date.now().toString(36)}-${_cid}` }
 
 // 半小时时段（9:00-20:00，共22格）
 export const SLOTS: string[] = (() => {
@@ -63,21 +70,69 @@ export const SLOTS: string[] = (() => {
 
 function toMin(t: string) { const [h, m] = t.split(':').map(Number); return h * 60 + m }
 
+function adaptResource(d: DispatchResourceDTO): Resource {
+  return {
+    id: d.id,
+    type: d.type,
+    name: d.name,
+    title: d.title ?? undefined,
+    room: d.room ?? undefined,
+    workStart: d.workStart,
+    workEnd: d.workEnd,
+    status: d.status === 'ON' ? 'ON' : 'OFF',
+  }
+}
+
+function adaptJob(d: DispatchJobDTO): Job {
+  return {
+    id: d.id,
+    jobNo: d.jobNo,
+    customerName: d.customerName,
+    itemName: d.itemName,
+    durationMin: d.durationMin,
+    apptTime: d.apptTime,
+    preferredDoctorId: d.preferredDoctorId ?? undefined,
+    preferredDoctor: d.preferredDoctor ?? undefined,
+    priority: 'NORMAL',
+    status: 'PENDING',
+    arrived: d.arrived,
+    createdAt: d.createdAt,
+  }
+}
+
+function adaptAssignment(d: DispatchAssignmentDTO): Assignment {
+  return {
+    id: d.id,
+    resourceType: (d.resourceType === 'ROOM' ? 'ROOM' : 'DOCTOR') as ResourceType,
+    resourceId: d.resourceId,
+    jobId: d.jobId,
+    customerName: d.customerName,
+    itemName: d.itemName,
+    start: d.start,
+    end: d.end,
+    status: d.status === 'IN_PROGRESS' ? 'IN_PROGRESS' : 'SCHEDULED',
+  }
+}
+
 export const useM1DispatchStore = defineStore('m1Dispatch', () => {
+  const toast = useToast()
   const resources = ref<Resource[]>([])
   const jobs = ref<Job[]>([])
   const assignments = ref<Assignment[]>([])
-  const seeded = ref(false)
+  const loaded = ref(false)
+  const loading = ref(false)
+  const bizDate = ref(shDateStr())
+  const storeCode = ref('SST01')
 
   const doctors = computed(() => resources.value.filter((r) => r.type === 'DOCTOR'))
   const rooms = computed(() => resources.value.filter((r) => r.type === 'ROOM'))
   const pendingJobs = computed(() => jobs.value.filter((j) => j.status === 'PENDING'))
-  const urgentJobs = computed(() => pendingJobs.value.filter((j) => j.priority === 'URGENT'))
 
   function assignmentsOf(resourceId: string) {
     return assignments.value.filter((a) => a.resourceId === resourceId)
   }
   function resource(id: string) { return resources.value.find((r) => r.id === id) }
+  function jobOf(jobId: string) { return jobs.value.find((j) => j.id === jobId) }
 
   function isSlotBusy(resourceId: string, slot: string): Assignment | undefined {
     const s = toMin(slot)
@@ -104,19 +159,48 @@ export const useM1DispatchStore = defineStore('m1Dispatch', () => {
       onDoctors: onDocs,
       rooms: rooms.value.length,
       pending: pendingJobs.value.length,
-      urgent: urgentJobs.value.length,
       avgUtil,
     }
   })
 
-  // 派单
+  // 门店切换后重载（视图调用；loaded 不做一次性门控）
+  async function load(sc: string = storeCode.value, date: string = bizDate.value) {
+    storeCode.value = sc
+    bizDate.value = date
+    if (loading.value) return
+    loading.value = true
+    try {
+      const [rres, rjobs] = await Promise.all([
+        api.listDispatchResources({ storeCode: sc, date }),
+        api.listDispatchJobs({ storeCode: sc, date }),
+      ])
+      resources.value = rres.data.map(adaptResource)
+      jobs.value = rjobs.data.map(adaptJob)
+      assignments.value = rres.data.flatMap((r) => r.assignments.map(adaptAssignment))
+      // 已被活跃派单占用的预约不在 jobs 返回；RELEASED 不回读，释放后重新进队列
+      loaded.value = true
+    } catch (e) {
+      resources.value = []
+      jobs.value = []
+      assignments.value = []
+      toast.error(errMsg(e, '调度数据加载失败'))
+    } finally {
+      loading.value = false
+    }
+  }
+
+  // 兼容视图 onMounted 的 seed() 入口（切真后为真实加载）
+  function seed(sc?: string) {
+    return load(sc ?? storeCode.value)
+  }
+
+  // 派单前端预检（最终以后端 409/422 中文错误为准）
   function canDispatch(job: Job, resourceId: string, start: string): boolean {
     if (job.status !== 'PENDING') return false
     const r = resource(resourceId)
     if (!r || r.status !== 'ON') return false
     const endMin = toMin(start) + job.durationMin
     if (toMin(start) < toMin(r.workStart) || endMin > toMin(r.workEnd)) return false
-    // 检查冲突
     for (let m = toMin(start); m < endMin; m += 30) {
       const hh = String(Math.floor(m / 60)).padStart(2, '0')
       const mm = String(m % 60).padStart(2, '0')
@@ -125,69 +209,39 @@ export const useM1DispatchStore = defineStore('m1Dispatch', () => {
     return true
   }
 
-  function dispatch(jobId: string, resourceId: string, start: string): boolean {
-    const job = jobs.value.find((j) => j.id === jobId)
-    if (!job || !canDispatch(job, resourceId, start)) return false
-    const endMin = toMin(start) + job.durationMin
-    const end = `${String(Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`
-    assignments.value.push({
-      id: cid('asg'), resourceId, jobId, customerName: job.customerName,
-      itemName: job.itemName, start, end, status: 'SCHEDULED',
-    })
-    job.status = 'ASSIGNED'
-    return true
-  }
-
-  function release(assignmentId: string) {
-    const a = assignments.value.find((x) => x.id === assignmentId)
-    if (!a || a.status === 'DONE') return
-    assignments.value = assignments.value.filter((x) => x.id !== assignmentId)
-    const job = jobs.value.find((j) => j.id === a.jobId)
-    if (job) job.status = 'PENDING'
-  }
-
-  function seed() {
-    if (seeded.value) return
-    resources.value = [
-      { id: cid('res'), type: 'DOCTOR', name: '顾屿', title: '主治医师', room: 'A治疗室', workStart: '09:00', workEnd: '18:00', status: 'ON' },
-      { id: cid('res'), type: 'DOCTOR', name: '沈知意', title: '皮肤主诊', room: 'B治疗室', workStart: '10:00', workEnd: '20:00', status: 'ON' },
-      { id: cid('res'), type: 'DOCTOR', name: '陆沉', title: '注射医师', room: 'C治疗室', workStart: '09:30', workEnd: '18:30', status: 'ON' },
-      { id: cid('res'), type: 'DOCTOR', name: '江晚', title: '皮肤科医生', room: 'A治疗室', workStart: '09:00', workEnd: '18:00', status: 'OFF' },
-      { id: cid('res'), type: 'ROOM', name: 'A治疗室', workStart: '09:00', workEnd: '20:00', status: 'ON' },
-      { id: cid('res'), type: 'ROOM', name: 'B治疗室', workStart: '09:00', workEnd: '20:00', status: 'ON' },
-      { id: cid('res'), type: 'ROOM', name: 'C治疗室', workStart: '09:00', workEnd: '20:00', status: 'ON' },
-      { id: cid('res'), type: 'DEVICE', name: '热玛吉FLX', room: 'C治疗室', workStart: '09:00', workEnd: '20:00', status: 'ON' },
-      { id: cid('res'), type: 'DEVICE', name: '超皮秒', room: 'B治疗室', workStart: '09:00', workEnd: '20:00', status: 'ON' },
-    ]
-    const doc1 = resources.value[0].id, doc2 = resources.value[1].id
-
-    // 已有排班块
-    const mkAsg = (resourceId: string, customerName: string, itemName: string, start: string, durMin: number, status: Assignment['status'] = 'SCHEDULED') => {
-      const endMin = toMin(start) + durMin
-      assignments.value.push({
-        id: cid('asg'), resourceId, jobId: cid('job'), customerName, itemName, start,
-        end: `${String(Math.floor(endMin / 60)).padStart(2, '0')}:${String(endMin % 60).padStart(2, '0')}`, status,
+  async function dispatch(jobId: string, resourceId: string, start: string): Promise<boolean> {
+    const job = jobOf(jobId)
+    const r = resource(resourceId)
+    if (!job || !r || !canDispatch(job, resourceId, start)) return false
+    try {
+      const { data } = await api.dispatchJob(storeCode.value, {
+        apptNo: job.id,
+        resourceType: r.type,
+        resourceId,
       })
+      assignments.value.push(adaptAssignment(data))
+      jobs.value = jobs.value.filter((j) => j.id !== jobId)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '派单失败'))
+      return false
     }
-    mkAsg(doc1, '周童', '保妥适瘦脸', '10:00', 30, 'DONE')
-    mkAsg(doc1, '吴念', '乔雅登填充', '11:00', 60, 'IN_PROGRESS')
-    mkAsg(doc1, '郑好', '水光补水', '14:00', 40)
-    mkAsg(doc2, '许棠', '光子嫩肤', '13:00', 40, 'DONE')
-    mkAsg(doc2, '何蔓', '热玛吉面部', '15:00', 90)
+  }
 
-    // 待派单
-    jobs.value = [
-      { id: cid('job'), jobNo: 'JOB2026082501', customerName: '林一', itemName: '保妥适瘦脸', durationMin: 30, preferredDoctor: '顾屿', priority: 'NORMAL', status: 'PENDING', createdAt: new Date().toISOString() },
-      { id: cid('job'), jobNo: 'JOB2026082502', customerName: '苏晚', itemName: '水光补水', durationMin: 40, priority: 'NORMAL', status: 'PENDING', createdAt: new Date().toISOString() },
-      { id: cid('job'), jobNo: 'JOB2026082503', customerName: '高阳', itemName: '超皮秒祛斑', durationMin: 40, preferredDoctor: '沈知意', priority: 'URGENT', status: 'PENDING', createdAt: new Date().toISOString() },
-      { id: cid('job'), jobNo: 'JOB2026082504', customerName: '郑重', itemName: '热玛吉面部', durationMin: 90, priority: 'NORMAL', status: 'PENDING', createdAt: new Date().toISOString() },
-    ]
-    seeded.value = true
+  async function release(assignmentId: string) {
+    const a = assignments.value.find((x) => x.id === assignmentId)
+    if (!a) return
+    try {
+      await api.releaseAssignment(storeCode.value, a.id)
+      await load()
+    } catch (e) {
+      toast.error(errMsg(e, '释放失败'))
+    }
   }
 
   return {
-    resources, jobs, assignments, SLOTS, RES_TYPE_LABEL,
-    doctors, rooms, pendingJobs, urgentJobs, stats,
-    resource, assignmentsOf, isSlotBusy, utilization, canDispatch, dispatch, release, seed,
+    resources, jobs, assignments, loaded, loading, bizDate, storeCode, SLOTS, RES_TYPE_LABEL,
+    doctors, rooms, pendingJobs, stats,
+    resource, assignmentsOf, isSlotBusy, utilization, canDispatch, dispatch, release, seed, load,
   }
 })

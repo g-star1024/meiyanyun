@@ -3,19 +3,38 @@ import { computed, onMounted, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
-import { useM1DispatchStore, type Assignment, type Job } from '@/stores/m1Dispatch'
+import { useM1DispatchStore, type Assignment, type Job, type Resource } from '@/stores/m1Dispatch'
 import { useAuthStore } from '@/stores/auth'
+import { listStores, type Store } from '@/api/org'
 
 const dp = useM1DispatchStore()
 const auth = useAuthStore()
-onMounted(() => dp.seed())
+
+// 门店选择器（M1 集团页，本地选择不走全局 storeContext；默认 SST01 照卡10 先例）
+const selId = ref('SST01')
+const stores = ref<Store[]>([])
+onMounted(async () => {
+  try {
+    const res = await listStores()
+    stores.value = res.data || []
+    if (!stores.value.some((s) => s.storeCode === selId.value)) {
+      selId.value = stores.value[0]?.storeCode || 'SST01'
+    }
+  } catch { /* 列表拉取失败保留默认门店码，读链 toast 由 store 负责 */ }
+  await dp.seed(selId.value)
+})
+function changeStore() {
+  activeJobId.value = ''
+  dispatchMsg.value = ''
+  dp.load(selId.value)
+}
 
 const canEdit = computed(() => auth.can('dispatch:edit'))
 
 const resTab = ref<'DOCTOR' | 'ROOM' | 'DEVICE'>('DOCTOR')
 const list = computed(() => dp.resources.filter((r) => r.type === resTab.value))
 
-// 选中待派单（点 job 后再点空时段完成派单）
+// 选中待派单（点 job 后再点资源行完成派单）
 const activeJobId = ref('')
 const activeJob = computed<Job | undefined>(() => dp.jobs.find((j) => j.id === activeJobId.value))
 const dispatchMsg = ref('')
@@ -23,23 +42,36 @@ const dispatchMsg = ref('')
 function pickJob(j: Job) {
   if (j.status !== 'PENDING') return
   activeJobId.value = activeJobId.value === j.id ? '' : j.id
-  dispatchMsg.value = activeJobId.value ? `已选「${j.customerName} · ${j.itemName}」，点击时间格派单` : ''
+  dispatchMsg.value = activeJobId.value
+    ? `已选「${j.customerName} · ${j.itemName}」，预约 ${j.apptTime}，点击右侧资源派单（派单时间取预约时间）`
+    : ''
 }
 
-function slotClick(resourceId: string, slot: string) {
-  if (!activeJob.value || !canEdit.value) return
-  const ok = dp.dispatch(activeJob.value.id, resourceId, slot)
+// 派单 start 锚定预约时间不可选（后端 DispatchCmd 无 start）；点击仅用于选择资源
+async function slotClick(resourceId: string) {
+  const job = activeJob.value
+  if (!job || !canEdit.value) return
+  const r = dp.resource(resourceId)
+  if (!r || r.status !== 'ON') {
+    dispatchMsg.value = '✗ 该资源当前不在岗'
+    return
+  }
+  if (!dp.canDispatch(job, resourceId, job.apptTime)) {
+    dispatchMsg.value = `✗ 预约时段 ${job.apptTime} 该资源不可用（冲突/不在班次），请改选其他资源或先调整预约`
+    return
+  }
+  const ok = await dp.dispatch(job.id, resourceId, job.apptTime)
   if (ok) {
-    dispatchMsg.value = `✓ 已派单：${activeJob.value.customerName} → ${dp.resource(resourceId)?.name} ${slot}`
+    dispatchMsg.value = `✓ 已派单：${job.customerName} → ${r.name} ${job.apptTime}`
     activeJobId.value = ''
   } else {
-    dispatchMsg.value = '✗ 该时段不可用（冲突/不在班次/时长超出）'
+    dispatchMsg.value = '✗ 派单失败，请留意提示（冲突/医生不一致）'
   }
 }
 
-function release(a: Assignment) {
+async function release(a: Assignment) {
   if (!canEdit.value) return
-  dp.release(a.id)
+  await dp.release(a.id)
   dispatchMsg.value = `已释放 ${a.customerName} 的排班，工单回到待派单`
 }
 
@@ -54,8 +86,15 @@ function blockStyle(a: Assignment) {
 }
 function toMin(t: string) { const [h, m] = t.split(':').map(Number); return h * 60 + m }
 
+// 预约时段格高亮（仅有活跃选单且该格=选单预约时间时可点）
+function isJobSlot(r: Resource, slot: string) {
+  return !!activeJob.value && r.status === 'ON' && slot === activeJob.value.apptTime
+    && !dp.isSlotBusy(r.id, slot)
+    && toMin(slot) >= toMin(r.workStart) && toMin(slot) < toMin(r.workEnd)
+}
+
 function asgTone(status: Assignment['status']) {
-  return status === 'DONE' ? 'success' : status === 'IN_PROGRESS' ? 'warning' : 'info'
+  return status === 'IN_PROGRESS' ? 'warning' : 'info'
 }
 
 function utilTone(u: number) {
@@ -71,7 +110,7 @@ function utilTone(u: number) {
     <div class="dp-kpis">
       <div class="kpi kpi--success"><div class="kpi__icon"><CIcon name="user-check" :size="20" /></div><div class="kpi__body"><div class="kpi__label">在岗医生</div><div class="kpi__value">{{ dp.stats.onDoctors }}</div></div></div>
       <div class="kpi kpi--info"><div class="kpi__icon"><CIcon name="store" :size="20" /></div><div class="kpi__body"><div class="kpi__label">可用治疗室</div><div class="kpi__value">{{ dp.stats.rooms }}</div></div></div>
-      <div class="kpi kpi--warning"><div class="kpi__icon"><CIcon name="clock" :size="20" /></div><div class="kpi__body"><div class="kpi__label">待派单</div><div class="kpi__value">{{ dp.stats.pending }}<span v-if="dp.stats.urgent" class="kpi__sub kpi__sub--danger">{{ dp.stats.urgent }} 急</span></div></div></div>
+      <div class="kpi kpi--warning"><div class="kpi__icon"><CIcon name="clock" :size="20" /></div><div class="kpi__body"><div class="kpi__label">待派单</div><div class="kpi__value">{{ dp.stats.pending }}</div></div></div>
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="trend-up" :size="20" /></div><div class="kpi__body"><div class="kpi__label">医生平均利用率</div><div class="kpi__value">{{ dp.stats.avgUtil }}%</div></div></div>
     </div>
 
@@ -85,17 +124,17 @@ function utilTone(u: number) {
         <div class="queue-body">
           <div
             v-for="j in dp.pendingJobs" :key="j.id"
-            class="job" :class="{ 'job--active': activeJobId === j.id, 'job--urgent': j.priority === 'URGENT' }"
+            class="job" :class="{ 'job--active': activeJobId === j.id }"
             @click="pickJob(j)"
           >
             <div class="job__top">
               <span class="job__no">{{ j.jobNo.slice(-6) }}</span>
-              <CStatusPill v-if="j.priority === 'URGENT'" status="danger" dot>加急</CStatusPill>
+              <CStatusPill v-if="j.arrived" status="success" dot>已到店</CStatusPill>
             </div>
             <div class="job__name">{{ j.customerName }} · {{ j.itemName }}</div>
             <div class="job__meta">
-              <span><CIcon name="clock" :size="12" /> {{ j.durationMin }}分钟</span>
-              <span v-if="j.preferredDoctor"><CIcon name="user" :size="12" /> 偏好 {{ j.preferredDoctor }}</span>
+              <span><CIcon name="clock" :size="12" /> {{ j.apptTime }} · 约 {{ j.durationMin }} 分钟（默认）</span>
+              <span v-if="j.preferredDoctor"><CIcon name="user" :size="12" /> 指定 {{ j.preferredDoctor }}</span>
             </div>
           </div>
           <div v-if="dp.pendingJobs.length === 0" class="queue-empty">
@@ -111,7 +150,10 @@ function utilTone(u: number) {
           <button class="bt" :class="{ 'is-on': resTab === 'DOCTOR' }" @click="resTab = 'DOCTOR'">医生</button>
           <button class="bt" :class="{ 'is-on': resTab === 'ROOM' }" @click="resTab = 'ROOM'">治疗室</button>
           <button class="bt" :class="{ 'is-on': resTab === 'DEVICE' }" @click="resTab = 'DEVICE'">设备</button>
-          <span class="board-hint">{{ activeJob ? '点击空白时段派单' : '先从左侧选择待派单' }}</span>
+          <select v-model="selId" class="sel" @change="changeStore">
+            <option v-for="s in stores" :key="s.storeCode" :value="s.storeCode">{{ s.storeName }}（{{ s.storeCode }}）</option>
+          </select>
+          <span class="board-hint">{{ activeJob ? `点击 ${activeJob.apptTime} 时段的资源派单` : '先从左侧选择待派单' }}</span>
         </div>
 
         <!-- 时间刻度 -->
@@ -140,8 +182,8 @@ function utilTone(u: number) {
                 <div
                   v-for="s in dp.SLOTS.slice(0, -1)" :key="s"
                   class="cell"
-                  :class="{ 'cell--busy': !!dp.isSlotBusy(r.id, s), 'cell--offshift': toMin(s) < toMin(r.workStart) || toMin(s) >= toMin(r.workEnd), 'cell--pickable': activeJob && r.status === 'ON' }"
-                  @click="slotClick(r.id, s)"
+                  :class="{ 'cell--busy': !!dp.isSlotBusy(r.id, s), 'cell--offshift': toMin(s) < toMin(r.workStart) || toMin(s) >= toMin(r.workEnd), 'cell--pickable': isJobSlot(r, s) }"
+                  @click="slotClick(r.id)"
                 ></div>
               </div>
               <!-- 排班块 -->
@@ -153,7 +195,7 @@ function utilTone(u: number) {
                 <span class="block__time">{{ a.start }}</span>
                 <span class="block__name">{{ a.customerName }}</span>
                 <span class="block__item">{{ a.itemName }}</span>
-                <button v-if="canEdit && a.status !== 'DONE'" class="block__x" @click.stop="release(a)">×</button>
+                <button v-if="canEdit" class="block__x" @click.stop="release(a)">×</button>
               </div>
             </div>
             <div class="row__util">
@@ -162,11 +204,16 @@ function utilTone(u: number) {
             </div>
           </div>
         </div>
+        <div v-if="resTab === 'DEVICE' && list.length === 0" class="queue-empty">
+          <CIcon name="info" :size="28" /><p>设备档案为远期能力，暂无设备资源</p>
+        </div>
+        <div v-else-if="list.length === 0 && dp.loaded" class="queue-empty">
+          <CIcon name="check" :size="28" /><p>当前门店当日暂无{{ resTab === 'DOCTOR' ? '在岗医生' : '治疗室' }}资源</p>
+        </div>
         <div class="legend">
-          <span><i class="lg lg--info"></i>已排</span>
-          <span><i class="lg lg--warning"></i>进行中</span>
-          <span><i class="lg lg--success"></i>已完成</span>
-          <span class="muted">点击排班块右上角 × 可释放回待派单</span>
+          <span><i class="lg lg--info"></i>已排（SCHEDULED）</span>
+          <span><i class="lg lg--warning"></i>进行中（IN_PROGRESS）</span>
+          <span class="muted">派单时间取预约时间；点击排班块右上角 × 可释放回待派单</span>
         </div>
       </CCard>
     </div>
