@@ -1,7 +1,9 @@
 package com.meiyun.audit;
 
+import com.meiyun.security.ClientIp;
 import com.meiyun.security.RequirePerm;
 import com.meiyun.security.SecurityContext;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -34,15 +36,17 @@ public class ComplianceController {
         return complianceService.list(category, status);
     }
 
-    /** 复检：body={pass:boolean 必填, remark?}，同事务写 COMPLIANCE/RECHECK 审计。 */
+    /** 复检：body={pass:boolean 必填, remark?}，同事务写 COMPLIANCE/RECHECK 审计（L134：ip 取真实客户端 IP）。 */
     @PostMapping("/checks/{id}/recheck")
     @RequirePerm("compliance:edit")
     public ComplianceCheck recheck(@PathVariable Long id,
-                                   @RequestBody(required = false) Map<String, Object> body) {
+                                   @RequestBody(required = false) Map<String, Object> body,
+                                   HttpServletRequest request) {
         Object raw = body == null ? null : body.get("pass");
         Boolean pass = raw instanceof Boolean b ? b : null;
         Object r = body == null ? null : body.get("remark");
         String remark = r == null ? null : String.valueOf(r);
-        return complianceService.recheck(id, pass, remark, SecurityContext.currentStaffName());
+        return complianceService.recheck(id, pass, remark, SecurityContext.currentStaffName(),
+                ClientIp.resolve(request));
     }
 }

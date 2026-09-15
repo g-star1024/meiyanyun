@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -70,6 +71,30 @@ func withInternalGuard(next http.Handler) http.Handler {
 	})
 }
 
+// remoteHost 从 TCP 对端地址（host:port）中剥离端口；无端口时原样返回。
+func remoteHost(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		return remoteAddr
+	}
+	return host
+}
+
+// clientIPFromRequest 解析真实客户端 IP（L134）。
+// 优先级：X-Forwarded-For 首个条目（前置可信反代如 nginx 已注入）→ X-Real-IP → TCP 对端地址。
+// 直连网关（无前置反代）时前两者缺失，回落到 RemoteAddr（剥离端口）。
+func clientIPFromRequest(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
+			return first
+		}
+	}
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		return xri
+	}
+	return remoteHost(r.RemoteAddr)
+}
+
 // NewHandler 构建反向代理处理器。
 func NewHandler() http.Handler {
 	mux := http.NewServeMux()
@@ -80,6 +105,22 @@ func NewHandler() http.Handler {
 		}
 		// 保留原始路径前缀转发到后端
 		p := httputil.NewSingleHostReverseProxy(target)
+		// 在默认 Director 之上叠加真实客户端 IP 头（L134）：网关是后端服务唯一可信入口。
+		// X-Real-IP 统一规范化为解析出的真实客户端 IP（XFF 首段→X-Real-IP→对端）；
+		// X-Forwarded-For 按标准反代约定追加「直接对端」（TCP RemoteAddr 剥端口），
+		// 经 nginx 链路为 "浏览器IP, nginxIP"，直连网关时仅为对端 IP，均不重复。
+		baseDirector := p.Director
+		p.Director = func(req *http.Request) {
+			baseDirector(req)
+			clientIP := clientIPFromRequest(req)
+			peer := remoteHost(req.RemoteAddr)
+			req.Header.Set("X-Real-IP", clientIP)
+			if prior := strings.TrimSpace(req.Header.Get("X-Forwarded-For")); prior != "" {
+				req.Header.Set("X-Forwarded-For", prior+", "+peer)
+			} else {
+				req.Header.Set("X-Forwarded-For", peer)
+			}
+		}
 		// 双写：精确前缀 + 尾斜杠子树，避免 301
 		mux.Handle(r.base, p)
 		mux.Handle(r.base+"/", p)

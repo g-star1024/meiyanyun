@@ -23,7 +23,7 @@ import java.util.Map;
  * （无 PENDING 中间态）；同时刷新 lastCheckAt/checker/updatedAt，remark 非空覆盖。
  * 复检与审计同事务：bizType=COMPLIANCE、action=RECHECK、txnNo=check id，
  * ip/risk/target 落 payload jsonb（audit_log 不扩列），risk=newStatus==FAIL ? HIGH : LOW，
- * ip 如实写 "web"（浏览器侧取不到真实 IP，网关采集登记 backlog）。
+ * ip 由 Controller 经 ClientIp 解析（L134：网关规范化 X-Forwarded-For/X-Real-IP 后透传）。
  */
 @Service
 public class ComplianceService {
@@ -57,10 +57,11 @@ public class ComplianceService {
     /**
      * 复检：pass → PASS/FAIL，同事务写一条 COMPLIANCE/RECHECK 审计。
      * 操作人取 SecurityContext.currentStaffName()（中文姓名，贴 mock checker 显示口径，
-     * 与卡8 BIZ_TARGET 审计 actor 一致）。
+     * 与卡8 BIZ_TARGET 审计 actor 一致）；clientIp 为网关透传的真实客户端 IP（L134）。
      */
     @Transactional
-    public ComplianceCheck recheck(Long id, Boolean pass, String remark, String operator) {
+    public ComplianceCheck recheck(Long id, Boolean pass, String remark, String operator,
+                                   String clientIp) {
         if (pass == null) {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "复检结论 pass 必填");
         }
@@ -93,7 +94,7 @@ public class ComplianceService {
         }
         payload.put("detail", detail.toString());
         payload.put("risk", "FAIL".equals(newStatus) ? "HIGH" : "LOW");
-        payload.put("ip", "web");
+        payload.put("ip", clientIp);
         auditService.append("COMPLIANCE", String.valueOf(id), operator, "RECHECK", toJson(payload));
         return saved;
     }
