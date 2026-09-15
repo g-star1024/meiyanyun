@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { getScreenOverview, screenStreamUrl, type ScreenOrderPaidDto } from '@/api/screen'
 import { listStores } from '@/api/org'
+import { shTimeStr } from '@/utils/datetime'
 
 // 数据大屏：集团经营实时看板（B49 卡7 已切真）
 // 口径：overview 30s 重取为 KPI/图表唯一数据来源；SSE 仅驱动实时成交流顶插（>8 pop），不累加 KPI。
@@ -89,13 +90,15 @@ export const useM1ScreenStore = defineStore('m1Screen', () => {
         if (seenPaymentIds.has(p.paymentId)) return
         if (seenPaymentIds.size > 1000) seenPaymentIds.clear()
         seenPaymentIds.add(p.paymentId)
+        const paid = p.paidAt ? new Date(p.paidAt) : null
         realtime.value.unshift({
           id: p.paymentId,
           store: storeName(p.storeCode),
           customer: maskName(p.customerName),
           item: p.item,
           amount: p.amountFen / 100,
-          time: (p.paidAt || '').slice(11, 16),
+          // B50 卡3（L129）：paidAt 为 UTC ISO，直接 slice(11,16) 会截出 UTC 时分；按 Asia/Shanghai 渲染
+          time: paid && !Number.isNaN(paid.getTime()) ? shTimeStr(paid) : '—',
           channel: PAY_METHOD_LABEL[p.payMethod] || p.payMethod,
         })
         if (realtime.value.length > 8) realtime.value.pop()

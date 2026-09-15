@@ -49,6 +49,10 @@ export function shDateStr(d: Date = new Date()): string {
   return SHANGHAI_DATE_FMT.format(d)
 }
 
+export function shTimeStr(d: Date = new Date()): string {
+  return SHANGHAI_TIME_FMT.format(d)
+}
+
 export function shDateTimeStr(d: Date = new Date()): string {
-  return `${shDateStr(d)} ${SHANGHAI_TIME_FMT.format(d)}`
+  return `${shDateStr(d)} ${shTimeStr(d)}`
 }
