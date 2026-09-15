@@ -43,12 +43,12 @@ function pickJob(j: Job) {
   if (j.status !== 'PENDING') return
   activeJobId.value = activeJobId.value === j.id ? '' : j.id
   dispatchMsg.value = activeJobId.value
-    ? `已选「${j.customerName} · ${j.itemName}」，预约 ${j.apptTime}，点击右侧资源派单（派单时间取预约时间）`
+    ? `已选「${j.customerName} · ${j.itemName}」，预约 ${j.apptTime}，点击右侧班次内空闲时段派单（可自由选时）`
     : ''
 }
 
-// 派单 start 锚定预约时间不可选（后端 DispatchCmd 无 start）；点击仅用于选择资源
-async function slotClick(resourceId: string) {
+// 自由时段派单（B52 卡2）：点击具体时间格，start 取该格时段而非锚定预约 apptTime
+async function slotClick(resourceId: string, slot: string) {
   const job = activeJob.value
   if (!job || !canEdit.value) return
   const r = dp.resource(resourceId)
@@ -56,13 +56,13 @@ async function slotClick(resourceId: string) {
     dispatchMsg.value = '✗ 该资源当前不在岗'
     return
   }
-  if (!dp.canDispatch(job, resourceId, job.apptTime)) {
-    dispatchMsg.value = `✗ 预约时段 ${job.apptTime} 该资源不可用（冲突/不在班次），请改选其他资源或先调整预约`
+  if (!dp.canDispatch(job, resourceId, slot)) {
+    dispatchMsg.value = `✗ ${slot} 时段该资源不可用（超出班次或与已有排单冲突），请改选其他空闲时段或资源`
     return
   }
-  const ok = await dp.dispatch(job.id, resourceId, job.apptTime)
+  const ok = await dp.dispatch(job.id, resourceId, slot)
   if (ok) {
-    dispatchMsg.value = `✓ 已派单：${job.customerName} → ${r.name} ${job.apptTime}`
+    dispatchMsg.value = `✓ 已派单：${job.customerName} → ${r.name} ${slot}`
     activeJobId.value = ''
   } else {
     dispatchMsg.value = '✗ 派单失败，请留意提示（冲突/医生不一致）'
@@ -86,9 +86,10 @@ function blockStyle(a: Assignment) {
 }
 function toMin(t: string) { const [h, m] = t.split(':').map(Number); return h * 60 + m }
 
-// 预约时段格高亮（仅有活跃选单且该格=选单预约时间时可点）
+// 自由时段可点格（B52 卡2）：有活跃选单且资源在岗时，该资源班次内全部非占用格皆可点；
+// 时长/精细冲突不在此判定（仅按格 busy + 班次窗），点击时由 canDispatch 预检、后端 422/409 兜底
 function isJobSlot(r: Resource, slot: string) {
-  return !!activeJob.value && r.status === 'ON' && slot === activeJob.value.apptTime
+  return !!activeJob.value && r.status === 'ON'
     && !dp.isSlotBusy(r.id, slot)
     && toMin(slot) >= toMin(r.workStart) && toMin(slot) < toMin(r.workEnd)
 }
@@ -134,7 +135,7 @@ function utilTone(u: number) {
             </div>
             <div class="job__name">{{ j.customerName }} · {{ j.itemName }}</div>
             <div class="job__meta">
-              <span><CIcon name="clock" :size="12" /> {{ j.apptTime }} · 约 {{ j.durationMin }} 分钟（默认）</span>
+              <span><CIcon name="clock" :size="12" /> {{ j.apptTime }} · 约 {{ j.durationMin }} 分钟</span>
               <span v-if="j.preferredDoctor"><CIcon name="user" :size="12" /> 指定 {{ j.preferredDoctor }}</span>
             </div>
           </div>
@@ -154,7 +155,7 @@ function utilTone(u: number) {
           <select v-model="selId" class="sel" @change="changeStore">
             <option v-for="s in stores" :key="s.storeCode" :value="s.storeCode">{{ s.storeName }}（{{ s.storeCode }}）</option>
           </select>
-          <span class="board-hint">{{ activeJob ? `点击 ${activeJob.apptTime} 时段的资源派单` : '先从左侧选择待派单' }}</span>
+          <span class="board-hint">{{ activeJob ? `点击班次内空闲时段派单（预约 ${activeJob.apptTime}，可自由选时）` : '先从左侧选择待派单' }}</span>
         </div>
 
         <!-- 时间刻度 -->
@@ -183,8 +184,9 @@ function utilTone(u: number) {
                 <div
                   v-for="s in dp.SLOTS.slice(0, -1)" :key="s"
                   class="cell"
+                  :data-slot="s"
                   :class="{ 'cell--busy': !!dp.isSlotBusy(r.id, s), 'cell--offshift': toMin(s) < toMin(r.workStart) || toMin(s) >= toMin(r.workEnd), 'cell--pickable': isJobSlot(r, s) }"
-                  @click="slotClick(r.id)"
+                  @click="slotClick(r.id, s)"
                 ></div>
               </div>
               <!-- 排班块 -->
@@ -212,7 +214,7 @@ function utilTone(u: number) {
           <span><i class="lg lg--info"></i>已排（SCHEDULED）</span>
           <span><i class="lg lg--warning"></i>进行中（IN_PROGRESS）</span>
           <span><i class="lg lg--success"></i>已完成（DONE）</span>
-          <span class="muted">派单时间取预约时间；点击排班块右上角 × 可释放回待派单</span>
+          <span class="muted">选单后点击班次内空闲格即可自由选时派单；点击排班块右上角 × 可释放回待派单</span>
         </div>
       </CCard>
     </div>

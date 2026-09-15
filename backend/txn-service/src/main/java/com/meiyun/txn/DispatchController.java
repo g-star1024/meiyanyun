@@ -45,7 +45,7 @@ public class DispatchController {
         return service.jobs(storeCode, date);
     }
 
-    /** 派单：body {apptNo, resourceType, resourceId}，start 锚定预约时段，时长取预约绑定 SKU 的 duration_min（未绑定回落 60 分钟，P5-B51 卡6）。 */
+    /** 派单：body {apptNo, resourceType, resourceId, start?}；start 可选（HH:mm，P5-B52 卡2 自由时段），缺省回落预约 apptTime；时长取预约绑定 SKU 的 duration_min（未绑定回落 60 分钟，P5-B51 卡6）。 */
     @PostMapping("/dispatch")
     @RequirePerm("dispatch:edit")
     public DispatchService.AssignmentView dispatch(@RequestParam String storeCode,

@@ -2,7 +2,7 @@
 // Dispatch API（对接 txn-service 调度派单域 · B49 卡12；B51 卡4 DEVICE 接真）
 // 读：GET /api/txn/dispatch/resources（DOCTOR/ROOM/DEVICE 资源+当日占用块内联：活跃+DONE 回显；DEVICE=本店 NORMAL 态设备）
 //     GET /api/txn/dispatch/jobs（当日「已预约/已到店」且无活跃派单的预约，已到店排前）
-// 写：POST /api/txn/dispatch/dispatch（start 锚定 apptTime，end=start+60min；三类资源均可派）
+// 写：POST /api/txn/dispatch/dispatch（start 可选 HH:mm 自由时段，缺省回落 apptTime；end=start+durationMin；三类资源均可派）
 //     POST /api/txn/dispatch/assignments/{id}/release（RELEASED+released_at 保留行）
 // 口径：storeCode 为必传过滤参数（单门店视角）；写操作方法级 dispatch:edit。
 // ============================================================
@@ -44,7 +44,7 @@ export interface DispatchJobDTO {
   jobNo: string
   customerName: string
   itemName: string
-  /** 固定 60 分钟（真实时长无源，见 Backlog） */
+  /** 预约绑定 SKU 时长（未绑定/未配置回落 60 分钟，B51 卡6） */
   durationMin: number
   apptTime: string
   preferredDoctorId: string | null
@@ -61,6 +61,8 @@ export interface DispatchCmd {
   apptNo: string
   resourceType: DispatchResourceType
   resourceId: string
+  /** 手工派单开始时段 HH:mm（B52 卡2 自由时段）；缺省后端回落预约 apptTime，老调用方不传行为不变 */
+  start?: string
 }
 
 export interface DispatchQuery {

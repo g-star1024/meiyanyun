@@ -17,6 +17,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 调度中心聚合服务（P5-B49 卡12，M1 调度中心）。
@@ -27,7 +28,8 @@ import java.util.Map;
  * P5-B51 卡4 接真，resourceId=资产编号 assetNo）。
  *
  * <p>待派单 Job = 当日「已预约/已到店」且无派单占用（含 DONE 终态）的预约；已到店排前、到店时间升序。
- * 派单 start 锚定预约 apptTime（不可自由选时），时长取预约绑定 SKU 的 duration_min 真源
+ * 派单 start 支持手工指定班次内任意时段（P5-B52 卡2 产品拍板开放自由时段），cmd.start 缺省/空白回落
+ * 预约 apptTime 保持兼容；时长取预约绑定 SKU 的 duration_min 真源
  * （P5-B51 卡6；未绑定/未配置/目录不可达回落 60 分钟，不伪造真实时长）；DOCTOR 资源必须与预约
  * 指定医生一致；同资源同日时段重叠拒绝；
  * 占用状态由预约态派生（已预约=SCHEDULED / 已到店=IN_PROGRESS）。释放为 RELEASED 保留行；
@@ -55,6 +57,8 @@ public class DispatchService {
     public static final String WORK_END = "20:00";
     /** 默认派单时长（分钟）：预约未绑定 SKU 或 SKU 未配置时长时回落（P5-B51 卡6 前为固定值）。 */
     public static final int DURATION_MIN = 60;
+    /** 手工派单时段格式 HH:mm（零填充）；P5-B52 卡2 自由时段。 */
+    private static final Pattern HHMM = Pattern.compile("^([01]\\d|2[0-3]):[0-5]\\d$");
 
     private final DispatchAssignmentRepository assignmentRepo;
     private final AppointmentRepository appointmentRepo;
@@ -188,7 +192,7 @@ public class DispatchService {
         return DURATION_MIN;
     }
 
-    /** 派单：start 锚定预约 apptTime，时长取预约 SKU 的 duration_min 真源（无 SKU 回落 60 分钟），全量校验 + 状态派生 + 审计；DONE 终态预约 422。 */
+    /** 派单：start 取 cmd.start 手工时段（HH:mm，缺省/空白回落预约 apptTime），时长取预约 SKU 的 duration_min 真源（无 SKU 回落 60 分钟），全量校验 + 状态派生 + 审计；DONE 终态预约 422。 */
     @Transactional
     public AssignmentView dispatch(String storeCode, DispatchCmd cmd) {
         String sc = requireStore(storeCode);
@@ -261,13 +265,22 @@ public class DispatchService {
             if (resourceName.isBlank()) resourceName = resourceId;
         }
 
-        // start 锚定预约时段；班次窗校验 + 时长取 SKU 真源（无 SKU 回落 60 分钟）。
-        String start = a.getApptTime();
+        // start 取手工自由时段（P5-B52 卡2）：cmd.start 非空须为 HH:mm，缺省/空白回落预约 apptTime 保持兼容。
+        String rawStart = cmd.start();
+        String start;
+        if (rawStart == null || rawStart.isBlank()) {
+            start = a.getApptTime();
+        } else {
+            start = rawStart.trim();
+            if (!HHMM.matcher(start).matches()) {
+                throw error(HttpStatus.UNPROCESSABLE_ENTITY, "派单时段格式应为 HH:mm（如 09:30）");
+            }
+        }
         int dur = resolveDurationMin(a);
         if (start.compareTo(WORK_START) < 0 || plusMinutes(start, dur).compareTo(WORK_END) > 0) {
             throw error(HttpStatus.UNPROCESSABLE_ENTITY,
                     "派单时段 " + start + " 超出班次 " + WORK_START + "-" + WORK_END
-                            + "，改期请先在预约管理改期");
+                            + "，请选择班次内的空闲时段");
         }
         String end = plusMinutes(start, dur);
 
@@ -447,6 +460,9 @@ public class DispatchService {
             String jobId, String customerName, String itemName,
             String start, String end, String status) {}
 
-    /** 派单命令。 */
-    public record DispatchCmd(String apptNo, String resourceType, String resourceId) {}
+    /**
+     * 派单命令。start 可选（P5-B52 卡2 自由时段）：手工指定班次内开始时段 HH:mm；
+     * 缺省/空白后端回落预约 apptTime，老客户端（不传 start）行为不变。
+     */
+    public record DispatchCmd(String apptNo, String resourceType, String resourceId, String start) {}
 }
