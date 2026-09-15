@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { DataScope, Role } from '@/types/domain'
 import { login as apiLogin, devLogin as apiDevLogin, getPermissions as apiGetPermissions, type LoginResult, type PermissionMatrix } from '@/api/auth'
-import { setToken, clearToken } from '@/api/client'
+import { setToken, getToken, clearToken } from '@/api/client'
 
 // 登录会话持久化键（localStorage）
 const SESSION_KEY = 'meiyun_session'
@@ -400,6 +400,8 @@ export const useAuthStore = defineStore('auth', () => {
     storeId.value = info.storeCode || storeId.value
     setToken(info.token)
     localStorage.setItem(SESSION_KEY, JSON.stringify(info))
+    // B50 卡5（L146）：登录建会话后补拉服务端权限矩阵（启动时无 token 已门控不发）
+    void loadMatrix()
   }
 
   /** 工号 + 密码登录 */
@@ -468,6 +470,9 @@ export const useAuthStore = defineStore('auth', () => {
    * 失败静默：离线 ?as= 演示自动回退前端硬编码 ROLE_PERMISSIONS，不阻塞页面渲染。
    */
   async function loadMatrix(): Promise<boolean> {
+    // B50 卡5（L146）：无 token（未登录/登录页/离线 ?as= 演示）不发请求。
+    // 该端点网关实测需鉴权，未登录硬拉必然 401；离线演示直接回退前端硬编码角色矩阵。
+    if (!getToken()) return false
     try {
       matrix.value = await apiGetPermissions()
       return true

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { listStores } from '@/api/org'
+import { getToken } from '@/api/client'
 import { useAuthStore } from '@/stores/auth'
 
 // ============================================================
@@ -27,6 +28,9 @@ export const useStoreContext = defineStore('storeContext', () => {
   const stores = ref<StoreOption[]>([])
   const currentStoreCode = ref<string>('')
   const loaded = ref(false)
+  // B50 卡5（L146）：并发 init 去重——main.ts 与 App.vue 挂载几乎同时触发，
+  // 首拉未完成时 loaded 闸门尚未置位，复用同一在途 Promise 根治 /stores 双发
+  let inflight: Promise<void> | null = null
 
   const currentStore = computed<StoreOption | undefined>(() =>
     stores.value.find((s) => s.storeCode === currentStoreCode.value),
@@ -43,29 +47,39 @@ export const useStoreContext = defineStore('storeContext', () => {
   }
 
   /** 拉取真实门店列表；拉取失败不抛出（侧栏退回门店编码/空名，不阻断页面） */
-  async function loadStores(force = false) {
-    if (loaded.value && !force) return
-    try {
-      const res = await listStores()
-      const list = (res.data || []) as StoreOption[]
-      stores.value = list
-      // 当前选中不在列表里（门店下线/旧缓存/演示码残留），按 登录人门店 → 列表首家 兜底
-      if (!list.some((s) => s.storeCode === currentStoreCode.value)) {
-        const auth = useAuthStore()
-        const ownStore = auth.storeId
-        currentStoreCode.value = list.some((s) => s.storeCode === ownStore)
-          ? ownStore
-          : (list[0]?.storeCode ?? '')
+  function loadStores(force = false): Promise<void> {
+    // B50 卡5（L146）：无 token（未登录/登录页）不发 /stores——该端点网关实测需鉴权，
+    // 未登录硬拉必然 401；登录后由桌面壳 onMounted 补拉。
+    if (!getToken()) return Promise.resolve()
+    if (loaded.value && !force) return Promise.resolve()
+    // 并发首拉复用同一在途请求（main.ts 与 App.vue 两处 init 合并为单次 /stores）
+    if (inflight) return inflight
+    inflight = (async () => {
+      try {
+        const res = await listStores()
+        const list = (res.data || []) as StoreOption[]
+        stores.value = list
+        // 当前选中不在列表里（门店下线/旧缓存/演示码残留），按 登录人门店 → 列表首家 兜底
+        if (!list.some((s) => s.storeCode === currentStoreCode.value)) {
+          const auth = useAuthStore()
+          const ownStore = auth.storeId
+          currentStoreCode.value = list.some((s) => s.storeCode === ownStore)
+            ? ownStore
+            : (list[0]?.storeCode ?? '')
+        }
+        loaded.value = true
+      } catch {
+        // 网络/后端异常：尝试用登录人所属门店兜底（业务页按本店数据域过滤仍可用）
+        if (!currentStoreCode.value) {
+          const auth = useAuthStore()
+          currentStoreCode.value = auth.storeId || ''
+        }
+        loaded.value = false
+      } finally {
+        inflight = null
       }
-      loaded.value = true
-    } catch {
-      // 网络/后端异常：尝试用登录人所属门店兜底（业务页按本店数据域过滤仍可用）
-      if (!currentStoreCode.value) {
-        const auth = useAuthStore()
-        currentStoreCode.value = auth.storeId || ''
-      }
-      loaded.value = false
-    }
+    })()
+    return inflight
   }
 
   /** 按门店编码切换 */

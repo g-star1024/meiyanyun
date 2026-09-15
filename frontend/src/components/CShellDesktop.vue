@@ -12,6 +12,7 @@ import CIcon from './CIcon.vue'
 import CButton from './CButton.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationStore } from '@/stores/notification'
+import { useStoreContext } from '@/stores/storeContext'
 import type { Role } from '@/types/domain'
 
 interface DomainItem { key: string; label: string; icon: string }
@@ -59,12 +60,16 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const notification = useNotificationStore()
+const storeCtx = useStoreContext()
 // 门店上下文为受控值：显示用 props.store（来自全局 storeContext），选择只 emit 给父更新
 const drawerOpen = ref(false)
 const userMenuOpen = ref(false)
 const roleSwitching = ref<Role | ''>('')
 
 onMounted(() => {
+  // B50 卡5（L146）：桌面壳仅在已认证后挂载，是登录后首次补拉的统一入口；
+  // 启动无 token 时 main.ts 的预拉取已被 store 门控跳过，此处补齐门店列表与通知。
+  if (!storeCtx.loaded) void storeCtx.loadStores()
   void notification.fetch()
 })
 

@@ -12,6 +12,7 @@ import {
   getNotificationPreferences, updateNotificationPreference,
   type NotificationDTO, type NotifyPreferenceDTO,
 } from '@/api/notification'
+import { getToken } from '@/api/client'
 
 export type NotifyCategory = 'APPROVAL' | 'CUSTOMER' | 'INVENTORY' | 'MARKETING' | 'SYSTEM'
 export type NotifyChannel = 'INBOX' | 'SMS' | 'WECHAT' | 'EMAIL'
@@ -101,6 +102,8 @@ export const useNotificationStore = defineStore('notification', () => {
 
   /** 拉取当前登录人的通知（最新在前）；失败静默——通知为旁路能力，不阻断页面 */
   async function fetch() {
+    // B50 卡5（L146）：无 token 不发请求（/txn/notifications 网关实测需鉴权，未登录硬拉必 401）
+    if (!getToken()) return
     try {
       const res = await listNotifications()
       items.value = (res.data.items || []).map(adapt)
@@ -151,6 +154,8 @@ export const useNotificationStore = defineStore('notification', () => {
 
   /** 拉取服务端持久化偏好（失败静默保留本地默认态——偏好为旁路能力，不阻断页面） */
   async function fetchPreferences() {
+    // B50 卡5（L146）：无 token 不发请求，偏好保留本地默认态
+    if (!getToken()) return
     try {
       const res = await getNotificationPreferences()
       const rows = (res.data.items || []).map(adaptPreference)
