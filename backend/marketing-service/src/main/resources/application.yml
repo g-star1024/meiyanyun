@@ -31,8 +31,12 @@ spring:
     baseline-description: "JPA 自动建表基线"
     table: flyway_schema_history
     validate-on-migrate: true
+    # P5-B52 卡1：全库共享 flyway_schema_history，seed 库多服务先后初始化时 ai(V15-V29)/audit(V30/V31)
+    # 已先于 marketing 应用，marketing 本地 V11-V14 成为低版本 pending，默认校验直接失败致服务 Exited(1)。
+    # 放行乱序补应用（B38 audit 同款先例）；V11-V14 全部 CREATE TABLE IF NOT EXISTS，补跑幂等安全。
+    out-of-order: true
     # 全库共享 flyway_schema_history：customer 持 V1/V2/V3/V5/V9、finance 持 V4/V6/V7/V8、
-    # audit 持 V10，marketing 类路径仅持 V11。他服务脚本缺失分两种状态，均须忽略：
+    # audit 持 V10/V30/V31，marketing 类路径持 V11-V14。他服务脚本缺失分两种状态，均须忽略：
     #   missing = 已应用但本地缺失且版本早于本地最新迁移；future = 已应用但本地缺失且版本更新；
     # 显式配置 patterns 后默认 ignoreFutureMigrations 被覆盖，故两个状态都要列。
     ignore-migration-patterns:

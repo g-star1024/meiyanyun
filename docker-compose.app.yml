@@ -248,6 +248,9 @@ services:
     ports: ["8080:80"]
     depends_on:
       gateway: { condition: service_started }
+    environment:
+      # P5-B52 卡1：nginx 模板 envsubst 上游（正式栈服务键=gateway，行为同改名前）。
+      GATEWAY_UPSTREAM: "gateway"
 
 networks:
   meiyun-network:

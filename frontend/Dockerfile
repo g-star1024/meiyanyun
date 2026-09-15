@@ -11,5 +11,7 @@ RUN pnpm run build
 
 FROM nginx:1.27-alpine
 COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# P5-B52 卡1：放官方 templates 目录，entrypoint 启动时按容器 env（GATEWAY_UPSTREAM）
+# envsubst 生成 /etc/nginx/conf.d/default.conf——同一镜像双栈注入不同上游（app=gateway / seed=meiyun-seed-gateway）。
+COPY nginx.conf /etc/nginx/templates/default.conf.template
 EXPOSE 80

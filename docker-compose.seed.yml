@@ -4,7 +4,7 @@
 #   1. 先构建过正式镜像（docker-compose.app.yml up -d --build），本栈直接复用 image，不重复 build。
 #   2. 已灌种子：bash scripts/setup-seed-db.sh
 #
-# 隔离方式（四要素，缺一会串栈）：
+# 隔离方式（五要素，缺一会串栈）：
 #   - 数据源覆盖为 jdbc:postgresql://meiyun-pg:5432/meiyun_seed（复用同一 PG 实例的不同库）；
 #   - 独立容器名 meiyun-seed-*、独立宿主端口（前端 18080 / 网关 18443 / 后端 18082-18088），
 #     与正式栈（8080/8443/8082-8088）互不冲突，可同时运行；
@@ -12,18 +12,23 @@
 #     （customer-service 等），若与正式栈共用 10-_meiyun 网络，同名别名冲突会让正式栈网关
 #     把请求轮询路由到 seed 容器（core 库返回 seed 数据）。故 seed 必须用独立网络；
 #     中间件容器（pg/redis/es/minio/rocketmq）需额外 `docker network connect meiyun-seed-net <容器>` 接入。
+#   - **compose 服务键统一 seed- 前缀（P5-B52 卡1 第五纵深）**：即使误把两栈接到同一 Docker 网络，
+#     网络上注册的别名也不同（seed-customer-service vs customer-service），从别名层根治 DNS 轮询串扰，
+#     与独立网络形成双保险。容器名（container_name）本就独立且后端互访/中间件寻址全走容器名，
+#     故服务键改名零运行时影响；唯一同步点=frontend nginx 反向代理上游经 GATEWAY_UPSTREAM
+#     环境变量注入（seed=meiyun-seed-gateway，app=gateway，镜像双栈共享，见 frontend/nginx.conf 模板）。
 #
 # 启动：docker compose -f docker-compose.seed.yml up -d
 # 停止：docker compose -f docker-compose.seed.yml down
 # 清库：bash scripts/reset-seed-db.sh（开发完彻底清空测试数据）
 #
 # 注意：本文件与 docker-compose.app.yml 同目录，必须用独立 compose 项目名（顶层 name: meiyun-seed），
-# 否则服务名相同（customer-service/gateway…）会被默认项目判定为同一服务而互相 recreate/替换正式栈。
+# 否则即使服务键加了 seed- 前缀，compose 仍可能按容器/网络判定为关联项目。
 
 name: meiyun-seed
 
 services:
-  customer-service: &seed-backend
+  seed-customer-service: &seed-backend
     image: meiyun/customer-service:latest
     container_name: meiyun-seed-customer-service
     networks: [seed-net]
@@ -57,7 +62,7 @@ services:
       retries: 10
       start_period: 60s
 
-  txn-service:
+  seed-txn-service:
     <<: *seed-backend
     image: meiyun/txn-service:latest
     container_name: meiyun-seed-txn-service
@@ -69,7 +74,7 @@ services:
       retries: 10
       start_period: 60s
 
-  audit-service:
+  seed-audit-service:
     <<: *seed-backend
     image: meiyun/audit-service:latest
     container_name: meiyun-seed-audit-service
@@ -81,7 +86,7 @@ services:
       retries: 10
       start_period: 60s
 
-  store-service:
+  seed-store-service:
     <<: *seed-backend
     image: meiyun/store-service:latest
     container_name: meiyun-seed-store-service
@@ -93,7 +98,7 @@ services:
       retries: 10
       start_period: 60s
 
-  org-service:
+  seed-org-service:
     <<: *seed-backend
     image: meiyun/org-service:latest
     container_name: meiyun-seed-org-service
@@ -105,7 +110,7 @@ services:
       retries: 10
       start_period: 60s
 
-  finance-service:
+  seed-finance-service:
     <<: *seed-backend
     image: meiyun/finance-service:latest
     container_name: meiyun-seed-finance-service
@@ -117,7 +122,7 @@ services:
       retries: 10
       start_period: 60s
 
-  marketing-service:
+  seed-marketing-service:
     <<: *seed-backend
     image: meiyun/marketing-service:latest
     container_name: meiyun-seed-marketing-service
@@ -129,7 +134,7 @@ services:
       retries: 10
       start_period: 60s
 
-  ai-service:
+  seed-ai-service:
     <<: *seed-backend
     image: meiyun/ai-service:latest
     container_name: meiyun-seed-ai-service
@@ -145,13 +150,13 @@ services:
       retries: 10
       start_period: 60s
 
-  gateway:
+  seed-gateway:
     image: meiyun/gateway:latest
     container_name: meiyun-seed-gateway
     networks: [seed-net]
     ports: ["18443:8443"]
     depends_on:
-      ai-service: { condition: service_healthy }
+      seed-ai-service: { condition: service_healthy }
     environment:
       CUSTOMER_SERVICE_URL: "http://meiyun-seed-customer-service:8082"
       TXN_SERVICE_URL: "http://meiyun-seed-txn-service:8083"
@@ -168,13 +173,17 @@ services:
       retries: 10
       start_period: 30s
 
-  frontend:
+  seed-frontend:
     image: meiyun/frontend:latest
     container_name: meiyun-seed-frontend
     networks: [seed-net]
     ports: ["18080:80"]
     depends_on:
-      gateway: { condition: service_started }
+      seed-gateway: { condition: service_started }
+    environment:
+      # P5-B52 卡1：nginx 模板 envsubst 上游——seed 网内按容器名寻址网关
+      # （服务键已改 seed-gateway，容器名 meiyun-seed-gateway 两皆可解析；此处统一用容器名）。
+      GATEWAY_UPSTREAM: "meiyun-seed-gateway"
 
 networks:
   # seed 栈独占网络（与正式栈 10-_meiyun 隔离）。compose 自动创建，实际名 meiyun-seed_seed-net。
