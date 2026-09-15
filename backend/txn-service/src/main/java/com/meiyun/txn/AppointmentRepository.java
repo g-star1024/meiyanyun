@@ -31,8 +31,8 @@ public interface AppointmentRepository extends JpaRepository<Appointment, String
     boolean existsByCustomerIdAndApptDateAndApptTimeAndStatusNot(
             String customerId, LocalDate apptDate, String apptTime, String status);
 
-    /** 当日预约号最大序号（appt_no 形如 AP20260901-000007，序号从第 12 位起 6 位），用于生成不重号的下一个号。 */
+    /** 当日预约号最大序号（appt_no 形如 AP20260901-000007，序号从第 12 位起 6 位），用于生成不重号的下一个号；历史演示单（如 -DEMO01 非数字后缀）不纳入序号统计，避免 cast bigint 异常。 */
     @Query(value = "select coalesce(max(cast(substring(appt_no from 12) as bigint)), 0) " +
-           "from appointment where appt_no like :prefix", nativeQuery = true)
+           "from appointment where appt_no like :prefix and substring(appt_no from 12) ~ '^[0-9]+$'", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);
 }
