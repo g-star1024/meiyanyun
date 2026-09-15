@@ -49,10 +49,23 @@ const chainTone = computed(() => {
   if (!au.verify) return 'disabled'
   return au.verify.ok ? 'success' : 'danger'
 })
+const chainBreaks = computed(() => au.verify?.breaks ?? [])
 const chainText = computed(() => {
   if (!au.verify) return '校验中…'
-  return au.verify.ok ? `完整 · ${au.verify.total} 条` : `断链 #${au.verify.brokenAtId}`
+  if (au.verify.ok) return `完整 · ${au.verify.total} 条`
+  const n = chainBreaks.value.length
+  return n > 1 ? `断链 ${n} 处 · #${au.verify.brokenAtId} 等` : `断链 #${au.verify.brokenAtId}`
 })
+const chainTitle = computed(() => {
+  if (!au.verify) return '哈希链巡检中'
+  if (au.verify.ok) return `哈希链完整，共 ${au.verify.total} 条；点击重新巡检`
+  const ids = chainBreaks.value.map((b) => `#${b.id}`).join('、')
+  return `检出 ${chainBreaks.value.length} 处断链：${ids}（点击重新巡检）`
+})
+function breakTime(iso: string) {
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
 </script>
 
 <template>
@@ -61,8 +74,21 @@ const chainText = computed(() => {
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="order" :size="20" /></div><div class="kpi__body"><div class="kpi__label">审计记录总数</div><div class="kpi__value">{{ au.stats.total }}</div></div></div>
       <div class="kpi kpi--warning"><div class="kpi__icon"><CIcon name="clock" :size="20" /></div><div class="kpi__body"><div class="kpi__label">近24小时新增</div><div class="kpi__value">{{ au.stats.last24 }}</div></div></div>
       <div class="kpi kpi--info"><div class="kpi__icon"><CIcon name="user" :size="20" /></div><div class="kpi__body"><div class="kpi__label">操作人数（含系统）</div><div class="kpi__value">{{ au.stats.actors }}</div></div></div>
-      <div class="kpi kpi--danger kpi--clickable" title="点击重新巡检哈希链" @click="au.checkChain()"><div class="kpi__icon"><CIcon name="shield" :size="20" /></div><div class="kpi__body"><div class="kpi__label">哈希链完整性</div><div class="kpi__value kpi__value--sm"><CStatusPill :status="chainTone" dot>{{ chainText }}</CStatusPill></div></div></div>
+      <div class="kpi kpi--danger kpi--clickable" :title="chainTitle" @click="au.checkChain()"><div class="kpi__icon"><CIcon name="shield" :size="20" /></div><div class="kpi__body"><div class="kpi__label">哈希链完整性</div><div class="kpi__value kpi__value--sm"><CStatusPill :status="chainTone" dot>{{ chainText }}</CStatusPill></div></div></div>
     </div>
+
+    <CCard v-if="chainBreaks.length" padding="md" class="au-breaks">
+      <div class="brk-head">
+        <CIcon name="shield" :size="15" />
+        <span>哈希链巡检：检出 <b>{{ chainBreaks.length }}</b> 处断链（append-only 存量不回改，仅列示），点击 KPI 卡可重新巡检</span>
+      </div>
+      <div class="brk-list">
+        <div v-for="b in chainBreaks" :key="b.id" class="brk-item" :title="`期望前驱 ${b.expectedPrev}\n存储前驱 ${b.storedPrev}`">
+          <CStatusPill status="danger" dot>#{{ b.id }}</CStatusPill>
+          <span class="brk-meta">{{ breakTime(b.createdAt) }} · {{ au.displayActor(b.actor) }}（{{ b.actor }}） · {{ b.action }}</span>
+        </div>
+      </div>
+    </CCard>
 
     <CCard padding="md">
       <div class="au-filter">
@@ -156,6 +182,13 @@ const chainText = computed(() => {
 .kpi__label { font-size: var(--t-xs); color: var(--c-text-3); }
 .kpi__value { font-size: var(--t-xl); font-weight: 700; color: var(--c-text); display: flex; align-items: baseline; gap: 6px; }
 .kpi__value--sm { font-size: var(--t-md); }
+
+.au-breaks { border-color: var(--c-danger-fg, #e03e3e); }
+.brk-head { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--c-text-2); }
+.brk-head b { color: var(--c-danger-fg, #e03e3e); }
+.brk-list { display: flex; flex-direction: column; gap: 6px; margin-top: var(--s-sm); }
+.brk-item { display: flex; align-items: center; gap: var(--s-sm); font-size: var(--t-xs); }
+.brk-meta { color: var(--c-text-2); }
 
 .au-filter { display: flex; align-items: center; gap: var(--s-sm); flex-wrap: nowrap; overflow-x: auto; }
 .au-filter .sel { flex-shrink: 0; }

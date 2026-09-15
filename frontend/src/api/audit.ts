@@ -51,10 +51,23 @@ export interface AuditFacets {
   bizTypes: AuditBizTypeFacet[]
 }
 
+export interface AuditChainBreak {
+  id: number
+  expectedPrev: string
+  storedPrev: string
+  curHash: string
+  action: string
+  actor: string
+  createdAt: string
+}
+
 export interface AuditChainVerifyResult {
   ok: boolean
+  /** 首处断链 id（保留旧口径兼容；全量清单见 breaks） */
   brokenAtId: number | null
   total: number
+  /** 全量断链清单（按 id 升序） */
+  breaks: AuditChainBreak[]
 }
 
 export const pageAuditLogs = (query: AuditPageQuery) =>

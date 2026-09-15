@@ -74,27 +74,50 @@ public class AuditService {
     }
 
     /**
-     * 巡检整链：逐条重算 cur_hash 并与存储值比对。任一条失配即返回 brokenAtId。
+     * 巡检整链：逐条重算 cur_hash 并与存储值比对，<b>遍历全程</b>收集所有失配节点。
+     * <p>关键：发现失配后不能沿重算值继续（否则历史断链会导致其后全部节点误报），
+     * expectedPrev 始终推进为「存储的 node.curHash」，从而独立检出每一处断链。
+     * brokenAtId 保留首处口径以兼容旧前端，全量清单见 breaks。</p>
      */
     public ChainVerifyResult verifyChain() {
         List<AuditLog> chain = repository.findAllByOrderByIdAsc();
+        List<ChainBreak> breaks = new ArrayList<>();
         String expectedPrev = AuditChain.genesisHash();
         for (AuditLog node : chain) {
             // 验链时也要对 payload 做 canonicalize（与写入时一致）
             String canonicalPayload = canonicalize(node.getPayload());
+            String createdAtIso = node.getCreatedAt().withOffsetSameInstant(ZoneOffset.UTC)
+                    .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME);
             boolean ok = AuditChain.verifyLink(
                     expectedPrev, canonicalPayload, node.getActor(), node.getAction(),
-                    node.getCreatedAt().withOffsetSameInstant(ZoneOffset.UTC)
-                            .format(DateTimeFormatter.ISO_OFFSET_DATE_TIME), node.getCurHash());
+                    createdAtIso, node.getCurHash());
             if (!ok) {
-                return new ChainVerifyResult(false, node.getId(), chain.size());
+                breaks.add(new ChainBreak(node.getId(), expectedPrev, node.getPrevHash(),
+                        node.getCurHash(), node.getAction(), node.getActor(), createdAtIso));
             }
+            // 无论是否失配都沿「存储值」推进，保证后续断链可被独立检出
             expectedPrev = node.getCurHash();
         }
-        return new ChainVerifyResult(true, null, chain.size());
+        Long firstBreak = breaks.isEmpty() ? null : breaks.get(0).id();
+        return new ChainVerifyResult(breaks.isEmpty(), firstBreak, chain.size(), breaks);
     }
 
-    public record ChainVerifyResult(boolean ok, Long brokenAtId, int total) {
+    /**
+     * 单处断链详情（供前端全量清单展示与对账排查）。
+     *
+     * @param id           失配节点 audit_log.id
+     * @param expectedPrev 验链期望的前驱哈希（链首为创世哈希）
+     * @param storedPrev   该节点存储的 prev_hash
+     * @param curHash      该节点存储的 cur_hash（与重算值不一致）
+     * @param action       动作（排查辅助）
+     * @param actor        操作人（排查辅助）
+     * @param createdAt    UTC ISO 时间（排查辅助）
+     */
+    public record ChainBreak(Long id, String expectedPrev, String storedPrev, String curHash,
+                             String action, String actor, String createdAt) {
+    }
+
+    public record ChainVerifyResult(boolean ok, Long brokenAtId, int total, List<ChainBreak> breaks) {
     }
 
     public List<AuditLog> findAll() {
