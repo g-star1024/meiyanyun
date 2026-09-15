@@ -50,6 +50,7 @@ public class ConsultPlanService {
     private final StoreCatalogClient catalogClient;
     private final EmrService emrService;
     private final FollowupScheduler followupScheduler;
+    private final DispatchCompletion dispatchCompletion;
     private final ObjectMapper json = new ObjectMapper();
 
     public ConsultPlanService(PlanRepository planRepo, PlanItemRepository itemRepo,
@@ -57,7 +58,7 @@ public class ConsultPlanService {
                               OrderItemRepository orderItemRepo, OrderNoGenerator orderNoGen,
                               AuditRecorder audit, ApptRefNameResolver names,
                               StoreCatalogClient catalogClient, EmrService emrService,
-                              FollowupScheduler followupScheduler) {
+                              FollowupScheduler followupScheduler, DispatchCompletion dispatchCompletion) {
         this.planRepo = planRepo;
         this.itemRepo = itemRepo;
         this.revRepo = revRepo;
@@ -69,6 +70,7 @@ public class ConsultPlanService {
         this.catalogClient = catalogClient;
         this.emrService = emrService;
         this.followupScheduler = followupScheduler;
+        this.dispatchCompletion = dispatchCompletion;
     }
 
     // ==================== DTO ====================
@@ -711,8 +713,9 @@ public class ConsultPlanService {
     /**
      * 完成治疗：TREATING → DONE。治疗过程/操作记录必填，术后医嘱随治疗记录一并电子签名归档，
      * 生成治疗记录病历号（EM 号）。事务提交成功后（AFTER_COMMIT）由 {@link FollowupScheduler}
-     * 按术后 SOP 模板自动排程多节点随访（1/3/7/30 天，source_plan_id 查库幂等，一张方案单只排一次）；
-     * 排程独立事务，失败不回滚治疗主链路。幂等：DONE 重复提交直接返回当前单。
+     * 按术后 SOP 模板自动排程多节点随访（1/3/7/30 天，source_plan_id 查库幂等，一张方案单只排一次），
+     * 并由 {@link DispatchCompletion} 联动该预约的活跃派单置 DONE 终态（回显不占时段、不可再派/释放）；
+     * 联动均独立事务，失败不回滚治疗主链路。幂等：DONE 重复提交直接返回当前单。
      */
     @Transactional
     public PlanView treatDone(String planId, TreatDoneCmd cmd) {
@@ -749,7 +752,7 @@ public class ConsultPlanService {
         audit.record("PLAN", planId, actor, "TREAT_DONE",
                 "{\"treatEmr\":\"" + emrNo + "\",\"noteLen\":" + note.length() + "}");
 
-        // 治疗事务提交成功后再排程术后 SOP：避免治疗回滚却已生成随访；独立事务 + 方案单查库幂等
+        // 治疗事务提交成功后再联动（术后 SOP 排程 + 派单置 DONE）：避免治疗回滚却已生效；独立事务 + 查库幂等
         final String scheduledPlanId = planId;
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
@@ -760,6 +763,13 @@ public class ConsultPlanService {
                     // 排程失败不影响治疗完成主链路（下一轮可由补偿/人工排程兜底）
                     org.slf4j.LoggerFactory.getLogger(ConsultPlanService.class)
                             .warn("术后 SOP 排程失败 planId={}: {}", scheduledPlanId, ex.getMessage());
+                }
+                try {
+                    dispatchCompletion.completeForPlan(scheduledPlanId);
+                } catch (Exception ex) {
+                    // 派单完成态联动失败不影响治疗主链路（派单保留活跃态，可人工释放兜底）
+                    org.slf4j.LoggerFactory.getLogger(ConsultPlanService.class)
+                            .warn("调度派单完成态联动失败 planId={}: {}", scheduledPlanId, ex.getMessage());
                 }
             }
         });

@@ -94,6 +94,7 @@ function isJobSlot(r: Resource, slot: string) {
 }
 
 function asgTone(status: Assignment['status']) {
+  if (status === 'DONE') return 'success'
   return status === 'IN_PROGRESS' ? 'warning' : 'info'
 }
 
@@ -195,7 +196,7 @@ function utilTone(u: number) {
                 <span class="block__time">{{ a.start }}</span>
                 <span class="block__name">{{ a.customerName }}</span>
                 <span class="block__item">{{ a.itemName }}</span>
-                <button v-if="canEdit" class="block__x" @click.stop="release(a)">×</button>
+                <button v-if="canEdit && a.status !== 'DONE'" class="block__x" @click.stop="release(a)">×</button>
               </div>
             </div>
             <div class="row__util">
@@ -213,6 +214,7 @@ function utilTone(u: number) {
         <div class="legend">
           <span><i class="lg lg--info"></i>已排（SCHEDULED）</span>
           <span><i class="lg lg--warning"></i>进行中（IN_PROGRESS）</span>
+          <span><i class="lg lg--success"></i>已完成（DONE）</span>
           <span class="muted">派单时间取预约时间；点击排班块右上角 × 可释放回待派单</span>
         </div>
       </CCard>

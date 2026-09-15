@@ -25,10 +25,11 @@ import java.util.Map;
  * ROOM 治疗室经 {@link StoreRoomClient} 取 store 内部端点（store 不可用软降级空列表）；
  * DEVICE 设备无真实台账，一期诚实空态（Backlog）。
  *
- * <p>待派单 Job = 当日「已预约/已到店」且无活跃派单占用的预约；已到店排前、到店时间升序。
+ * <p>待派单 Job = 当日「已预约/已到店」且无派单占用（含 DONE 终态）的预约；已到店排前、到店时间升序。
  * 派单 start 锚定预约 apptTime（不可自由选时），时长固定 60 分钟（project↔SKU 名匹配率 0% 实证，
  * 不伪造真实时长，Backlog）；DOCTOR 资源必须与预约指定医生一致；同资源同日时段重叠拒绝；
- * 占用状态由预约态派生（已预约=SCHEDULED / 已到店=IN_PROGRESS）。释放为 RELEASED 保留行。
+ * 占用状态由预约态派生（已预约=SCHEDULED / 已到店=IN_PROGRESS）。释放为 RELEASED 保留行；
+ * 治疗完成由方案单 treatDone AFTER_COMMIT 联动置 DONE（终态回显不占时段，不可释放/再派单）。
  */
 @Service
 public class DispatchService {
@@ -36,9 +37,12 @@ public class DispatchService {
     private static final Logger log = LoggerFactory.getLogger(DispatchService.class);
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
-    /** 活跃占用状态（已排期 + 进行中）；RELEASED 不再占用时段。 */
+    /** 活跃占用状态（已排期 + 进行中）；RELEASED 不再占用时段，DONE 终态不占时段。 */
     private static final List<String> ACTIVE = List.of(
             DispatchAssignment.ST_SCHEDULED, DispatchAssignment.ST_IN_PROGRESS);
+    /** 读侧可见状态（活跃 + 已完成回显）：时间轴渲染 + 待派单排除集（治完预约不重现）。 */
+    private static final List<String> VISIBLE = List.of(
+            DispatchAssignment.ST_SCHEDULED, DispatchAssignment.ST_IN_PROGRESS, DispatchAssignment.ST_DONE);
     /** 可派单预约态。 */
     private static final String ST_BOOKED = "已预约";
     private static final String ST_ARRIVED = "已到店";
@@ -71,14 +75,14 @@ public class DispatchService {
 
     // ============================= 读侧 =============================
 
-    /** 资源列表（含当日活跃占用块）。type 为空返回全部三类；DEVICE 恒为空列表。 */
+    /** 资源列表（含当日占用块：活跃 + 已完成 DONE 回显）。type 为空返回全部三类；DEVICE 恒为空列表。 */
     @Transactional(readOnly = true)
     public List<ResourceView> resources(String storeCode, String type, LocalDate date) {
         String sc = requireStore(storeCode);
         LocalDate day = date == null ? LocalDate.now() : date;
         String wantType = type == null || type.isBlank() ? null : type.trim();
         List<DispatchAssignment> active =
-                assignmentRepo.findByStoreCodeAndBizDateAndStatusInOrderByStartTimeAsc(sc, day, ACTIVE);
+                assignmentRepo.findByStoreCodeAndBizDateAndStatusInOrderByStartTimeAsc(sc, day, VISIBLE);
 
         List<ResourceView> out = new ArrayList<>();
         if (wantType == null || DispatchAssignment.RES_DOCTOR.equals(wantType)) {
@@ -116,8 +120,9 @@ public class DispatchService {
         LocalDate day = date == null ? LocalDate.now() : date;
         List<Appointment> appts = appointmentRepo.findByStoreCodeAndApptDateOrderByApptTimeAsc(sc, day);
 
+        // 排除集含 DONE：治完预约的 appointment.status 不变，不把已完成工单重新暴露为待派单
         List<DispatchAssignment> active =
-                assignmentRepo.findByStoreCodeAndBizDateAndStatusInOrderByStartTimeAsc(sc, day, ACTIVE);
+                assignmentRepo.findByStoreCodeAndBizDateAndStatusInOrderByStartTimeAsc(sc, day, VISIBLE);
         java.util.Set<String> assignedApptNos = active.stream()
                 .map(DispatchAssignment::getApptNo).collect(java.util.stream.Collectors.toSet());
         List<Appointment> pending = appts.stream()
@@ -148,7 +153,7 @@ public class DispatchService {
 
     // ============================= 写侧 =============================
 
-    /** 派单：start 锚定预约 apptTime，时长 60 分钟，全量校验 + 状态派生 + 审计。 */
+    /** 派单：start 锚定预约 apptTime，时长 60 分钟，全量校验 + 状态派生 + 审计；DONE 终态预约 422。 */
     @Transactional
     public AssignmentView dispatch(String storeCode, DispatchCmd cmd) {
         String sc = requireStore(storeCode);
@@ -174,6 +179,9 @@ public class DispatchService {
         if (!ST_BOOKED.equals(a.getStatus()) && !ST_ARRIVED.equals(a.getStatus())) {
             throw error(HttpStatus.UNPROCESSABLE_ENTITY,
                     "预约当前状态为「" + a.getStatus() + "」，不可派单");
+        }
+        if (assignmentRepo.existsByApptNoAndStatusIn(a.getApptNo(), List.of(DispatchAssignment.ST_DONE))) {
+            throw error(HttpStatus.UNPROCESSABLE_ENTITY, "该预约已完成治疗，不可再派单");
         }
         if (assignmentRepo.existsByApptNoAndStatusIn(a.getApptNo(), ACTIVE)) {
             throw error(HttpStatus.CONFLICT, "该预约已派单，如需改派请先释放原派单");
@@ -250,7 +258,7 @@ public class DispatchService {
         return toView(saved);
     }
 
-    /** 释放派单：仅活跃态可释放 → RELEASED + released_at 保留行；重复释放 422。 */
+    /** 释放派单：仅活跃态可释放 → RELEASED + released_at 保留行；重复释放/DONE 终态 422。 */
     @Transactional
     public AssignmentView release(Long id, String storeCode) {
         DispatchAssignment asg = assignmentRepo.findById(id).orElse(null);
@@ -262,6 +270,9 @@ public class DispatchService {
         }
         if (DispatchAssignment.ST_RELEASED.equals(asg.getStatus())) {
             throw error(HttpStatus.UNPROCESSABLE_ENTITY, "该派单已释放，请勿重复操作");
+        }
+        if (DispatchAssignment.ST_DONE.equals(asg.getStatus())) {
+            throw error(HttpStatus.UNPROCESSABLE_ENTITY, "该派单已完成治疗，终态无需释放");
         }
         asg.setStatus(DispatchAssignment.ST_RELEASED);
         asg.setReleasedAt(OffsetDateTime.now());

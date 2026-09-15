@@ -30,7 +30,7 @@ public class DispatchController {
         this.service = service;
     }
 
-    /** 资源（医生/治疗室/设备）及当日活跃占用块；type 可选 DOCTOR/ROOM/DEVICE，date 默认今日。 */
+    /** 资源（医生/治疗室/设备）及当日占用块（活跃 + DONE 完成回显）；type 可选 DOCTOR/ROOM/DEVICE，date 默认今日。 */
     @GetMapping("/resources")
     public List<DispatchService.ResourceView> resources(@RequestParam String storeCode,
                                                         @RequestParam(required = false) String type,
@@ -38,7 +38,7 @@ public class DispatchController {
         return service.resources(storeCode, type, date);
     }
 
-    /** 待派单工单（当日已预约/已到店且无活跃占用，已到店排前 + 时间升序）。 */
+    /** 待派单工单（当日已预约/已到店且无派单占用含 DONE 终态，已到店排前 + 时间升序）。 */
     @GetMapping("/jobs")
     public List<DispatchService.JobView> jobs(@RequestParam String storeCode,
                                               @RequestParam(required = false) LocalDate date) {

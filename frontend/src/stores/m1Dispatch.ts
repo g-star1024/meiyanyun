@@ -12,7 +12,7 @@ import { shDateStr } from '@/utils/datetime'
 // 调度中心 store（M1 集团管控 / 调度中心 · B49 卡12 切真）
 // - 数据源：/api/txn/dispatch（txn 聚合 org 医生 + store 治疗室；DEVICE 无真实源诚实空态）
 // - Job = 当日「已预约/已到店」且无活跃派单的预约（已到店排前），start 锚定 apptTime
-// - Assignment 随 Resource 行内联返回（仅 SCHEDULED/IN_PROGRESS；RELEASED 保留行不回读）
+// - Assignment 随 Resource 行内联返回（SCHEDULED/IN_PROGRESS/DONE 回显；RELEASED 保留行不回读）
 // - durationMin 固定 60、priority 全 NORMAL、班次固定 09:00-20:00（无源，见 Backlog）
 // ============================================================
 
@@ -54,7 +54,7 @@ export interface Assignment {
   itemName: string
   start: string // "10:00"
   end: string
-  status: 'SCHEDULED' | 'IN_PROGRESS'
+  status: 'SCHEDULED' | 'IN_PROGRESS' | 'DONE'
 }
 
 // 半小时时段（9:00-20:00，共22格）
@@ -110,7 +110,7 @@ function adaptAssignment(d: DispatchAssignmentDTO): Assignment {
     itemName: d.itemName,
     start: d.start,
     end: d.end,
-    status: d.status === 'IN_PROGRESS' ? 'IN_PROGRESS' : 'SCHEDULED',
+    status: d.status === 'DONE' ? 'DONE' : d.status === 'IN_PROGRESS' ? 'IN_PROGRESS' : 'SCHEDULED',
   }
 }
 
@@ -134,9 +134,10 @@ export const useM1DispatchStore = defineStore('m1Dispatch', () => {
   function resource(id: string) { return resources.value.find((r) => r.id === id) }
   function jobOf(jobId: string) { return jobs.value.find((j) => j.id === jobId) }
 
+  // DONE 终态不占时段（与后端 ACTIVE 冲突检测口径一致）：完成块回显但格子可再派
   function isSlotBusy(resourceId: string, slot: string): Assignment | undefined {
     const s = toMin(slot)
-    return assignments.value.find((a) => a.resourceId === resourceId && toMin(a.start) <= s && toMin(a.end) > s)
+    return assignments.value.find((a) => a.resourceId === resourceId && a.status !== 'DONE' && toMin(a.start) <= s && toMin(a.end) > s)
   }
 
   // 利用率：已占用时段 / 工作时段（按30分钟格）

@@ -1,6 +1,6 @@
 // ============================================================
 // Dispatch API（对接 txn-service 调度派单域 · B49 卡12）
-// 读：GET /api/txn/dispatch/resources（DOCTOR/ROOM 资源+当日活跃占用块内联；DEVICE 无真实源诚实空态）
+// 读：GET /api/txn/dispatch/resources（DOCTOR/ROOM 资源+当日占用块内联：活跃+DONE 回显；DEVICE 无真实源诚实空态）
 //     GET /api/txn/dispatch/jobs（当日「已预约/已到店」且无活跃派单的预约，已到店排前）
 // 写：POST /api/txn/dispatch/dispatch（start 锚定 apptTime，end=start+60min）
 //     POST /api/txn/dispatch/assignments/{id}/release（RELEASED+released_at 保留行）
@@ -21,8 +21,8 @@ export interface DispatchAssignmentDTO {
   itemName: string
   start: string // "HH:mm"
   end: string
-  /** SCHEDULED 已排 / IN_PROGRESS 进行中（RELEASED 不随读侧返回） */
-  status: 'SCHEDULED' | 'IN_PROGRESS' | string
+  /** SCHEDULED 已排 / IN_PROGRESS 进行中 / DONE 已完成（RELEASED 不随读侧返回） */
+  status: 'SCHEDULED' | 'IN_PROGRESS' | 'DONE' | string
 }
 
 /** 调度资源（医生/治疗室；DEVICE 不产出） */

@@ -16,6 +16,9 @@ public interface DispatchAssignmentRepository
     /** 某张预约是否已有活跃占用（幂等：已派单的预约不重复派）。 */
     boolean existsByApptNoAndStatusIn(String apptNo, List<String> statuses);
 
+    /** 某张预约的指定状态派单（治疗完成联动取活跃占用置 DONE；派单终态拦截查 DONE）。 */
+    List<DispatchAssignment> findByApptNoAndStatusIn(String apptNo, List<String> statuses);
+
     /** 同资源同日活跃占用（时段冲突检测在 Service 内做字符串区间比较）。 */
     List<DispatchAssignment> findByStoreCodeAndBizDateAndResourceTypeAndResourceIdAndStatusIn(
             String storeCode, LocalDate bizDate, String resourceType, String resourceId, List<String> statuses);

@@ -19,8 +19,9 @@ import java.time.OffsetDateTime;
  *
  * <p>一条记录 = 某门店某日某资源（DOCTOR 医生 / ROOM 治疗室）在一个 HH:mm 时段上对某张预约的占用。
  * 资源类型/状态为技术码英文存储（前端经字典映射中文，不在界面裸露）；释放采用保留行的状态机
- * （RELEASED + released_at），不物理删除，保证审计与时段历史可追溯。DEVICE 设备无真实台账源，
- * 一期不产生派单（空态 + Backlog）。
+ * （RELEASED + released_at），不物理删除，保证审计与时段历史可追溯；治疗完成由方案单 treatDone
+ * AFTER_COMMIT 联动置 DONE + done_at（终态保留行回显时间轴，不再占用时段、不可释放/再派单）。
+ * DEVICE 设备无真实台账源，一期不产生派单（空态 + Backlog）。
  */
 @Entity
 @Table(name = "dispatch_assignment")
@@ -38,6 +39,8 @@ public class DispatchAssignment {
     public static final String ST_IN_PROGRESS = "IN_PROGRESS";
     /** 状态：已释放（保留行，时段回收可再派）。 */
     public static final String ST_RELEASED = "RELEASED";
+    /** 状态：已完成（治疗完成联动，终态保留行回显，不占时段）。 */
+    public static final String ST_DONE = "DONE";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -76,13 +79,17 @@ public class DispatchAssignment {
     private String endTime;                   // HH:mm
 
     @Column(nullable = false, length = 16)
-    private String status;                    // SCHEDULED / IN_PROGRESS / RELEASED
+    private String status;                    // SCHEDULED / IN_PROGRESS / RELEASED / DONE
 
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 
     @Column(name = "released_at")
     private OffsetDateTime releasedAt;
+
+    /** 治疗完成时间（方案单 treatDone AFTER_COMMIT 联动写入；仅 DONE 态有值）。 */
+    @Column(name = "done_at")
+    private OffsetDateTime doneAt;
 
     @PrePersist
     void prePersist() {
