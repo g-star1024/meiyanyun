@@ -4,9 +4,9 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-15 22:05 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-15 22:25 CST -->
 <!-- MACHINE:BATCH=P5-B51 M1 调度 Backlog 纵深缺口批（04-backlog L140-145 六缺口，用户 2026-09-15 晚拍板「P5-B51开工吧」=此前顺序②授权落地；多依赖跨域新数据源，先逐卡只读侦察数据源就绪度，无源继续诚实空态） -->
-<!-- MACHINE:CARD=卡5 L145 预约改期联动（用户四项拍板已全部落定：①施工序=按建议序 L143→L140→L145；②L140 范围=同时放开 DEVICE 派单写（读+写全闭环，设备参与时段占用与 409 冲突校验）；③L142 方向=appointment 加 sku_code 列；④无源缺口=都保留诚实空态（L141 URGENT/L144 班次表）。卡4 L140 DEVICE 接真已 22:05 全闭合：feat 86d4a65 已 push，三轨真验全绿——读侧 5 台 NORMAL 过滤非 NORMAL 3 台/写侧派单成功+409 冲突+404 不可用/PG assignment+audit 双落库） -->
+<!-- MACHINE:CARD=卡6 L142 appointment 加 sku_code 列（用户四项拍板已全部落定：①施工序=按建议序 L143→L140→L145；②L140 范围=同时放开 DEVICE 派单写（读+写全闭环，设备参与时段占用与 409 冲突校验）；③L142 方向=appointment 加 sku_code 列+durationMin 从 SKU 真源取；④无源缺口=都保留诚实空态（L141 URGENT/L144 班次表）。卡5 L145 改期联动已 22:25 全闭合：feat 50a7eb7 已 push，三轨真验全绿——跟随移动/409 冲突回滚/422 班次越界/无派单回归/PG 双轨 audit） -->
 
 ## 当前状态（人读区）
 
@@ -20,7 +20,7 @@
 
 ## 开工基线
 
-- 代码 HEAD=`86d4a65`（B51 卡4 feat）；总 HEAD=`86d4a65`，均已 push origin/main
+- 代码 HEAD=`50a7eb7`（B51 卡5 feat）；总 HEAD=`50a7eb7`，均已 push origin/main
 - 后端 19 服务 + 网关在线（卡1 开工用 `bash /tmp/meiyun-health.sh` 复核）；正式前端 http://localhost:8080 / 网关 8443；seed 前端 127.0.0.1:18080 / 网关 18443
 - 登录：curl 通道 POST `https://127.0.0.1:8443/api/org/auth/login`（curl -k，E011/meiyun123=REGION_MGR 华东域，token 存 /tmp/meiyun_token.txt，验证前重新登录）；Chrome 通道 http://localhost:8080 手工填表（快捷登录已关闭）
 - 铁律 10 开工读数：索引+00～04 五分册本批开工前已全部整读
@@ -39,8 +39,9 @@
 2. ✅ 卡2 侦察汇报+四项拍板已落（21:00 用户 AskUserQuestion 拍板：①按建议序开工 ②同时放开 DEVICE 派单写 ③appointment 加 sku_code 列 ④L141/L144 都保留诚实空态）
 3. ✅ 卡3 L143 assignment DONE 完成态联动（**21:30 全闭合**：9 文件 +150/-25 含新建 DispatchCompletion；feat `79a8ae4`+顺手修既有 bug fix `2714287` 均已 push；三轨真验 8 项全绿——PG done_at 列置值/REQUIRES_NEW 日志「置DONE 1条」/resources DONE 回显/jobs 不重现/release 422/再派 422/DONE 不占时段 id=7 同医生同时段派单成功/audit DISPATCH/6/DONE actor=SE004）
 4. ✅ 卡4 L140 DEVICE 接真+放开 DEVICE 派单写（**22:05 全闭合**：8 文件 +179/-21 含新建 InternalEquipmentController+StoreEquipmentClient；feat `86d4a65` 已 push；三轨真验全绿——读侧 resources?type=DEVICE 返回 5 台 NORMAL（校准/停用/维修 3 台过滤）、写侧派 EQ-L001 成功 id=8 SCHEDULED、同设备同时段 409「皮秒激光治疗仪 在 14:00-15:00 已有排单」、派校准中 EQ-R002 404「所选设备不存在或不可用（仅正常状态设备可派单）」、resources 占用块回显 14:00-15:00 唐玉兰、PG dispatch_assignment DEVICE 行+audit_log DISPATCH payload resourceType=DEVICE 双落库；设计期规避两坑——EquipmentService.toView 维保记录 N+1 改轻量 listDispatchBriefs、前端 adaptAssignment 二元映射会把 DEVICE 错映射 DOCTOR 改显式三态）
-5. 🔄 卡5 L145 预约改期联动（下一卡，拍板已授权：reschedule 同事务释放/跟随 SCHEDULED 派单，同服务同库）→ 卡6 L142 appointment 加 sku_code 列+durationMin 从 SKU 真源取
-6. ⬜ 批末：DELIVERY-P5-B51-2026-09-15.md + 五分册回写（00 顶部简报/03 表底 P5-B51 行/04 已闭合行勾销/02 挂载备注/01 数字仅真实落地才动）+ 同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B52
+5. ✅ 卡5 L145 预约改期联动（**22:25 全闭合**：2 文件 +56/-3；feat `50a7eb7` 已 push；三轨真验全绿——改期 000007→16:00 派单 id=8 跟随 16:00-17:00 resources 回显/改期 16:30 与既有排单重叠 409「皮秒激光治疗仪 在新时段 16:30-17:30 与已有排单 16:00-17:00 冲突」且预约回滚仍 14:30/改期 19:30 越班次 422/改期 17:30 成功跟随 EQ-L001 双块/无派单预约改期回归 200/PG 两行派单 bizDate+start/end 跟随正确+audit 双轨 RESCHEDULE×3+RESCHEDULE_FOLLOW×2（拒绝两次无 FOLLOW 记录））
+6. 🔄 卡6 L142 appointment 加 sku_code 列（下一卡，拍板已授权：schema 变更+预约创建选 SKU+durationMin 从 SKU duration_min 真源取，替代固定 60min；seed appointment 共 166 行存量）
+7. ⬜ 批末：DELIVERY-P5-B51-2026-09-15.md + 五分册回写（00 顶部简报/03 表底 P5-B51 行/04 已闭合行勾销/02 挂载备注/01 数字仅真实落地才动）+ 同批原子 docs 提交 + 铁律 9 汇报 + 哨兵 DORMANT/B52
 
 ## 中断恢复指引
 
