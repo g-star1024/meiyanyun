@@ -137,3 +137,10 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | M1 报表 R02 区域+项目品类维度扩展（现 RevenueMonthlyRepository 直读，区域 join 已补、品类收窄） | P5-B49 卡11 | revenue_monthly 维度字段补齐 | 远期 M1 |
 | mapPayMethod transfer 渠道直通（现归「其他」保守口径，影响 R01 支付方式分布） | P5-B49 卡11 | 支付渠道枚举扩充与历史口径确认 | 远期 M1 |
 | R02 毛利率 % 格式化（gross_rate 小数输出 vs 表头（%）） | P5-B49 卡11 | 前端或 SQL 层统一 ×100 口径 | 远期 M1 |
+| M1 调度 DEVICE 设备档案台账域待建（GET /resources DOCTOR/ROOM/DEVICE 三源之一现诚实空态） | P5-B49 卡12（详见 DELIVERY-P5-B49 §卡12） | 设备档案主数据域落地后接真，当前资源面板设备组显空态不伪造 | 远期 M1 |
+| M1 调度 URGENT 加急标记源（jobs 加急标记现无源，前端已删 stats.urgent 死代码） | P5-B49 卡12 | 依赖预约/工单优先级字段落地 | 远期 M1 |
+| M1 调度 durationMin 真实时长（派单时长现固定 end=start+60min） | P5-B49 卡12 | 依赖 appointment 增 itemCode 关联 SKU 或时长字段（现 SKU↔project 名匹配率 0%） | 远期 M1 |
+| M1 调度 assignment DONE 完成态（现仅 SCHEDULED/IN_PROGRESS/RELEASED） | P5-B49 卡12 | 依赖服务完成事件源/疗程消耗联动 | 远期 M1 |
+| M1 调度医生/房间班次表（资源可用时间现固定 09:00-20:00） | P5-B49 卡12 | 需真实排班数据源 | 远期 M1 |
+| M1 调度派单时段自由度（start 现锚定 apptTime，不支持自由时段/改期） | P5-B49 卡12 | 依赖预约管理域改期能力 | 远期 M1 |
+| 登录页无 token 预拉取四路 401 观察项（/login 挂全局壳 CShellDesktop.vue，onMounted 无条件 notification.fetch 致 permissions/stores×2/notifications 401） | P5-B49 卡12 三轨真验（观察项，详见 DELIVERY-P5-B49 §卡12） | 既有现象非本卡引入（登录后全 200，client.ts 401 拦截器已对 /login 豁免跳转，E011 token curl notifications 返 200 {"items":[],"unread":0}）；修复=全局壳预拉取加 token 门控或登录页不挂载壳 | 平台治理批/B50 |
