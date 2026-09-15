@@ -3,14 +3,14 @@
 > 用途：铁律 11 自主续跑的唯一事实源。任何接续会话/定时任务先读本文件，再按「开发前 checklist」执行。
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
-<!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-16 07:28 CST -->
-<!-- MACHINE:BATCH=P5-B52 -->
-<!-- MACHINE:CARD=卡3 批末落账——DELIVERY 已成稿、五分册回写五笔+通读勾稽全闭合（01 L18+L36 双尾接/02 M1 行尾接/03 表底新行/04 L146+L147 双勾销/00 新简报），当前进入原子 docs 提交，随后哨兵置 DONE+铁律9 汇报 -->
+<!-- MACHINE:STATUS=DONE -->
+<!-- MACHINE:HEARTBEAT=2026-09-16 07:31 CST -->
+<!-- MACHINE:BATCH=P5-B52（队列全闭合：卡0 侦察/卡1 0ea8983/卡2 cc00948/卡3 批末落账 6510627 均 push） -->
+<!-- MACHINE:CARD=无——P5-B52 三卡全部闭合，哨兵置 DONE；下一周期空跑，待用户拍板新批次方向（见文末 P5-B52 存档候选） -->
 
 ## 当前状态（人读区）
 
-- **批次**：P5-B52（**2026-09-16 05:10 开工**）——卡1 seed 栈别名层纵深加固（用户拍板方案②服务别名加 seed- 前缀）+卡2 M1 调度派单自由时段开放（start 不锚定 apptTime，产品决策已拍板开放）+卡3 批末落账；哨兵 ACTIVE
+- **批次**：P5-B52（**2026-09-16 05:10 开工，07:31 全闭合哨兵 DONE**）——卡1 seed 栈别名层纵深加固 `0ea8983`（用户拍板方案②服务别名加 seed- 前缀）+卡2 M1 调度派单自由时段开放 `cc00948`（start 不锚定 apptTime，产品决策已拍板开放）+卡3 批末落账 `6510627`（DELIVERY+五分册，7 files +98/-13）；三卡全部 push origin/main，纯纵深+环境治理批完成度数字不变（✅108/166≈65%、🔧1、⬜56、域⑧ 34✅2🔧31⬜），勾销 04-backlog L146/L147 两行；**哨兵 STATUS=DONE，自主队列清空，待用户拍板下一批方向**
 - **用户拍板（原文照录）**：「1、优先处理 seed 栈 DNS 轮询串扰隐患，②seed 容器服务别名加 seed- 前缀；2、M1 调度派单自由时段（start 不锚定 apptTime）：卡5 已闭合改期联动半项，此半项属产品决策，开放；3、完成后开工 P5-B52」
 - **用户四项拍板（持续指导本批施工）**：①施工序=按建议序（L143 DONE→L140 DEVICE→L145 改期）；②L140 同时放开 DEVICE 派单写（读+写全闭环）；③L142 appointment 加 sku_code 列；④L141/L144 都保留诚实空态
 - **阶段**：卡0 哨兵激活（05:10）；**卡1 已全闭合**（`0ea8983` 05:45 commit+已 push origin/main，a-f 六子步含三轨真验均在提交说明留证）；**卡2 代码+构建+双栈部署已由前实例完成（05:57 dist / 05:58 txn 镜像，双栈 frontend/txn 均已换载），中断于三轨真验前（哨兵未回写、五文件未提交）**；接力会话 06:11 法医鉴识（git show/diff+docker 现场）后接管，从卡2 三轨五分支真验续跑
@@ -35,7 +35,7 @@
 2. ✅ 卡2 M1 派单自由时段（**已全闭合 `cc00948` 06:23，已 push**）：五文件 +46/-25（DispatchController javadoc 透传 / DispatchService HH:mm 正则+空回落 apptTime+班次 422+重叠 409 复用+DispatchCmd 增 start / dispatch.ts start? / m1Dispatch store 透传 / M1DispatchView slotClick 带 slot、班次内全空闲格可点、data-slot 锚点、style 零改）；三轨真验：curl+PG 五分支全绿（06:30）、Playwright Chrome 轨已在 cc00948 提交说明留证（22 格放开/非预约 14:00 派单/释放复位/治疗室设备 tab/FINANCE 守卫/0 console error）；接力会话 07:09-07:13 独立复验：seed 18443 E011 登录 token 6516 字符，GET resources SST01 2026-09-16→200 12 资源（DOCTOR/ROOM/DEVICE，workStart 09:00/workEnd 20:00），GET jobs→200 2 个 PENDING（000007 16:00/000008 17:30，与 PG appointment「已预约」对账一致），dispatch_assignment id14-18 全 RELEASED 留档（id14=自由 10:00 异于 apptTime16:00），audit_log id234-243 DISPATCH/RELEASE payload 含 start/end、actor=E011、哈希链连续；cc00948 完整 diff 逐行复核无误
    - 历史执行细节（append-only）：a. curl+PG 06:30 闭合——⑤9:60→422「HH:mm」；②08:00 与 19:30(60min→20:30)→422「超出班次」；①000007 start=10:00→200 id=14；③000008 同 10:00→409、10:30 半重叠→409、相邻 11:00→200 id=15；④空串/空白/不传三态回落 17:30 落 id=16/17/18（已 release 留档）；core 栈医生保护补验未破坏
    - b. Chrome 轨（cc00948 内含 Playwright 实证，见提交说明）；c. feat commit+push=`cc00948`；d. 心跳随验随更——均闭合
-3. ⬜ 卡3 批末：DELIVERY-P5-B52+五分册回写（00 顶部简报、02 M1 调度行尾接、03 表底新增 P5-B52 行、04 勾销 L146 自由时段+L147 seed 别名串扰、01 数字勾稽不变）+哨兵推进（队列全闭合置 DONE）+原子 docs 提交 push+铁律 9 汇报（✅108/166≈65%、🔧1、⬜56，纯纵深批新增 0 模块）
+3. ✅ 卡3 批末（**已闭合 `6510627` 07:29，已 push**）：DELIVERY-P5-B52-2026-09-16（9 章）+五分册回写通读勾稽全闭合（00 顶部新简报+B51 降级上一批、01 L18 口径流水+L36 域⑧行双尾接、02 M1 调度行尾接【卡1 环境治理明示不挂业务模块行】、03 表底 P5-B52 六列行、04 L146 自由时段+L147 seed 别名串扰双勾销末列 ✅ B52）+哨兵置 DONE+原子 docs 提交 push（7 files +98/-13）+铁律 9 汇报（✅108/166≈65%、🔧1、⬜56，纯纵深+环境治理批新增 0 模块、勾销 Backlog 2 行）。P5-B52 队列全闭合
 
 ## 中断恢复指引
 
@@ -43,6 +43,18 @@
 - 心跳 ≥15 分钟且 STATUS=ACTIVE：前实例中断，从「下一步动作」第一个 ⬜ 续跑
 - 429/模型上限：刷新本文件心跳后退出，等每小时定时任务重试
 - 每卡开工前必须重读本文件 + 铁律 10 全读五分册
+
+## P5-B52 闭合存档（2026-09-16）
+
+- **主题**：seed 栈别名层纵深加固（环境治理）+M1 派单自由时段开放（既有模块纵深）两卡施工+卡0 侦察+卡3 批末落账，共 1 fix+1 feat+1 docs 三 commit 全 push；用户 2026-09-15 晚三项拍板（①DNS 串扰走方案②别名加 seed- 前缀 ②自由时段开放 ③开工 P5-B52）
+- **完成度**：纯纵深+环境治理批数字一律不变——**✅108/166=约65%、🔧1、⬜56 约34%；域⑧ 34✅ 2🔧 31⬜**（同 B44/B45/B50/B51 先例：均既有 ✅ 模块纵深挂载/环境治理，无新页面、无模块状态跃迁、无 🔧 成因消解）；本批新增完成模块 **0 个**，勾销 04-backlog **2 行**（L146 自由时段、L147 seed 别名串扰）
+- 卡1 seed 栈多栈隔离纵深 `0ea8983`（fix，纯环境治理不挂业务模块行）：docker-compose.seed.yml 十服务键全加 seed- 前缀（八后端+seed-gateway+seed-frontend，container_name/env URL/端口/独立网络/锚点不动），裸名 gateway 在 seed 网内 NXDOMAIN，与既有独立网络（seed-net vs 默认网零跨网附着，卡0 实证）成第二道纵深；前端镜像双栈共享，nginx.conf 4 处 proxy_pass 改 envsubst `${GATEWAY_UPSTREAM}` 模板+Dockerfile COPY templates，app/seed 分别注入 gateway/meiyun-seed-gateway（$host/$remote_addr 非 env 白名单原样保留）；连带修 seed marketing Exited(1) 31h：Flyway out-of-order:true 补 V11-14 乱序 pending（同 B38 修法）+新增 V32 `ALTER ... ADD COLUMN IF NOT EXISTS` 补 writeoff_fallback_store_code schema drift、对正式库幂等 no-op。三轨：10 容器 Up、双向 DNS 隔离、双栈 nginx 上游分流、8080/18080 全 200、V11-14+V32 齐、core 库重放安全。**如实标注**：施工时双网运行态已隔离零跨网附着，系别名层纵深加固（防误接第二道防线）非现网抢修
+- 卡2 M1 派单自由时段开放 `cc00948`（feat，5 files +46/-25，挂 02-modules M1 调度中心行纵深）：DispatchCmd record 增可选第四参 start（String HH:mm），Service 正则 `^([01]\d|2[0-3]):[0-5]\d$` 非法→422「派单时段格式应为 HH:mm（如 09:30）」、null/空白（空串/纯空格/不传三态）回落 apptTime、越固定班次窗 09:00-20:00→422「请选择班次内的空闲时段」、同时段/半重叠→409 全量复用；end 仍走 resolveDurationMin（绑 SKU duration_min 真源/未绑 60min）；前端 slotClick(resourceId, slot) 带格子时段、班次内全空闲格可点（原仅 apptTime 格）、data-slot 锚点、dispatch.ts start?:string、m1Dispatch 请求体透传、style 零改。三轨：curl+PG 五分支（9:60→422、08:00/19:30→422、10:00→200 id14、同 10:00+半重叠 10:30 双 409、相邻 11:00→200 id15、空串/空白/不传三态回落落 id16/17/18）+Playwright Chrome（22 格放开/非预约 14:00 派单/释放复位/治疗室设备 tab/FINANCE 守卫/0 console error）+双栈构建部署
+- **接力会话独立复验（07:09-07:13，只读三轨）**：seed 18443 E011 登录→GET resources SST01 2026-09-16→200 12 资源（DOCTOR/ROOM/DEVICE，workStart 09:00/workEnd 20:00）、GET jobs→200 2 个 PENDING（000007 16:00/000008 17:30 与 PG 对账一致）；PG dispatch_assignment id14-18 全 RELEASED 留档（id14=自由 10:00 异于 apptTime 16:00 铁证）；audit_log id234-243 DISPATCH/RELEASE payload 含 start/end、actor=E011、哈希链连续；cc00948 完整 diff 逐行复核
+- 卡3 批末落账 `6510627`（docs，7 files +98/-13）：DELIVERY-P5-B52-2026-09-16.md（9 章）+五分册（00 顶部新简报+B51 降级上一批/01 L18 口径流水+L36 域⑧行双尾接/02 M1 调度行尾接【卡1 环境治理明示不挂业务模块行】/03 表底 P5-B52 六列行/04 L146+L147 双勾销末列 ✅ B52），通读勾稽数字五处一致；保留登记不动：L141 URGENT/L144 班次表（拍板④诚实空态）、L133 impersonate 大项、L123 报告哈希验真 UI
+- **append-only 留档（不可删）**：seed 库 dispatch_assignment id14-18（全 RELEASED，id14=自由 10:00/apptTime 16:00、id15=相邻 11:00、id16/17/18=三态回落 17:30）、audit_log id234-243（DISPATCH/RELEASE 哈希链 actor=E011）；seed marketing Flyway V11-14+V32 迁移记录
+- **中断/接力留档**：前实例完成卡2 代码+双栈部署（05:57 dist/05:58 txn 镜像）后中断于三轨真验前（心跳停 05:12→06:11 停滞 ≥15min）；接力会话 06:11 法医鉴识（git show/diff+docker 现场无活跃构建进程，确认非并发）接管，完成卡2 curl+PG 五分支真验+feat 提交 push（cc00948 06:23）、Chrome 轨引用提交内 Playwright 实证、07:09-07:13 二次独立复验、卡3 批末落账全流程
+- **下一批候选方向（待用户拍板）**：①04-backlog 存量纵深（L141 URGENT 加急标记加列、L144 医生/房间班次表真实排班源——均需产品决策，拍板④曾保留诚实空态）；②L133 impersonate 平台安全大项（JWT act/realSub claim+meiyun-security 全服务回归+前端换 token，与 L46 合并）；③L123 报告哈希验真 UI（content_hash+规范化字节口径，DSAR/consent 远期）；④其他用户指定方向。哨兵 STATUS=DONE，下一自主周期空跑，直到用户拍板新批次才置 ACTIVE
 
 ## P5-B51 闭合存档（2026-09-16）
 
