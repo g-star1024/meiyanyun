@@ -4,9 +4,9 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-16 06:11 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-16 07:28 CST -->
 <!-- MACHINE:BATCH=P5-B52 -->
-<!-- MACHINE:CARD=卡2 M1 派单自由时段（DispatchCmd 可选 start）——代码+双栈部署已完成（前实例 05:58-06:08），接力会话 06:11 接管，待三轨五分支真验+commit+docs -->
+<!-- MACHINE:CARD=卡3 批末落账——DELIVERY 已成稿、五分册回写五笔+通读勾稽全闭合（01 L18+L36 双尾接/02 M1 行尾接/03 表底新行/04 L146+L147 双勾销/00 新简报），当前进入原子 docs 提交，随后哨兵置 DONE+铁律9 汇报 -->
 
 ## 当前状态（人读区）
 
@@ -32,11 +32,9 @@
 
 0. ✅ 卡0 哨兵激活+侦察（05:11）：六册开工前已读齐；实证双网运行态已隔离（10-_meiyun 15 容器 / meiyun-seed_seed-net 14 容器零跨网附着，别名前缀系别名层纵深加固非现网抢修）+seed marketing Exited(1)（Flyway V11-14 乱序 pending，缺 out-of-order:true）+frontend nginx 4 处裸别名 gateway；卡2 全链路五环节锚定（Controller 透传零改/Service L265 start 锚定+record L451/api 类型/store 请求体漏传 start/view 格子不带 slot）
 1. ✅ 卡1 seed 栈别名层纵深（**已闭合 `0ea8983` 05:45，已 push**；a 十服务键 seed- 前缀+两处 depends_on+b nginx envsubst 模板 4 处 proxy_pass+Dockerfile COPY templates+双栈 GATEWAY_UPSTREAM 注入+c marketing out-of-order:true+新增 V32 schema drift ALTER 幂等补列+d seed down/up+网络重接+双栈部署+e 三轨真验全绿（双向 DNS 隔离/双栈 nginx 上游/8080+18080 200/seed V11-14+V32）+f commit+push）——接力会话已复核提交内容与运行态，不重做
-2. 🔄 卡2 M1 派单自由时段（**接力接管点**）：代码五环节前实例已写完且已审阅、双栈已构建部署（txn 镜像 05:58/dist 05:57），**剩余**：
-   - a. 三轨五分支真验（curl 经网关）：①自由时段 start=14:00 派单成功 200 落库 start=14:00；②越班次 start=08:00/20:00→422 中文「超出班次」；③同资源同时段重叠→409；④不传/空 start→回落 apptTime 回归；⑤格式非法 start=9:60→422「HH:mm」；PG 轨查 dispatch_assignment 落库+审计 DISPATCH payload 含 start
-   - b. Chrome 轨：M1DispatchView 选单→点非预约时段空闲格派单成功、冲突格 toast 中文提示
-   - c. 五文件 feat commit（建议 `feat(dispatch): 派单支持班次内自由时段（DispatchCmd 可选 start，缺省回落 apptTime）`）+push
-   - d. 心跳随验随更
+2. ✅ 卡2 M1 派单自由时段（**已全闭合 `cc00948` 06:23，已 push**）：五文件 +46/-25（DispatchController javadoc 透传 / DispatchService HH:mm 正则+空回落 apptTime+班次 422+重叠 409 复用+DispatchCmd 增 start / dispatch.ts start? / m1Dispatch store 透传 / M1DispatchView slotClick 带 slot、班次内全空闲格可点、data-slot 锚点、style 零改）；三轨真验：curl+PG 五分支全绿（06:30）、Playwright Chrome 轨已在 cc00948 提交说明留证（22 格放开/非预约 14:00 派单/释放复位/治疗室设备 tab/FINANCE 守卫/0 console error）；接力会话 07:09-07:13 独立复验：seed 18443 E011 登录 token 6516 字符，GET resources SST01 2026-09-16→200 12 资源（DOCTOR/ROOM/DEVICE，workStart 09:00/workEnd 20:00），GET jobs→200 2 个 PENDING（000007 16:00/000008 17:30，与 PG appointment「已预约」对账一致），dispatch_assignment id14-18 全 RELEASED 留档（id14=自由 10:00 异于 apptTime16:00），audit_log id234-243 DISPATCH/RELEASE payload 含 start/end、actor=E011、哈希链连续；cc00948 完整 diff 逐行复核无误
+   - 历史执行细节（append-only）：a. curl+PG 06:30 闭合——⑤9:60→422「HH:mm」；②08:00 与 19:30(60min→20:30)→422「超出班次」；①000007 start=10:00→200 id=14；③000008 同 10:00→409、10:30 半重叠→409、相邻 11:00→200 id=15；④空串/空白/不传三态回落 17:30 落 id=16/17/18（已 release 留档）；core 栈医生保护补验未破坏
+   - b. Chrome 轨（cc00948 内含 Playwright 实证，见提交说明）；c. feat commit+push=`cc00948`；d. 心跳随验随更——均闭合
 3. ⬜ 卡3 批末：DELIVERY-P5-B52+五分册回写（00 顶部简报、02 M1 调度行尾接、03 表底新增 P5-B52 行、04 勾销 L146 自由时段+L147 seed 别名串扰、01 数字勾稽不变）+哨兵推进（队列全闭合置 DONE）+原子 docs 提交 push+铁律 9 汇报（✅108/166≈65%、🔧1、⬜56，纯纵深批新增 0 模块）
 
 ## 中断恢复指引
