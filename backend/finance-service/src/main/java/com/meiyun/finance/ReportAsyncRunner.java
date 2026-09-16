@@ -56,6 +56,10 @@ public class ReportAsyncRunner {
                 job.setRowCount(data.rows().size());
                 job.setFileSize(data.content().length);
                 job.setError(null);
+                // B56：指纹与冻结文件名在生成落库时一次性定型（哈希输入=含 BOM 最终字节本身）
+                job.setContentHash(ReportCsvBuilder.sha256Hex(data.content()));
+                job.setFileName(ReportCsvBuilder.downloadFileName(
+                        job.getTemplateName(), job.getPeriod(), job.getCreatedAt()));
                 jobRepo.save(job);
                 tplRepo.findById(job.getTemplateId()).ifPresent(t -> {
                     t.setLastRunAt(OffsetDateTime.now());
@@ -70,6 +74,8 @@ public class ReportAsyncRunner {
                 job.setContent(null);
                 job.setRowCount(null);
                 job.setFileSize(null);
+                job.setContentHash(null);
+                job.setFileName(null);
                 jobRepo.save(job);
             }
         } finally {

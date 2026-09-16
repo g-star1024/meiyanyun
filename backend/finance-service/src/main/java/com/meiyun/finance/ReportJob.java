@@ -64,4 +64,12 @@ public class ReportJob {
     /** CSV 真实内容（含 BOM）；历史种子行为 NULL。 */
     @Column(name = "content")
     private byte[] content;
+
+    /** SHA-256(content 原始字节，含 BOM) 64 位小写 hex（B56 验真指纹）；历史/失败行为 NULL。 */
+    @Column(name = "content_hash", length = 64)
+    private String contentHash;
+
+    /** 冻结下载文件名（锚生成时刻 createdAt，多次下载同名）；B56 前任务为 NULL 走下载回退拼名。 */
+    @Column(name = "file_name", length = 128)
+    private String fileName;
 }

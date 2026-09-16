@@ -75,6 +75,12 @@ public class ReportController {
         return reportService.retry(id);
     }
 
+    /** 哈希验真（B56）：重算当前 content 的 SHA-256 与生成时指纹比对（只读，吃类级 report:view，不新增权限码）。 */
+    @GetMapping("/jobs/{id}/verify")
+    public Map<String, Object> verify(@PathVariable("id") String id) {
+        return reportService.verify(id);
+    }
+
     /** 下载真实 CSV（report:export；历史种子行 content=NULL 走 404 提示路径）。 */
     @GetMapping("/jobs/{id}/download")
     @RequirePerm("report:export")

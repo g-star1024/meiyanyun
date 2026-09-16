@@ -6,9 +6,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.YearMonth;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -28,7 +28,11 @@ import java.util.Set;
  * 见 ReportAsyncRunner 类注释）。
  *
  * <p><b>download 不校验属主</b>：任务列表本为共享视图，内容已按生成人数据域收敛（如实标注）。
- * 审计四 action：GENERATE / RETRY / DOWNLOAD / SUBSCRIBE（bizType=REPORT，payload 手写受控 JSON）。
+ * 审计五 action：GENERATE / RETRY / DOWNLOAD / SUBSCRIBE / VERIFY（bizType=REPORT，payload 手写受控 JSON）。
+ *
+ * <p><b>B56 哈希验真</b>：CSV 字节口径本就确定（ReportCsvBuilder 固定 UTF-8 BOM+CRLF、R01/R02
+ * 无生成时刻列），冻结点收敛为「文件名锚 createdAt 落库 + content_hash（SHA-256 含 BOM 字节）落库」；
+ * verify 重算当前 content 与落库指纹常量时间比对，历史 content NULL 行诚实返回 HISTORICAL_NOT_RETAINED。
  */
 @Service
 public class ReportService {
@@ -36,8 +40,9 @@ public class ReportService {
     /** 首卡真实数据源仅 R01/R02。 */
     static final Set<String> SUPPORTED = Set.of("R01", "R02");
 
-    private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     private static final DateTimeFormatter VIEW_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
+    /** 验真时刻显式锚东八区（容器 TZ=UTC，VIEW_TS 直刷 OffsetDateTime 会落 UTC 墙钟）。 */
+    private static final ZoneId CN_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int PREVIEW_LIMIT = 50;
 
     private final ReportTemplateRepository tplRepo;
@@ -82,11 +87,12 @@ public class ReportService {
             m.put("period", s.getPeriod());
             m.put("status", s.getStatus());
             m.put("format", s.getFormat());
-            m.put("createdAt", s.getCreatedAt() == null ? null : VIEW_TS.format(s.getCreatedAt()));
+            m.put("createdAt", viewTs(s.getCreatedAt()));
             m.put("createdBy", s.getCreatedBy());
             if (s.getRowCount() != null) m.put("rowCount", s.getRowCount());
             if (s.getFileSize() != null) m.put("fileSize", fileSizeStr(s.getFileSize()));
             if (s.getError() != null) m.put("error", s.getError());
+            if (s.getContentHash() != null) m.put("contentHash", s.getContentHash());
             out.add(m);
         }
         return out;
@@ -192,9 +198,56 @@ public class ReportService {
         }
         audit.record("REPORT", job.getId(), operatorName(), "DOWNLOAD",
                 "{\"templateId\":\"" + job.getTemplateId() + "\",\"period\":\"" + job.getPeriod() + "\"}");
-        String filename = job.getTemplateName() + "-" + job.getPeriod() + "-"
-                + LocalDateTime.now().format(TS_FMT) + ".csv";
+        // B56：文件名读生成时冻结列；B56 前已生成任务（file_name NULL）回退锚 createdAt 同名规则
+        String filename = job.getFileName() != null ? job.getFileName()
+                : ReportCsvBuilder.downloadFileName(
+                        job.getTemplateName(), job.getPeriod(), job.getCreatedAt());
         return new CsvDownload(filename, job.getContent());
+    }
+
+    /**
+     * 哈希验真（B56，report:view 只读）：对当前落库 content 重算 SHA-256，与生成时指纹常量时间比对。
+     * 任务不存在 404；生成中/失败 422；content 或指纹缺失（历史种子行）诚实返回空态不当异常。
+     */
+    public Map<String, Object> verify(String jobId) {
+        ReportJob job = jobRepo.findById(jobId)
+                .orElseThrow(() -> err404("任务不存在：" + jobId));
+        if ("GENERATING".equals(job.getStatus())) {
+            throw err422("报表生成中，请稍后");
+        }
+        if ("FAILED".equals(job.getStatus())) {
+            throw err422("报表生成失败，请重试");
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("jobId", job.getId());
+        m.put("templateName", job.getTemplateName());
+        m.put("period", job.getPeriod());
+        m.put("fileName", job.getFileName());
+        m.put("expectedHash", job.getContentHash());
+        m.put("generatedAt", viewTs(job.getCreatedAt()));
+        m.put("verifiedAt", viewTs(OffsetDateTime.now()));
+        if (job.getContent() == null || job.getContent().length == 0) {
+            m.put("ok", false);
+            m.put("reason", "HISTORICAL_NOT_RETAINED");
+            m.put("conclusion", "历史文件未留存，无法验真，请重新生成");
+        } else {
+            String actual = ReportCsvBuilder.sha256Hex(job.getContent());
+            m.put("actualHash", actual);
+            if (job.getContentHash() == null) {
+                m.put("ok", false);
+                m.put("reason", "HASH_NOT_RECORDED");
+                m.put("conclusion", "该任务生成于验真功能上线前，未留存指纹，请重新生成后再验");
+            } else {
+                boolean ok = ReportCsvBuilder.hashEquals(job.getContentHash(), actual);
+                m.put("ok", ok);
+                m.put("reason", ok ? "MATCH" : "MISMATCH");
+                m.put("conclusion", ok ? "哈希一致，文件内容与生成时完全一致" : "哈希不一致，文件内容已被篡改");
+            }
+        }
+        audit.record("REPORT", job.getId(), operatorName(), "VERIFY",
+                "{\"ok\":" + Boolean.TRUE.equals(m.get("ok"))
+                        + ",\"reason\":\"" + m.get("reason") + "\"}");
+        return m;
     }
 
     // ==================== 内部工具 ====================
@@ -210,7 +263,7 @@ public class ReportService {
         m.put("dimensions", split(t.getDimensions()));
         m.put("metrics", split(t.getMetrics()));
         if (t.getLastRunAt() != null) {
-            m.put("lastRunAt", VIEW_TS.format(t.getLastRunAt()));
+            m.put("lastRunAt", viewTs(t.getLastRunAt()));
         }
         m.put("subscribed", Boolean.TRUE.equals(t.getSubscribed()));
         return m;
@@ -226,11 +279,12 @@ public class ReportService {
         m.put("period", j.getPeriod());
         m.put("status", j.getStatus());
         m.put("format", j.getFormat());
-        m.put("createdAt", j.getCreatedAt() == null ? null : VIEW_TS.format(j.getCreatedAt()));
+        m.put("createdAt", viewTs(j.getCreatedAt()));
         m.put("createdBy", j.getCreatedBy());
         if (j.getRowCount() != null) m.put("rowCount", j.getRowCount());
         if (j.getFileSize() != null) m.put("fileSize", fileSizeStr(j.getFileSize()));
         if (j.getError() != null) m.put("error", j.getError());
+        if (j.getContentHash() != null) m.put("contentHash", j.getContentHash());
         return m;
     }
 
@@ -274,6 +328,11 @@ public class ReportService {
             }
         }
         return String.format(Locale.ROOT, "J%02d", max + 1);
+    }
+
+    /** OffsetDateTime → 'yyyy-MM-dd HH:mm' 展示串（显式锚东八区，不随容器 TZ 漂移）。 */
+    private static String viewTs(OffsetDateTime t) {
+        return t == null ? null : t.atZoneSameInstant(CN_ZONE).format(VIEW_TS);
     }
 
     /** 字节 → '248 KB' 展示串（照 mock 形态；<1KB 显 B）。 */

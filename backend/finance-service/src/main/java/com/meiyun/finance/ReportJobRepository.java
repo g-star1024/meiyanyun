@@ -29,5 +29,6 @@ public interface ReportJobRepository extends JpaRepository<ReportJob, String> {
         Integer getRowCount();
         Integer getFileSize();
         String getError();
+        String getContentHash();
     }
 }

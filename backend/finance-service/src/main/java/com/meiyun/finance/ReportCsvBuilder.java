@@ -5,7 +5,12 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -180,5 +185,46 @@ public class ReportCsvBuilder {
     /** Long 分 → 元字符串（两位小数）。 */
     private String fen(long v) {
         return String.format(Locale.ROOT, "%.2f", v / 100.0);
+    }
+
+    // ==================== B56 验真工具（字节冻结口径） ====================
+
+    /** 冻结文件名时刻统一锚东八区（生成即定，多次下载同名；不依赖容器默认时区）。 */
+    private static final ZoneId CN_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter FILE_TS = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+
+    /** SHA-256 原始字节（含 BOM）→ 64 位小写 hex；finance 不依赖 meiyun-common，用 JDK 原生实现。 */
+    static String sha256Hex(byte[] content) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(content);
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+                sb.append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 不可用", e);
+        }
+    }
+
+    /** 常量时间比较两段 hex（验真防时序侧信道，仿 meiyun-security AuthInterceptor token 比对）。 */
+    static boolean hashEquals(String expectedHex, String actualHex) {
+        if (expectedHex == null || actualHex == null
+                || expectedHex.length() != actualHex.length()) {
+            return false;
+        }
+        return MessageDigest.isEqual(
+                expectedHex.getBytes(StandardCharsets.UTF_8),
+                actualHex.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 冻结下载文件名：模板名-period-生成时刻（+08:00）.csv。
+     * 锚 job.createdAt 而非下载时刻，同任务重复下载同名同字节（backlog L123 字节冻结要求）。
+     */
+    static String downloadFileName(String templateName, String period, OffsetDateTime createdAt) {
+        String ts = createdAt.atZoneSameInstant(CN_ZONE).format(FILE_TS);
+        return templateName + "-" + period + "-" + ts + ".csv";
     }
 }
