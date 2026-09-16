@@ -4,10 +4,10 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-16 22:15 CST -->
+<!-- MACHINE:HEARTBEAT=2026-09-16 23:01 CST -->
 <!-- MACHINE:BATCH=P5-B56 在工——报告哈希验真 UI（04-backlog L123 第①类，用户 2026-09-15 晚同条指令拍板「P5-B55 与 P5-B56 开工吧」）；范围仅第①类中项：规范化字节冻结→report_job content_hash SHA-256→report:verify 端点+前端验真卡；第②类 DSAR/consent/巡检合规远期不并入 -->
-<!-- MACHINE:CARD=P5-B56 卡0 进行中：报表哈希验真链路只读侦察（finance report 域 ReportCsvBuilder/ReportAsyncRunner/ReportJob content BYTEA/ReportController 七端点 + 前端 report.ts/m1Report/M1ReportView + 对照 ai_privacy_export SHA-256 先例 a86a643/V29），锁定 BOM/CRLF/时间戳列/下载文件名规范化字节口径 -->
-<!-- MACHINE:PREV=P5-B55 卡0-5 全闭合（三代码 commit 8f78169/557a20a/1331a21 + docs 原子提交 2e88ee7，均已 push origin/main，HEAD=2e88ee7；数字不变 ✅109/166、🔧1、⬜55，勾 L133/L46） -->
+<!-- MACHINE:CARD=P5-B56 卡5 进行中（23:01 接力会话接管）：卡0-4 已闭合——卡1-3 后端 3b34214 已 push（V33 双库迁移 success、双栈 finance 容器 22:30 换载 healthy、ReportVerifyHashTest 4 测试）、卡4 前端 68d01cd 已 push（双栈 nginx 换载 M1ReportView-CQia10-v.js）；seed 已有测试 job J92（hash 64/冻结名/100B）+audit_log VERIFY 13 条（前实例卡5 中途）。接力会话从卡5 续跑：补齐 curl 四角+自节/MISMATCH 负例/HISTORICAL 空态+PG 对账+Chrome 两分支，数据还原后进卡6 批末落账 -->
+<!-- MACHINE:PREV=P5-B56 卡1-3 `3b34214`（22:39，8 files +219/-8：V33 SQL+6 改 Java+ReportVerifyHashTest）、卡4 `68d01cd`（22:44，3 files +121/-6：api/report.ts+m1Report.ts+M1ReportView.vue），均 push origin/main，23:01 核 ls-remote 一致、工作区干净；更早 P5-B55 三代码 8f78169/557a20a/1331a21+docs 2e88ee7；数字不变 ✅109/166、🔧1、⬜55 -->
 
 ## 当前状态（人读区）
 
