@@ -243,7 +243,6 @@ function utilTone(u: number) {
 .job { padding: var(--s-sm) var(--s-md); border-radius: var(--r-md); border: 1px solid var(--c-border-light); cursor: pointer; transition: all .12s; }
 .job:hover { border-color: var(--c-brand); background: var(--c-surface, #f7f8fa); }
 .job--active { border-color: var(--c-brand); background: var(--c-brand-soft); box-shadow: 0 0 0 2px var(--c-brand-soft); }
-.job--urgent { border-left: 3px solid var(--c-danger-fg); }
 .job__top { display: flex; align-items: center; justify-content: space-between; }
 .job__no { font-family: var(--t-number, monospace); font-size: 11px; color: var(--c-text-3); }
 .job__name { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); margin: 4px 0; }
