@@ -60,28 +60,33 @@ function submitRecheck() {
 const showImp = ref(false)
 const impForm = reactive({ target: '', reason: '' })
 const impErr = ref('')
+const impLoading = ref(false)
 function openImp() { impForm.target = ''; impForm.reason = ''; impErr.value = ''; showImp.value = true }
-function startImp() {
-  if (!impForm.target.trim()) { impErr.value = '请输入被代操作人'; return }
-  if (!impForm.reason.trim()) { impErr.value = '代操作必须填写理由（将记入审计）'; return }
-  const ok = cp.startImpersonate(impForm.target.trim(), impForm.reason, auth.user.name)
-  if (!ok) { impErr.value = '已有进行中的代操作会话'; return }
-  showImp.value = false
+async function startImp() {
+  if (impLoading.value) return
+  const staffId = impForm.target.trim()
+  const reason = impForm.reason.trim()
+  if (!staffId) { impErr.value = '请输入被代操作人工号'; return }
+  if (!reason) { impErr.value = '代操作必须填写理由（将记入审计）'; return }
+  impLoading.value = true
+  impErr.value = ''
+  try {
+    await auth.startImpersonate(staffId, reason)
+    showImp.value = false
+    void cp.refreshAudits()
+  } catch (e: any) {
+    const data = e?.response?.data
+    impErr.value = data?.message || data?.error || '代操作启动失败，请检查工号或稍后重试'
+  } finally {
+    impLoading.value = false
+  }
 }
-function endImp() { cp.endImpersonate(auth.user.name) }
 
 const scoreColor = (rate: number) => rate >= 90 ? 'var(--c-success-fg)' : rate >= 70 ? 'var(--c-warning-fg)' : 'var(--c-danger-fg)'
 </script>
 
 <template>
   <div class="cx-page">
-    <!-- impersonate 会话条 -->
-    <div v-if="cp.activeSession" class="imp-bar">
-      <CIcon name="alert" :size="16" />
-      <span class="imp-bar__txt">代操作中：您正以「<b>{{ cp.activeSession.target }}</b>」身份操作，全程审计留痕 · 理由：{{ cp.activeSession.reason }}</span>
-      <CButton size="sm" variant="primary" @click="endImp">结束代操作</CButton>
-    </div>
-
     <div class="cx-kpis">
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="shield" :size="20" /></div><div class="kpi__body"><div class="kpi__label">整体合规率</div><div class="kpi__value" :style="{ color: scoreColor(cp.stats.passRate) }">{{ cp.stats.passRate }}%</div></div></div>
       <div class="kpi kpi--success"><div class="kpi__icon"><CIcon name="check" :size="20" /></div><div class="kpi__body"><div class="kpi__label">合规</div><div class="kpi__value">{{ cp.stats.pass }}</div></div></div>
@@ -183,11 +188,11 @@ const scoreColor = (rate: number) => rate >= 90 ? 'var(--c-success-fg)' : rate >
         <div class="modal__head"><h3><CIcon name="alert" :size="16" class="danger-ic" /> 超管代操作（受控）</h3><button class="modal__close" @click="showImp = false"><CIcon name="close" :size="18" /></button></div>
         <div class="modal__body">
           <div class="imp-warn">代操作期间您将以指定身份执行操作，所有行为将记录到不可删除的审计日志。请仅在排障/授权场景使用。</div>
-          <label class="field field--full"><span class="field__label">被代操作人 <i>*</i></span><input v-model="impForm.target" class="inp" placeholder="如 苏晴（静安店长）" /></label>
+          <label class="field field--full"><span class="field__label">被代操作人工号 <i>*</i></span><input v-model="impForm.target" class="inp" placeholder="如 E005（须为在职员工工号）" /></label>
           <label class="field field--full" style="margin-top:12px"><span class="field__label">代操作理由（必填，记入审计） <i>*</i></span><CTextarea v-model="impForm.reason" :rows="3" placeholder="如：处理工单#T20260824 退款审批异常" /></label>
           <div v-if="impErr" class="form-err">{{ impErr }}</div>
         </div>
-        <div class="modal__foot"><CButton variant="secondary" @click="showImp = false">取消</CButton><CButton variant="primary" @click="startImp">开始代操作</CButton></div>
+        <div class="modal__foot"><CButton variant="secondary" :disabled="impLoading" @click="showImp = false">取消</CButton><CButton variant="primary" :disabled="impLoading" @click="startImp">{{ impLoading ? '签发中…' : '开始代操作' }}</CButton></div>
       </div>
     </div>
   </div>
@@ -195,9 +200,6 @@ const scoreColor = (rate: number) => rate >= 90 ? 'var(--c-success-fg)' : rate >
 
 <style scoped>
 .cx-page { display: flex; flex-direction: column; gap: var(--s-md); }
-.imp-bar { display: flex; align-items: center; gap: var(--s-sm); padding: var(--s-sm) var(--s-lg); background: var(--c-danger-bg, #FFF0F0); border: 1px solid var(--c-danger-fg); border-radius: var(--r-lg); color: var(--c-danger-fg); font-size: var(--t-sm); }
-.imp-bar__txt { flex: 1; }
-.imp-bar b { color: var(--c-danger-fg); }
 
 .cx-kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-md); }
 .kpi { display: flex; align-items: center; gap: var(--s-md); padding: var(--s-md); border-radius: var(--r-xl); background: var(--c-surface); border: 1px solid var(--c-border-light); }

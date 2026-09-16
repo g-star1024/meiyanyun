@@ -1,8 +1,18 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { DataScope, Role } from '@/types/domain'
-import { login as apiLogin, devLogin as apiDevLogin, getPermissions as apiGetPermissions, type LoginResult, type PermissionMatrix } from '@/api/auth'
-import { setToken, getToken, clearToken } from '@/api/client'
+import {
+  login as apiLogin,
+  devLogin as apiDevLogin,
+  getPermissions as apiGetPermissions,
+  impersonate as apiImpersonate,
+  exitImpersonate as apiExitImpersonate,
+  type LoginResult, type PermissionMatrix,
+} from '@/api/auth'
+import {
+  setToken, getToken, clearToken,
+  saveImpSnapshot, clearImpSnapshot, getImpSnapshot,
+} from '@/api/client'
 
 // 登录会话持久化键（localStorage）
 const SESSION_KEY = 'meiyun_session'
@@ -289,6 +299,33 @@ interface SessionInfo {
   scope: DataScope
   permissions: string[]
   devLogin: boolean
+  // B55 代操作态：impersonating=true 时当前会话是短 token 目标人身份；
+  // realSub=真实超管工号、act=被切换人工号（与 JWT 双 claim 对齐）；
+  // realName=真实超管姓名、impReason=本次代操作事由（仅前端展示用）。
+  impersonating?: boolean
+  realSub?: string | null
+  act?: string | null
+  realName?: string | null
+  impReason?: string | null
+}
+
+function toInfo(res: LoginResult, extra?: { realName?: string | null; impReason?: string | null }): SessionInfo {
+  const roles = (res.roles || []).filter((r): r is Role => r in ROLE_PERMISSIONS)
+  return {
+    token: res.token,
+    staffId: res.staffId,
+    staffName: res.staffName,
+    roles: roles.length ? roles : [res.roleCode as Role],
+    storeCode: res.storeCode,
+    scope: (res.scope as DataScope) || 'STORE',
+    permissions: res.permissions || [],
+    devLogin: res.devLogin,
+    impersonating: !!res.impersonating,
+    realSub: res.realSub ?? null,
+    act: res.act ?? null,
+    realName: extra?.realName ?? null,
+    impReason: extra?.impReason ?? null,
+  }
 }
 
 function loadSession(): SessionInfo | null {
@@ -331,6 +368,11 @@ export const useAuthStore = defineStore('auth', () => {
   // 已登录：以后端 JWT 下发的 permissions 为真源（超管为 ['*']）；
   // 未登录（?as= 离线演示）：优先服务端 /org/auth/permissions 矩阵，拉取失败回退硬编码。
   const isSuper = computed(() => currentRoles.value.includes('SUPER_ADMIN'))
+  // B55：当前会话是否为代操作短 token（此时 roles/permissions/scope 均为目标人身份，
+  // isSuper 天然为 false，页面权限/数据域自然收窄，无需特判）
+  const impersonating = computed(() => !!session.value?.impersonating)
+  const realName = computed(() => session.value?.realName || '')
+  const impReason = computed(() => session.value?.impReason || '')
   const permissions = computed<Set<string>>(() => {
     const set = new Set<string>()
     if (session.value) {
@@ -384,17 +426,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   /** 用后端登录结果建立会话并持久化 */
   function applySession(res: LoginResult) {
-    const roles = (res.roles || []).filter((r): r is Role => r in ROLE_PERMISSIONS)
-    const info: SessionInfo = {
-      token: res.token,
-      staffId: res.staffId,
-      staffName: res.staffName,
-      roles: roles.length ? roles : [res.roleCode as Role],
-      storeCode: res.storeCode,
-      scope: (res.scope as DataScope) || 'STORE',
-      permissions: res.permissions || [],
-      devLogin: res.devLogin,
-    }
+    const info = toInfo(res)
     session.value = info
     currentRoles.value = [...info.roles]
     storeId.value = info.storeCode || storeId.value
@@ -402,6 +434,66 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem(SESSION_KEY, JSON.stringify(info))
     // B50 卡5（L146）：登录建会话后补拉服务端权限矩阵（启动时无 token 已门控不发）
     void loadMatrix()
+  }
+
+  /**
+   * B55 开始代操作：先把真实超管会话快照落 sessionStorage（刷新/401 还原用），
+   * 再调后端换发 30 分钟短 token。失败（403/404/400）不写快照、保留原会话并如实抛出。
+   */
+  async function startImpersonate(targetStaffId: string, reason: string) {
+    if (!session.value) throw new Error('登录已失效，请重新登录')
+    const snapshot = JSON.stringify(session.value)
+    const realName = session.value.staffName
+    const res = await apiImpersonate({ targetStaffId, reason })
+    saveImpSnapshot(snapshot)
+    const info = toInfo(res, { realName, impReason: reason.trim() })
+    session.value = info
+    currentRoles.value = [...info.roles]
+    storeId.value = info.storeCode || storeId.value
+    setToken(info.token)
+    localStorage.setItem(SESSION_KEY, JSON.stringify(info))
+    void loadMatrix()
+  }
+
+  /**
+   * B55 退出代操作：调后端权威还原通道重签常规 TTL token，清快照。
+   * 短 token 已超时（401）时 client 拦截器已先行本地还原，这里静默成功即可，
+   * 避免拦截器 toast 之后再抛一次错误；其余错误如实抛出。
+   */
+  async function exitImpersonate() {
+    try {
+      const res = await apiExitImpersonate()
+      clearImpSnapshot()
+      applySession(res)
+    } catch (e: any) {
+      if (e?.response?.status === 401 && getImpSnapshot() === null) {
+        // 拦截器已完成本地还原（快照已被消费），不再视为失败
+        return
+      }
+      throw e
+    }
+  }
+
+  /**
+   * B55 client 拦截器在短 token 401 时已把快照写回 localStorage/token，
+   * 这里同步 store 内存态（供无刷新场景横幅即时消失）。
+   */
+  function applyRestoredSnapshot(snapshotJson: string) {
+    try {
+      const s = JSON.parse(snapshotJson) as SessionInfo
+      if (!s?.token) return
+      s.impersonating = false
+      s.realSub = null
+      s.act = null
+      s.realName = null
+      s.impReason = null
+      session.value = s
+      currentRoles.value = [...s.roles]
+      storeId.value = s.storeCode || storeId.value
+      void loadMatrix()
+    } catch {
+      // 快照损坏则忽略，拦截器已写回 localStorage；下次刷新走常规恢复
+    }
   }
 
   /** 工号 + 密码登录 */
@@ -444,16 +536,44 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  /** 退出登录：清会话与 token，回到登录页 */
+  /** 退出登录：清会话、token 与代操作快照，回到登录页 */
   function logout() {
     session.value = null
     currentRoles.value = []
     clearToken()
     localStorage.removeItem(SESSION_KEY)
+    clearImpSnapshot()
   }
 
-  /** 启动时恢复会话：localStorage 有会话则回填 token（供 axios 拦截器用） */
+  /**
+   * 启动时恢复会话：localStorage 有会话则回填 token（供 axios 拦截器用）。
+   * B55 刷新语义：只要 sessionStorage 里还存在代操作快照，就认为本次是「代操作态下刷新」，
+   * 放弃短 token 会话、还原真实超管（快照写回 localStorage）；快照随标签页关闭自然消失。
+   */
   function restoreSession() {
+    const snapshot = getImpSnapshot()
+    if (snapshot) {
+      try {
+        const s = JSON.parse(snapshot) as SessionInfo
+        if (s?.token) {
+          s.impersonating = false
+          s.realSub = null
+          s.act = null
+          s.realName = null
+          s.impReason = null
+          session.value = s
+          currentRoles.value = [...s.roles]
+          storeId.value = s.storeCode || storeId.value
+          setToken(s.token)
+          localStorage.setItem(SESSION_KEY, JSON.stringify(s))
+          clearImpSnapshot()
+          return true
+        }
+      } catch {
+        // 快照损坏：落到常规恢复
+      }
+      clearImpSnapshot()
+    }
     const s = loadSession()
     if (s) {
       session.value = s
@@ -498,8 +618,9 @@ export const useAuthStore = defineStore('auth', () => {
 
   return {
     session, currentRoles, primaryRole, storeId, scope, permissions, isSuper, user,
-    isAuthenticated,
+    isAuthenticated, impersonating, realName, impReason,
     can, login, loginByRole, devLoginByStaff, loginAs, logout, restoreSession, loadMatrix,
+    startImpersonate, exitImpersonate, applyRestoredSnapshot,
     toggleRole, registerCustomRole,
   }
 })

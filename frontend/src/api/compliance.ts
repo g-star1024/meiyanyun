@@ -1,10 +1,10 @@
 // ============================================================
-// 合规中心 API（对接 audit-service 合规域 · B49 卡9）
+// 合规中心 API（对接 audit-service 合规域 · B49 卡9；B55 impersonate 改走 org 端点）
 // 读：GET /api/audit/compliance/checks（category/status 可选过滤，按 id 升序）
 // 写：POST /api/audit/compliance/checks/{id}/recheck（{pass 必填, remark?}，
 //   同事务写 COMPLIANCE/RECHECK 审计）
-// 审计：POST /api/audit（impersonate 开始/结束直调 append 留痕，bizType=COMPLIANCE，
-//   ip/risk/target 落 payload jsonb 四键；ip 浏览器取不到真实值，如实写 "web"）
+// 超管代操作 IMPERSONATE_START/END 由 org-service /auth/impersonate(/exit)
+//   端点权威留痕，前端不再直调 POST /api/audit。
 // ============================================================
 import client from './client'
 
@@ -37,15 +37,3 @@ export const listChecks = (f: ComplianceCheckFilter = {}) =>
 /** 复检：pass=true → PASS，false → FAIL；remark 非空覆盖。 */
 export const recheckCheck = (id: number, pass: boolean, remark?: string) =>
   client.post<ComplianceCheckDTO>(`/audit/compliance/checks/${id}/recheck`, { pass, remark })
-
-/** 合规审计追加（impersonate 留痕专用）：payload 四键 target/ip/detail/risk。 */
-export const appendComplianceAudit = (
-  actor: string, action: string, target: string, detail: string, risk: string,
-) =>
-  client.post('/audit', {
-    bizType: 'COMPLIANCE',
-    txnNo: null,
-    actor,
-    action,
-    payload: JSON.stringify({ target, ip: 'web', detail, risk }),
-  })

@@ -13,6 +13,7 @@ import CButton from './CButton.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationStore } from '@/stores/notification'
 import { useStoreContext } from '@/stores/storeContext'
+import { useToast } from '@/composables/useToast'
 import type { Role } from '@/types/domain'
 
 interface DomainItem { key: string; label: string; icon: string }
@@ -61,10 +62,13 @@ const router = useRouter()
 const auth = useAuthStore()
 const notification = useNotificationStore()
 const storeCtx = useStoreContext()
+const toast = useToast()
 // 门店上下文为受控值：显示用 props.store（来自全局 storeContext），选择只 emit 给父更新
 const drawerOpen = ref(false)
 const userMenuOpen = ref(false)
 const roleSwitching = ref<Role | ''>('')
+// B55 代操作退出进行中（短 token 可能临近过期，按钮防重复点）
+const impExiting = ref(false)
 
 onMounted(() => {
   // B50 卡5（L146）：桌面壳仅在已认证后挂载，是登录后首次补拉的统一入口；
@@ -120,6 +124,12 @@ const ALL_ROLES: { key: Role; label: string }[] = [
 ]
 
 async function switchRole(r: Role) {
+  // B55 代操作态禁止顶栏角色切换：短 token 的身份由授权矩阵收窄，
+  // 切换角色会绕过「仅真实超管可发起」门控，必须先一键退出代操作。
+  if (auth.impersonating) {
+    toast.warning('代操作进行中，请先退出代操作后再切换角色')
+    return
+  }
   roleSwitching.value = r
   // 优先走后端 dev-login 换发该角色真实 token；仅后端网络不可达时回退离线演示视角。
   // 业务拒绝（如生产环境关闭免密登录）弹中文提示，不落无 token 假会话。
@@ -134,6 +144,22 @@ async function switchRole(r: Role) {
   userMenuOpen.value = false
   // 切角色后回到工作台频道首页，避免停在无权限页
   router.push('/workbench')
+}
+
+// B55 一键退出代操作：调后端权威还原（重签常规 TTL），短 token 过期则 store 内静默走快照还原
+async function exitImpersonation() {
+  if (impExiting.value) return
+  impExiting.value = true
+  try {
+    await auth.exitImpersonate()
+    toast.success('已退出代操作，还原为您的真实账户')
+    userMenuOpen.value = false
+  } catch (e: any) {
+    const data = e?.response?.data
+    toast.error(data?.message || data?.error || '退出代操作失败，请稍后重试')
+  } finally {
+    impExiting.value = false
+  }
 }
 
 function logout() {
@@ -276,6 +302,24 @@ function logout() {
           </div>
         </div>
       </header>
+
+      <!-- B55 代操作全局强制横幅：全页常驻、不可关闭，一键退出还原真实账户 -->
+      <Transition name="imp-slide">
+        <div v-if="auth.impersonating" class="imp-banner">
+          <div class="imp-banner__icon"><CIcon name="alert" :size="16" /></div>
+          <div class="imp-banner__txt">
+            <span class="imp-banner__title">代操作进行中</span>
+            <span class="imp-banner__detail">
+              真实管理员「{{ auth.realName || auth.session?.realSub }}」正以
+              <b>{{ auth.user.name }}（{{ auth.session?.staffId }}）</b>身份操作，
+              权限与数据范围已按该身份收窄，全程强制审计留痕<template v-if="auth.impReason">；事由：{{ auth.impReason }}</template>
+            </span>
+          </div>
+          <CButton size="sm" variant="primary" :disabled="impExiting" @click="exitImpersonation">
+            <CIcon name="logout" :size="14" /> {{ impExiting ? '退出中…' : '一键退出代操作' }}
+          </CButton>
+        </div>
+      </Transition>
 
       <main class="shell__content">
         <slot />
@@ -594,6 +638,50 @@ function logout() {
 .user-pop__logout:hover {
   background: rgba(229, 72, 77, 0.08);
 }
+
+/* B55 代操作全局强制横幅（危险红，全页常驻） */
+.imp-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--s-md);
+  padding: var(--s-sm) var(--s-lg);
+  background: var(--c-danger-bg, #FFF0F0);
+  border-bottom: 1px solid var(--c-danger-fg);
+  color: var(--c-danger-fg);
+  flex: none;
+}
+.imp-banner__icon {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--r-md);
+  background: var(--c-danger-fg);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.imp-banner__txt {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.imp-banner__title {
+  font-size: var(--t-sm);
+  font-weight: 700;
+  line-height: 1.3;
+}
+.imp-banner__detail {
+  font-size: var(--t-xs);
+  line-height: 1.4;
+  color: var(--c-danger-fg);
+  opacity: .92;
+}
+.imp-banner__detail b { font-weight: 700; }
+.imp-slide-enter-active, .imp-slide-leave-active { transition: all .18s ease; }
+.imp-slide-enter-from, .imp-slide-leave-to { transform: translateY(-100%); opacity: 0; }
 
 /* 内容区 */
 .shell__content {

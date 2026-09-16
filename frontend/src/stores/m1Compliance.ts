@@ -1,15 +1,15 @@
-// 合规中心（M1 集团屏 /m1-compliance · B49 卡9 接真）
+// 合规中心（M1 集团屏 /m1-compliance · B49 卡9 接真，B55 impersonate 真实化）
 // 数据源：audit-service 合规域——检查项 GET /api/audit/compliance/checks
 //   （compliance_check 表，种子栈 12 行六类×四态）；审计时间线
 //   GET /api/audit/page?bizType=COMPLIANCE（audit_log 链式哈希，种子 6 条）。
-// 写路径：复检 POST /checks/{id}/recheck（pass → PASS/FAIL，后端同事务写 RECHECK 审计）；
-//   impersonate 开始/结束直调 POST /api/audit append（仅留痕真实化，
-//   真实身份切换登记 backlog；ip 浏览器取不到，如实 "web"）。
-// 写成功后局部替换检查项 + 重拉审计时间线。
+// 写路径：复检 POST /checks/{id}/recheck（pass → PASS/FAIL，后端同事务写 RECHECK 审计）。
+// 超管代操作（B55）：身份换发/IMPERSONATE_START/END 审计全部由 org-service
+//   /auth/impersonate(/exit) 端点权威完成（JWT realSub/act 双 claim + 审计边界收敛），
+//   前端只经 auth store 调端点，不再本地伪造会话或直调 /audit 留痕。
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
-  listChecks, recheckCheck, appendComplianceAudit, type ComplianceCheckDTO,
+  listChecks, recheckCheck, type ComplianceCheckDTO,
 } from '@/api/compliance'
 import { pageAuditLogs, type AuditLogRow } from '@/api/audit'
 import { useToast } from '@/composables/useToast'
@@ -103,9 +103,6 @@ export const useM1ComplianceStore = defineStore('m1Compliance', () => {
   const seeded = ref(false)
   const loading = ref(false)
 
-  // 当前 impersonate 会话（前端内存单会话，真实身份切换属 backlog）
-  const activeSession = ref<{ target: string; startedAt: string; reason: string } | null>(null)
-
   const stats = computed(() => {
     const total = items.value.length
     return {
@@ -169,29 +166,11 @@ export const useM1ComplianceStore = defineStore('m1Compliance', () => {
     }
   }
 
-  // 超管代操作：必须填理由，全程留痕（审计 append 异步写，失败不阻断会话但 toast 提示）
-  function startImpersonate(target: string, reason: string, actor: string): boolean {
-    if (activeSession.value) return false
-    if (!reason.trim()) return false
-    activeSession.value = { target, startedAt: new Date().toISOString(), reason: reason.trim() }
-    appendComplianceAudit(actor, 'IMPERSONATE_START', target,
-      `以「${target}」身份开始代操作，理由：${reason.trim()}`, 'HIGH')
-      .then(() => refreshAudits())
-      .catch((e) => toast.error(errMsg(e, '代操作审计写入失败')))
-    return true
-  }
-  function endImpersonate(actor: string) {
-    if (!activeSession.value) return
-    const dur = Math.round((Date.now() - new Date(activeSession.value.startedAt).getTime()) / 60000)
-    const target = activeSession.value.target
-    activeSession.value = null
-    appendComplianceAudit(actor, 'IMPERSONATE_END', target, `结束代操作，会话时长 ${dur} 分钟`, 'MEDIUM')
-      .then(() => refreshAudits())
-      .catch((e) => toast.error(errMsg(e, '代操作审计写入失败')))
-  }
+  // 超管代操作（B55）已下沉到 auth store + org-service 端点：
+  // 开始/结束均由后端换发 token 并权威留痕 IMPERSONATE_START/END，本 store 不再持有会话。
 
   return {
-    items, auditLogs, activeSession, STATUS_LABEL, CATEGORY_LABEL, AUDIT_ACTION_LABEL,
-    stats, itemsByCategory, categoryScore, recheck, startImpersonate, endImpersonate, seed,
+    items, auditLogs, STATUS_LABEL, CATEGORY_LABEL, AUDIT_ACTION_LABEL,
+    stats, itemsByCategory, categoryScore, recheck, refreshAudits, seed,
   }
 })
