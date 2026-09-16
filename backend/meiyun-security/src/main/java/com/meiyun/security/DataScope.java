@@ -177,12 +177,43 @@ public final class DataScope {
     }
 
     /**
-     * 当前操作人工号：一律取 JWT 登录人（请求体 actor/operator/consultant 等字段不可信，忽略）；
-     * 无登录上下文（服务间匿名调用）回落 "system"。审计留痕/申请人字段统一使用本方法。
+     * 当前业务身份工号：取 JWT sub（被切换人即业务身份；请求体 actor/operator/consultant 等
+     * 字段不可信，忽略）；无登录上下文（服务间匿名调用）回落 "system"。
+     *
+     * <p>业务归属列（退款申请人/审批提交人/排班操作人等）一律使用本方法——超管代店长提交退款时，
+     * 业务申请人记被切换的店长。审计 actor 需记真实人时用 {@link #currentRealActor()}，
+     * 由各服务审计写入边界（RestAuditRecorder / audit append）单点收敛，勿在业务代码里混用。
      */
     public static String currentActor() {
         LoginUser u = SecurityContext.get();
         return (u == null || u.staffId() == null || u.staffId().isBlank()) ? "system" : u.staffId();
+    }
+
+    /**
+     * 审计真实操作人工号：超管代操作（impersonate）时取 realSub（真实超管），
+     * 其余等同 {@link #currentActor()}；无登录上下文回落 "system"。仅供审计写入边界使用。
+     */
+    public static String currentRealActor() {
+        LoginUser u = SecurityContext.get();
+        if (u == null) {
+            return "system";
+        }
+        if (u.realSub() != null && !u.realSub().isBlank()) {
+            return u.realSub();
+        }
+        return (u.staffId() == null || u.staffId().isBlank()) ? "system" : u.staffId();
+    }
+
+    /** 当前请求是否处于超管代操作态（JWT 携带 realSub）。 */
+    public static boolean impersonating() {
+        LoginUser u = SecurityContext.get();
+        return u != null && u.impersonating();
+    }
+
+    /** 被切换人工号（act claim）；非代操作态返回 null。审计 payload 区分真实人/被代操作人用。 */
+    public static String currentAct() {
+        LoginUser u = SecurityContext.get();
+        return u == null ? null : u.act();
     }
 
     /** 当前登录人是否持有指定权限码（超管/通配 * 直接放行）；匿名无上下文返回 false。 */

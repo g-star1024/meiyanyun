@@ -17,7 +17,8 @@ import java.util.Map;
  * 极简 JWT（HS256）签发/验签工具，全部 JDK 原生实现（零 jjwt/security 依赖）。
  *
  * Token 结构：base64url(header).base64url(payload).base64url(HMACSHA256(header.payload, secret))
- * payload 为自包含 claims：sub（工号）/ name / roles / store / scope / perms / dev / iat / exp。
+ * payload 为自包含 claims：sub（工号）/ name / roles / store / scope / perms / dev / iat / exp；
+ * 超管代操作（impersonate）短 token 额外携带 realSub（真实操作超管工号）/ act（被切换人工号）。
  * 各服务共享同一 secret 本地验签，服务自治、无状态。
  */
 public class JwtTokenUtil {
@@ -39,8 +40,13 @@ public class JwtTokenUtil {
         this.ttl = ttl;
     }
 
-    /** 签发 token。perms 为权限码集合（超管传 List.of("*")）。 */
+    /** 签发 token（默认登录 TTL）。perms 为权限码集合（超管传 List.of("*")）。 */
     public String issue(LoginUser user) {
+        return issue(user, ttl);
+    }
+
+    /** 签发 token 并指定有效期（超管代操作短 token 用 impersonateTtl，不滑动续期）。 */
+    public String issue(LoginUser user, Duration tokenTtl) {
         Instant now = Instant.now();
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("sub", user.staffId());
@@ -51,9 +57,11 @@ public class JwtTokenUtil {
         payload.put("perms", user.perms());
         if (user.region() != null && !user.region().isBlank()) payload.put("region", user.region());
         if (user.stores() != null && !user.stores().isEmpty()) payload.put("stores", user.stores());
+        if (user.realSub() != null && !user.realSub().isBlank()) payload.put("realSub", user.realSub());
+        if (user.act() != null && !user.act().isBlank()) payload.put("act", user.act());
         payload.put("dev", user.devLogin());
         payload.put("iat", now.getEpochSecond());
-        payload.put("exp", now.plus(ttl).getEpochSecond());
+        payload.put("exp", now.plus(tokenTtl).getEpochSecond());
 
         String header = B64.encodeToString("{\"alg\":\"HS256\",\"typ\":\"JWT\"}".getBytes(StandardCharsets.UTF_8));
         String body = B64.encodeToString(toJson(payload).getBytes(StandardCharsets.UTF_8));
@@ -94,7 +102,10 @@ public class JwtTokenUtil {
                     asStringList(payload.get("perms")),
                     Boolean.TRUE.equals(payload.get("dev")),
                     (String) payload.get("region"),
-                    asStringList(payload.get("stores")));
+                    asStringList(payload.get("stores")),
+                    (String) payload.get("realSub"),
+                    (String) payload.get("act"),
+                    payload.get("iat") instanceof Number n ? n.longValue() : null);
         } catch (Exception e) {
             throw new JwtAuthException("登录凭证字段缺失");
         }

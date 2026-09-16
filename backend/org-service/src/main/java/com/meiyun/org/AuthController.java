@@ -1,5 +1,7 @@
 package com.meiyun.org;
 
+import com.meiyun.org.audit.AuditRecorder;
+import com.meiyun.security.DataScope;
 import com.meiyun.security.JwtTokenUtil;
 import com.meiyun.security.LoginUser;
 import com.meiyun.security.SecurityContext;
@@ -8,6 +10,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -20,8 +24,11 @@ import java.util.Set;
  * - POST /api/org/auth/login     工号 + 密码登录，签发自包含 JWT
  * - POST /api/org/auth/dev-login 开发期免密登录（?as= 联调工作流；meiyun.security.dev-login 开关）
  * - GET  /api/org/auth/permissions 权限字典 + 角色权限矩阵（前端启动拉取，后端为唯一真源）
+ * - POST /api/org/auth/impersonate      超管代操作：签发 30 分钟短 token（sub=目标人，realSub=超管，act=目标人）
+ * - POST /api/org/auth/impersonate/exit 退出代操作：凭短 token 反解 realSub 重签超管原会话
  *
- * JWT claims：sub(工号)/name/roles[]/store/scope/perms[](超管为 *)。
+ * JWT claims：sub(工号)/name/roles[]/store/scope/perms[](超管为 *)；
+ * 代操作短 token 追加 realSub(真实超管)/act(被切换人工号)，权限与数据域按 sub 目标身份自然收窄。
  */
 @RestController
 @RequestMapping("/api/org/auth")
@@ -49,11 +56,12 @@ public class AuthController {
     private final OrgUnitRepository orgUnitRepo;
     private final JwtTokenUtil jwt;
     private final SecurityProperties securityProps;
+    private final AuditRecorder audit;
 
     public AuthController(StaffRepository staffRepo, StaffRoleRepository staffRoleRepo,
                           RoleDefRepository roleRepo, RolePermissionRepository rolePermRepo,
                           PermissionDefRepository permRepo, OrgUnitRepository orgUnitRepo,
-                          JwtTokenUtil jwt, SecurityProperties securityProps) {
+                          JwtTokenUtil jwt, SecurityProperties securityProps, AuditRecorder audit) {
         this.staffRepo = staffRepo;
         this.staffRoleRepo = staffRoleRepo;
         this.roleRepo = roleRepo;
@@ -62,6 +70,7 @@ public class AuthController {
         this.orgUnitRepo = orgUnitRepo;
         this.jwt = jwt;
         this.securityProps = securityProps;
+        this.audit = audit;
     }
 
     // ==================== 登录 ====================
@@ -166,7 +175,107 @@ public class AuthController {
         return out;
     }
 
+    // ==================== 超管代操作（impersonate） ====================
+
+    /**
+     * 开始代操作：仅真实超管（非链式）可发起，目标必须是「在职」非超管员工。
+     * 签发 30 分钟短 token：sub/roles/perms/scope/stores 全部按目标身份组装（权限与数据域自然收窄），
+     * realSub=真实超管、act=目标人；不滑动续期。同请求线程经 RestAuditRecorder 写
+     * COMPLIANCE/IMPERSONATE_START 审计（actor 由审计边界收敛为 realSub，payload 注入 act/realSub）。
+     */
+    @PostMapping("/impersonate")
+    public Map<String, Object> impersonate(@RequestBody Map<String, String> body) {
+        LoginUser current = SecurityContext.get();
+        if (current == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "未登录或登录已失效，请重新登录");
+        }
+        if (!current.isSuper()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅集团超级管理员可发起代操作");
+        }
+        if (current.impersonating()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "代操作态不允许链式切换，请先退出当前代操作");
+        }
+        String targetStaffId = body == null ? "" : body.getOrDefault("targetStaffId", "").trim();
+        String reason = body == null ? "" : body.getOrDefault("reason", "").trim();
+        if (targetStaffId.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请填写被代操作员工工号");
+        }
+        if (reason.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "代操作必须填写事由");
+        }
+        if (targetStaffId.equals(current.staffId())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不能对本人发起代操作");
+        }
+        Staff target = staffRepo.findById(targetStaffId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "目标员工不存在: " + targetStaffId));
+        if (!"在职".equals(target.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "目标员工已离职停用，不可代操作");
+        }
+        List<String> targetRoles = rolesOf(target);
+        if (targetRoles.contains("SUPER_ADMIN")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "不允许代操作超级管理员账户");
+        }
+
+        Duration ttl = securityProps.getImpersonateTtl();
+        Map<String, Object> result = issueFor(target, targetRoles, false,
+                current.staffId(), target.getStaffId(), ttl);
+
+        String payload = "{\"target\":" + jsonStr(target.getStaffId())
+                + ",\"ip\":\"web\",\"detail\":"
+                + jsonStr("以「" + target.getStaffName() + "」身份开始代操作，理由：" + reason)
+                + ",\"risk\":\"HIGH\"}";
+        audit.record("COMPLIANCE", null, DataScope.currentActor(), "IMPERSONATE_START", payload);
+        return result;
+    }
+
+    /**
+     * 退出代操作：仅代操作态短 token 可调。凭 realSub 反查真实超管并按其原始角色重签常规 TTL token
+     * （纯短 TTL 还原，不维护服务端会话）；写 COMPLIANCE/IMPERSONATE_END 审计，会话时长取短 token iat。
+     * 前端在发起前应已快照原 token，本端点为服务端权威还原通道，短 token 过期则直接 401 由前端回退快照。
+     */
+    @PostMapping("/impersonate/exit")
+    public Map<String, Object> exitImpersonate() {
+        LoginUser current = SecurityContext.get();
+        if (current == null) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "未登录或登录已失效，请重新登录");
+        }
+        if (!current.impersonating()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前不处于代操作态");
+        }
+        String realSub = current.realSub();
+        Staff real = staffRepo.findById(realSub)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "真实账户不存在，请重新登录"));
+        if (!"在职".equals(real.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "真实账户已离职停用，请联系管理员");
+        }
+        List<String> realRoles = rolesOf(real);
+        if (!realRoles.contains("SUPER_ADMIN")) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "真实账户超管权限已变更，拒绝自动还原");
+        }
+
+        long minutes = 0L;
+        if (current.issuedAt() != null) {
+            minutes = Math.max(0L,
+                    Duration.between(Instant.ofEpochSecond(current.issuedAt()), Instant.now()).toMinutes());
+        }
+        String payload = "{\"target\":" + jsonStr(current.act())
+                + ",\"ip\":\"web\",\"detail\":"
+                + jsonStr("结束代操作，会话时长 " + minutes + " 分钟")
+                + ",\"risk\":\"MEDIUM\"}";
+        audit.record("COMPLIANCE", null, DataScope.currentRealActor(), "IMPERSONATE_END", payload);
+
+        return issueFor(real, realRoles, false, null, null, securityProps.getTtl());
+    }
+
     // ==================== 内部方法 ====================
+
+    private static String jsonStr(String v) {
+        return v == null ? "null" : "\"" + esc(v) + "\"";
+    }
+
+    private static String esc(String v) {
+        return v == null ? "" : v.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
 
     private List<String> rolesOf(Staff staff) {
         List<String> roles = staffRoleRepo.findByStaffId(staff.getStaffId()).stream()
@@ -180,6 +289,16 @@ public class AuthController {
     }
 
     private Map<String, Object> issueFor(Staff staff, List<String> roles, boolean devLogin) {
+        return issueFor(staff, roles, devLogin, null, null, securityProps.getTtl());
+    }
+
+    /**
+     * 组装身份（perms/scope/region/stores 与登录同口径）并签发 token。
+     * realSub/act 非空时为超管代操作短 token：sub=目标人（权限数据域按目标人收窄），
+     * realSub=真实超管、act=目标人工号仅随审计边界使用；tokenTtl 由调用方指定（代操作 30min 不续期）。
+     */
+    private Map<String, Object> issueFor(Staff staff, List<String> roles, boolean devLogin,
+                                         String realSub, String act, Duration tokenTtl) {
         Set<String> perms = new LinkedHashSet<>();
         boolean superAdmin = roles.contains("SUPER_ADMIN");
         if (superAdmin) {
@@ -193,8 +312,8 @@ public class AuthController {
         List<String> stores = resolveVisibleStores(staff, scope, region);
         LoginUser user = new LoginUser(staff.getStaffId(), staff.getStaffName(),
                 roles, staff.getStoreCode(), scope, new ArrayList<>(perms),
-                devLogin, region, stores);
-        String token = jwt.issue(user);
+                devLogin, region, stores, realSub, act, null);
+        String token = jwt.issue(user, tokenTtl);
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("token", token);
@@ -208,6 +327,10 @@ public class AuthController {
         result.put("scope", scope);
         result.put("permissions", new ArrayList<>(perms));
         result.put("devLogin", devLogin);
+        result.put("impersonating", realSub != null && !realSub.isBlank());
+        result.put("realSub", realSub);
+        result.put("act", act);
+        result.put("ttlSeconds", tokenTtl.toSeconds());
         return result;
     }
 

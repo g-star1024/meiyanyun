@@ -1,5 +1,6 @@
 package com.meiyun.audit;
 
+import com.meiyun.security.AuditBoundary;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
@@ -29,17 +30,20 @@ public class AuditController {
      * 追加一条审计（唯一写入入口）。
      * 双通道鉴权：各业务服务携带 X-Internal-Token 系统身份写入，或持 audit:view 的员工（如审计/超管）。
      * actor 口径按通道强制收敛：X-Internal-Token 系统身份（staffId=system）时业务服务已在本地
-     * SecurityContext 代填真实操作人，沿用请求体 actor；员工 JWT 直连（合规 impersonate 留痕）时
-     * 一律以 JWT staffId 为准，忽略请求体 actor，杜绝登录人伪造他人留痕破坏审计不可抵赖性。
+     * SecurityContext 代填真实操作人（代操作取 realSub），沿用请求体 actor；员工 JWT 直连（合规
+     * impersonate 留痕）时一律以 JWT 真实人为准（realSub 优先），忽略请求体 actor，payload 服务端
+     * 注入 act/realSub，杜绝登录人伪造他人留痕破坏审计不可抵赖性。
      */
     @PostMapping
     @RequirePerm("audit:view")
     public Map<String, Object> append(@RequestBody @Valid AppendRequest req) {
-        String actor = "system".equals(DataScope.currentActor())
+        boolean systemChannel = "system".equals(DataScope.currentActor());
+        String actor = systemChannel
                 ? (req.actor() == null || req.actor().isBlank() ? "system" : req.actor())
-                : DataScope.currentActor();
+                : DataScope.currentRealActor();
+        String payload = systemChannel ? req.payload() : AuditBoundary.enrichPayload(req.payload());
         AuditLog log = auditService.append(
-                req.bizType(), req.txnNo(), actor, req.action(), req.payload());
+                req.bizType(), req.txnNo(), actor, req.action(), payload);
         return Map.of(
                 "id", log.getId(),
                 "curHash", log.getCurHash(),

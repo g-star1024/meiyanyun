@@ -1,5 +1,6 @@
 package com.meiyun.txn.audit;
 
+import com.meiyun.security.AuditBoundary;
 import com.meiyun.security.AuthInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,6 +42,9 @@ public class RestAuditRecorder implements AuditRecorder {
 
     @Override
     public void record(String bizType, String txnNo, String actor, String action, String payload) {
+        // 审计边界收敛：超管代操作时 actor 强制为真实超管 realSub，payload 注入 act/realSub
+        actor = AuditBoundary.resolveActor(actor);
+        payload = AuditBoundary.enrichPayload(payload);
         Map<String, String> body = new LinkedHashMap<>();
         body.put("bizType", bizType);
         body.put("txnNo", txnNo);

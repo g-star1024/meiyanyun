@@ -9,9 +9,10 @@ import java.util.List;
 /**
  * 安全配置（meiyun.security.*）。
  *
- * @param secret        HS256 共享密钥（7 服务一致；生产经环境变量 MEIYUN_JWT_SECRET 注入）
- * @param ttl           token 有效期，默认 12 小时
- * @param devLogin      开发期免密登录开关（/api/org/auth/dev-login），生产必须关闭
+ * @param secret         HS256 共享密钥（7 服务一致；生产经环境变量 MEIYUN_JWT_SECRET 注入）
+ * @param ttl            token 有效期，默认 12 小时
+ * @param impersonateTtl 超管代操作（impersonate）切换态短 token 有效期，默认 30 分钟，不滑动续期
+ * @param devLogin       开发期免密登录开关（/api/org/auth/dev-login），生产必须关闭
  * @param internalToken 服务间内部调用令牌（请求头 X-Internal-Token），命中即按系统身份放行；
  *                      生产经环境变量 MEIYUN_INTERNAL_TOKEN 注入
  * @param publicPaths   公共路径（Ant 风格，无需登录即可访问）
@@ -21,6 +22,7 @@ public class SecurityProperties {
 
     private String secret = "meiyun-dev-jwt-secret-please-change-in-prod-0123456789";
     private Duration ttl = Duration.ofHours(12);
+    private Duration impersonateTtl = Duration.ofMinutes(30);
     private boolean devLogin = false;
     private String internalToken = "meiyun-dev-internal-token-please-change-in-prod";
     private List<String> publicPaths = new ArrayList<>(List.of(
@@ -43,6 +45,14 @@ public class SecurityProperties {
 
     public void setTtl(Duration ttl) {
         this.ttl = ttl;
+    }
+
+    public Duration getImpersonateTtl() {
+        return impersonateTtl;
+    }
+
+    public void setImpersonateTtl(Duration impersonateTtl) {
+        this.impersonateTtl = impersonateTtl;
     }
 
     public boolean isDevLogin() {
