@@ -3,40 +3,40 @@
 > 用途：铁律 11 自主续跑的唯一事实源。任何接续会话/定时任务先读本文件，再按「开发前 checklist」执行。
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
-<!-- MACHINE:STATUS=DONE -->
-<!-- MACHINE:HEARTBEAT=2026-09-16 11:19 CST -->
-<!-- MACHINE:BATCH=P5-B53 全闭合（HEAD=fb16b53）；下一批待开工 P5-B54 排班真实化大批（6 卡）→ P5-B55 impersonate → P5-B56 报告哈希验真 -->
-<!-- MACHINE:CARD=无（队列清空，哨兵 DONE 空跑，待 P5-B54 开工置 ACTIVE） -->
-<!-- MACHINE:PREV=P5-B53 全闭合（style fb16b53 已 push，L141 A3 保留登记不勾销，数字不变） -->
+<!-- MACHINE:STATUS=ACTIVE -->
+<!-- MACHINE:HEARTBEAT=2026-09-16 12:13 CST -->
+<!-- MACHINE:BATCH=P5-B54 排班真实化大批（6 卡，B=L144 医生/房间班次表）；其后 P5-B55 impersonate → P5-B56 报告哈希验真 -->
+<!-- MACHINE:CARD=卡1 编码+编译+双栈换载+双栈三轨真验全绿（core 17 项/seed 12 项），待 commit+push；StaffShift/StaffShiftRepository/ScheduleController 三新文件未跟踪 -->
+<!-- MACHINE:PREV=P5-B53 全闭合（style fb16b53+docs 50103cc 已 push，L141 A3 保留登记不勾销，数字不变） -->
 
 ## 当前状态（人读区）
 
-- **批次**：P5-B53（**2026-09-16 11:06 开工，11:19 全闭合哨兵 DONE**）——用户对 A/B/C/D 四方向正式拍板后首个最小卡：A=L141 URGENT 加急源选 **A3（不造优先级字段、继续诚实空态、顺手清死 CSS）**，仅删 M1DispatchView.vue 全站零引用死 CSS `.job--urgent` 一行，style `fb16b53`（1 file -1）已 push origin/main；三轨真验（pnpm build exit0、新 hash 产物 grep 零命中且 job--active 保留、双栈 8080/18080 200）全绿；**L141 加急源字段缺口按 A3 产品决策保留登记不勾销**，纯死码清理完成度数字不变（✅108/166≈65%、🔧1、⬜56、域⑧ 34✅2🔧31⬜）；**哨兵 STATUS=DONE，自主队列清空，下一主线 P5-B54 排班真实化大批（B=L144，6 卡）待开工**
-- **用户拍板（原文照录）**：「1、优先处理 seed 栈 DNS 轮询串扰隐患，②seed 容器服务别名加 seed- 前缀；2、M1 调度派单自由时段（start 不锚定 apptTime）：卡5 已闭合改期联动半项，此半项属产品决策，开放；3、完成后开工 P5-B52」
-- **用户四项拍板（持续指导本批施工）**：①施工序=按建议序（L143 DONE→L140 DEVICE→L145 改期）；②L140 同时放开 DEVICE 派单写（读+写全闭环）；③L142 appointment 加 sku_code 列；④L141/L144 都保留诚实空态
-- **阶段**：卡0 哨兵激活（05:10）；**卡1 已全闭合**（`0ea8983` 05:45 commit+已 push origin/main，a-f 六子步含三轨真验均在提交说明留证）；**卡2 代码+构建+双栈部署已由前实例完成（05:57 dist / 05:58 txn 镜像，双栈 frontend/txn 均已换载），中断于三轨真验前（哨兵未回写、五文件未提交）**；接力会话 06:11 法医鉴识（git show/diff+docker 现场）后接管，从卡2 三轨五分支真验续跑
-- **接力法医结论（06:05-06:11）**：HEAD=`0ea8983` 已 push；工作区 5 个未提交文件=卡2 全链路五环节代码且已审阅完整（Controller javadoc 透传/Service HHMM 校验+空回落+班次 422+重叠 409 复用/DispatchCmd record 加 start；api start?/store 请求体透传+dispatch 签名带 start/view slotClick 带 slot+全空闲格可点+文案，style 零改）；frontend/dist 05:57 构建物已含「可自由选时」、txn-service:latest 05:58:40 镜像在跑；无活跃 mvn/compose 进程、哨兵 mtime 停 05:12、心跳停滞 ≥15 分钟→确认前实例中断非并发；docker CLI 在 `/Applications/Docker.app/Contents/Resources/bin/docker`（本会话 PATH 无系统命令须绝对路径）
-- **本批范围**：卡1（04 新增登记行②）seed 栈 10 个 compose 服务键加 `seed-` 前缀根治别名层串扰，连带①frontend nginx 裸别名 `gateway` 改 envsubst 模板（双栈共享镜像，默认 gateway 保 app 栈零影响、seed 注入 meiyun-seed-gateway）②顺带修 seed marketing 崩溃（Exited(1) 31h，Flyway V11-14 pending 乱序，application.yml 缺 out-of-order:true，B38 audit 同款修法）；卡2（04 L146）派单自由时段（DispatchCmd 增可选 start，复用 409/422/审计；前端格子点击带 slot 时段）；卡3 批末落账。
+- **批次**：P5-B54 排班真实化大批（B=L144，**2026-09-16 11:43 开工，6 卡**）——用户 B 方向拍板：建实体+维护界面+后端接线、全员排班、周例（维度照线上截图 6 员工×7 天网格，早/中/全改名 上午/下午/全天，加 休息/请假 共 5 态）、前端时间格以后端为准。**卡0 只读侦察已完成**（11:43）：org-service 无任何既有排班实现（仅 PermissionMatrix schedule:view/edit/approve 三码已预置——view 八角色全有、edit/approve 仅 REGION_MGR/STORE_MGR，无需新播种）；业务表一律 JPA ddl-auto=update（org 无 Flyway、V1 仅 sys_ 表）；实体审计字段惯例仅 createdAt 一个、操作人/动作走 AuditRecorder；范式=Controller 直注 Repository、无 Service、裸 Map 出参、中文 ResponseStatusException、DataScope 门店越权 404、internal 走 X-Internal-Token（internal:name-map，网关外 404）。**卡1 已落地待提交**：com.meiyun.org 新建 StaffShift（staff_id+shift_date 唯一、shift_code 5 态、source TEMPLATE/OVERRIDE、createdAt）+ StaffShiftRepository + ScheduleController（GET 周视图/GET 字典/PUT 改班/POST 周例铺底），编译 0 错误、双栈双库建表、core 17 项+seed 12 项三轨真验全绿。完成度数字本批随模块落地而动，L144 全行勾销留待真源贯通（卡1 仅后端表+端点，不动数字）
+- **用户拍板（B54 B 方向原文照录）**：「B. L144 医生/房间班次表（资源真实可用时间）1、建实体+维护界面+后端接线；2、全员排班；3、周例，排班维度你看看我给的线上截图，按这种维度就行；早中全，改为上午、下午、全天、休息、请假；4、前端时间格以后端为准；其他的问题你可以先做竞品调研，然后根据调研结果，推荐一个最合适我们的」；同批另三方向：A=L141 选 A3（不提前造字段+诚实空态，已在 B53 闭合）、C=L133 真实 impersonate（P5-B55，超管→店长→员工、总部跨店门店不可跨店）、D=L123 报告哈希验真 UI（P5-B56，按推荐口径）；「剩下的我没有决定的你按照推荐来就行」
+- **阶段（P5-B54）**：卡0 只读侦察完成（11:43）；**卡1 编码+编译+双栈换载+双栈三轨真验全绿（12:13），待 commit+push**——三新文件 StaffShift.java / StaffShiftRepository.java / ScheduleController.java 未跟踪。编译：`mvn -pl org-service package` 二次通过（首编译 Specification<Object> 泛型退化，抽 activeStaffInScope()+显式 witness `DataScope.<Staff>storeSpec` 修复），fat jar 47,180,905 字节；双栈 docker cp /app/app.jar+restart 均 healthy；staff_shift 由 ddl-auto 在 meiyun_core/meiyun_seed 双库建成（id IDENTITY PK、uk_staff_shift_date UNIQUE(staff_id,shift_date) 已 \d 核对）。**core 栈 17 项真验全绿**（经 8443）：字典五态中文+assignable；周视图数据域（店长本店 8 人/区域 stores 6 店在编 10 人/财务空 stores 全量 19 人）；PUT 新建 OVERRIDE+同码幂等不重复审计+改码；非法码/非法日期双 400；同区他店/跨大区 404；财务/医生写 403；无 token 401；周例铺底 created=55/skipped=1、再铺 0/56；财务铺底 403；铺底结构周一至六 FULL/TEMPLATE、周日 OFF/TEMPLATE、手工 MID/OVERRIDE 不被覆盖；PG 计数 47/1/8；重复插 23505；audit_log 598-601 四条 SCHEDULE（SET×2 幂等重复未记、GENERATE_WEEK×2，actor E005，合法 JSON 含中文 staffName）。**seed 栈 12 项抽验全绿**（经 18443，SE001 许店长 SST01/E012 财务/E001 医生）：字典+空态 4 人+PUT 手工 SE003 周二 MID+铺底 27/1+再铺 0/28+财务/医生写双 403+财务铺底 403+无 token 401+非法码 400+越权改 SST02 SE005 404+财务读全量 43 人；PG seed 23 FULL/TEMPLATE+1 MID/OVERRIDE+4 OFF/TEMPLATE；audit_log 246-248（actor SE001 江医生中文）。**数据处置**：core.staff_shift 真验 56 行已 DELETE 清空恢复纯净（审计 append-only 保留 598-601 留痕）；seed.staff_shift 28 行保留作卡3 前端联调样例（本周 2026-09-14~20，SST01 4 人，SE003 周二手工 MID）
+- **本批 6 卡范围**：卡1 org staff_shift 实体+Repo+浏览器周视图/改班/周例端点（**本卡，待提交**）→卡2 org internal schedule/resolve（X-Internal-Token、网关外 404、软降级）+txn DispatchService 三处固定窗（WORK_START/END 09:00/20:00、resources DOCTOR、派单/改期 422）改排班真源→卡3 M2 /m2-schedule 接真（frontend/src/api/schedule.ts 走 api/client.ts baseURL '/api' 勿用 request.ts、stores/schedule.ts 换真源、SHIFTS 早/中/全→上午/下午/全天、ScheduleView.vue 模板样式零改、seed 对齐）→卡4 M1 m1Dispatch SLOTS/时间轴硬编码以后端排班动态化→卡5 周例复制上周+请假批准写 OVERRIDE/LEAVE 联动（评估 leave_id）→卡6 批末落账（DELIVERY-P5-B54+台账六册 L144 勾销+数字重算+哨兵 DONE，原子 docs 提交 push）。docker CLI 在 `/Applications/Docker.app/Contents/Resources/bin/docker`（本会话 PATH 无系统命令须绝对路径）
 - **保留登记（不在 B51 范围，随后续批次评估）**：L133 impersonate＝大（JWT act/realSub claim+meiyun-security 全服务回归+前端换 token，与 L46 合并）、L123 报告哈希验真 UI＝中（content_hash+规范化字节口径，DSAR/consent 远期）。非本批：L89 setup-seed-db 保留 audit_log、L128 ai-service seed Flyway V17-V29 悬置。
 - **记账口径**：纵深缺口批以「缺口闭合即勾 04-backlog 行」为记账单位——完成度数字（✅108/166≈65%、⬜56、🔧1、域⑧ 34✅2🔧31⬜）仅当缺口对应功能真实落地才动；侦察无源的行保持登记不动、诚实说明。
 - **上一批**：P5-B50 平台治理/还债批九卡全闭合（B49 四项观察项清零，见文末存档）
 
 ## 开工基线
 
-- 代码 HEAD=`0ea8983`（P5-B52 卡1 fix(seed) 提交，05:45），已 push origin/main（ls-remote 核对一致）；工作区=卡2 五文件未提交（DispatchController/DispatchService/dispatch.ts/m1Dispatch.ts/M1DispatchView.vue）+本哨兵
-- 后端 19 服务 + 网关在线（双栈 25 容器 06:10 全 healthy/Up）；正式前端 http://localhost:8080 / 网关 8443；seed 前端 127.0.0.1:18080 / 网关 18443；**卡2 双栈已换载**：txn-service 镜像 05:58:40、seed-txn 同镜像 05:58 起、双 frontend dist 05:57 已 docker cp（dist 含「可自由选时」实证）
-- 登录：curl 通道 POST `https://127.0.0.1:8443/api/org/auth/login`（curl -k，E011/meiyun123=REGION_MGR 华东域，token 存 /tmp/meiyun_token.txt，验证前重新登录）；Chrome 通道 http://localhost:8080 手工填表（快捷登录已关闭）
+- 代码 HEAD=`50103cc`（P5-B53 批末落账，已 push origin/main）；工作区=B54 卡1 三新文件未跟踪（backend/org-service/src/main/java/com/meiyun/org/ 下 StaffShift.java、StaffShiftRepository.java、ScheduleController.java）+本哨兵修改；target/org-service-1.0.0-SNAPSHOT.jar 已构建（fat 47,180,905 字节）
+- 双栈 org-service 均已换载本卡 jar（docker cp /app/app.jar+restart，12:0x 起双 healthy）；后端 19 服务+网关在线；正式前端 http://localhost:8080 / 网关 https://127.0.0.1:8443；seed 前端 127.0.0.1:18080 / 网关 https://127.0.0.1:18443
+- 登录：POST `/api/org/auth/login` body {loginName,password=meiyun123}，curl -k；core 19 名在职（E001-E014+SE101-105；E005 李店长 ST-SH-001/E011 冯区域 stores 6 店/E012 褚财务 REGION 空 stores 全量/E009 吴店长 ST-BJ-001 华北/E001 刘治疗师 STORE）；seed 43 名在职（E001-E014 无门店+SE001 起 SST01/02/03；SE001 许店长 SST01 4 人在编）。token 存 /tmp/tok_E*.txt、/tmp/seed_tok_*.json（permissions 字段名）
+- 数据库：docker exec meiyun-pg psql -U meiyun -d meiyun_core|meiyun_seed；staff_shift 双库已建；core 已清空 0 行（audit_log 598-601 留痕保留）、seed 28 行联调样例（本周 2026-09-14~20）
 - 铁律 10 开工读数：索引+00～04 五分册本批开工前已全部整读
 - docs 提交坑：`docs/` 被 .gitignore 整体忽略；已跟踪文档用 `git add -u docs/`，仅新增 docs 文件用 `git add -f`；Grep 工具对 docs 超长中文行失效，用 shell `grep -rn` 或 Read
 
-## 下一步动作（B52 卡序列）
+## 下一步动作（B54 卡序列）
 
-0. ✅ 卡0 哨兵激活+侦察（05:11）：六册开工前已读齐；实证双网运行态已隔离（10-_meiyun 15 容器 / meiyun-seed_seed-net 14 容器零跨网附着，别名前缀系别名层纵深加固非现网抢修）+seed marketing Exited(1)（Flyway V11-14 乱序 pending，缺 out-of-order:true）+frontend nginx 4 处裸别名 gateway；卡2 全链路五环节锚定（Controller 透传零改/Service L265 start 锚定+record L451/api 类型/store 请求体漏传 start/view 格子不带 slot）
-1. ✅ 卡1 seed 栈别名层纵深（**已闭合 `0ea8983` 05:45，已 push**；a 十服务键 seed- 前缀+两处 depends_on+b nginx envsubst 模板 4 处 proxy_pass+Dockerfile COPY templates+双栈 GATEWAY_UPSTREAM 注入+c marketing out-of-order:true+新增 V32 schema drift ALTER 幂等补列+d seed down/up+网络重接+双栈部署+e 三轨真验全绿（双向 DNS 隔离/双栈 nginx 上游/8080+18080 200/seed V11-14+V32）+f commit+push）——接力会话已复核提交内容与运行态，不重做
-2. ✅ 卡2 M1 派单自由时段（**已全闭合 `cc00948` 06:23，已 push**）：五文件 +46/-25（DispatchController javadoc 透传 / DispatchService HH:mm 正则+空回落 apptTime+班次 422+重叠 409 复用+DispatchCmd 增 start / dispatch.ts start? / m1Dispatch store 透传 / M1DispatchView slotClick 带 slot、班次内全空闲格可点、data-slot 锚点、style 零改）；三轨真验：curl+PG 五分支全绿（06:30）、Playwright Chrome 轨已在 cc00948 提交说明留证（22 格放开/非预约 14:00 派单/释放复位/治疗室设备 tab/FINANCE 守卫/0 console error）；接力会话 07:09-07:13 独立复验：seed 18443 E011 登录 token 6516 字符，GET resources SST01 2026-09-16→200 12 资源（DOCTOR/ROOM/DEVICE，workStart 09:00/workEnd 20:00），GET jobs→200 2 个 PENDING（000007 16:00/000008 17:30，与 PG appointment「已预约」对账一致），dispatch_assignment id14-18 全 RELEASED 留档（id14=自由 10:00 异于 apptTime16:00），audit_log id234-243 DISPATCH/RELEASE payload 含 start/end、actor=E011、哈希链连续；cc00948 完整 diff 逐行复核无误
-   - 历史执行细节（append-only）：a. curl+PG 06:30 闭合——⑤9:60→422「HH:mm」；②08:00 与 19:30(60min→20:30)→422「超出班次」；①000007 start=10:00→200 id=14；③000008 同 10:00→409、10:30 半重叠→409、相邻 11:00→200 id=15；④空串/空白/不传三态回落 17:30 落 id=16/17/18（已 release 留档）；core 栈医生保护补验未破坏
-   - b. Chrome 轨（cc00948 内含 Playwright 实证，见提交说明）；c. feat commit+push=`cc00948`；d. 心跳随验随更——均闭合
-3. ✅ 卡3 批末（**已闭合 `6510627` 07:29，已 push**）：DELIVERY-P5-B52-2026-09-16（9 章）+五分册回写通读勾稽全闭合（00 顶部新简报+B51 降级上一批、01 L18 口径流水+L36 域⑧行双尾接、02 M1 调度行尾接【卡1 环境治理明示不挂业务模块行】、03 表底 P5-B52 六列行、04 L146 自由时段+L147 seed 别名串扰双勾销末列 ✅ B52）+哨兵置 DONE+原子 docs 提交 push（7 files +98/-13）+铁律 9 汇报（✅108/166≈65%、🔧1、⬜56，纯纵深+环境治理批新增 0 模块、勾销 Backlog 2 行）。P5-B52 队列全闭合
+0. ✅ 卡0 只读侦察（11:43）：org-service 无既有排班实现；PermissionMatrix schedule:view/edit/approve 三码已预置（view 八角色、edit/approve 仅 REGION_MGR/STORE_MGR/SUPER_ADMIN）；业务表 JPA ddl-auto=update（org 无 Flyway）；实体审计惯例仅 createdAt+AuditRecorder；Controller 直注 Repository 无 Service、裸 Map、中文 ResponseStatusException、DataScope 越权 404、internal 走 X-Internal-Token
+1. ⏳ 卡1 后端端点（**编码/编译/双栈换载/双栈三轨真验全绿，仅剩 commit+push**）：StaffShift（id IDENTITY、staff_id(16)+shift_date date 唯一键 uk_staff_shift_date、shift_code(8)/source(8)、created_at timestamptz）+StaffShiftRepository（区间按日期工号排序、单日 findById 锚点）+ScheduleController 四端点：GET /api/org/schedule?weekStart=（默认本周、任意日期归一化到周一；返回 weekStart/weekEnd/staff[]/shifts[]，DataScope 数据域）、GET /api/org/shift-codes（MORNING 上午/MID 下午/FULL 全天 assignable=true、OFF 休息/LEAVE 请假 assignable=false）、PUT /api/org/schedule/shift（schedule:edit；落 OVERRIDE；同码幂等不重复审计；离职/越权 404；非法码/日期 400；SET 审计 bizType=SCHEDULE）、POST /api/org/schedule/generate-week（周一至六 FULL/周日 OFF TEMPLATE、已存在一律跳过不覆盖手工行、GENERATE_WEEK 一条审计）。**编译坑留证**：`DataScope.storeSpec("storeCode").and(lambda)` 链式推断退化为 Specification<Object>，须显式 witness `DataScope.<Staff>storeSpec(...)`（抽私有静态 activeStaffInScope()）
+2. ⬜ 卡2 org internal resolve 端点（/api/org/internal/schedule/resolve，X-Internal-Token=internal: 权限、网关外 404）+txn-service 新增 org RestTemplate client（软降级回固定窗，铁律 6）+DispatchService 三处固定窗（WORK_START/END 09:00/20:00、resources DOCTOR 过滤、派单/改期越窗 422）改 staff_shift 真源（FULL=全天可派/MORNING+MID 时段语义/休息日与请假不可派）
+3. ⬜ 卡3 M2 /m2-schedule 接真：新建 frontend/src/api/schedule.ts（仿 api/client.ts baseURL '/api'，勿用 request.ts）、stores/schedule.ts 换真源、SHIFTS label 早/中/全→上午/下午/全天+休息/请假、ScheduleView.vue 模板与样式零改、seed 数据对齐
+4. ⬜ 卡4 M1 m1Dispatch SLOTS/时间轴硬编码以后端排班动态化
+5. ⬜ 卡5 周例复制上周+请假批准写 OVERRIDE/LEAVE 联动（评估 leave_id 锚点）
+6. ⬜ 卡6 批末落账：DELIVERY-P5-B54+台账六册 L144 全行勾销+完成度数字重算+哨兵置 DONE，原子 docs 提交 push
 
 ## 中断恢复指引
 
