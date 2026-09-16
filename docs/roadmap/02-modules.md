@@ -116,7 +116,8 @@
 | 组织树 | ✅ | B33 | DELIVERY-P5-B33，OrgAdminController 三写端点 + T1OrgView 去 mock | 部门层级写闭环真实（仅门店下建部门/编辑三态语义/部门跨店移动联动 store_code+region/启停带停用原因，越权中文 404）；**门店/大区/集团层级写能力与兼岗上级路由留 Backlog**，部门只停用不物理删 |
 | 消息通知中心 | ✅ | B20/B21 | DELIVERY-P5-B20/B21，NotificationController 6 端点 | 系统内通知真实闭环（铃铛/列表/已读）；通知偏好持久化（notify_preference 表 + GET/PUT 端点 + SLA 催办偏好免打扰双向实证）B21 收口；**多渠道（短信/企微/邮件 dev 网关 + SSE 实时推送 + 免打扰 + 失败重试/死信）B26 收口**，真实运营商网关接入留 Backlog |
 | 交接班 | ⬜ | — | — | 近线缺口 |
-| M2 门店运营（排班/工单/日结/申购/报损/绩效/周报/巡检/拓客/唤醒/异常等 13 页） | ⬜ | — | — | **远期独立阶段 M2**，Backlog |
+| M2 门店运营（排班/工单/日结/申购/报损/绩效/周报/巡检/拓客/唤醒/异常等 13 页） | ⬜ | — | — | **远期独立阶段 M2**，排班页（/m2-schedule）P5-B54 已切真=**M2 1/13**，余 12 页 Backlog |
+| M2 · 排班（/m2-schedule） | ✅ | P5-B54 | DELIVERY-P5-B54-2026-09-16，`bbcdb46`、`e2da7d7`、`2e1602b`、`fc5c2e7`、`9f44eb1` | org-service staff_shift 实体（uk staff_id+shift_date、source TEMPLATE/OVERRIDE、五态上午/下午/全天可派·休息/请假 assignable=false）+周视图/改班/生成周例/复制上周四端点+internal resolve 供 txn 派单/改期/resources 三处真源替换固定 09:00-20:00 窗（X-Internal-Token 软降级、越窗 422 中文动态文案、OFF/LEAVE 权威不可派）；leave_request 请假申请-批准-驳回闭环+批准逐日 LEAVE/OVERRIDE 联动；M2 排班整页接真（NONE 空态不造假班、考勤恒空诚实标注）、M1 调度时间轴改后端班次并集动态轴；**M2 13 页首个切真页（1/13）**，余 12 页远期 |
 
 ### 域⑧ 平台与基建
 
