@@ -1,13 +1,18 @@
 <script setup lang="ts">
-// M2-03 排班与考勤：周视图排班表（可点击换班）+ 今日考勤记录 + 请假/换班审批。
-import { computed, onMounted } from 'vue'
+// M2-03 排班与考勤：周视图排班表（可点击换班）+ 今日考勤记录 + 请假登记/审批。
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useScheduleStore, type ShiftCode, type AttendanceStatus } from '@/stores/schedule'
 import { useAuthStore } from '@/stores/auth'
+import type { LeaveType } from '@/api/schedule'
 import CKpi from '@/components/CKpi.vue'
 import CCard from '@/components/CCard.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
+import CDrawer from '@/components/CDrawer.vue'
+import CSelect from '@/components/CSelect.vue'
+import CInput from '@/components/CInput.vue'
+import CTextarea from '@/components/CTextarea.vue'
 
 const sc = useScheduleStore()
 const auth = useAuthStore()
@@ -15,6 +20,56 @@ onMounted(() => sc.seed())
 
 const canEdit = computed(() => auth.can('schedule:edit'))
 const canApprove = computed(() => auth.can('schedule:approve'))
+
+const LEAVE_TYPES: LeaveType[] = ['年假', '事假', '病假']
+const weekBusy = ref(false)
+const leaveDrawer = ref(false)
+const leaveSubmitting = ref(false)
+const leaveForm = reactive({
+  staffId: '',
+  type: '年假' as LeaveType,
+  startDate: '',
+  endDate: '',
+  reason: '',
+})
+const leaveFormError = ref('')
+
+function openLeaveDrawer() {
+  leaveForm.staffId = sc.staff[0]?.id ?? ''
+  leaveForm.type = '年假'
+  leaveForm.startDate = ''
+  leaveForm.endDate = ''
+  leaveForm.reason = ''
+  leaveFormError.value = ''
+  leaveDrawer.value = true
+}
+
+async function submitLeave() {
+  if (!leaveForm.staffId) { leaveFormError.value = '请选择员工'; return }
+  if (!leaveForm.startDate || !leaveForm.endDate) { leaveFormError.value = '请选择起止日期'; return }
+  if (leaveForm.endDate < leaveForm.startDate) { leaveFormError.value = '结束日期不能早于开始日期'; return }
+  if (!leaveForm.reason.trim()) { leaveFormError.value = '请填写请假事由'; return }
+  leaveFormError.value = ''
+  leaveSubmitting.value = true
+  const ok = await sc.submitLeave({
+    staffId: leaveForm.staffId,
+    type: leaveForm.type,
+    startDate: leaveForm.startDate,
+    endDate: leaveForm.endDate,
+    reason: leaveForm.reason.trim(),
+  })
+  leaveSubmitting.value = false
+  if (ok) leaveDrawer.value = false
+}
+
+async function runWeek(action: 'generate' | 'copy') {
+  weekBusy.value = true
+  try {
+    await sc.runWeekAction(action)
+  } finally {
+    weekBusy.value = false
+  }
+}
 
 const kpi = computed(() => ({
   onDuty: sc.todayOnDuty,
@@ -53,7 +108,7 @@ function fmtWeekRange() {
 function leaveTypePill(t: string) {
   if (t === '年假') return { status: 'primary' as const }
   if (t === '病假') return { status: 'danger' as const }
-  if (t === '换班') return { status: 'info' as const }
+  if (t === '事假') return { status: 'info' as const }
   return { status: 'default' as const }
 }
 </script>
@@ -65,7 +120,7 @@ function leaveTypePill(t: string) {
       <CKpi :value="String(kpi.onDuty)" label="今日在岗" tone="success" icon="profile" />
       <CKpi :value="String(kpi.late)" label="今日迟到" tone="warning" icon="profile" />
       <CKpi :value="String(kpi.absent)" label="今日缺勤" tone="danger" icon="profile" />
-      <CKpi :value="String(kpi.pending)" label="待批请假/换班" tone="brand" icon="profile" />
+      <CKpi :value="String(kpi.pending)" label="待批请假" tone="brand" icon="profile" />
     </div>
 
     <div class="sch__body">
@@ -80,6 +135,10 @@ function leaveTypePill(t: string) {
             <CButton variant="ghost" size="sm" @click="sc.weekOffset--"><CIcon name="chevron-left" :size="14" /></CButton>
             <CButton variant="ghost" size="sm" @click="sc.weekOffset = 0">本周</CButton>
             <CButton variant="ghost" size="sm" @click="sc.weekOffset++"><CIcon name="chevron-right" :size="14" /></CButton>
+            <template v-if="canEdit">
+              <CButton variant="ghost" size="sm" :disabled="weekBusy" @click="runWeek('copy')">复制上周</CButton>
+              <CButton variant="ghost" size="sm" :disabled="weekBusy" @click="runWeek('generate')">生成周例</CButton>
+            </template>
           </div>
         </div>
         <div class="sch__legend">
@@ -135,7 +194,13 @@ function leaveTypePill(t: string) {
           </div>
         </CCard>
 
-        <CCard title="请假 / 换班审批" padding="none" class="sch__leave">
+        <CCard padding="none" class="sch__leave">
+          <template #header>
+            <h3 class="card__title">请假审批</h3>
+            <CButton v-if="canEdit" variant="primary" size="sm" @click="openLeaveDrawer">
+              <CIcon name="plus" :size="14" /> 请假登记
+            </CButton>
+          </template>
           <div class="lv__rows">
             <div v-for="l in sc.leaves" :key="l.id" class="lv">
               <div class="lv__top">
@@ -147,18 +212,67 @@ function leaveTypePill(t: string) {
               <div class="lv__meta">
                 <span class="lv__type" :class="'lv__type--' + leaveTypePill(l.type).status">{{ l.type }}</span>
                 <span>{{ l.startDate }} 至 {{ l.endDate }}</span>
+                <span class="lv__no">{{ l.leaveNo }}</span>
               </div>
               <p class="lv__reason">{{ l.reason }}</p>
+              <p v-if="l.status === 'REJECTED' && l.rejectReason" class="lv__reject">驳回原因：{{ l.rejectReason }}</p>
               <div v-if="l.status === 'PENDING' && canApprove" class="lv__ops">
                 <CButton variant="danger" size="sm" @click="sc.approveLeave(l.id, false)">驳回</CButton>
                 <CButton variant="primary" size="sm" @click="sc.approveLeave(l.id, true)">批准</CButton>
               </div>
               <div v-else-if="l.reviewer" class="lv__reviewer">审批人：{{ l.reviewer }}</div>
             </div>
+            <div v-if="sc.leaves.length === 0" class="att__empty">暂无请假记录</div>
           </div>
         </CCard>
       </div>
     </div>
+
+    <!-- 请假登记抽屉 -->
+    <CDrawer v-model:show="leaveDrawer" title="请假登记" size="sm">
+      <div class="lv-form">
+        <label class="lv-form__item">
+          <span class="lv-form__label">员工</span>
+          <CSelect
+            :model-value="leaveForm.staffId"
+            :options="sc.staff.map(s => ({ label: `${s.name}（${s.role}）`, value: s.id }))"
+            placeholder="请选择员工"
+            width="100%"
+            @update:model-value="(v: string) => (leaveForm.staffId = v)"
+          />
+        </label>
+        <label class="lv-form__item">
+          <span class="lv-form__label">请假类型</span>
+          <CSelect
+            :model-value="leaveForm.type"
+            :options="LEAVE_TYPES.map(t => ({ label: t, value: t }))"
+            width="100%"
+            @update:model-value="(v: string) => (leaveForm.type = v as LeaveType)"
+          />
+        </label>
+        <div class="lv-form__row">
+          <label class="lv-form__item">
+            <span class="lv-form__label">开始日期</span>
+            <CInput v-model="leaveForm.startDate" type="date" />
+          </label>
+          <label class="lv-form__item">
+            <span class="lv-form__label">结束日期</span>
+            <CInput v-model="leaveForm.endDate" type="date" />
+          </label>
+        </div>
+        <label class="lv-form__item">
+          <span class="lv-form__label">请假事由</span>
+          <CTextarea v-model="leaveForm.reason" :rows="4" placeholder="请填写请假事由" />
+        </label>
+        <p v-if="leaveFormError" class="lv-form__error">{{ leaveFormError }}</p>
+      </div>
+      <template #footer>
+        <CButton variant="ghost" :disabled="leaveSubmitting" @click="leaveDrawer = false">取消</CButton>
+        <CButton variant="primary" :disabled="leaveSubmitting" @click="submitLeave">
+          {{ leaveSubmitting ? '提交中…' : '提交登记' }}
+        </CButton>
+      </template>
+    </CDrawer>
   </div>
 </template>
 
@@ -214,8 +328,17 @@ td.grid__staff { display: flex; align-items: center; gap: var(--s-sm); text-alig
 .lv__type--info { background: rgba(107,138,255,.12); color: var(--c-brand-secondary); }
 .lv__type--default { background: var(--c-surface-muted, #f0f2f5); color: var(--c-text-2); }
 .lv__reason { margin: 0 0 var(--s-sm); font-size: var(--t-xs); color: var(--c-text-2); line-height: 1.5; }
+.lv__no { margin-left: auto; font-size: 10px; color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+.lv__reject { margin: 0 0 var(--s-sm); font-size: var(--t-xs); color: var(--c-danger-fg); line-height: 1.5; }
 .lv__ops { display: flex; gap: var(--s-xs); justify-content: flex-end; }
 .lv__reviewer { font-size: 10px; color: var(--c-text-3); text-align: right; }
+
+/* 请假登记抽屉 */
+.lv-form { display: flex; flex-direction: column; gap: var(--s-md); }
+.lv-form__item { display: flex; flex-direction: column; gap: 6px; }
+.lv-form__row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-sm); }
+.lv-form__label { font-size: 13px; color: var(--c-text); line-height: 18px; font-weight: 600; }
+.lv-form__error { margin: 0; font-size: var(--t-xs); color: var(--c-danger-fg); }
 
 @media (max-width: 900px) {
   .sch__body { grid-template-columns: 1fr; }

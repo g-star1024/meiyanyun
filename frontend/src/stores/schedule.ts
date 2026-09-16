@@ -1,11 +1,12 @@
 // ============================================================
-// Schedule 排班考勤 store（M2-03，B54 卡3 接真）
-// 周视图排班已接真实 org-service（/api/org/schedule）：周视图读 + 单日改班 + 周例铺底。
+// Schedule 排班考勤 store（M2-03，B54 卡3/卡5 接真）
+// 周视图排班已接真实 org-service（/api/org/schedule）：周视图读 + 单日改班 + 周例铺底 + 复制上周；
+// 请假域（B54 卡5）已接真：登记 / 列表 / 批准（联动写 LEAVE OVERRIDE）/ 驳回。
 //
 // 诚实空态（铁律：不造后端没有的字段/功能）：
-//  - 考勤打卡、请假/换班审批后端尚无端点，attendance/leaves 恒空，KPI 迟到/缺勤/待批恒 0；
-//    视图原有「今日考勤」「请假审批」卡片按既有空态文案呈现，approveLeave 为无数据兜底。
+//  - 考勤打卡后端尚无端点，attendance 恒空，KPI 迟到/缺勤恒 0，「今日考勤」卡片维持空态。
 //  - 未排班日期后端不返回行，shiftOf 返 NONE（区别于 OFF 休息），不替用户造班。
+//  - 请假类型只收 年假/事假/病假（换班历史占位不接收新登记）；LEAVE 只能由真实请假单批准产生。
 //
 // 班次五态唯一事实源在后端 ScheduleController.SHIFT_CODES（字典）与 internal resolve 钟点窗；
 // 下方 SHIFTS 常量仅做镜像（文案/颜色/钟点），卡4 M1 时间轴改走 resolve 真窗。
@@ -17,9 +18,13 @@ import { useAuthStore } from './auth'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from './m5Coupon'
 import {
-  getScheduleWeek, setStaffShift,
+  getScheduleWeek, setStaffShift, generateWeek as apiGenerateWeek, copyWeek as apiCopyWeek,
+  listLeaves, applyLeave as apiApplyLeave, approveLeave as apiApproveLeave,
+  rejectLeave as apiRejectLeave,
   type ShiftCode as ApiShiftCode,
   type ScheduleStaffDTO,
+  type LeaveRequestDTO,
+  type LeaveApplyCmd,
 } from '@/api/schedule'
 
 /** 五态 + NONE 空态（NONE 仅前端表示「未排班」，不提交后端、不参与循环切换）。 */
@@ -47,15 +52,17 @@ export interface AttendanceRecord {
 
 export interface LeaveRequest {
   id: string
+  leaveNo: string
   staffId: string
   staffName: string
-  type: '年假' | '事假' | '病假' | '换班'
+  type: '年假' | '事假' | '病假'
   startDate: string
   endDate: string
   reason: string
   status: LeaveStatus
   appliedAt: string
   reviewer?: string
+  rejectReason?: string
 }
 
 /** 镜像后端 ScheduleController：文案/可派钟点窗以后端为事实源，颜色为前端展示层唯一增量。 */
@@ -98,6 +105,23 @@ function adaptStaff(s: ScheduleStaffDTO): Staff {
     name: s.staffName,
     role: ROLE_LABELS[s.roleCode] ?? s.roleCode,
     avatarColor: avatarColorOf(s.staffId),
+  }
+}
+
+function adaptLeave(l: LeaveRequestDTO): LeaveRequest {
+  return {
+    id: String(l.id),
+    leaveNo: l.leaveNo,
+    staffId: l.staffId,
+    staffName: l.staffName,
+    type: l.type as LeaveRequest['type'],
+    startDate: l.startDate,
+    endDate: l.endDate,
+    reason: l.reason,
+    status: l.status as LeaveStatus,
+    appliedAt: l.appliedAt,
+    reviewer: l.reviewerName ?? undefined,
+    rejectReason: l.rejectReason ?? undefined,
   }
 }
 
@@ -173,9 +197,71 @@ export const useScheduleStore = defineStore('schedule', () => {
     }
   }
 
-  /** 后端尚无请假审批端点：无真实数据可批，保留签名供视图调用，不做任何本地假写。 */
-  function approveLeave(_id: string, _approved: boolean) {
-    // no-op（诚实空态，待请假审批后端立项）
+  /**
+   * 请假审批：批准调 approve（后端区间联动写 LEAVE OVERRIDE，随后重载周网格显假）；
+   * 驳回调 reject（不动排班）。成功后刷新请假列表，错误透传后端中文文案。
+   */
+  async function decideLeave(id: string, approved: boolean): Promise<boolean> {
+    if (!auth.can('schedule:approve')) return false
+    try {
+      if (approved) {
+        const res = await apiApproveLeave(id)
+        toast.success(`已批准 ${res.data.leaveNo}，请假期间班次已置为请假`)
+        const s = staff.value.find((x) => x.id === res.data.staffId)
+        activity.log(auth.user.name, `请假批准：${s?.name ?? res.data.staffName} ${res.data.startDate} 至 ${res.data.endDate}`, res.data.leaveNo)
+        await load()
+      } else {
+        const res = await apiRejectLeave(id)
+        toast.success(`已驳回 ${res.data.leaveNo}`)
+        const s = staff.value.find((x) => x.id === res.data.staffId)
+        activity.log(auth.user.name, `请假驳回：${s?.name ?? res.data.staffName} ${res.data.leaveNo}`, res.data.leaveNo)
+      }
+      await loadLeaves()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, approved ? '批准失败' : '驳回失败'))
+      return false
+    }
+  }
+
+  /** 兼容视图既有签名：approveLeave(id, approved) 委托 decideLeave。 */
+  function approveLeave(id: string, approved: boolean) {
+    void decideLeave(id, approved)
+  }
+
+  /** 请假登记（schedule:edit）：成功刷新待批列表并关弹层（由调用方据返回值处理）。 */
+  async function submitLeave(cmd: LeaveApplyCmd): Promise<boolean> {
+    if (!auth.can('schedule:edit')) return false
+    try {
+      const res = await apiApplyLeave(cmd)
+      toast.success(`请假单 ${res.data.leaveNo} 已提交，待审批`)
+      const s = staff.value.find((x) => x.id === cmd.staffId)
+      activity.log(auth.user.name, `请假登记：${s?.name ?? res.data.staffName} ${cmd.type} ${cmd.startDate} 至 ${cmd.endDate}`, res.data.leaveNo)
+      await loadLeaves()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '请假登记失败'))
+      return false
+    }
+  }
+
+  /** 周动作：铺底（generate）/ 复制上周（copy），成功后按当前周真源重载。 */
+  async function runWeekAction(action: 'generate' | 'copy'): Promise<boolean> {
+    if (!auth.can('schedule:edit')) return false
+    const monday = dayKey(weekStart.value)
+    const verb = action === 'generate' ? '铺底' : '复制'
+    try {
+      const res = action === 'generate'
+        ? await apiGenerateWeek(monday)
+        : await apiCopyWeek(monday)
+      toast.success(`已${verb} ${res.data.created} 个班次，跳过既有 ${res.data.skipped} 个`)
+      activity.log(auth.user.name, `排班${verb}：${res.data.weekStart} 周，新建 ${res.data.created} / 跳过 ${res.data.skipped}`, `week@${res.data.weekStart}`)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, `排班${verb}失败`))
+      return false
+    }
   }
 
   function attendanceOf(_dateKey: string): AttendanceRecord[] {
@@ -210,9 +296,21 @@ export const useScheduleStore = defineStore('schedule', () => {
     }
   }
 
+  /** 拉取真实请假单列表（数据域内在职员工，登记时间倒序）。 */
+  async function loadLeaves(): Promise<void> {
+    try {
+      const res = await listLeaves()
+      leaves.value = (res.data ?? []).map(adaptLeave)
+    } catch (e) {
+      leaves.value = []
+      toast.error(errMsg(e, '请假单加载失败'))
+    }
+  }
+
   /** 视图 onMounted 入口（沿用旧名 seed，内部即真实加载）。 */
   function seed() {
     void load()
+    void loadLeaves()
   }
 
   // 上周/下周导航：周偏移变化后自动按新周真源重载
@@ -223,6 +321,7 @@ export const useScheduleStore = defineStore('schedule', () => {
   return {
     staff, shifts, attendance, leaves, weekOffset, weekStart, days, loading,
     pendingLeaves, todayOnDuty, lateToday, absentToday,
-    shiftOf, setShift, approveLeave, attendanceOf, SHIFTS, seed, load,
+    shiftOf, setShift, approveLeave, decideLeave, submitLeave, runWeekAction,
+    attendanceOf, SHIFTS, seed, load, loadLeaves,
   }
 })

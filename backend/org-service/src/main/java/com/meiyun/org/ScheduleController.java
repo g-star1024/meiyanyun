@@ -30,7 +30,8 @@ import java.util.Optional;
  * 数据域：员工集走门店数据域（STORE 本店 / REGION 本区门店 / GROUP 全量），大区编制账号
  * （store_code 为空）不参与门店排班；单日写越权员工统一 404「数据不存在或无权查看」。
  *
- * <p>审计：bizType=SCHEDULE，动作 SET（单日改班）/ GENERATE_WEEK（周例铺底），payload 合法 JSON；
+ * <p>审计：bizType=SCHEDULE，动作 SET（单日改班）/ GENERATE_WEEK（周例铺底）/ COPY_WEEK（复制上周），
+ * payload 合法 JSON；
  * 同码重复提交幂等返回、不重复记审计；周例不覆盖已存在行（保留手工调整）。
  */
 @RestController
@@ -49,11 +50,14 @@ public class ScheduleController {
 
     private final StaffRepository staffRepo;
     private final StaffShiftRepository shiftRepo;
+    private final ShiftUpsertService shiftUpsert;
     private final AuditRecorder audit;
 
-    public ScheduleController(StaffRepository staffRepo, StaffShiftRepository shiftRepo, AuditRecorder audit) {
+    public ScheduleController(StaffRepository staffRepo, StaffShiftRepository shiftRepo,
+                              ShiftUpsertService shiftUpsert, AuditRecorder audit) {
         this.staffRepo = staffRepo;
         this.shiftRepo = shiftRepo;
+        this.shiftUpsert = shiftUpsert;
         this.audit = audit;
     }
 
@@ -216,6 +220,29 @@ public class ScheduleController {
     }
 
     /**
+     * 复制上周（B54 卡5）：POST /api/org/schedule/copy-week，body={weekStart?(yyyy-MM-dd)}。
+     * 把目标周上一周（weekStart-7 ~ weekStart-1）数据域内在职员工的真实班次复制到目标周：
+     * 目标日已有行一律跳过（保留手工调整与请假联动），LEAVE 行不复制（LEAVE 只由请假单批准产生），
+     * 复制行落 source=TEMPLATE。返回 created/skipped/staffCount，整动作一条 COPY_WEEK 审计。
+     */
+    @PostMapping("/schedule/copy-week")
+    @RequirePerm("schedule:edit")
+    @Transactional
+    public Map<String, Object> copyWeek(@RequestBody(required = false) CopyWeekRequest req) {
+        LocalDate monday = resolveMonday(req == null ? null : req.weekStart());
+        int[] counts = shiftUpsert.copyWeek(monday);
+
+        List<Staff> staff = staffRepo.findAll(activeStaffInScope(), Sort.by("staffId"));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("weekStart", monday.toString());
+        out.put("weekEnd", monday.plusDays(6).toString());
+        out.put("staffCount", staff.size());
+        out.put("created", counts[0]);
+        out.put("skipped", counts[1]);
+        return out;
+    }
+
+    /**
      * 服务间排班解析（B54 卡2，txn 调度派单真源）：GET /api/org/internal/schedule/resolve?staffId=&date=，
      * X-Internal-Token 系统身份（网关外 404 隐身）。返回该员工当日班次与可派钟点窗：
      * FULL 全天 09:00-20:00、MORNING 上午 09:00-14:00、MID 下午 14:00-20:00；
@@ -299,5 +326,8 @@ public class ScheduleController {
     }
 
     public record GenerateWeekRequest(String weekStart) {
+    }
+
+    public record CopyWeekRequest(String weekStart) {
     }
 }
