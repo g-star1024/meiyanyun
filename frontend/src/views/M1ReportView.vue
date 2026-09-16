@@ -83,20 +83,55 @@
           <!-- 最近生成记录 -->
           <div class="jobs">
             <div class="jobs__h">最近生成</div>
-            <div class="job" v-for="j in selJobs" :key="j.id">
+            <div class="jobwrap" v-for="j in selJobs" :key="j.id">
+            <div class="job">
               <div class="job__left">
                 <CStatusPill :status="jobStatus(j.status)">{{ STATUS_LABEL[j.status] }}</CStatusPill>
                 <span class="job__period">{{ j.period }} · {{ FORMAT_LABEL[j.format] }}</span>
                 <span v-if="j.rowCount" class="job__meta">{{ j.rowCount }} 行 · {{ j.fileSize }}</span>
+                <code v-if="j.contentHash" class="job__hash" :title="'SHA-256 指纹：' + j.contentHash">
+                  <CIcon name="shield" :size="11" /> {{ j.contentHash.slice(0, 12) }}…
+                </code>
                 <span v-if="j.error" class="job__err">{{ j.error }}</span>
               </div>
               <div class="job__right">
                 <span class="job__by">{{ j.createdBy }} · {{ j.createdAt }}</span>
+                <CButton v-if="j.status === 'READY'" size="sm" variant="ghost"
+                         :disabled="rp.verifyingIds.has(j.id)" @click="doVerify(j.id)">
+                  <CIcon :name="rp.verifyingIds.has(j.id) ? 'loading' : 'shield'" :size="13" />
+                  {{ rp.verifyingIds.has(j.id) ? '验真中…' : '哈希验真' }}
+                </CButton>
                 <CButton v-if="j.status === 'READY'" size="sm" variant="ghost" @click="download(j)">
                   <CIcon name="export" :size="13" /> 下载
                 </CButton>
                 <CButton v-if="j.status === 'FAILED' && canExport" size="sm" variant="ghost" @click="rp.retry(j.id)">重试</CButton>
               </div>
+            </div>
+            <!-- B56 验真结果（四态：MATCH 绿 / MISMATCH 红 / 两历史空态灰） -->
+            <div v-if="vfyRes(j.id)" class="vfy" :class="vfyTone(vfyRes(j.id)!.reason)">
+              <div class="vfy__head">
+                <CIcon :name="vfyIcon(vfyRes(j.id)!.reason)" :size="15" />
+                <span class="vfy__concl">{{ vfyRes(j.id)!.conclusion }}</span>
+                <span class="vfy__tag">{{ VFY_REASON_LABEL[vfyRes(j.id)!.reason] }}</span>
+                <span class="vfy__time">验真于 {{ vfyRes(j.id)!.verifiedAt }}</span>
+              </div>
+              <div v-if="vfyRes(j.id)!.fileName" class="vfy__file">
+                <CIcon name="export" :size="11" /> {{ vfyRes(j.id)!.fileName }}
+                <span class="vfy__time">（生成于 {{ vfyRes(j.id)!.generatedAt }}）</span>
+              </div>
+              <div v-if="vfyRes(j.id)!.expectedHash" class="vfy__hash">
+                <span class="vfy__hash-l">落库指纹</span>
+                <code>{{ vfyRes(j.id)!.expectedHash }}</code>
+              </div>
+              <div v-if="vfyRes(j.id)!.actualHash && vfyRes(j.id)!.actualHash !== vfyRes(j.id)!.expectedHash" class="vfy__hash">
+                <span class="vfy__hash-l">当前重算</span>
+                <code>{{ vfyRes(j.id)!.actualHash }}</code>
+              </div>
+              <div v-else-if="vfyRes(j.id)!.actualHash && !vfyRes(j.id)!.expectedHash" class="vfy__hash">
+                <span class="vfy__hash-l">当前哈希</span>
+                <code>{{ vfyRes(j.id)!.actualHash }}</code>
+              </div>
+            </div>
             </div>
             <div v-if="!selJobs.length" class="empty">暂无生成记录</div>
           </div>
@@ -116,7 +151,8 @@ import CTable from '@/components/CTable.vue'
 import CSelect from '@/components/CSelect.vue'
 import CKpi from '@/components/CKpi.vue'
 import { useM1ReportStore, CAT_LABEL, STATUS_LABEL, FORMAT_LABEL,
-  type ReportStatus, type ExportFormat, type ReportJob, type ReportPreview } from '@/stores/m1Report'
+  type ReportStatus, type ExportFormat, type ReportJob, type ReportPreview,
+  type ReportVerifyResult, type ReportVerifyReason } from '@/stores/m1Report'
 import { useAuthStore } from '@/stores/auth'
 
 const PERIOD_LABEL: Record<string, string> = { DAY: '日报', WEEK: '周报', MONTH: '月报', QUARTER: '季报', YEAR: '年报', RANGE: '自定义' }
@@ -195,6 +231,24 @@ async function download(j: ReportJob) {
 function jobStatus(s: ReportStatus): 'success' | 'warning' | 'danger' {
   return s === 'READY' ? 'success' : s === 'GENERATING' ? 'warning' : 'danger'
 }
+
+// B56 哈希验真：结果按 jobId 取（store 留存），四态映射到面板色调/图标/中文标签
+const VFY_REASON_LABEL: Record<ReportVerifyReason, string> = {
+  MATCH: '指纹一致',
+  MISMATCH: '指纹不一致',
+  HASH_NOT_RECORDED: '历史无指纹',
+  HISTORICAL_NOT_RETAINED: '历史文件未留存',
+}
+function vfyRes(jobId: string): ReportVerifyResult | undefined {
+  return rp.verifyResults[jobId]
+}
+function doVerify(jobId: string) { void rp.verify(jobId) }
+function vfyTone(reason: ReportVerifyReason): 'ok' | 'bad' | 'dim' {
+  return reason === 'MATCH' ? 'ok' : reason === 'MISMATCH' ? 'bad' : 'dim'
+}
+function vfyIcon(reason: ReportVerifyReason): 'check-square' | 'alert' | 'clock' {
+  return reason === 'MATCH' ? 'check-square' : reason === 'MISMATCH' ? 'alert' : 'clock'
+}
 void CAT_LABEL
 </script>
 
@@ -242,13 +296,31 @@ void CAT_LABEL
 .preview__h { font-weight: 600; font-size: var(--t-sm); margin-bottom: var(--s-sm); }
 .jobs__h { font-weight: 600; font-size: var(--t-sm); margin-bottom: var(--s-xs); padding-top: var(--s-md); border-top: 1px solid var(--c-border); }
 .job { display: flex; justify-content: space-between; align-items: center; padding: var(--s-sm) 0; border-bottom: 1px solid var(--c-border); gap: var(--s-sm); }
-.job:last-child { border-bottom: none; }
+.jobwrap:last-child .job { border-bottom: none; }
 .job__left { display: flex; align-items: center; gap: var(--s-sm); flex-wrap: wrap; font-size: var(--t-xs); }
 .job__period { font-weight: 600; }
 .job__meta { color: var(--c-text-3); }
+.job__hash { display: inline-flex; align-items: center; gap: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--c-text-3); background: var(--c-surface-muted); border-radius: var(--r-sm); padding: 2px 7px; cursor: help; }
+.job__hash svg { color: var(--c-brand); }
 .job__err { color: var(--c-danger-fg); }
 .job__right { display: flex; align-items: center; gap: var(--s-xs); flex-shrink: 0; }
 .job__by { font-size: 10px; color: var(--c-text-3); }
+/* B56 验真结果卡：左色条+底色随四态（MATCH 绿 / MISMATCH 红 / 历史空态灰） */
+.vfy { margin: var(--s-xs) 0 var(--s-sm); padding: var(--s-sm) var(--s-md); border-radius: var(--r-md); font-size: var(--t-xs); line-height: 1.7; }
+.vfy.ok { background: var(--c-success-bg); box-shadow: inset 3px 0 0 var(--c-success-fg); }
+.vfy.ok .vfy__head svg { color: var(--c-success-fg); }
+.vfy.bad { background: var(--c-danger-bg); box-shadow: inset 3px 0 0 var(--c-danger-fg); }
+.vfy.bad .vfy__head svg, .vfy.bad .vfy__concl { color: var(--c-danger-fg); }
+.vfy.dim { background: var(--c-surface-muted); box-shadow: inset 3px 0 0 var(--c-text-3); }
+.vfy.dim .vfy__head svg { color: var(--c-text-3); }
+.vfy__head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.vfy__concl { font-weight: 600; }
+.vfy__tag { padding: 1px 8px; border-radius: var(--r-sm); background: rgba(0,0,0,.06); font-size: 10px; color: var(--c-text-2); }
+.vfy__time { color: var(--c-text-3); font-size: 10px; }
+.vfy__file { display: flex; align-items: center; gap: 4px; color: var(--c-text-2); margin-top: 2px; }
+.vfy__hash { display: flex; align-items: baseline; gap: var(--s-sm); margin-top: 2px; }
+.vfy__hash-l { color: var(--c-text-3); flex-shrink: 0; }
+.vfy__hash code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10px; color: var(--c-text-2); word-break: break-all; }
 .empty { text-align: center; color: var(--c-text-3); font-size: var(--t-sm); padding: var(--s-xl) 0; }
 @media (max-width: 900px) { .rp__body { grid-template-columns: 1fr; } .detail__grid { grid-template-columns: 1fr; } }
 </style>

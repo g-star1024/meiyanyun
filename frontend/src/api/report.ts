@@ -39,6 +39,24 @@ export interface ReportJobView {
   rowCount?: number
   fileSize?: string
   error?: string
+  /** SHA-256(content 含 BOM) 64 位小写 hex（B56）；B56 前老行不带 */
+  contentHash?: string
+}
+
+/** B56 验真结果（与后端 ReportService.verify 契约对齐） */
+export type ReportVerifyReason = 'MATCH' | 'MISMATCH' | 'HASH_NOT_RECORDED' | 'HISTORICAL_NOT_RETAINED'
+export interface ReportVerifyResult {
+  jobId: string
+  templateName: string
+  period: string
+  fileName: string | null
+  expectedHash: string | null
+  generatedAt: string
+  verifiedAt: string
+  actualHash?: string
+  ok: boolean
+  reason: ReportVerifyReason
+  conclusion: string
 }
 
 /** 数据预览（rows 为字符串矩阵，最多 50 行） */
@@ -65,6 +83,10 @@ export const generateReport = (body: { templateId: string; period?: string; form
 
 export const retryReportJob = (jobId: string) =>
   client.post<ReportJobView>(`/finance/report/jobs/${encodeURIComponent(jobId)}/retry`)
+
+/** B56 哈希验真：后端对当前 content 重算 SHA-256 与生成时指纹常量时间比对（只读 report:view）。 */
+export const verifyReportJob = (jobId: string) =>
+  client.get<ReportVerifyResult>(`/finance/report/jobs/${encodeURIComponent(jobId)}/verify`)
 
 /** 下载真实 CSV（blob）。responseType=blob 时错误体同为 Blob，需先还原 JSON 取中文 message 再抛。 */
 export const downloadReportJob = async (jobId: string): Promise<{ blob: Blob; filename: string }> => {

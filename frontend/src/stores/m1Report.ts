@@ -9,9 +9,9 @@ import { ref, computed } from 'vue'
 import * as api from '@/api/report'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
-import type { ReportCategory, ReportStatus, ExportFormat, ReportTemplateView, ReportJobView, ReportPreview } from '@/api/report'
+import type { ReportCategory, ReportStatus, ExportFormat, ReportTemplateView, ReportJobView, ReportPreview, ReportVerifyResult } from '@/api/report'
 
-export type { ReportCategory, ReportStatus, ExportFormat, ReportPeriod, ReportTemplateView, ReportJobView, ReportPreview } from '@/api/report'
+export type { ReportCategory, ReportStatus, ExportFormat, ReportPeriod, ReportTemplateView, ReportJobView, ReportPreview, ReportVerifyResult, ReportVerifyReason } from '@/api/report'
 export type ReportTemplate = ReportTemplateView
 export type ReportJob = ReportJobView
 
@@ -27,6 +27,9 @@ export const useM1ReportStore = defineStore('m1Report', () => {
   const templates = ref<ReportTemplateView[]>([])
   const jobs = ref<ReportJobView[]>([])
   const loaded = ref(false)
+  // B56：验真结果按 jobId 留存（轮询整包替换 jobs 时不丢），verifying 承载按钮 loading
+  const verifyResults = ref<Record<string, ReportVerifyResult>>({})
+  const verifyingIds = ref<Set<string>>(new Set())
 
   async function seed() {
     if (loaded.value) return
@@ -100,6 +103,23 @@ export const useM1ReportStore = defineStore('m1Report', () => {
     }
   }
 
+  // B56 哈希验真：结果留 verifyResults（成功/业务空态均留），网络/权限异常 toast 且不留结果
+  async function verify(jobId: string) {
+    if (verifyingIds.value.has(jobId)) return
+    verifyingIds.value.add(jobId)
+    verifyingIds.value = new Set(verifyingIds.value)
+    try {
+      const r = await api.verifyReportJob(jobId)
+      verifyResults.value[jobId] = r.data
+      verifyResults.value = { ...verifyResults.value }
+    } catch (e) {
+      toast.error(errMsg(e, '验真失败'))
+    } finally {
+      verifyingIds.value.delete(jobId)
+      verifyingIds.value = new Set(verifyingIds.value)
+    }
+  }
+
   function upsertJob(job: ReportJobView) {
     const i = jobs.value.findIndex((x) => x.id === job.id)
     if (i >= 0) jobs.value[i] = job
@@ -131,6 +151,7 @@ export const useM1ReportStore = defineStore('m1Report', () => {
 
   return {
     templates, jobs, loaded, seed, catFilter, filtered, subscribedCount,
-    isSupported, toggleSubscribe, generate, retry, download, preview,
+    isSupported, toggleSubscribe, generate, retry, download, preview, verify,
+    verifyResults, verifyingIds,
   }
 })
