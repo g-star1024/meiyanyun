@@ -1,7 +1,6 @@
 package com.meiyun.org;
 
 import com.meiyun.org.audit.AuditRecorder;
-import com.meiyun.security.DataScope;
 import com.meiyun.security.JwtTokenUtil;
 import com.meiyun.security.LoginUser;
 import com.meiyun.security.SecurityContext;
@@ -181,7 +180,7 @@ public class AuthController {
      * 开始代操作：仅真实超管（非链式）可发起，目标必须是「在职」非超管员工。
      * 签发 30 分钟短 token：sub/roles/perms/scope/stores 全部按目标身份组装（权限与数据域自然收窄），
      * realSub=真实超管、act=目标人；不滑动续期。同请求线程经 RestAuditRecorder 写
-     * COMPLIANCE/IMPERSONATE_START 审计（actor 由审计边界收敛为 realSub，payload 注入 act/realSub）。
+     * COMPLIANCE/IMPERSONATE_START 审计（actor=真实超管，payload 显式携带 act/realSub 双标记）。
      */
     @PostMapping("/impersonate")
     public Map<String, Object> impersonate(@RequestBody Map<String, String> body) {
@@ -221,10 +220,12 @@ public class AuthController {
                 current.staffId(), target.getStaffId(), ttl);
 
         String payload = "{\"target\":" + jsonStr(target.getStaffId())
+                + ",\"realSub\":" + jsonStr(current.staffId())
+                + ",\"act\":" + jsonStr(target.getStaffId())
                 + ",\"ip\":\"web\",\"detail\":"
                 + jsonStr("以「" + target.getStaffName() + "」身份开始代操作，理由：" + reason)
                 + ",\"risk\":\"HIGH\"}";
-        audit.record("COMPLIANCE", null, DataScope.currentActor(), "IMPERSONATE_START", payload);
+        audit.record("COMPLIANCE", null, current.staffId(), "IMPERSONATE_START", payload);
         return result;
     }
 
@@ -259,10 +260,12 @@ public class AuthController {
                     Duration.between(Instant.ofEpochSecond(current.issuedAt()), Instant.now()).toMinutes());
         }
         String payload = "{\"target\":" + jsonStr(current.act())
+                + ",\"realSub\":" + jsonStr(realSub)
+                + ",\"act\":" + jsonStr(current.act())
                 + ",\"ip\":\"web\",\"detail\":"
                 + jsonStr("结束代操作，会话时长 " + minutes + " 分钟")
                 + ",\"risk\":\"MEDIUM\"}";
-        audit.record("COMPLIANCE", null, DataScope.currentRealActor(), "IMPERSONATE_END", payload);
+        audit.record("COMPLIANCE", null, realSub, "IMPERSONATE_END", payload);
 
         return issueFor(real, realRoles, false, null, null, securityProps.getTtl());
     }
