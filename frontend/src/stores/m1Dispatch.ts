@@ -13,7 +13,9 @@ import { shDateStr } from '@/utils/datetime'
 // - 数据源：/api/txn/dispatch（txn 聚合 org 医生 + store 治疗室 + store NORMAL 态设备）
 // - Job = 当日「已预约/已到店」且无活跃派单的预约（已到店排前）；派单 start 支持自由选时（B52 卡2，缺省回落 apptTime）
 // - Assignment 随 Resource 行内联返回（SCHEDULED/IN_PROGRESS/DONE 回显；RELEASED 保留行不回读）
-// - durationMin 取预约 SKU 真源（无则回落 60，B51 卡6）、priority 全 NORMAL、班次固定 09:00-20:00（无源，见 Backlog）
+// - durationMin 取预约 SKU 真源（无则回落 60，B51 卡6）、priority 全 NORMAL
+// - B54 卡4：医生钟点窗/班次态取 staff_shift 真源（OFF/LEAVE 权威无窗，无排班/服务异常软降级营业窗+degraded），
+//   时间轴坐标空间按当日资源窗动态生成（axisFor），不再写死 09:00-20:00；房间/设备不排班恒营业窗
 // ============================================================
 
 export type ResourceType = DispatchResourceType
@@ -25,9 +27,13 @@ export interface Resource {
   name: string
   title?: string
   room?: string
-  workStart: string // "09:00"
-  workEnd: string   // "20:00"
+  workStart: string | null // "09:00"；医生 OFF/LEAVE 当日权威无窗为 null
+  workEnd: string | null   // "20:00"
   status: 'ON' | 'OFF'
+  shiftCode: string | null
+  shiftLabel: string | null
+  source: string | null
+  degraded: boolean
 }
 
 export interface Job {
@@ -57,18 +63,23 @@ export interface Assignment {
   status: 'SCHEDULED' | 'IN_PROGRESS' | 'DONE'
 }
 
-// 半小时时段（9:00-20:00，共22格）
-export const SLOTS: string[] = (() => {
-  const arr: string[] = []
-  for (let h = 9; h < 20; h++) {
-    arr.push(`${String(h).padStart(2, '0')}:00`)
-    arr.push(`${String(h).padStart(2, '0')}:30`)
-  }
-  arr.push('20:00')
-  return arr
-})()
+// 时间轴兜底窗（无任何资源窗时回落；医生无排班行/org 异常时后端亦软降级到此窗并标 degraded）
+const AXIS_FALLBACK_START = 9 * 60
+const AXIS_FALLBACK_END = 20 * 60
+const AXIS_STEP_MIN = 30
 
 function toMin(t: string) { const [h, m] = t.split(':').map(Number); return h * 60 + m }
+function toHHMM(m: number) {
+  return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`
+}
+
+/** 按 30 分钟步长生成 [start, end] 刻度数组（含终点；格数 = 刻度数 - 1）。 */
+function buildAxis(startMin: number, endMin: number): string[] {
+  const arr: string[] = []
+  for (let m = startMin; m < endMin; m += AXIS_STEP_MIN) arr.push(toHHMM(m))
+  arr.push(toHHMM(endMin))
+  return arr
+}
 
 function adaptResource(d: DispatchResourceDTO): Resource {
   return {
@@ -80,6 +91,10 @@ function adaptResource(d: DispatchResourceDTO): Resource {
     workStart: d.workStart,
     workEnd: d.workEnd,
     status: d.status === 'ON' ? 'ON' : 'OFF',
+    shiftCode: d.shiftCode ?? null,
+    shiftLabel: d.shiftLabel ?? null,
+    source: d.source ?? null,
+    degraded: d.degraded === true,
   }
 }
 
@@ -140,16 +155,37 @@ export const useM1DispatchStore = defineStore('m1Dispatch', () => {
     return assignments.value.find((a) => a.resourceId === resourceId && a.status !== 'DONE' && toMin(a.start) <= s && toMin(a.end) > s)
   }
 
-  // 利用率：已占用时段 / 工作时段（按30分钟格）
+  // 利用率：已占用时段 / 工作时段（按30分钟格；OFF/LEAVE 无窗恒 0）
   function utilization(r: Resource): number {
-    const total = (toMin(r.workEnd) - toMin(r.workStart)) / 30
+    if (!r.workStart || !r.workEnd) return 0
+    const ws = toMin(r.workStart)
+    const we = toMin(r.workEnd)
+    const total = (we - ws) / AXIS_STEP_MIN
     const occ = new Set<number>()
     for (const a of assignmentsOf(r.id)) {
-      for (let m = toMin(a.start); m < toMin(a.end); m += 30) {
-        if (m >= toMin(r.workStart) && m < toMin(r.workEnd)) occ.add(m)
+      for (let m = toMin(a.start); m < toMin(a.end); m += AXIS_STEP_MIN) {
+        if (m >= ws && m < we) occ.add(m)
       }
     }
     return total ? Math.round((occ.size / total) * 100) : 0
+  }
+
+  /**
+   * 时间轴坐标空间（B54 卡4）：取当前 tab 资源窗的最早开始/最晚结束并集，半小时刻度；
+   * 全部资源无窗（如当日医生全休）或无资源时回落营业窗 09:00-20:00，保证网格恒可渲染。
+   */
+  function axisFor(type: ResourceType): string[] {
+    let start = Infinity
+    let end = -Infinity
+    for (const r of resources.value) {
+      if (r.type !== type || !r.workStart || !r.workEnd) continue
+      start = Math.min(start, toMin(r.workStart))
+      end = Math.max(end, toMin(r.workEnd))
+    }
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      return buildAxis(AXIS_FALLBACK_START, AXIS_FALLBACK_END)
+    }
+    return buildAxis(start, end)
   }
 
   const stats = computed(() => {
@@ -199,10 +235,10 @@ export const useM1DispatchStore = defineStore('m1Dispatch', () => {
   function canDispatch(job: Job, resourceId: string, start: string): boolean {
     if (job.status !== 'PENDING') return false
     const r = resource(resourceId)
-    if (!r || r.status !== 'ON') return false
+    if (!r || r.status !== 'ON' || !r.workStart || !r.workEnd) return false
     const endMin = toMin(start) + job.durationMin
     if (toMin(start) < toMin(r.workStart) || endMin > toMin(r.workEnd)) return false
-    for (let m = toMin(start); m < endMin; m += 30) {
+    for (let m = toMin(start); m < endMin; m += AXIS_STEP_MIN) {
       const hh = String(Math.floor(m / 60)).padStart(2, '0')
       const mm = String(m % 60).padStart(2, '0')
       if (isSlotBusy(resourceId, `${hh}:${mm}`)) return false
@@ -242,8 +278,9 @@ export const useM1DispatchStore = defineStore('m1Dispatch', () => {
   }
 
   return {
-    resources, jobs, assignments, loaded, loading, bizDate, storeCode, SLOTS, RES_TYPE_LABEL,
+    resources, jobs, assignments, loaded, loading, bizDate, storeCode, RES_TYPE_LABEL,
     doctors, rooms, pendingJobs, stats,
+    axisFor,
     resource, assignmentsOf, isSlotBusy, utilization, canDispatch, dispatch, release, seed, load,
   }
 })

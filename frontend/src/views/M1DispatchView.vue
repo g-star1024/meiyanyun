@@ -75,23 +75,51 @@ async function release(a: Assignment) {
   dispatchMsg.value = `已释放 ${a.customerName} 的排班，工单回到待派单`
 }
 
-// 时间格占用定位：计算一个排班块在时间轴上的 left/width（按分钟比例）
+// B54 卡4：时间轴坐标空间按当前 tab 资源窗动态生成（医生以后端 staff_shift 钟点窗为准），
+// 全部无窗时 store 内回落营业窗；刻度/格网/块定位共用同一组轴边界
+const axis = computed(() => dp.axisFor(resTab.value))
+const axisStartMin = computed(() => toMin(axis.value[0]))
+const axisTotalMin = computed(() => toMin(axis.value[axis.value.length - 1]) - axisStartMin.value)
+const trackStyle = computed(() => ({ gridTemplateColumns: `repeat(${axis.value.length - 1}, 1fr)` }))
+
+// 时间格占用定位：计算一个排班块在时间轴上的 left/width（按分钟比例，越出动态轴部分裁掉）
 function blockStyle(a: Assignment) {
-  const startMin = toMin(a.start) - 9 * 60 // 轴从 9:00
-  const endMin = toMin(a.end) - 9 * 60
-  const total = (20 - 9) * 60
+  const startMin = toMin(a.start) - axisStartMin.value
+  const endMin = toMin(a.end) - axisStartMin.value
+  const total = axisTotalMin.value
   const leftPct = (Math.max(0, startMin) / total) * 100
   const widthPct = (Math.min(total, endMin) - Math.max(0, startMin)) / total * 100
   return { left: leftPct + '%', width: widthPct + '%' }
 }
 function toMin(t: string) { const [h, m] = t.split(':').map(Number); return h * 60 + m }
 
+// 班次可派窗在动态轴上的位置（无窗的 OFF/LEAVE 资源不渲染遮罩）
+function shiftStyle(r: Resource) {
+  if (!r.workStart || !r.workEnd) return null
+  const startMin = toMin(r.workStart) - axisStartMin.value
+  const widthMin = toMin(r.workEnd) - toMin(r.workStart)
+  return { left: (startMin / axisTotalMin.value) * 100 + '%', width: (widthMin / axisTotalMin.value) * 100 + '%' }
+}
+
+// 班次外格判定（无窗资源全部格子为班次外，显示斜纹不可点）
+function isOffShift(r: Resource, slot: string) {
+  if (!r.workStart || !r.workEnd) return true
+  const m = toMin(slot)
+  return m < toMin(r.workStart) || m >= toMin(r.workEnd)
+}
+
+// 资源副标题：有窗显钟点；无窗（休息/请假）显后端中文班次态；医生软降级补「未排班」提示
+function resSub(r: Resource) {
+  if (r.workStart && r.workEnd) return `${r.workStart}-${r.workEnd}`
+  return r.shiftLabel || '不在可派班次'
+}
+
 // 自由时段可点格（B52 卡2）：有活跃选单且资源在岗时，该资源班次内全部非占用格皆可点；
 // 时长/精细冲突不在此判定（仅按格 busy + 班次窗），点击时由 canDispatch 预检、后端 422/409 兜底
 function isJobSlot(r: Resource, slot: string) {
   return !!activeJob.value && r.status === 'ON'
     && !dp.isSlotBusy(r.id, slot)
-    && toMin(slot) >= toMin(r.workStart) && toMin(slot) < toMin(r.workEnd)
+    && !isOffShift(r, slot)
 }
 
 function asgTone(status: Assignment['status']) {
@@ -161,8 +189,8 @@ function utilTone(u: number) {
         <!-- 时间刻度 -->
         <div class="ruler">
           <div class="ruler__label">资源</div>
-          <div class="ruler__track">
-            <span v-for="s in dp.SLOTS" :key="s" class="tick" :class="{ 'tick--hour': s.endsWith(':00') }">{{ s.endsWith(':00') ? s : '' }}</span>
+          <div class="ruler__track" :style="trackStyle">
+            <span v-for="(s, i) in axis" :key="s" class="tick" :class="{ 'tick--hour': s.endsWith(':00'), 'tick--last': i === axis.length - 1 }">{{ s.endsWith(':00') ? s : '' }}</span>
           </div>
           <div class="ruler__util">利用率</div>
         </div>
@@ -171,21 +199,20 @@ function utilTone(u: number) {
           <div v-for="r in list" :key="r.id" class="row" :class="{ 'row--off': r.status === 'OFF' }">
             <div class="row__label">
               <div class="res-name">{{ r.name }}<span v-if="r.title" class="res-title">{{ r.title }}</span></div>
-              <div class="res-sub">{{ r.workStart }}-{{ r.workEnd }}<span v-if="r.room"> · {{ r.room }}</span></div>
+              <div class="res-sub">
+                {{ resSub(r) }}<span v-if="r.degraded" class="res-deg" title="排班服务暂无该员工当日班次，按门店营业窗 09:00-20:00 软降级显示">未排班</span><span v-if="r.room"> · {{ r.room }}</span>
+              </div>
             </div>
             <div class="row__track">
-              <!-- 班次遮罩（工作时段外灰） -->
-              <div
-                class="shift"
-                :style="{ left: (((toMin(r.workStart) - 540) / 660) * 100) + '%', width: (((toMin(r.workEnd) - toMin(r.workStart)) / 660) * 100) + '%' }"
-              ></div>
+              <!-- 班次遮罩（可派时段底色；OFF/LEAVE 无窗不渲染，全行斜纹） -->
+              <div v-if="shiftStyle(r)" class="shift" :style="shiftStyle(r)!"></div>
               <!-- 时间格（可点击派单） -->
-              <div class="cells">
+              <div class="cells" :style="trackStyle">
                 <div
-                  v-for="s in dp.SLOTS.slice(0, -1)" :key="s"
+                  v-for="s in axis.slice(0, -1)" :key="s"
                   class="cell"
                   :data-slot="s"
-                  :class="{ 'cell--busy': !!dp.isSlotBusy(r.id, s), 'cell--offshift': toMin(s) < toMin(r.workStart) || toMin(s) >= toMin(r.workEnd), 'cell--pickable': isJobSlot(r, s) }"
+                  :class="{ 'cell--busy': !!dp.isSlotBusy(r.id, s), 'cell--offshift': isOffShift(r, s), 'cell--pickable': isJobSlot(r, s) }"
                   @click="slotClick(r.id, s)"
                 ></div>
               </div>
@@ -262,9 +289,11 @@ function utilTone(u: number) {
 
 .ruler { display: grid; grid-template-columns: 140px 1fr 90px; align-items: center; padding: var(--s-sm) 0; border-bottom: 1px solid var(--c-border-light); background: var(--c-surface, #f7f8fa); position: sticky; top: 0; z-index: 2; }
 .ruler__label { font-size: var(--t-xs); color: var(--c-text-3); padding-left: var(--s-md); font-weight: 600; }
-.ruler__track { display: grid; grid-template-columns: repeat(22, 1fr); position: relative; height: 18px; }
-.tick { font-size: 10px; color: var(--c-text-3); border-left: 1px dotted var(--c-border); padding-left: 2px; }
+.ruler__track { display: grid; position: relative; height: 18px; }
+.tick { font-size: 10px; color: var(--c-text-3); border-left: 1px dotted var(--c-border); padding-left: 2px; white-space: nowrap; }
 .tick--hour { color: var(--c-text-2); border-left: 1px solid var(--c-border); font-weight: 600; }
+/* 动态轴终点刻度（原写死 22 格时末列无列宽承载，用负 margin 拉到轴线末端） */
+.tick--last { position: absolute; right: 0; border-left: none; padding-left: 0; transform: translateX(50%); }
 .ruler__util { font-size: var(--t-xs); color: var(--c-text-3); text-align: center; }
 
 .rows { max-height: calc(100vh - 360px); overflow-y: auto; }
@@ -274,10 +303,11 @@ function utilTone(u: number) {
 .row__label { padding: var(--s-sm) var(--s-md); display: flex; flex-direction: column; justify-content: center; gap: 2px; border-right: 1px solid var(--c-border-light); }
 .res-name { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); display: flex; align-items: center; gap: 6px; }
 .res-title { font-size: 11px; color: var(--c-text-3); font-weight: 400; }
-.res-sub { font-size: 11px; color: var(--c-text-3); }
+.res-sub { font-size: 11px; color: var(--c-text-3); display: flex; align-items: center; gap: 4px; }
+.res-deg { font-size: 10px; color: var(--c-warning-fg); background: var(--c-warning-bg, #FFF5E6); border-radius: var(--r-sm, 4px); padding: 0 4px; line-height: 14px; cursor: help; }
 .row__track { position: relative; }
 .shift { position: absolute; top: 4px; bottom: 4px; background: var(--c-surface, #f7f8fa); border-radius: var(--r-sm); z-index: 0; }
-.cells { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(22, 1fr); z-index: 1; }
+.cells { position: absolute; inset: 0; display: grid; z-index: 1; }
 .cell { border-right: 1px dotted var(--c-border-light); cursor: default; }
 .cell--offshift { background: repeating-linear-gradient(45deg, transparent, transparent 4px, rgba(0,0,0,.02) 4px, rgba(0,0,0,.02) 8px); }
 .cell--pickable:not(.cell--busy):not(.cell--offshift) { cursor: pointer; }

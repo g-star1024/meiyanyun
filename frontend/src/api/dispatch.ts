@@ -25,16 +25,29 @@ export interface DispatchAssignmentDTO {
   status: 'SCHEDULED' | 'IN_PROGRESS' | 'DONE' | string
 }
 
-/** 调度资源（医生/治疗室/设备；DEVICE 自 B51 卡4 接真=本店 NORMAL 态设备） */
+/**
+ * 调度资源（医生/治疗室/设备；DEVICE 自 B51 卡4 接真=本店 NORMAL 态设备）。
+ * B54 卡4：医生钟点窗/班次态取 staff_shift 真源——OFF/LEAVE 权威无窗（workStart/workEnd 为 null），
+ * 无排班行或 org 异常软降级营业窗且 degraded=true；房间/设备不排班，shift* 为 null、source=BUSINESS_HOURS。
+ */
 export interface DispatchResourceDTO {
   id: string
   type: DispatchResourceType
   name: string
   title: string | null
   room: string | null
-  workStart: string
-  workEnd: string
+  /** 班次钟点窗 "HH:mm"；医生休息/请假当日权威无窗为 null（时间轴不渲染可派区） */
+  workStart: string | null
+  workEnd: string | null
   status: 'ON' | 'OFF' | string
+  /** FULL/MORNING/MID/OFF/LEAVE；无排班行降级与房间/设备为 null */
+  shiftCode: string | null
+  /** 后端中文班次态（全天/上午/下午/休息/请假）；无班次为 null */
+  shiftLabel: string | null
+  /** TEMPLATE/OVERRIDE/BUSINESS_HOURS；软降级（无排班行/org 异常）为 null */
+  source: string | null
+  /** true=未经排班真源确认，钟点窗为营业窗软降级（医生无排班行/org 异常） */
+  degraded: boolean
   assignments: DispatchAssignmentDTO[]
 }
 

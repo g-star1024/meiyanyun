@@ -58,6 +58,8 @@ public class DispatchService {
     /** 营业窗（房间/设备资源窗，以及医生无排班行或 org 不可用时的软降级回落，B54 卡2）。 */
     public static final String WORK_START = "09:00";
     public static final String WORK_END = "20:00";
+    /** 房间/设备资源窗来源标记（不排班，统一营业窗；B54 卡4 随读模型透出）。 */
+    public static final String SHIFT_SOURCE_BUSINESS_HOURS = "BUSINESS_HOURS";
     /** 默认派单时长（分钟）：预约未绑定 SKU 或 SKU 未配置时长时回落（P5-B51 卡6 前为固定值）。 */
     public static final int DURATION_MIN = 60;
     /** 手工派单时段格式 HH:mm（零填充）；P5-B52 卡2 自由时段。 */
@@ -115,10 +117,14 @@ public class DispatchService {
                         .filter(a -> DispatchAssignment.RES_DOCTOR.equals(a.getResourceType())
                                 && s.staffId().equals(a.getResourceId()))
                         .toList());
+                // B54 卡4：班次码/中文态/来源/降级旗标随读模型透出；OFF/LEAVE 权威无窗（null），
+                // 不再回填营业窗假钟点；无排班行或 org 异常时 win 自身软降级营业窗且 degraded=true。
                 out.add(new ResourceView(s.staffId(), DispatchAssignment.RES_DOCTOR,
                         s.staffName(), null, null,
-                        win.assignable() ? win.start() : WORK_START,
-                        win.assignable() ? win.end() : WORK_END, status, blocks));
+                        win.assignable() ? win.start() : null,
+                        win.assignable() ? win.end() : null, status,
+                        win.shiftCode(), shiftLabel(win.shiftCode()), win.source(), win.degraded(),
+                        blocks));
             }
         }
         if (wantType == null || DispatchAssignment.RES_ROOM.equals(wantType)) {
@@ -132,7 +138,8 @@ public class DispatchService {
                         .toList());
                 out.add(new ResourceView(roomCode, DispatchAssignment.RES_ROOM,
                         roomName.isBlank() ? roomCode : roomName, null, null,
-                        WORK_START, WORK_END, "ON", blocks));
+                        WORK_START, WORK_END, "ON",
+                        null, null, SHIFT_SOURCE_BUSINESS_HOURS, false, blocks));
             }
         }
         if (wantType == null || DispatchAssignment.RES_DEVICE.equals(wantType)) {
@@ -146,7 +153,8 @@ public class DispatchService {
                         .toList());
                 out.add(new ResourceView(assetNo, DispatchAssignment.RES_DEVICE,
                         devName.isBlank() ? assetNo : devName, null, null,
-                        WORK_START, WORK_END, "ON", blocks));
+                        WORK_START, WORK_END, "ON",
+                        null, null, SHIFT_SOURCE_BUSINESS_HOURS, false, blocks));
             }
         }
         return out;
@@ -475,11 +483,14 @@ public class DispatchService {
         return String.format("%02d:%02d", total / 60, total % 60);
     }
 
-    /** 班次码 → 中文文案（仅 OFF/LEAVE 拒绝文案使用；与 org shift-codes 字典口径一致）。 */
+    /** 班次码 → 中文文案（OFF/LEAVE 拒绝文案与资源读模型共用；与 org shift-codes 字典口径一致）。 */
     private static String shiftLabel(String code) {
+        if ("FULL".equals(code)) return "全天";
+        if ("MORNING".equals(code)) return "上午";
+        if ("MID".equals(code)) return "下午";
         if ("OFF".equals(code)) return "休息";
         if ("LEAVE".equals(code)) return "请假";
-        return "不在可派班次";
+        return null;
     }
 
     private static String str(Object o) {
@@ -492,10 +503,16 @@ public class DispatchService {
 
     // ============================= 读模型 DTO =============================
 
-    /** 资源读模型：内嵌当日活跃占用块。title/room 无真实源恒为 null（前端兜底不显示）。 */
+    /**
+     * 资源读模型：内嵌当日活跃占用块。title/room 无真实源恒为 null（前端兜底不显示）。
+     * B54 卡4：医生增透 shiftCode/shiftLabel/source/degraded（无排班行或 org 异常软降级时
+     * degraded=true、shiftCode 为 null 但钟点窗回落营业窗；OFF/LEAVE 权威无窗，workStart/End 为 null）；
+     * 房间/设备不排班，shiftCode/shiftLabel 恒 null、source=BUSINESS_HOURS。
+     */
     public record ResourceView(
             String id, String type, String name, String title, String room,
             String workStart, String workEnd, String status,
+            String shiftCode, String shiftLabel, String source, boolean degraded,
             List<AssignmentView> assignments) {}
 
     /** 待派单读模型：preferredDoctor 为预约指定医生中文名；arrived 派生自预约态用于排序/徽标。 */
