@@ -4,13 +4,14 @@
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
 <!-- MACHINE:STATUS=DONE -->
-<!-- MACHINE:HEARTBEAT=2026-09-16 07:31 CST -->
-<!-- MACHINE:BATCH=P5-B52（队列全闭合：卡0 侦察/卡1 0ea8983/卡2 cc00948/卡3 批末落账 6510627 均 push） -->
-<!-- MACHINE:CARD=无——P5-B52 三卡全部闭合，哨兵置 DONE；下一周期空跑，待用户拍板新批次方向（见文末 P5-B52 存档候选） -->
+<!-- MACHINE:HEARTBEAT=2026-09-16 11:19 CST -->
+<!-- MACHINE:BATCH=P5-B53 全闭合（HEAD=fb16b53）；下一批待开工 P5-B54 排班真实化大批（6 卡）→ P5-B55 impersonate → P5-B56 报告哈希验真 -->
+<!-- MACHINE:CARD=无（队列清空，哨兵 DONE 空跑，待 P5-B54 开工置 ACTIVE） -->
+<!-- MACHINE:PREV=P5-B53 全闭合（style fb16b53 已 push，L141 A3 保留登记不勾销，数字不变） -->
 
 ## 当前状态（人读区）
 
-- **批次**：P5-B52（**2026-09-16 05:10 开工，07:31 全闭合哨兵 DONE**）——卡1 seed 栈别名层纵深加固 `0ea8983`（用户拍板方案②服务别名加 seed- 前缀）+卡2 M1 调度派单自由时段开放 `cc00948`（start 不锚定 apptTime，产品决策已拍板开放）+卡3 批末落账 `6510627`（DELIVERY+五分册，7 files +98/-13）；三卡全部 push origin/main，纯纵深+环境治理批完成度数字不变（✅108/166≈65%、🔧1、⬜56、域⑧ 34✅2🔧31⬜），勾销 04-backlog L146/L147 两行；**哨兵 STATUS=DONE，自主队列清空，待用户拍板下一批方向**
+- **批次**：P5-B53（**2026-09-16 11:06 开工，11:19 全闭合哨兵 DONE**）——用户对 A/B/C/D 四方向正式拍板后首个最小卡：A=L141 URGENT 加急源选 **A3（不造优先级字段、继续诚实空态、顺手清死 CSS）**，仅删 M1DispatchView.vue 全站零引用死 CSS `.job--urgent` 一行，style `fb16b53`（1 file -1）已 push origin/main；三轨真验（pnpm build exit0、新 hash 产物 grep 零命中且 job--active 保留、双栈 8080/18080 200）全绿；**L141 加急源字段缺口按 A3 产品决策保留登记不勾销**，纯死码清理完成度数字不变（✅108/166≈65%、🔧1、⬜56、域⑧ 34✅2🔧31⬜）；**哨兵 STATUS=DONE，自主队列清空，下一主线 P5-B54 排班真实化大批（B=L144，6 卡）待开工**
 - **用户拍板（原文照录）**：「1、优先处理 seed 栈 DNS 轮询串扰隐患，②seed 容器服务别名加 seed- 前缀；2、M1 调度派单自由时段（start 不锚定 apptTime）：卡5 已闭合改期联动半项，此半项属产品决策，开放；3、完成后开工 P5-B52」
 - **用户四项拍板（持续指导本批施工）**：①施工序=按建议序（L143 DONE→L140 DEVICE→L145 改期）；②L140 同时放开 DEVICE 派单写（读+写全闭环）；③L142 appointment 加 sku_code 列；④L141/L144 都保留诚实空态
 - **阶段**：卡0 哨兵激活（05:10）；**卡1 已全闭合**（`0ea8983` 05:45 commit+已 push origin/main，a-f 六子步含三轨真验均在提交说明留证）；**卡2 代码+构建+双栈部署已由前实例完成（05:57 dist / 05:58 txn 镜像，双栈 frontend/txn 均已换载），中断于三轨真验前（哨兵未回写、五文件未提交）**；接力会话 06:11 法医鉴识（git show/diff+docker 现场）后接管，从卡2 三轨五分支真验续跑
@@ -43,6 +44,16 @@
 - 心跳 ≥15 分钟且 STATUS=ACTIVE：前实例中断，从「下一步动作」第一个 ⬜ 续跑
 - 429/模型上限：刷新本文件心跳后退出，等每小时定时任务重试
 - 每卡开工前必须重读本文件 + 铁律 10 全读五分册
+
+## P5-B53 闭合存档（2026-09-16）
+
+- **主题**：用户 A/B/C/D 四方向拍板（A=L141 URGENT 加急源、B=L144 班次表、C=L133 合并 L46 impersonate、D=L123 报告哈希验真）后的首个最小卡；A 选 A3「不提前造字段、继续诚实空态、顺手清死 CSS」，卡1 单删一行死码 + 卡2 批末落账，共 1 style commit（`fb16b53`）+1 docs 原子提交，均 push
+- **完成度**：纯死码清理数字一律不变——**✅108/166=约65%、🔧1、⬜56 约34%；域⑧ 34✅ 2🔧 31⬜**（同 B44/B45/B50/B51/B52 先例：无新页面、无模块状态跃迁、无 🔧 成因消解）；新增完成模块 **0 个**，勾销 04-backlog **0 行**（L141 按 A3 保留登记仅尾接注记，不打勾不删除线）
+- 卡1 删死 CSS `fb16b53`（style，1 file changed 1 deletion）：`frontend/src/views/M1DispatchView.vue` 删除 `.job--urgent { border-left: 3px solid var(--c-danger-fg); }` 孤儿规则一行（B49 卡12 去 mock 已删 urgentJobs 死脚本后的遗留；模板零 job--urgent 绑定）。删除前全站只读核实：`urgent` 共 52 命中，其余 51 处全属 T3 工单/通知/交接/日结待办等独立功能，**均未触碰**；相邻真实在用规则 `.job--active` 保留。模板/脚本/后端/契约/schema/文案零改动
+- **三轨真验全绿**：①构建 `pnpm build` exit0（20.24s，0 error），新产物 M1DispatchView-B-BnlAuT.css/-DfV4LoYr.js；②产物 grep：新 dist 内 job--urgent 计数 0、job--active 仍在（精准单删未误伤）；③双栈部署+HTTP：docker cp 叠加残留旧 hash 产物（Cyk7km7L.css）→两容器先 `rm -rf /usr/share/nginx/html/*` 再干净 cp，复测各 2 个新 hash 产物、全 assets grep 零命中，8080/18080 均 200；提交 `17251b7..fb16b53 main -> main`
+- 卡2 批末落账（docs）：DELIVERY-P5-B53-2026-09-16.md（7 章）+五分册（00 顶部新简报+B52 降级「上一批 B52」/01 L18 口径流水+L36 域⑧行双尾接/02 M1 调度行尾接/03 表底 P5-B53 六列行/04 L141 尾接 A3 注记**保留登记不勾销**），数字五处勾稽一致
+- **保留登记（后续批次主线，均已锁方案）**：B=L144 医生/房间班次表→**P5-B54 排班真实化大批 6 卡**（org `staff_shift` 单表 ddl-auto/meiyun_core：staff_id+shift_date 唯一键、source=TEMPLATE/OVERRIDE、5 态 MORNING 上午/MID 下午/FULL 全天/OFF 休息/LEAVE 请假，全员排班+周例生成+请假 OVERRIDE；浏览器 GET/PUT/POST generate-week + internal resolve 软降级；txn DispatchService 派单/改期三处固定窗改真源+422；M2 /m2-schedule 接真模板样式零改；M1 SLOTS/时间轴以后端为准）；C=L133 合并 L46→**P5-B55**（真实 impersonate：JWT act/realSub 双 claim+meiyun-security 全服务回归、审计 realSub·act、短时效切换 token+版本号回收、前端换 token+强制横幅+一键退出；授权矩阵 超管→店长→员工、总部员工可跨店、门店员工不可跨店 DataScope 403）；D=L123→**P5-B56**（报告哈希验真 UI：先冻结规范化字节 UTF-8 BOM+CRLF/文件名去下载时刻→finance report_job 加 content_hash SHA-256 落库原始字节→验真端点 report:verify+前端验真卡；注意现有 finance/ai 两套体系）
+- **下一批 P5-B54**：开工前重读六册+铁律、哨兵置 ACTIVE，卡1 从 org-service staff_shift 实体+JPA 建表+读写端点起步，一卡一 commit 紧跟 push；无用户新指令前不擅自提前开工
 
 ## P5-B52 闭合存档（2026-09-16）
 
