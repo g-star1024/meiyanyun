@@ -215,6 +215,41 @@ public class ScheduleController {
         return out;
     }
 
+    /**
+     * 服务间排班解析（B54 卡2，txn 调度派单真源）：GET /api/org/internal/schedule/resolve?staffId=&date=，
+     * X-Internal-Token 系统身份（网关外 404 隐身）。返回该员工当日班次与可派钟点窗：
+     * FULL 全天 09:00-20:00、MORNING 上午 09:00-14:00、MID 下午 14:00-20:00；
+     * OFF 休息 / LEAVE 请假 assignable=false（不可派）；无排班行 present=false（调用方按未排班软降级）。
+     * 不做数据域断言（系统身份 GROUP），也不校验在职状态（离职员工不应再有派单入口，由调用方既有在职校验兜底）。
+     */
+    @GetMapping("/internal/schedule/resolve")
+    @RequirePerm("internal:name-map")
+    public ShiftWindow resolveShift(@RequestParam String staffId, @RequestParam String date) {
+        if (staffId == null || staffId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "staffId 不能为空");
+        }
+        LocalDate day;
+        try {
+            day = LocalDate.parse(date == null ? "" : date.trim());
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "date 格式应为 yyyy-MM-dd");
+        }
+        StaffShift sh = shiftRepo.findByStaffIdAndShiftDate(staffId.trim(), day).orElse(null);
+        if (sh == null) {
+            return new ShiftWindow(staffId.trim(), day.toString(), null, null,
+                    false, false, null, null);
+        }
+        ShiftCodeDef def = SHIFT_CODES.get(sh.getShiftCode());
+        if (def == null || !def.assignable()) {
+            return new ShiftWindow(sh.getStaffId(), day.toString(), sh.getShiftCode(), sh.getSource(),
+                    true, false, null, null);
+        }
+        String start = "MID".equals(sh.getShiftCode()) ? "14:00" : "09:00";
+        String end = "MORNING".equals(sh.getShiftCode()) ? "14:00" : "20:00";
+        return new ShiftWindow(sh.getStaffId(), day.toString(), sh.getShiftCode(), sh.getSource(),
+                true, true, start, end);
+    }
+
     // ==================== 内部方法 ====================
 
     /** 数据域内在职员工（门店数据域 + status=在职；大区编制无门店账号不参与门店排班）。 */
@@ -252,6 +287,12 @@ public class ScheduleController {
     // ==================== 字典与请求体记录 ====================
 
     public record ShiftCodeDef(String code, String label, boolean assignable) {
+    }
+
+    /** 服务间单日班次解析结果：present=是否有排班行；assignable+windowStart/windowEnd=可派钟点窗（OFF/LEAVE/无行均为 null）。 */
+    public record ShiftWindow(String staffId, String date, String shiftCode, String source,
+                              boolean present, boolean assignable,
+                              String windowStart, String windowEnd) {
     }
 
     public record ShiftSetRequest(String staffId, String shiftDate, String shiftCode) {

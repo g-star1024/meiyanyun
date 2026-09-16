@@ -22,10 +22,13 @@ import java.util.regex.Pattern;
 /**
  * 调度中心聚合服务（P5-B49 卡12，M1 调度中心）。
  *
- * <p>资源三源：DOCTOR 医生复用 {@link OrgStaffClient#listStaffByRole}（org 不可用软降级空列表）；
+ * <p>资源三源：DOCTOR 医生复用 {@link OrgStaffClient#listStaffByRole}（org 不可用软降级空列表），
+ * 其当日可派时间窗经 {@link OrgScheduleClient#resolve} 取 org staff_shift 真源（B54 卡2：
+ * FULL 09:00-20:00 / MORNING 09:00-14:00 / MID 14:00-20:00，OFF/LEAVE 权威不可派，
+ * 无排班行或 org 异常软降级营业窗）；
  * ROOM 治疗室经 {@link StoreRoomClient} 取 store 内部端点（store 不可用软降级空列表）；
  * DEVICE 设备经 {@link StoreEquipmentClient} 取 store 内部端点（仅 NORMAL 态，软降级空列表；
- * P5-B51 卡4 接真，resourceId=资产编号 assetNo）。
+ * P5-B51 卡4 接真，resourceId=资产编号 assetNo）。房间/设备不排班，统一按营业窗 09:00-20:00。
  *
  * <p>待派单 Job = 当日「已预约/已到店」且无派单占用（含 DONE 终态）的预约；已到店排前、到店时间升序。
  * 派单 start 支持手工指定班次内任意时段（P5-B52 卡2 产品拍板开放自由时段），cmd.start 缺省/空白回落
@@ -52,7 +55,7 @@ public class DispatchService {
     /** 可派单预约态。 */
     private static final String ST_BOOKED = "已预约";
     private static final String ST_ARRIVED = "已到店";
-    /** 固定班次（暂无真实排班源，Backlog）。 */
+    /** 营业窗（房间/设备资源窗，以及医生无排班行或 org 不可用时的软降级回落，B54 卡2）。 */
     public static final String WORK_START = "09:00";
     public static final String WORK_END = "20:00";
     /** 默认派单时长（分钟）：预约未绑定 SKU 或 SKU 未配置时长时回落（P5-B51 卡6 前为固定值）。 */
@@ -63,6 +66,7 @@ public class DispatchService {
     private final DispatchAssignmentRepository assignmentRepo;
     private final AppointmentRepository appointmentRepo;
     private final OrgStaffClient orgStaffClient;
+    private final OrgScheduleClient orgScheduleClient;
     private final StoreRoomClient storeRoomClient;
     private final StoreEquipmentClient storeEquipmentClient;
     private final StoreProjectClient storeProjectClient;
@@ -72,6 +76,7 @@ public class DispatchService {
     public DispatchService(DispatchAssignmentRepository assignmentRepo,
                            AppointmentRepository appointmentRepo,
                            OrgStaffClient orgStaffClient,
+                           OrgScheduleClient orgScheduleClient,
                            StoreRoomClient storeRoomClient,
                            StoreEquipmentClient storeEquipmentClient,
                            StoreProjectClient storeProjectClient,
@@ -80,6 +85,7 @@ public class DispatchService {
         this.assignmentRepo = assignmentRepo;
         this.appointmentRepo = appointmentRepo;
         this.orgStaffClient = orgStaffClient;
+        this.orgScheduleClient = orgScheduleClient;
         this.storeRoomClient = storeRoomClient;
         this.storeEquipmentClient = storeEquipmentClient;
         this.storeProjectClient = storeProjectClient;
@@ -101,12 +107,18 @@ public class DispatchService {
         List<ResourceView> out = new ArrayList<>();
         if (wantType == null || DispatchAssignment.RES_DOCTOR.equals(wantType)) {
             for (OrgStaffClient.StaffBrief s : orgStaffClient.listStaffByRole("DOCTOR", sc, null)) {
+                // B54 卡2：医生时间窗与状态取 staff_shift 真源（FULL/MORNING/MID 可派、OFF/LEAVE 不可派、
+                // 无排班行或 org 不可用软降级营业窗）；房间/设备不排班，仍按营业窗。
+                OrgScheduleClient.ShiftWindow win = orgScheduleClient.resolve(s.staffId(), day);
+                String status = win.assignable() ? "ON" : "OFF";
                 List<AssignmentView> blocks = toViews(active.stream()
                         .filter(a -> DispatchAssignment.RES_DOCTOR.equals(a.getResourceType())
                                 && s.staffId().equals(a.getResourceId()))
                         .toList());
                 out.add(new ResourceView(s.staffId(), DispatchAssignment.RES_DOCTOR,
-                        s.staffName(), null, null, WORK_START, WORK_END, "ON", blocks));
+                        s.staffName(), null, null,
+                        win.assignable() ? win.start() : WORK_START,
+                        win.assignable() ? win.end() : WORK_END, status, blocks));
             }
         }
         if (wantType == null || DispatchAssignment.RES_ROOM.equals(wantType)) {
@@ -277,9 +289,23 @@ public class DispatchService {
             }
         }
         int dur = resolveDurationMin(a);
-        if (start.compareTo(WORK_START) < 0 || plusMinutes(start, dur).compareTo(WORK_END) > 0) {
+        // B54 卡2：医生派单窗取 staff_shift 真源（休息/请假权威拒绝，无排班/服务异常软降级营业窗）；
+        // 治疗室/设备不排班，沿用营业窗 09:00-20:00。
+        String winStart = WORK_START;
+        String winEnd = WORK_END;
+        if (DispatchAssignment.RES_DOCTOR.equals(resourceType)) {
+            OrgScheduleClient.ShiftWindow win = orgScheduleClient.resolve(resourceId, a.getApptDate());
+            if (!win.assignable()) {
+                throw error(HttpStatus.UNPROCESSABLE_ENTITY,
+                        resourceName + " 当日" + shiftLabel(win.shiftCode())
+                                + "，不可派单，请改派其他医生或调整排班");
+            }
+            winStart = win.start();
+            winEnd = win.end();
+        }
+        if (start.compareTo(winStart) < 0 || plusMinutes(start, dur).compareTo(winEnd) > 0) {
             throw error(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "派单时段 " + start + " 超出班次 " + WORK_START + "-" + WORK_END
+                    "派单时段 " + start + " 超出班次 " + winStart + "-" + winEnd
                             + "，请选择班次内的空闲时段");
         }
         String end = plusMinutes(start, dur);
@@ -330,10 +356,27 @@ public class DispatchService {
                 a.getApptNo(), List.of(DispatchAssignment.ST_SCHEDULED));
         if (scheduled.isEmpty()) return;
         int dur = resolveDurationMin(a);
-        if (newTime.compareTo(WORK_START) < 0 || plusMinutes(newTime, dur).compareTo(WORK_END) > 0) {
-            throw error(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "该预约已派单，新时段 " + newTime + " 超出班次 " + WORK_START + "-" + WORK_END
-                            + "，请先释放派单再改期");
+        // B54 卡2：跟随派单的越窗校验下沉到每条派单按自身资源取窗（医生 staff_shift 真源，
+        // 房间/设备营业窗）；医生休息/请假同样拒绝改期，提示先释放派单。
+        for (DispatchAssignment winAsg : scheduled) {
+            String wStart = WORK_START;
+            String wEnd = WORK_END;
+            if (DispatchAssignment.RES_DOCTOR.equals(winAsg.getResourceType())) {
+                OrgScheduleClient.ShiftWindow win =
+                        orgScheduleClient.resolve(winAsg.getResourceId(), newDate);
+                if (!win.assignable()) {
+                    throw error(HttpStatus.UNPROCESSABLE_ENTITY,
+                            "该预约已派单，医生当日" + shiftLabel(win.shiftCode())
+                                    + "，不可改期，请先释放派单再改期");
+                }
+                wStart = win.start();
+                wEnd = win.end();
+            }
+            if (newTime.compareTo(wStart) < 0 || plusMinutes(newTime, dur).compareTo(wEnd) > 0) {
+                throw error(HttpStatus.UNPROCESSABLE_ENTITY,
+                        "该预约已派单，新时段 " + newTime + " 超出班次 " + wStart + "-" + wEnd
+                                + "，请先释放派单再改期");
+            }
         }
         String end = plusMinutes(newTime, dur);
         for (DispatchAssignment asg : scheduled) {
@@ -430,6 +473,13 @@ public class DispatchService {
         String[] hm = hhmm.split(":");
         int total = Integer.parseInt(hm[0]) * 60 + Integer.parseInt(hm[1]) + minutes;
         return String.format("%02d:%02d", total / 60, total % 60);
+    }
+
+    /** 班次码 → 中文文案（仅 OFF/LEAVE 拒绝文案使用；与 org shift-codes 字典口径一致）。 */
+    private static String shiftLabel(String code) {
+        if ("OFF".equals(code)) return "休息";
+        if ("LEAVE".equals(code)) return "请假";
+        return "不在可派班次";
     }
 
     private static String str(Object o) {
