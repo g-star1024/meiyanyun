@@ -65,6 +65,7 @@ public class ExternalChannelController {
     private final ChannelReturnbackRepository repo;
     private final RateLimiter rateLimiter;
     private final CustomerDirectoryClient customerDirectory;
+    private final IntegrationConfigClient integrationConfig;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** dev 免签开关：默认 false（fail-closed），仅种子/联调环境显式置 true。 */
@@ -79,10 +80,12 @@ public class ExternalChannelController {
     private String secretMeituan;
 
     public ExternalChannelController(ChannelReturnbackRepository repo, RateLimiter rateLimiter,
-                                     CustomerDirectoryClient customerDirectory) {
+                                     CustomerDirectoryClient customerDirectory,
+                                     IntegrationConfigClient integrationConfig) {
         this.repo = repo;
         this.rateLimiter = rateLimiter;
         this.customerDirectory = customerDirectory;
+        this.integrationConfig = integrationConfig;
     }
 
     @PostConstruct
@@ -114,7 +117,12 @@ public class ExternalChannelController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "回调体不可为空且长度需 ≤ 64KB");
         }
 
-        if (!devNoAuth) {
+        // 免签有效值：配置窗口（org external_integration，60s 快照）优先，env dev-no-auth 兜底；二者皆 false 才验签
+        boolean effectiveNoAuth = integrationConfig.resolveSwitch("AD_DEV_NO_AUTH", devNoAuth);
+        if (effectiveNoAuth) {
+            log.warn("【安全告警】渠道 {} 回传按免签模式处理（env dev-no-auth={} 或配置窗口已开启），仅限联调环境", code, devNoAuth);
+        }
+        if (!effectiveNoAuth) {
             verifySignature(code, ts, nonce, sig, rawBody);
         }
 
@@ -255,9 +263,9 @@ public class ExternalChannelController {
 
     private String secretOf(String code) {
         return switch (code) {
-            case "DOUYIN" -> secretDouyin;
-            case "RED" -> secretRed;
-            case "MEITUAN" -> secretMeituan;
+            case "DOUYIN" -> integrationConfig.resolveSecret("AD_SECRET_DOUYIN", secretDouyin);
+            case "RED" -> integrationConfig.resolveSecret("AD_SECRET_RED", secretRed);
+            case "MEITUAN" -> integrationConfig.resolveSecret("AD_SECRET_MEITUAN", secretMeituan);
             default -> null;
         };
     }

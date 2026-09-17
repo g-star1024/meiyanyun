@@ -29,6 +29,11 @@
             <groupId>com.meiyun</groupId>
             <artifactId>meiyun-security</artifactId>
         </dependency>
+        <!-- 外部依赖配置窗口系统表 external_integration（V34）：org-service 接入全库共享 Flyway 链 -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>

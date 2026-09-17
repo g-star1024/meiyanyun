@@ -19,13 +19,16 @@ import java.util.Map;
 @Component
 public class WechatChannelAdapter implements NotificationChannelAdapter {
 
+    /** env/@Value 兜底值；配置窗口（org external_integration）启用值优先，无需重启。 */
     @Value("${meiyun.notify.gateway.wechat-url:}")
     private String wechatUrl;
 
     private final RestTemplate restTemplate;
+    private final IntegrationConfigClient integrationConfig;
 
-    public WechatChannelAdapter(RestTemplate restTemplate) {
+    public WechatChannelAdapter(RestTemplate restTemplate, IntegrationConfigClient integrationConfig) {
         this.restTemplate = restTemplate;
+        this.integrationConfig = integrationConfig;
     }
 
     @Override
@@ -35,8 +38,9 @@ public class WechatChannelAdapter implements NotificationChannelAdapter {
 
     @Override
     public DeliveryResult send(Notification notification, String channel, NotifyPreference preference) {
-        if (wechatUrl == null || wechatUrl.isBlank()) {
-            return DeliveryResult.skipped("dev 网关未配置 meiyun.notify.gateway.wechat-url，不发送真实企微消息");
+        String url = integrationConfig.resolveUrl("NOTIFY_WECHAT_GATEWAY", wechatUrl);
+        if (url == null || url.isBlank()) {
+            return DeliveryResult.skipped("dev 网关未配置 meiyun.notify.gateway.wechat-url 且配置窗口未启用企微网关，不发送真实企微消息");
         }
         String staffId = preference == null ? null : preference.getStaffId();
         if (staffId == null || staffId.isBlank()) {
@@ -48,7 +52,7 @@ public class WechatChannelAdapter implements NotificationChannelAdapter {
             body.put("staffId", staffId);
             body.put("title", notification.getTitle());
             body.put("content", notification.getContent());
-            restTemplate.postForEntity(wechatUrl, body, String.class);
+            restTemplate.postForEntity(url, body, String.class);
             return DeliveryResult.sent();
         } catch (HttpClientErrorException e) {
             return DeliveryResult.dead("企微网关确定性拒绝(" + e.getStatusCode().value() + ")");

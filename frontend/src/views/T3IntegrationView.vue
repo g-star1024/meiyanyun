@@ -2,7 +2,7 @@
 /* ============================================================
  * T3 集成中心 /integrations
  * 红线：单向镜像 + Outbox + T+1 对账，绝不触碰资金池。
- * 4 KPI + 红线提示 + 4 tab：连接器 / Outbox / 对账批次 / 调用日志。
+ * 4 KPI + 红线提示 + 5 tab：接入配置（真实）/ 连接器 / Outbox / 对账批次 / 调用日志（后 4 个为 T3-04 mock 演示）。
  * ============================================================ */
 import { computed, onMounted, ref, watch } from 'vue'
 import CCard from '@/components/CCard.vue'
@@ -17,14 +17,19 @@ import CDrawer from '@/components/CDrawer.vue'
 import { useT3IntegrationStore } from '@/stores/t3Integration'
 import { useAuthStore } from '@/stores/auth'
 import type { Connector, ConnectorType, OutboxMessage, ReconcileBatch } from '@/stores/t3Integration'
+import { listIntegrations, upsertIntegration, testIntegration, type IntegrationDTO } from '@/api/integration'
 
 const store = useT3IntegrationStore()
 const auth = useAuthStore()
-onMounted(() => store.seed())
+onMounted(() => {
+  store.seed()
+  loadIntegrations()
+})
 
-type Tab = 'connectors' | 'outbox' | 'batches' | 'logs'
-const tab = ref<Tab>('connectors')
+type Tab = 'access' | 'connectors' | 'outbox' | 'batches' | 'logs'
+const tab = ref<Tab>('access')
 const tabOptions = [
+  { value: 'access', label: '接入配置' },
   { value: 'connectors', label: '连接器' },
   { value: 'outbox', label: 'Outbox 消息' },
   { value: 'batches', label: '对账批次' },
@@ -169,6 +174,127 @@ function fmtAmt(n?: number) {
 // ---------- 调用日志 ----------
 const logList = computed(() => store.recentLogs)
 
+// ---------- 接入配置（真实 API：org-service external_integration，P5-B57 卡2） ----------
+const CATEGORY_LABEL: Record<string, string> = {
+  NOTIFY: '消息通知',
+  AD: '广告回传',
+}
+const integrations = ref<IntegrationDTO[]>([])
+const intLoading = ref(false)
+const intLoadErr = ref('')
+const canEditInt = computed(() => auth.can('integration:edit'))
+
+async function loadIntegrations() {
+  intLoading.value = true
+  intLoadErr.value = ''
+  try {
+    const { data } = await listIntegrations()
+    integrations.value = data
+  } catch (e) {
+    intLoadErr.value = intErrMsg(e, '接入配置加载失败')
+  } finally {
+    intLoading.value = false
+  }
+}
+function intErrMsg(e: unknown, fallback: string): string {
+  const anyE = e as { response?: { data?: { message?: string } }; message?: string }
+  return anyE?.response?.data?.message || anyE?.message || fallback
+}
+function statusPillOf(i: IntegrationDTO): { text: string; status: 'success' | 'disabled' | 'warning' } {
+  if (i.code === 'AD_DEV_NO_AUTH') {
+    return i.enabled && i.boolValue === true
+      ? { text: '免签开启', status: 'warning' }
+      : { text: '验签中', status: 'success' }
+  }
+  if (!i.enabled) return { text: '未启用', status: 'disabled' }
+  if (i.valueKind === 'URL') return i.baseUrl ? { text: '已启用', status: 'success' } : { text: '未配置', status: 'disabled' }
+  if (i.valueKind === 'SECRET') return i.hasSecret ? { text: '已启用', status: 'success' } : { text: '未配置', status: 'disabled' }
+  return { text: '已启用', status: 'success' }
+}
+function valueSummary(i: IntegrationDTO): string {
+  if (i.valueKind === 'URL') return i.baseUrl || '—'
+  if (i.valueKind === 'SECRET') return i.hasSecret ? `已保存密钥 ${i.secretMask ?? '****'}` : '未配置密钥'
+  return i.enabled && i.boolValue === true ? '免签（仅联调）' : 'HMAC 验签'
+}
+
+interface IntForm {
+  baseUrl: string
+  secret: string
+  boolValue: boolean
+  enabled: boolean
+  insecureHttpConfirmed: boolean
+}
+const intEditOpen = ref(false)
+const intEditing = ref<IntegrationDTO | null>(null)
+const intForm = ref<IntForm>({ baseUrl: '', secret: '', boolValue: false, enabled: false, insecureHttpConfirmed: false })
+const intSaving = ref(false)
+const intTesting = ref<string>('')
+const intTestInline = ref<Record<string, { ok: boolean; message: string; at: string }>>({})
+
+function openIntEdit(i: IntegrationDTO) {
+  intEditing.value = i
+  intForm.value = {
+    baseUrl: i.baseUrl ?? '',
+    secret: '',
+    boolValue: i.boolValue === true,
+    enabled: i.enabled,
+    insecureHttpConfirmed: false,
+  }
+  intEditOpen.value = true
+}
+async function saveInt() {
+  const i = intEditing.value
+  if (!i) return
+  const f = intForm.value
+  if (i.valueKind === 'URL' && f.enabled && !f.baseUrl.trim()) {
+    setFlash('err', '启用前请先填写网关 URL')
+    return
+  }
+  if (i.valueKind === 'SECRET' && f.enabled && !i.hasSecret && !f.secret.trim()) {
+    setFlash('err', '启用前请先填写渠道密钥')
+    return
+  }
+  if (
+    i.valueKind === 'URL'
+    && f.baseUrl.trim()
+    && f.baseUrl.trim().startsWith('http://')
+    && !f.insecureHttpConfirmed
+  ) {
+    if (!window.confirm('当前为明文 HTTP 网关（仅限内网联调），确认保存？')) return
+    f.insecureHttpConfirmed = true
+  }
+  intSaving.value = true
+  try {
+    await upsertIntegration(i.code, {
+      baseUrl: i.valueKind === 'URL' ? (f.baseUrl.trim() || null) : null,
+      secret: i.valueKind === 'SECRET' ? f.secret : null,
+      boolValue: i.valueKind === 'SWITCH' ? f.boolValue : null,
+      enabled: f.enabled,
+      insecureHttpConfirmed: i.valueKind === 'URL' ? f.insecureHttpConfirmed : undefined,
+    })
+    setFlash('ok', `「${i.name}」配置已保存（约 60 秒内对各服务生效）`)
+    intEditOpen.value = false
+    intEditing.value = null
+    await loadIntegrations()
+  } catch (e) {
+    setFlash('err', intErrMsg(e, '配置保存失败'))
+  } finally {
+    intSaving.value = false
+  }
+}
+async function doIntTest(i: IntegrationDTO) {
+  intTesting.value = i.code
+  try {
+    const { data } = await testIntegration(i.code)
+    intTestInline.value[i.code] = { ok: data.ok, message: data.message, at: new Date().toISOString() }
+    await loadIntegrations()
+  } catch (e) {
+    intTestInline.value[i.code] = { ok: false, message: intErrMsg(e, '测试失败'), at: new Date().toISOString() }
+  } finally {
+    intTesting.value = ''
+  }
+}
+
 // tab 切换时清理 flash
 watch(tab, () => (flash.value = null))
 </script>
@@ -231,8 +357,89 @@ watch(tab, () => (flash.value = null))
       </div>
     </Transition>
 
-    <!-- 连接器 tab -->
-    <CCard v-if="tab === 'connectors'" class="t3int__conncard" padding="lg">
+    <!-- 接入配置 tab（真实配置：org-service external_integration 单点持钥，P5-B57 卡2） -->
+    <CCard v-if="tab === 'access'" class="t3int__tablecard" padding="none">
+      <template #header>
+        <div class="access-head">
+          <span>外部依赖接入配置</span>
+          <CStatusPill status="success" dot>真实配置 · 保存后约 60 秒生效，无需重启</CStatusPill>
+        </div>
+      </template>
+      <div v-if="intLoading" class="access-state">加载中…</div>
+      <div v-else-if="intLoadErr" class="access-state access-state--err">
+        <CIcon name="alert" :size="14" />接入配置加载失败：{{ intLoadErr }}
+        <CButton variant="text" size="sm" @click="loadIntegrations">重试</CButton>
+      </div>
+      <div v-else class="tablewrap">
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>分类</th>
+              <th>接入点</th>
+              <th>类型</th>
+              <th>当前配置 / 影响</th>
+              <th>状态</th>
+              <th>最近测试</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="i in integrations" :key="i.code" :class="{ 'row-fail': i.code === 'AD_DEV_NO_AUTH' && i.enabled && i.boolValue === true }">
+              <td>
+                <CStatusPill status="info">{{ CATEGORY_LABEL[i.category] ?? i.category }}</CStatusPill>
+              </td>
+              <td>
+                <div class="access-name">{{ i.name }}</div>
+                <div class="mono access-code">{{ i.code }}</div>
+              </td>
+              <td class="text-weak">{{ i.valueKind === 'URL' ? '网关 URL' : i.valueKind === 'SECRET' ? '密钥' : '开关' }}</td>
+              <td>
+                <div class="mono access-val" :title="valueSummary(i)">{{ valueSummary(i) }}</div>
+                <div v-if="i.remark" class="access-remark">{{ i.remark }}</div>
+              </td>
+              <td>
+                <CStatusPill :status="statusPillOf(i).status" dot>{{ statusPillOf(i).text }}</CStatusPill>
+              </td>
+              <td>
+                <div v-if="i.lastTestAt" class="access-test" :class="i.lastTestOk ? 'ic-ok' : 'ic-pending'">
+                  {{ i.lastTestOk ? '成功' : '失败' }} · {{ fmtDateTime(i.lastTestAt) }}
+                </div>
+                <span v-else class="text-weak">—</span>
+              </td>
+              <td>
+                <div class="access-ops">
+                  <CButton
+                    v-if="i.valueKind !== 'SWITCH'"
+                    variant="ghost" size="sm"
+                    :disabled="!canEditInt || intTesting === i.code"
+                    @click="doIntTest(i)"
+                  >
+                    <CIcon name="loading" :size="14" />{{ intTesting === i.code ? '测试中' : '测试' }}
+                  </CButton>
+                  <CButton variant="text" size="sm" :disabled="!canEditInt" @click="openIntEdit(i)">
+                    <CIcon name="edit" :size="14" />配置
+                  </CButton>
+                </div>
+                <div
+                  v-if="intTestInline[i.code]"
+                  class="access-inline"
+                  :class="intTestInline[i.code].ok ? 'access-inline--ok' : 'access-inline--err'"
+                >
+                  <CIcon :name="intTestInline[i.code].ok ? 'check' : 'alert'" :size="13" />
+                  {{ intTestInline[i.code].message }}
+                </div>
+              </td>
+            </tr>
+            <tr v-if="!integrations.length">
+              <td colspan="7" class="cell-empty">暂无接入配置（目录由系统迁移播种）</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </CCard>
+
+    <!-- 连接器 tab（T3-04 mock 演示） -->
+    <CCard v-else-if="tab === 'connectors'" class="t3int__conncard" padding="lg">
       <div class="conn-grid">
         <div
           v-for="c in store.connectors"
@@ -478,6 +685,83 @@ watch(tab, () => (flash.value = null))
           :disabled="!editing?.name.trim() || !editing?.endpoint.trim()"
           @click="saveConnector"
         >保存</CButton>
+      </template>
+    </CDrawer>
+
+    <!-- 接入配置编辑抽屉（真实配置：URL / SECRET / SWITCH 三类条件字段，P5-B57 卡2） -->
+    <CDrawer
+      :show="intEditOpen"
+      :title="intEditing ? `配置 · ${intEditing.name}` : '配置接入点'"
+      size="md"
+      @update:show="(v: boolean) => { intEditOpen = v; if (!v) intEditing = null }"
+    >
+      <div v-if="intEditing" class="form">
+        <div class="form__readonly">
+          <span class="kv-k">{{ CATEGORY_LABEL[intEditing.category] ?? intEditing.category }}</span>
+          <CStatusPill status="info">{{ intEditing.code }}</CStatusPill>
+          <CStatusPill status="default">
+            {{ intEditing.valueKind === 'URL' ? '网关 URL' : intEditing.valueKind === 'SECRET' ? '密钥' : '开关' }}
+          </CStatusPill>
+        </div>
+
+        <template v-if="intEditing.valueKind === 'URL'">
+          <CInput
+            :model-value="intForm.baseUrl"
+            label="网关 URL"
+            placeholder="https://api.example.com/v1/send"
+            @update:model-value="intForm.baseUrl = $event"
+          />
+          <label v-if="intForm.baseUrl.trim().startsWith('http://')" class="access-chk">
+            <input type="checkbox" v-model="intForm.insecureHttpConfirmed" />
+            <span>我已知晓明文 HTTP 仅限内网联调，公网环境存在凭证被窃听风险，确认保存</span>
+          </label>
+        </template>
+
+        <template v-else-if="intEditing.valueKind === 'SECRET'">
+          <div v-if="intEditing.hasSecret" class="masked">
+            当前已保存密钥：<b class="mono">{{ intEditing.secretMask ?? '****' }}</b>，留空保存表示不修改原密钥
+          </div>
+          <CInput
+            type="password"
+            :model-value="intForm.secret"
+            label="渠道密钥"
+            :placeholder="intEditing.hasSecret ? intEditing.secretMask ?? '****（留空不修改）' : '未配置（保存后不可读回）'"
+            @update:model-value="intForm.secret = $event"
+          />
+        </template>
+
+        <template v-else>
+          <label class="access-chk">
+            <input type="checkbox" v-model="intForm.boolValue" />
+            <span>
+              <span class="access-chk__title">开启免签回传（跳过 HMAC 验签）</span>
+              <span class="access-chk__desc">仅用于广告渠道内网联调；生产环境开启将接收未验签的回传请求</span>
+            </span>
+          </label>
+          <div v-if="intForm.boolValue" class="form__hint">
+            <CIcon name="alert" :size="14" />
+            <span><em>安全红线：</em>免签模式下任何来源都可提交回传数据，仅限隔离联调环境短时开启，联调结束请立即关闭。</span>
+          </div>
+        </template>
+
+        <div v-if="intEditing.remark" class="form__readonly access-remark-ro">
+          <span class="kv-k">未配置影响</span>
+          <span class="text-weak">{{ intEditing.remark }}</span>
+        </div>
+
+        <label class="access-chk">
+          <input type="checkbox" v-model="intForm.enabled" />
+          <span>
+            <span class="access-chk__title">启用该接入点</span>
+            <span class="access-chk__desc">停用后对应功能进入诚实空态 / 优雅降级，不影响其他模块</span>
+          </span>
+        </label>
+      </div>
+      <template #footer>
+        <CButton variant="ghost" size="sm" @click="intEditOpen = false">取消</CButton>
+        <CButton variant="primary" size="sm" :disabled="!canEditInt || intSaving" @click="saveInt">
+          {{ intSaving ? '保存中…' : '保存' }}
+        </CButton>
       </template>
     </CDrawer>
   </div>
@@ -825,5 +1109,106 @@ table.grid tr.row-fail:hover {
   font-style: normal;
   color: var(--c-danger-fg);
   font-weight: 600;
+}
+
+/* 接入配置 tab（P5-B57 卡2，仅布局类，视觉令牌全部沿用既有） */
+.access-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-sm);
+  font-weight: 600;
+}
+.access-state {
+  display: flex;
+  align-items: center;
+  gap: var(--s-xs);
+  padding: var(--s-xl) var(--s-md);
+  color: var(--c-text-3);
+  font-size: var(--t-sm);
+}
+.access-state--err {
+  color: var(--c-danger-fg);
+}
+.access-name {
+  font-weight: 600;
+}
+.access-code {
+  font-size: var(--t-xs);
+  color: var(--c-text-4);
+}
+.access-val {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.access-remark {
+  margin-top: 2px;
+  font-size: var(--t-xs);
+  color: var(--c-text-3);
+  white-space: normal;
+  max-width: 280px;
+}
+.access-test {
+  font-size: var(--t-xs);
+  white-space: normal;
+}
+.access-ops {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+}
+.access-inline {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: var(--t-xs);
+  line-height: 1.5;
+  white-space: normal;
+  max-width: 200px;
+}
+.access-inline--ok {
+  color: var(--c-success-fg);
+}
+.access-inline--err {
+  color: var(--c-danger-fg);
+}
+.masked {
+  font-size: var(--t-xs);
+  color: var(--c-text-2);
+  background: var(--c-bg-page);
+  border-radius: var(--r-sm);
+  padding: var(--s-sm);
+}
+.masked b {
+  color: var(--c-text);
+}
+.access-remark-ro {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+}
+.access-chk {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-xs);
+  font-size: var(--t-sm);
+  color: var(--c-text-2);
+  cursor: pointer;
+  line-height: 1.6;
+}
+.access-chk input {
+  margin-top: 3px;
+}
+.access-chk__title {
+  display: block;
+  color: var(--c-text);
+  font-weight: 600;
+}
+.access-chk__desc {
+  display: block;
+  font-size: var(--t-xs);
+  color: var(--c-text-3);
 }
 </style>

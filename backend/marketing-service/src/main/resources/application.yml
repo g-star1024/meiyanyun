@@ -70,6 +70,11 @@ meiyun:
       - /actuator/health
       - /error
 
+# org-service 地址（P5-B57 卡2：外部依赖配置窗口 60s 快照拉取——三渠道 HMAC 密钥/免签开关）
+org:
+  service:
+    url: ${ORG_SERVICE_URL:http://127.0.0.1:8086}
+
 logging:
   level:
     com.meiyun: INFO
