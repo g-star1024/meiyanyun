@@ -188,7 +188,7 @@ public class DsarRequestService {
         }
         c.setName(ANON_NAME);
         c.setPhone(ANON_PHONE);
-        c.setGender("");
+        c.setGender("其他");
         c.setBirthDate(null);
         c.setAge(null);
         c.setSkinType(null);
