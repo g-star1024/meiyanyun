@@ -71,7 +71,7 @@ public class DsarRequest {
      * 履约数据（FULFILLED 时写入）：
      * - ACCESS：客户全量个人信息 JSON（Customer + Cards + Points + Tags）
      * - PORTABILITY：可携带数据 JSON（Customer 基础 + 消费记录 + 卡项余额）
-     * - DELETE：删除标记 JSON（{"deletedAt":"...","note":"..."}，不改 customer.status 避免破坏 CHECK 约束）
+     * - DELETE：匿名化结果 JSON（{"anonymizedAt":"...","note":"..."}，PIPL 第 73 条匿名化脱敏，不改 customer.status）
      * - RECTIFY：更正说明 JSON（{"fields":[...],"note":"..."}，实际字段修改由审核人在客户档案页操作）
      */
     @Column(name = "fulfillment_data", columnDefinition = "text")

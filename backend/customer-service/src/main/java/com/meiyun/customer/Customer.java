@@ -102,6 +102,10 @@ public class Customer {
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 
+    /** 匿名化时间（PIPL 第 47 条删除请求履约：物理删除不可行时依第 73 条匿名化脱敏，非空=已匿名化）。 */
+    @Column(name = "anonymized_at")
+    private OffsetDateTime anonymizedAt;
+
     // ---- P5-B58 卡3 隐私同意生命周期（PIPL 第 14-16 条同意要件 + 第 15 条撤回权） ----
     // consent_version=0 表示未同意；≥1 表示已同意，每次重新授权 +1。
     // consent_withdrawn_at 非 NULL 且 > consent_at → 已撤回（marketing 推送前硬校验，撤回则跳过）。
