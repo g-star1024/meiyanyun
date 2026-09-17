@@ -3,10 +3,10 @@
 > 用途：铁律 11 自主续跑的唯一事实源。任何接续会话/定时任务先读本文件，再按「开发前 checklist」执行。
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
-<!-- MACHINE:STATUS=ACTIVE -->
-<!-- MACHINE:HEARTBEAT=2026-09-17 11:14 CST -->
-<!-- MACHINE:BATCH=P5-B57 进行中（2026-09-17 08:55 ACTIVE，用户 08:5x 直接指令「开工吧」合法接管，非夜间窗但用户明示优先）——用户三指令：①1140 元 3 条 OK 脏核销（04 L98：WR20260908-000003 55200/WR-SEED-0001 50000/WR-SEED-0002 8800，store_code=SST01）核实确属历史残留且不影响其他已知数据后直接物理删除、不做归属回填；8 条 0 元 FORGED/DUPLICATE 风控证据未授权删除须保留；②所有依赖外部的项统一改造成「配置窗口」（端点/凭证/开关可配置+未配置优雅降级/诚实空态+外部信息一接入即可运行）；③其余项目按推荐自主推进，决策点先竞品调研据结果推荐 -->
-<!-- MACHINE:CARD=卡1 ✅ 已闭合 HEAD=`2f7fc32` 已 push（3 条历史脏核销物理删除+三播种器 meiyun_seed 门控，04 L98-100 登记）；卡2 设计定案进行中——docs/DESIGN-P5-B57-EXTERNAL-INTEGRATION-2026-09-17.md 已落盘暂存（V34 external_integration 表/AES-GCM 新密钥/60s 内部快照/env 兜底/零重启），台账 6 处「已定案待实施」注记，本 docs commit 后转卡2 实施；卡3=L123② DSAR/consent/合规巡检竞品调研→方案推荐（pending） -->
+<!-- MACHINE:STATUS=DORMANT -->
+<!-- MACHINE:HEARTBEAT=2026-09-17 14:31 CST -->
+<!-- MACHINE:BATCH=P5-B57 已闭合（2026-09-17 14:31 DORMANT，三卡全闭合）——用户三指令全执行完毕：①1140 元 3 条 OK 脏核销历史残留物理删除不回填+三播种器门控 `2f7fc32`；②外部依赖统一配置窗口 `fc97b37` 已 push（22 files +1480/-23，双栈六容器 healthy+三轨真验全绿）；③合规方案竞品调研定案（DESIGN-P5-B57-CARD3-COMPLIANCE-2026-09-17.md，推荐轻量内建路线，建议 P5-B58 实施） -->
+<!-- MACHINE:CARD=卡1 ✅ 已闭合 HEAD=`2f7fc32` 已 push（3 条历史脏核销物理删除+三播种器 meiyun_seed 栈门控，04 L98-100 登记）；卡2 ✅ 已闭合 HEAD=`fc97b37` 已 push（V34 external_integration 表+7 目录行+AES-GCM 独立主密钥+管理端 /api/org/integrations+内部 /internal/integrations/snapshot+txn/marketing 各建 IntegrationConfigClient 60s TTL+10min 宽限+env 兜底+前端 T3IntegrationView，22 files +1480/-23，双栈六容器 healthy+三轨真验全绿，04 L52/L64+02 L80/L81/L117/L147 勾销）；卡3 ✅ 已闭合（DESIGN-P5-B57-CARD3-COMPLIANCE-2026-09-17.md 竞品调研 15 条结果+推荐轻量内建路线 DSAR 工单流+同意生命周期+合规巡检告警，建议 P5-B58 合规专项批实施，04 L125 追加注记） -->
 <!-- MACHINE:PREV=P5-B56 已闭合 HEAD=`6ede21c`（2026-09-17 05:56，docs VERIFY 口径订正，已 push）；B56 代码 `3b34214`（后端 8 files +219/-8）+`68d01cd`（前端 3 files +121/-6），docs 留痕 046a55c/9f05598/3e93809/6ede21c；基线数字 ✅109/166≈66%、🔧1、⬜55、域⑦ 11/0/13、域⑧ 34/2/31；本接管为 B57 首个 docs commit -->
 
 ## 当前状态（人读区）
