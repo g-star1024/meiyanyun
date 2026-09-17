@@ -1,13 +1,21 @@
 package com.meiyun.customer;
 
 import com.meiyun.customer.audit.AuditRecorder;
+import com.meiyun.security.AuthInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
 
 import java.time.OffsetDateTime;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 合规巡检定时任务（PIPL 小型处理者简化措施下的最低合规保障）。
@@ -20,8 +28,9 @@ import java.util.List;
  * </ul>
  *
  * <p>告警通道（设计文档 §4.2）：WARN → STORE_MGR 站内信 / CRITICAL → REGION_MGR+超管 / INFO → 仅落 audit。
- * 本卡简化：巡检命中清单统一落 {@code COMPLIANCE/INSPECT} 审计（payload 含分级计数 + 工单号/客户号清单），
- * 同时按告警级别 log.warn / log.error 输出。跨服务通知中心联动（txn-service notification）留待后续。
+ * 巡检命中清单统一落 {@code COMPLIANCE/INSPECT} 审计（payload 含分级计数 + 工单号/客户号清单），
+ * 同时按告警级别 log.warn / log.error 输出；WARN/CRITICAL 另经 txn-service 内部端点
+ * {@code /api/txn/internal/compliance-alert} 跨服务落站内信（txn 不可用软降级，下轮自愈）。
  *
  * <p>参照 {@link LevelMonthlyJob} 范式：actor 统一记 SYSTEM（定时任务无登录人），
  * 无命中时也落一条 INSPECT 审计（payload 标 0 命中，证明巡检已执行）。
@@ -40,13 +49,21 @@ public class ComplianceInspectionJob {
     private final DsarRequestRepository dsarRepo;
     private final CustomerRepository customerRepo;
     private final AuditRecorder audit;
+    private final RestTemplate restTemplate;
+
+    @Value("${txn.service.url:http://localhost:8083}")
+    private String txnBaseUrl;
+    @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
+    private String internalToken;
 
     public ComplianceInspectionJob(DsarRequestRepository dsarRepo,
                                   CustomerRepository customerRepo,
-                                  AuditRecorder audit) {
+                                  AuditRecorder audit,
+                                  RestTemplate restTemplate) {
         this.dsarRepo = dsarRepo;
         this.customerRepo = customerRepo;
         this.audit = audit;
+        this.restTemplate = restTemplate;
     }
 
     /**
@@ -89,6 +106,11 @@ public class ComplianceInspectionJob {
         // 统一落 COMPLIANCE/INSPECT 审计（即使 0 命中也落，证明巡检已执行）
         String payload = buildInspectionPayload(now, pureWarn, criticalList, consentExpired);
         audit.record("COMPLIANCE", "INSPECT-" + now.toLocalDate(), ACTOR, "INSPECT", payload);
+
+        // WARN/CRITICAL 跨服务站内信联动（txn 不可用软降级，不阻断审计落库）
+        String bizRef = "INSPECT-" + now.toLocalDate();
+        sendComplianceAlert("CRITICAL", criticalList, bizRef);
+        sendComplianceAlert("WARN", pureWarn, bizRef);
 
         log.info("合规巡检完成：WARN={} CRITICAL={} CONSENT_EXPIRED={}（执行时间 {}）",
                 pureWarn.size(), criticalList.size(), consentExpired.size(), now);
@@ -146,5 +168,45 @@ public class ComplianceInspectionJob {
 
     private static String esc(String s) {
         return s == null ? "" : s.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
+    /**
+     * 跨服务联动：将 WARN/CRITICAL 命中清单推给 txn 通知中心内部端点
+     * {@code /api/txn/internal/compliance-alert}，txn 按级别解析 STORE_MGR / REGION_MGR+超管
+     * 接收人落站内信（category=SYSTEM）。txn 不可用软降级为空（本轮不通知，下轮自愈）。
+     */
+    private void sendComplianceAlert(String level, List<DsarRequest> requests, String bizRef) {
+        if (requests == null || requests.isEmpty()) {
+            return;
+        }
+        List<String> requestNos = requests.stream().map(DsarRequest::getRequestNo).toList();
+        String title = "CRITICAL".equals(level)
+                ? "合规告警：DSAR 超期未响应 " + requests.size() + " 单"
+                : "合规预警：DSAR 即将超期 " + requests.size() + " 单";
+        String content = ("CRITICAL".equals(level)
+                ? "以下 DSAR 请求已超过法定 30 日响应时限仍未办结，请尽快处理："
+                : "以下 DSAR 请求将在 7 日内超出法定 30 日响应时限，请尽快处理：")
+                + joinTop(requestNos) + "（共 " + requests.size() + " 单）。";
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.APPLICATION_JSON);
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            Map<String, Object> body = Map.of(
+                    "level", level,
+                    "title", title,
+                    "content", content,
+                    "link", "/m1-compliance",
+                    "bizRef", bizRef);
+            restTemplate.exchange(txnBaseUrl + "/api/txn/internal/compliance-alert",
+                    HttpMethod.POST, new HttpEntity<>(body, headers), Map.class);
+        } catch (Exception ex) {
+            log.warn("合规巡检站内信联动失败（txn 不可用，软降级下轮自愈）：level={} {}", level, ex.getMessage());
+        }
+    }
+
+    /** 工单号清单截取前 10 条顿号拼接（防内容过长超出 notification.content 上限）。 */
+    private static String joinTop(List<String> list) {
+        List<String> top = list.size() > 10 ? list.subList(0, 10) : list;
+        return String.join("、", top);
     }
 }
