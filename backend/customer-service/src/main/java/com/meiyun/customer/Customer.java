@@ -102,6 +102,18 @@ public class Customer {
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 
+    // ---- P5-B58 卡3 隐私同意生命周期（PIPL 第 14-16 条同意要件 + 第 15 条撤回权） ----
+    // consent_version=0 表示未同意；≥1 表示已同意，每次重新授权 +1。
+    // consent_withdrawn_at 非 NULL 且 > consent_at → 已撤回（marketing 推送前硬校验，撤回则跳过）。
+    @Column(name = "consent_version", nullable = false, columnDefinition = "integer not null default 0")
+    private Integer consentVersion;
+
+    @Column(name = "consent_at")
+    private OffsetDateTime consentAt;
+
+    @Column(name = "consent_withdrawn_at")
+    private OffsetDateTime consentWithdrawnAt;
+
     @PrePersist
     void prePersist() {
         if (createdAt == null) createdAt = OffsetDateTime.now();
@@ -110,6 +122,7 @@ public class Customer {
         if (status == null) status = "活跃";
         if (totalSpend == null) totalSpend = java.math.BigDecimal.ZERO;
         if (visitCount == null) visitCount = 0;
+        if (consentVersion == null) consentVersion = 0;
     }
 
     public Boolean getAllergyNone() {

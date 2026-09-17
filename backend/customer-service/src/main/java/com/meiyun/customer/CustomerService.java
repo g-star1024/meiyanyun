@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.text.NumberFormat;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Collections;
@@ -388,6 +389,10 @@ public class CustomerService {
         c.setBudget(budget);
         c.setIntentNote(intentNote);
         // points/status/totalSpend/visitCount/createdAt 由 @PrePersist 置默认（0/活跃/0 元/0 次/当前时间）
+        // P5-B58 卡3：会员注册联动同意授权（consent_version 0→1，PIPL 第 13 条合法基础）。
+        // consent_withdrawn_at 留 null（未撤回）；审计由 Controller 落 CONSENT/GRANT（scene=REGISTER）。
+        c.setConsentVersion(1);
+        c.setConsentAt(OffsetDateTime.now());
         Customer saved = customerRepo.save(c);
         // 同事务登记 ES 同步事件（仅存客户号，中继回查 PG 取权威数据）；ES 故障不阻断建档
         searchEventPublisher.emitUpsert(saved.getCustomerId());

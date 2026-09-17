@@ -79,6 +79,11 @@ public class CustomerController {
         Customer created = service.create(c);
         audit.record("CUSTOMER", created.getCustomerId(), DataScope.currentActor(), "CREATE",
                 payload(created));
+        // P5-B58 卡3：会员注册联动同意授权（service 层已置 consent_version=1），
+        // 落 CONSENT/GRANT 审计（scene=REGISTER），与 CUSTOMER/CREATE 同卡片闭环。
+        audit.record("CONSENT", created.getCustomerId(), DataScope.currentActor(), "GRANT",
+                "{\"customerId\":\"" + esc(created.getCustomerId())
+                        + "\",\"version\":1,\"scene\":\"REGISTER\"}");
         return created;
     }
 

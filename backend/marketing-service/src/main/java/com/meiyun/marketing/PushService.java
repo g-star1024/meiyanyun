@@ -52,6 +52,7 @@ public class PushService {
     private final RateLimiter rateLimiter;
     private final DomainEventPublisher events;
     private final AuditRecorder audit;
+    private final CustomerConsentClient consentClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PushService(PushRecordRepository pushRepo,
@@ -59,13 +60,15 @@ public class PushService {
                        MarketingCfgService cfgService,
                        RateLimiter rateLimiter,
                        DomainEventPublisher events,
-                       AuditRecorder audit) {
+                       AuditRecorder audit,
+                       CustomerConsentClient consentClient) {
         this.pushRepo = pushRepo;
         this.forbiddenWordService = forbiddenWordService;
         this.cfgService = cfgService;
         this.rateLimiter = rateLimiter;
         this.events = events;
         this.audit = audit;
+        this.consentClient = consentClient;
     }
 
     @Transactional
@@ -86,6 +89,20 @@ public class PushService {
         }
         String customerId = cmd.customerId().trim();
         String content = cmd.content().trim();
+
+        // P5-B58 卡3 撤回联动（设计文档 §3.3）：推送前硬校验客户同意状态。
+        // 已撤回（consent_withdrawn_at 非 NULL 且 > consent_at）→ 跳过推送（合规拦截，不落 push_record）。
+        // 未授权（consent_version=0）→ 跳过推送（客户从未同意营销推送）。
+        // 客户域不可用 → 502 硬失败（合规场景不允许降级成「照推」）。
+        CustomerConsentClient.ConsentStatus consent = consentClient.requireConsent(customerId);
+        if (CustomerConsentClient.isWithdrawn(consent)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "客户已撤回营销推送同意，不可触达：" + customerId);
+        }
+        if (!CustomerConsentClient.isGranted(consent)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "客户尚未授权营销推送同意，不可触达：" + customerId);
+        }
 
         // 红线②：违禁词校验（DB 词库 + 缓存，管理端可维护）
         List<String> hits = forbiddenWordService.check(content);
