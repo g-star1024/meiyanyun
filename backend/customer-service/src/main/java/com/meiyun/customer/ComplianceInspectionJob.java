@@ -45,6 +45,8 @@ public class ComplianceInspectionJob {
     private static final long CONSENT_EXPIRY_YEARS = 3L;
     /** DSAR 超期预警窗口：7 天。 */
     private static final long DSAR_WARN_DAYS = 7L;
+    /** 业务时区：巡检 cron 与执行日均按北京时区（Asia/Shanghai）口径。 */
+    private static final java.time.ZoneId BIZ_ZONE = java.time.ZoneId.of("Asia/Shanghai");
 
     private final DsarRequestRepository dsarRepo;
     private final CustomerRepository customerRepo;
@@ -103,12 +105,16 @@ public class ComplianceInspectionJob {
                             .map(Customer::getCustomerId).toList());
         }
 
+        // 巡检执行日一律按北京时区取日（容器/JVM 默认 UTC，直接 now.toLocalDate() 会在北京
+        // 02:00（=UTC 前一日 18:00）取到前一自然日，与 cron zone=Asia/Shanghai 口径错位）。
+        String inspectDate = now.atZoneSameInstant(BIZ_ZONE).toLocalDate().toString();
+
         // 统一落 COMPLIANCE/INSPECT 审计（即使 0 命中也落，证明巡检已执行）
         String payload = buildInspectionPayload(now, pureWarn, criticalList, consentExpired);
-        audit.record("COMPLIANCE", "INSPECT-" + now.toLocalDate(), ACTOR, "INSPECT", payload);
+        audit.record("COMPLIANCE", "INSPECT-" + inspectDate, ACTOR, "INSPECT", payload);
 
         // WARN/CRITICAL 跨服务站内信联动（txn 不可用软降级，不阻断审计落库）
-        String bizRef = "INSPECT-" + now.toLocalDate();
+        String bizRef = "INSPECT-" + inspectDate;
         sendComplianceAlert("CRITICAL", criticalList, bizRef);
         sendComplianceAlert("WARN", pureWarn, bizRef);
 
