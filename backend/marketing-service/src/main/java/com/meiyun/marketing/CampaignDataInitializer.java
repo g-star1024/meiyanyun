@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -21,6 +22,10 @@ import java.util.List;
  * 金额口径：budget/spent/targetAmount/actualAmount bigint 存「分」（活规格为元，×100）。
  * channels 为渠道中文名 JSON 数组文本（与 CampaignService.toJsonArray 落库格式一致）；
  * 活动 ID 用 CP-SEED-xxx（种子固定号，用户新建走 BizNoGenerator 的 CP 前缀）。
+ *
+ * <p><b>栈门控</b>：CP-SEED 固定号演示活动仅与 seed 栈演示数据自洽，仅做「空表幂等」时
+ * 会在 core 正式库空表场景下灌入演示活动。故仅在种子库（JDBC URL 含 meiyun_seed）播种，
+ * 与 CouponWriteoffDataInitializer 同一门控约定；正式栈活动由运营在活动管理页真实创建。
  */
 @Component
 @Order(16)
@@ -29,15 +34,23 @@ public class CampaignDataInitializer implements ApplicationRunner {
     private static final Logger log = LoggerFactory.getLogger(CampaignDataInitializer.class);
 
     private final CampaignRepository campaignRepo;
+    private final String datasourceUrl;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public CampaignDataInitializer(CampaignRepository campaignRepo) {
+    public CampaignDataInitializer(CampaignRepository campaignRepo,
+                                   @Value("${spring.datasource.url:}") String datasourceUrl) {
         this.campaignRepo = campaignRepo;
+        this.datasourceUrl = datasourceUrl;
     }
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        if (datasourceUrl == null || !datasourceUrl.contains("meiyun_seed")) {
+            log.info("非种子库（{}），跳过营销活动演示数据播种；正式栈活动由运营真实创建",
+                    datasourceUrl == null || datasourceUrl.isBlank() ? "默认数据源" : datasourceUrl);
+            return;
+        }
         if (campaignRepo.count() > 0) {
             log.info("营销活动已存在（{} 个），跳过播种", campaignRepo.count());
             return;

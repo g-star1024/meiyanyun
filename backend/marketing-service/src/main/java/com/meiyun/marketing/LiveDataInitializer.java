@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -22,6 +23,10 @@ import java.util.List;
  * 金额口径：dealAmount bigint 存「分」（活规格为元，×100）。
  * 场次 ID 用 LS-SEED-xxx、短视频 ID 用 SV-SEED-xxx（种子固定号，用户新单据走 BizNoGenerator）。
  * 挂载券：取券模板表首张券 ID（无券则空数组），与活规格「挂载 m1.coupons 首张」一致。
+ *
+ * <p><b>栈门控</b>：LS-/SV-SEED 固定号演示场次曾因仅做「空表幂等」而被播进 core 正式库，
+ * 形成挂载演示券（CPN-SEED-*）的脏数据（P5-B57 已清理）。故仅在种子库（JDBC URL 含
+ * meiyun_seed）播种，与 CouponWriteoffDataInitializer 同一门控约定；正式栈数据由真实直播排期产生。
  */
 @Component
 @Order(32)
@@ -32,18 +37,26 @@ public class LiveDataInitializer implements ApplicationRunner {
     private final LiveSessionRepository sessionRepo;
     private final ShortVideoRepository videoRepo;
     private final CouponTemplateRepository couponRepo;
+    private final String datasourceUrl;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public LiveDataInitializer(LiveSessionRepository sessionRepo, ShortVideoRepository videoRepo,
-                               CouponTemplateRepository couponRepo) {
+                               CouponTemplateRepository couponRepo,
+                               @Value("${spring.datasource.url:}") String datasourceUrl) {
         this.sessionRepo = sessionRepo;
         this.videoRepo = videoRepo;
         this.couponRepo = couponRepo;
+        this.datasourceUrl = datasourceUrl;
     }
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        if (datasourceUrl == null || !datasourceUrl.contains("meiyun_seed")) {
+            log.info("非种子库（{}），跳过直播场次/短视频演示数据播种；正式栈数据由真实直播排期产生",
+                    datasourceUrl == null || datasourceUrl.isBlank() ? "默认数据源" : datasourceUrl);
+            return;
+        }
         if (sessionRepo.count() > 0 || videoRepo.count() > 0) {
             log.info("直播场次/短视频已存在（场次 {} / 短视频 {}），跳过播种",
                     sessionRepo.count(), videoRepo.count());

@@ -2,6 +2,7 @@ package com.meiyun.marketing;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
@@ -16,6 +17,10 @@ import java.util.List;
  * 裂变海报启动播种（M5-04）：表为空时幂等灌入 6 个海报模板 + 6 张已生成海报（对齐前端活规格）。
  * 金额口径：dealAmount bigint 存「分」（活规格为元，×100）；commissionRate 百分比×10（5% = 50）。
  * 模板 ID 用 PT-SEED-xxx、海报 ID 用 MP-SEED-xxx（种子固定号，用户新单据走 BizNoGenerator）。
+ *
+ * <p><b>栈门控</b>：PT-/MP-SEED 固定号演示模板与海报仅与 seed 栈演示数据自洽，仅做「空表幂等」
+ * 时会在 core 正式库空表场景下灌入演示海报。故仅在种子库（JDBC URL 含 meiyun_seed）播种，
+ * 与 CouponWriteoffDataInitializer 同一门控约定；正式栈海报由真实模板配置与分享传播产生。
  */
 @Component
 @Order(31)
@@ -28,15 +33,23 @@ public class PosterDataInitializer implements ApplicationRunner {
 
     private final PosterTemplateRepository templateRepo;
     private final PosterRecordRepository posterRepo;
+    private final String datasourceUrl;
 
-    public PosterDataInitializer(PosterTemplateRepository templateRepo, PosterRecordRepository posterRepo) {
+    public PosterDataInitializer(PosterTemplateRepository templateRepo, PosterRecordRepository posterRepo,
+                                 @Value("${spring.datasource.url:}") String datasourceUrl) {
         this.templateRepo = templateRepo;
         this.posterRepo = posterRepo;
+        this.datasourceUrl = datasourceUrl;
     }
 
     @Override
     @Transactional
     public void run(ApplicationArguments args) {
+        if (datasourceUrl == null || !datasourceUrl.contains("meiyun_seed")) {
+            log.info("非种子库（{}），跳过裂变海报演示数据播种；正式栈海报由真实模板与分享传播产生",
+                    datasourceUrl == null || datasourceUrl.isBlank() ? "默认数据源" : datasourceUrl);
+            return;
+        }
         if (templateRepo.count() > 0 || posterRepo.count() > 0) {
             log.info("海报模板/记录已存在（模板 {} / 海报 {}），跳过播种",
                     templateRepo.count(), posterRepo.count());
