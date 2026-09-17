@@ -47,6 +47,21 @@ import {
   type CustomerRfmView,
 } from '@/api/customerView'
 import { listWriteoffs, type WriteoffRecordDTO } from '@/api/writeoff'
+import {
+  listDsar,
+  createDsar,
+  reviewDsar,
+  getConsent,
+  grantConsent,
+  withdrawConsent,
+  DSAR_TYPE_LABEL,
+  DSAR_STATUS_LABEL,
+  consentBadge,
+  isDsarOverdue,
+  isDsarWarn,
+  type DsarRequestDTO,
+  type ConsentStatusDTO,
+} from '@/api/dsar'
 
 type PillStatus = 'default' | 'primary' | 'success' | 'warning' | 'danger' | 'info' | 'disabled' | 'draft'
 
@@ -81,19 +96,65 @@ const consults = ref<CustomerConsultView[]>([])
 const appts = ref<CustomerApptView[]>([])
 const rfm = ref<CustomerRfmView | null>(null)
 const writeoffs = ref<WriteoffRecordDTO[]>([])
+// P5-B58 卡5：DSAR 工单 + 同意状态
+const consent = ref<ConsentStatusDTO | null>(null)
+const dsarRequests = ref<DsarRequestDTO[]>([])
+const dsarBusy = ref(false)
+const dsarShowCreate = ref(false)
+const dsarCreateType = ref('ACCESS')
+const dsarCreateDesc = ref('')
+const dsarReviewId = ref<number | null>(null)
+const dsarReviewAction = ref<'fulfill' | 'reject'>('fulfill')
+const dsarReviewRejectReason = ref('')
+const canViewDsar = computed(() => auth.can('dsar:view'))
+const canEditDsar = computed(() => auth.can('dsar:edit'))
+const consentPill = computed(() => {
+  const b = consentBadge(consent.value)
+  return { status: b.tone as PillStatus, text: b.text }
+})
+// 同意是否「生效中」（已授权且未撤回）：决定 UI 显「授权同意」还是「撤回同意」
+const consentGranted = computed(() => {
+  const s = consent.value
+  if (!s || s.consentVersion === 0) return false
+  if (s.consentWithdrawnAt && s.consentAt && new Date(s.consentWithdrawnAt) > new Date(s.consentAt)) return false
+  return true
+})
+// DSAR 新建类型选项（PIPL 第 44-49 条：访问/删除/更正/可携带）
+const DSAR_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: 'ACCESS', label: '访问（导出个人数据副本）' },
+  { value: 'DELETE', label: '删除（删除个人信息）' },
+  { value: 'RECTIFY', label: '更正（更正不准确信息）' },
+  { value: 'PORTABILITY', label: '可携带（结构化数据迁移）' },
+]
+function dsarPill(status: DsarRequestDTO['status']): { status: PillStatus; text: string } {
+  if (status === 'FULFILLED') return { status: 'success', text: DSAR_STATUS_LABEL.FULFILLED }
+  if (status === 'REJECTED') return { status: 'danger', text: DSAR_STATUS_LABEL.REJECTED }
+  if (status === 'REVIEWING') return { status: 'info', text: DSAR_STATUS_LABEL.REVIEWING }
+  return { status: 'draft', text: DSAR_STATUS_LABEL.SUBMITTED }
+}
+const canSubmitReview = computed(() => {
+  if (dsarBusy.value) return false
+  if (dsarReviewAction.value === 'reject' && !dsarReviewRejectReason.value.trim()) return false
+  return true
+})
 
 const canSeePhone = computed(() => auth.can('customer:phone:decrypt'))
 
-type ProfileTab = 'profile' | 'overview' | 'order' | 'medical' | 'photo'
+type ProfileTab = 'profile' | 'overview' | 'order' | 'medical' | 'photo' | 'privacy'
 const tab = ref<ProfileTab>(route.query.t === '360' ? 'overview' : 'profile')
 
-const profileTabs: { k: ProfileTab; label: string; icon: string }[] = [
-  { k: 'profile', label: '价值画像', icon: 'customer' },
-  { k: 'overview', label: '档案', icon: 'profile' },
-  { k: 'order', label: '消费订单', icon: 'order' },
-  { k: 'medical', label: '病历随访', icon: 'box' },
-  { k: 'photo', label: '对比照/面诊', icon: 'beauty' },
-]
+const profileTabs = computed(() => {
+  const base: { k: ProfileTab; label: string; icon: string }[] = [
+    { k: 'profile', label: '价值画像', icon: 'customer' },
+    { k: 'overview', label: '档案', icon: 'profile' },
+    { k: 'order', label: '消费订单', icon: 'order' },
+    { k: 'medical', label: '病历随访', icon: 'box' },
+    { k: 'photo', label: '对比照/面诊', icon: 'beauty' },
+  ]
+  // P5-B58 卡5：dsar:view 权限可见「隐私请求」tab（PIPL 第 44-49 条刚性要求）
+  if (auth.can('dsar:view')) base.push({ k: 'privacy', label: '隐私请求', icon: 'shield' })
+  return base
+})
 
 // 会员等级（中文）→ 胶囊色（与客户列表页一致：等级越高色越重）
 const LEVEL_PILL: Record<string, { status: PillStatus; text: string }> = {
@@ -438,14 +499,17 @@ async function load() {
   }
 
   // txn 域（订单/面诊/预约/划扣）独立容错：服务未就绪时对应 tab 显空态，不影响客户域
+  // P5-B58 卡5：dsar/consent 同款独立容错（dsar:view 权限才加载，无权限跳过）
   try {
     const id = customerId.value
-    const [o, cn, ap, rf, wo] = await Promise.allSettled([
+    const [o, cn, ap, rf, wo, co, ds] = await Promise.allSettled([
       listCustomerOrders(id),
       listCustomerConsultations(id),
       listCustomerAppointments(id),
       getCustomerRfm(id),
       listWriteoffs({ customerId: id }),
+      canViewDsar.value ? getConsent(id) : Promise.reject(new Error('no perm')),
+      canViewDsar.value ? listDsar({ customerId: id, size: 50 }) : Promise.reject(new Error('no perm')),
     ])
     orders.value = o.status === 'fulfilled' ? (o.value.data ?? []) : []
     consults.value = cn.status === 'fulfilled' ? (cn.value.data ?? []) : []
@@ -455,6 +519,8 @@ async function load() {
     writeoffs.value = wo.status === 'fulfilled'
       ? (wo.value.data ?? []).filter((w) => !!w.cardNo)
       : []
+    consent.value = co.status === 'fulfilled' ? (co.value.data ?? null) : null
+    dsarRequests.value = ds.status === 'fulfilled' ? (ds.value.data?.content ?? []) : []
   } catch (e) {
     console.error('[CustomerProfile] 加载交易域数据失败', e)
   }
@@ -467,6 +533,91 @@ function goBack() {
 }
 function call() {
   window.alert(`正在呼叫 ${phoneText.value}`)
+}
+
+// ---- P5-B58 卡5：隐私请求（DSAR）+ 同意生命周期操作 ----
+function openDsarCreate() {
+  dsarCreateType.value = 'ACCESS'
+  dsarCreateDesc.value = ''
+  dsarShowCreate.value = true
+}
+
+async function submitDsarCreate() {
+  if (dsarBusy.value) return
+  dsarBusy.value = true
+  try {
+    await createDsar({
+      customerId: customerId.value,
+      type: dsarCreateType.value as DsarRequestDTO['type'],
+      description: dsarCreateDesc.value.trim(),
+    })
+    toast.success('隐私请求工单已提交，依法 30 日内响应')
+    dsarShowCreate.value = false
+    await load()
+  } catch (e: any) {
+    toast.error('提交失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    dsarBusy.value = false
+  }
+}
+
+function openDsarReview(r: DsarRequestDTO, action: 'fulfill' | 'reject') {
+  dsarReviewId.value = r.id
+  dsarReviewAction.value = action
+  dsarReviewRejectReason.value = ''
+}
+
+function closeDsarReview() {
+  dsarReviewId.value = null
+  dsarReviewRejectReason.value = ''
+}
+
+async function submitDsarReview() {
+  if (!canSubmitReview.value || dsarReviewId.value === null) return
+  dsarBusy.value = true
+  try {
+    await reviewDsar(dsarReviewId.value, {
+      action: dsarReviewAction.value,
+      reviewer: auth.user.name || auth.user.staffId,
+      rejectReason: dsarReviewAction.value === 'reject' ? dsarReviewRejectReason.value.trim() : undefined,
+    })
+    toast.success(dsarReviewAction.value === 'fulfill' ? '工单已完成' : '工单已驳回')
+    closeDsarReview()
+    await load()
+  } catch (e: any) {
+    toast.error('审核失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    dsarBusy.value = false
+  }
+}
+
+async function doGrantConsent() {
+  if (dsarBusy.value) return
+  dsarBusy.value = true
+  try {
+    await grantConsent(customerId.value, 'MARKETING')
+    toast.success('已记录营销同意授权')
+    await load()
+  } catch (e: any) {
+    toast.error('授权失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    dsarBusy.value = false
+  }
+}
+
+async function doWithdrawConsent() {
+  if (!window.confirm('确认撤回该客户的营销同意？撤回后营销推送将自动停止。')) return
+  if (dsarBusy.value) return
+  dsarBusy.value = true
+  try {
+    await withdrawConsent(customerId.value)
+    toast.success('已撤回同意，营销推送已停止')
+    await load()
+  } catch (e: any) {
+    toast.error('撤回失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    dsarBusy.value = false
+  }
 }
 
 // 平台合规能力声明（系统级控制项，非客户数据，可常驻展示）
@@ -527,6 +678,7 @@ const compliance = [
               <span class="hero__anon">会员号 {{ customer.customerId }}</span>
               <CStatusPill :status="levelPill.status" dot>{{ levelPill.text }}</CStatusPill>
               <CStatusPill :status="statusPill.status" dot>{{ statusPill.text }}</CStatusPill>
+              <CStatusPill v-if="canViewDsar" :status="consentPill.status" dot>{{ consentPill.text }}</CStatusPill>
             </div>
             <div class="hero__meta">
               手机 {{ phoneText }} · 注册于 {{ registerDate }} · 来源 {{ channelText }}
@@ -788,6 +940,60 @@ const compliance = [
             </div>
           </CCard>
 
+          <!-- ===== Tab ⑥ 隐私请求（DSAR 工单 + 同意生命周期；PIPL 第 44-49 条） ===== -->
+          <CCard v-else-if="tab === 'privacy'" padding="lg">
+            <template #header><h3 class="cp__card-title">隐私请求 · 同意状态</h3></template>
+
+            <!-- 营销同意状态 + 授权/撤回 -->
+            <div class="cp__sub-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm);">
+              <span>营销同意</span>
+              <span style="display: inline-flex; gap: var(--s-xs);">
+                <CButton v-if="canEditDsar && !consentGranted" variant="primary" size="sm" :disabled="dsarBusy" @click="doGrantConsent">授权同意</CButton>
+                <CButton v-if="canEditDsar && consentGranted" variant="ghost" size="sm" :disabled="dsarBusy" @click="doWithdrawConsent">撤回同意</CButton>
+              </span>
+            </div>
+            <div class="card-row">
+              <div class="card-row__line">
+                <CIcon name="shield" :size="15" class="card-row__ic" />
+                <span class="card-row__name">当前状态</span>
+                <CStatusPill :status="consentPill.status" dot>{{ consentPill.text }}</CStatusPill>
+              </div>
+              <div class="card-row__sub">
+                <template v-if="consent && consent.consentVersion > 0">
+                  版本 v{{ consent.consentVersion }}<template v-if="consent.consentAt"> · 授权于 {{ fmtDateTime(consent.consentAt) }}</template><template v-if="consent.consentWithdrawnAt"> · 撤回于 {{ fmtDateTime(consent.consentWithdrawnAt) }}</template>
+                </template>
+                <template v-else>客户尚未进行营销同意授权（PIPL 第 14-16 条同意要件）。</template>
+              </div>
+            </div>
+
+            <!-- DSAR 工单列表 + 新建 -->
+            <div class="cp__sub-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm);">
+              <span>隐私请求工单（{{ dsarRequests.length }}）</span>
+              <CButton v-if="canEditDsar" variant="primary" size="sm" @click="openDsarCreate">
+                <CIcon name="plus" :size="13" />新建工单
+              </CButton>
+            </div>
+            <div v-if="!dsarRequests.length" class="cp__empty">暂无隐私请求工单</div>
+            <div v-for="r in dsarRequests" :key="r.id" class="card-row">
+              <div class="card-row__line">
+                <CIcon name="shield" :size="15" class="card-row__ic" />
+                <span class="card-row__name">{{ DSAR_TYPE_LABEL[r.type] }}请求</span>
+                <CStatusPill :status="dsarPill(r.status).status">{{ dsarPill(r.status).text }}</CStatusPill>
+                <CStatusPill v-if="isDsarOverdue(r)" status="danger">已超期</CStatusPill>
+                <CStatusPill v-else-if="isDsarWarn(r)" status="warning">将超期</CStatusPill>
+              </div>
+              <div class="card-row__sub">
+                {{ r.requestNo }} · 法定响应期限 {{ fmtDateTime(r.deadlineAt) }}<template v-if="r.reviewer"> · 审核人 {{ r.reviewer }}</template>
+              </div>
+              <div v-if="r.description" class="card-row__sub">诉求：{{ r.description }}</div>
+              <div v-if="r.rejectReason" class="card-row__sub">驳回原因：{{ r.rejectReason }}</div>
+              <div v-if="canEditDsar && (r.status === 'SUBMITTED' || r.status === 'REVIEWING')" class="card-row__sub" style="display: flex; gap: var(--s-xs);">
+                <CButton variant="primary" size="sm" :disabled="dsarBusy" @click="openDsarReview(r, 'fulfill')">完成</CButton>
+                <CButton variant="ghost" size="sm" :disabled="dsarBusy" @click="openDsarReview(r, 'reject')">驳回</CButton>
+              </div>
+            </div>
+          </CCard>
+
           <!-- ===== Tab ⑤ 对比照/面诊（图床未接入，占位） ===== -->
           <CCard v-else class="cp__placeholder-card" padding="lg">
             <template #header><h3 class="cp__card-title">对比照 / 面诊报告</h3></template>
@@ -907,6 +1113,56 @@ const compliance = [
           <CButton variant="ghost" @click="adjustShow = false">取消</CButton>
           <CButton variant="primary" :disabled="!canAdjust" @click="submitAdjust">
             {{ adjusting ? '提交中…' : `确认调分${adjustAmtNum !== 0 ? ' ' + (adjustAmtNum > 0 ? '+' : '') + adjustAmtNum.toLocaleString('zh-CN') : ''}` }}
+          </CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- P5-B58 卡5 新建隐私请求工单弹层（POST /customer/dsar） -->
+    <div v-if="dsarShowCreate" class="modal-mask" @click.self="dsarShowCreate = false">
+      <CCard class="modal" title="新建隐私请求工单" padding="lg">
+        <div class="form">
+          <div class="form__row">
+            <label class="form__label">请求类型</label>
+            <CSelect v-model="dsarCreateType" :options="DSAR_TYPE_OPTIONS" width="100%" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">诉求描述</label>
+            <CInput v-model="dsarCreateDesc" placeholder="选填：说明需访问、更正、删除或导出的数据范围" maxlength="255" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">法定时限</label>
+            <div style="font-size: var(--t-sm); color: var(--c-text-3);">依《个人信息保护法》自收到请求起 30 日内完成响应</div>
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="dsarShowCreate = false">取消</CButton>
+          <CButton variant="primary" :disabled="dsarBusy" @click="submitDsarCreate">
+            {{ dsarBusy ? '提交中…' : '提交工单' }}
+          </CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- P5-B58 卡5 DSAR 工单审核弹层（PUT /customer/dsar/{id}/review） -->
+    <div v-if="dsarReviewId !== null" class="modal-mask" @click.self="closeDsarReview">
+      <CCard class="modal" :title="dsarReviewAction === 'fulfill' ? '完成工单' : '驳回工单'" padding="lg">
+        <div class="form">
+          <div class="form__row">
+            <label class="form__label">处理结果</label>
+            <CStatusPill :status="dsarReviewAction === 'fulfill' ? 'success' : 'danger'">
+              {{ dsarReviewAction === 'fulfill' ? '执行请求并归档' : '驳回请求' }}
+            </CStatusPill>
+          </div>
+          <div v-if="dsarReviewAction === 'reject'" class="form__row">
+            <label class="form__label">驳回原因</label>
+            <CInput v-model="dsarReviewRejectReason" placeholder="必填：说明驳回依据，不超过 128 字" maxlength="128" />
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="closeDsarReview">取消</CButton>
+          <CButton variant="primary" :disabled="!canSubmitReview || dsarBusy" @click="submitDsarReview">
+            {{ dsarBusy ? '提交中…' : '确认' }}
           </CButton>
         </template>
       </CCard>
