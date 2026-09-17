@@ -3,11 +3,11 @@
 > 用途：铁律 11 自主续跑的唯一事实源。任何接续会话/定时任务先读本文件，再按「开发前 checklist」执行。
 > 维护规则：每批开工改 ACTIVE+心跳；批末（或中断前）改 DORMANT+存档。心跳格式 `YYYY-MM-DD HH:mm CST`。
 
-<!-- MACHINE:STATUS=DORMANT -->
-<!-- MACHINE:HEARTBEAT=2026-09-17 14:31 CST -->
-<!-- MACHINE:BATCH=P5-B57 已闭合（2026-09-17 14:31 DORMANT，三卡全闭合）——用户三指令全执行完毕：①1140 元 3 条 OK 脏核销历史残留物理删除不回填+三播种器门控 `2f7fc32`；②外部依赖统一配置窗口 `fc97b37` 已 push（22 files +1480/-23，双栈六容器 healthy+三轨真验全绿）；③合规方案竞品调研定案（DESIGN-P5-B57-CARD3-COMPLIANCE-2026-09-17.md，推荐轻量内建路线，建议 P5-B58 实施） -->
-<!-- MACHINE:CARD=卡1 ✅ 已闭合 HEAD=`2f7fc32` 已 push（3 条历史脏核销物理删除+三播种器 meiyun_seed 栈门控，04 L98-100 登记）；卡2 ✅ 已闭合 HEAD=`fc97b37` 已 push（V34 external_integration 表+7 目录行+AES-GCM 独立主密钥+管理端 /api/org/integrations+内部 /internal/integrations/snapshot+txn/marketing 各建 IntegrationConfigClient 60s TTL+10min 宽限+env 兜底+前端 T3IntegrationView，22 files +1480/-23，双栈六容器 healthy+三轨真验全绿，04 L52/L64+02 L80/L81/L117/L147 勾销）；卡3 ✅ 已闭合（DESIGN-P5-B57-CARD3-COMPLIANCE-2026-09-17.md 竞品调研 15 条结果+推荐轻量内建路线 DSAR 工单流+同意生命周期+合规巡检告警，建议 P5-B58 合规专项批实施，04 L125 追加注记） -->
-<!-- MACHINE:PREV=P5-B56 已闭合 HEAD=`6ede21c`（2026-09-17 05:56，docs VERIFY 口径订正，已 push）；B56 代码 `3b34214`（后端 8 files +219/-8）+`68d01cd`（前端 3 files +121/-6），docs 留痕 046a55c/9f05598/3e93809/6ede21c；基线数字 ✅109/166≈66%、🔧1、⬜55、域⑦ 11/0/13、域⑧ 34/2/31；本接管为 B57 首个 docs commit -->
+<!-- MACHINE:STATUS=ACTIVE -->
+<!-- MACHINE:HEARTBEAT=2026-09-17 15:00 CST -->
+<!-- MACHINE:BATCH=P5-B58 合规专项批开工（2026-09-17，用户「按这个方案开始 P5-B58 合规专项批」）——P5-B57 卡3 推荐方案（轻量内建路线 DSAR+consent+巡检）落地，6 卡：卡1 dsar_request 实体+Repo+五端点+权限播种 / 卡2 四类型执行逻辑 / 卡3 consent 三列+四场景+撤回联动 / 卡4 ComplianceInspectionJob 每日巡检 / 卡5 前端隐私请求 tab / 卡6 三轨真验+批末落账 -->
+<!-- MACHINE:CARD=卡1 ✅ 已闭合（dsar_request 实体+Repo+Service+五端点+权限播种 customer-service，2026-09-17 15:00）——四新文件 DsarRequest.java/DsarRequestRepository.java/DsarRequestService.java/DsarRequestController.java；auth.ts 加 dsar:view/dsar:edit 权限码（ALL_VIEW+REGION_MGR+STORE_MGR），gen_perm_matrix.mjs 重生 PermissionMatrix.java 298 条；mvn customer-service,org-service -am BUILD SUCCESS；双栈 docker cp 换载 4 容器 healthy；PG meiyun_core/meiyun_seed 双库 \d dsar_request 12 列+request_no UNIQUE 建成；curl 五端点真验全绿（POST 新建 DSAR20260917001/002 取号正确+deadline+30d、幂等 409、GET 列表 storeCode 门店过滤、GET 详情、PUT review fulfill→FULFILLED+fulfilledAt 写入/reject→REJECTED+rejectReason 写入/已闭合 409、GET stats 四态计数+overdue）；越权 ST-SH-002→404；审计 DSAR/CREATE+REVIEW 4 条哈希链 append-only；前端 vue-tsc 0 error+vite build OK+双栈换载。卡1 仅状态流转，四类型执行逻辑（ACCESS 导出/DELETE 软删/RECTIFY 改字段/PORTABILITY JSON）留卡2。下一步=卡2 四类型执行逻辑（customer-service+ai-service，复用 ai_privacy_export 导出能力） -->
+<!-- MACHINE:PREV=P5-B57 已闭合 HEAD=`cd6e74f`（2026-09-17 14:31 docs 收尾，已 push）；B57 代码 `2f7fc32`（卡1 数据治理）+`fc97b37`（卡2 外部配置窗口，22 files +1480/-23）+卡3 设计文档入库；基线数字 ✅109/166≈66%、🔧1、⬜55、域⑦ 11/0/13、域⑧ 34/2/31（B58 纵深批不加新页面，数字不变，只勾销 04 L125 第②类合规专项） -->
 
 ## 当前状态（人读区）
 

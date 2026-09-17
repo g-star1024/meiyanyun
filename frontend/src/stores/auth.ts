@@ -32,7 +32,7 @@ const ALL_VIEW = [
   'writeoff:view', 'refund:view', 'cardcancel:view', 'course:view', 'course:track',
   'transfer:view', 'contract:view', 'emr:view', 'recall:view', 'handover:view',
   'report:view', 'tenant:view', 'org:view', 'rbac:view', 'inventory:view', 'brand:view',
-  'marketing:view', 'dispatch:view', 'compliance:view', 'audit:view', 'health:view',
+  'marketing:view', 'dispatch:view', 'compliance:view', 'dsar:view', 'audit:view', 'health:view',
   'sop:view', 'target:view', 'screen:view', 'settings:view',
   'schedule:view', 'approval:view',
   'workorder:view', 'daily:view',
@@ -80,7 +80,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'contract:edit', 'marketing:edit', 'handover:edit', 'handover:create', 'sop:edit', 'dispatch:edit',
     'brand:edit', 'inventory:edit', 'tenant:edit', 'org:edit', 'rbac:edit',
     'consult:review', // 区域/门店主管可二次审核方案单
-    'compliance:edit', 'target:edit', 'health:edit', 'recall:edit', 'recall:create',
+    'compliance:edit', 'dsar:edit', 'target:edit', 'health:edit', 'recall:edit', 'recall:create',
     'transfer:edit', 'transfer:create', 'writeoff:edit', 'queue:edit', 'complaint:approve', 'transfer:approve',
     'target:approve', 'sop:approve', 'inventory:approve', 'brand:approve',
     // B19：L3 大额退款/退卡三阶段审批，区域经理为第二审（REVIEW 店长 → REGION 区域经理 → FINANCE 财务）
@@ -140,7 +140,7 @@ const ROLE_PERMISSIONS: Record<Role, string[]> = {
     'contract:edit', 'marketing:edit', 'handover:edit', 'handover:create', 'sop:edit', 'dispatch:edit',
     'brand:edit', 'inventory:edit', 'refund:approve', 'cardcancel:approve',
     'complaint:create', 'complaint:approve', 'transfer:approve', 'tenant:edit', 'org:edit', 'rbac:edit',
-    'compliance:edit', 'target:edit', 'health:edit', 'recall:edit', 'recall:create',
+    'compliance:edit', 'dsar:edit', 'target:edit', 'health:edit', 'recall:edit', 'recall:create',
     'transfer:edit', 'transfer:create', 'writeoff:edit', 'writeoff:create', 'queue:edit', 'cashier:sign',
     'customer:card:recharge', // B4 会员卡充值（店长可充值/查储值流水）
     'customer:merge', 'settings:edit',
