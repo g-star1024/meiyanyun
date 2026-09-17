@@ -27,4 +27,11 @@ public interface DsarRequestRepository extends JpaRepository<DsarRequest, Long>,
     /** 超期计数：deadline_at < now 且状态未闭合（FULFILLED/REJECTED）。 */
     @Query("select count(r) from DsarRequest r where r.deadlineAt < :now and r.status not in :closed")
     long countOverdue(@Param("now") OffsetDateTime now, @Param("closed") List<String> closed);
+
+    /**
+     * 超期清单：deadline_at < 指定阈值且状态未闭合（供巡检 Job 用，WARN 取 now+7d / CRITICAL 取 now）。
+     * 按 deadlineAt 升序（最紧急的在前），便于告警时优先展示。
+     */
+    @Query("select r from DsarRequest r where r.deadlineAt < :threshold and r.status not in :closed order by r.deadlineAt asc")
+    List<DsarRequest> findOverdueBefore(@Param("threshold") OffsetDateTime threshold, @Param("closed") List<String> closed);
 }

@@ -6,6 +6,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -43,4 +44,11 @@ public interface CustomerRepository extends JpaRepository<Customer, String>, Jpa
     /** AI 覆盖客户 KPI：客户域全量客户数（派生统计不入库）。 */
     @Query("select count(c) from Customer c")
     long countAllCustomers();
+
+    /**
+     * 同意过期清单（PIPL 第 14 条同意有效期一般 3 年）：consent_at < 指定阈值且未撤回。
+     * 供 ComplianceInspectionJob 巡检用，threshold 通常为 now-3y。
+     */
+    @Query("select c from Customer c where c.consentAt < :threshold and c.consentWithdrawnAt is null order by c.consentAt asc")
+    List<Customer> findConsentExpired(@Param("threshold") OffsetDateTime threshold);
 }
