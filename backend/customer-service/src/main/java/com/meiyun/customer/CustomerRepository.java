@@ -51,4 +51,28 @@ public interface CustomerRepository extends JpaRepository<Customer, String>, Jpa
      */
     @Query("select c from Customer c where c.consentAt < :threshold and c.consentWithdrawnAt is null order by c.consentAt asc")
     List<Customer> findConsentExpired(@Param("threshold") OffsetDateTime threshold);
+
+    /**
+     * 撞单候选发现（期1 只读）：按归一化手机号分组，取组内有效客户数 &gt; 1 的全部行。
+     * 归一化口径与建档查重同：去空白/连字符/括号 → 去 +86/86 国家码前缀；
+     * 已匿名化（anonymized_at 非空）客户不参与配对（PII 已销毁，不得重新关联）。
+     * 只投影候选读模型所需轻量列，组内两两配对/数据域过滤在 Service 层完成。
+     */
+    @Query(value = """
+            select customer_id as customerId, name as name, phone as phone, level as level,
+                   store_code as storeCode, owner_staff_id as ownerStaffId, created_at as createdAt
+            from customer
+            where anonymized_at is null
+              and regexp_replace(regexp_replace(regexp_replace(phone,'[\\s\\-()]','','g'),'^\\+?86',''),'^86','')
+                  in (
+                select norm from (
+                    select regexp_replace(regexp_replace(regexp_replace(phone,'[\\s\\-()]','','g'),'^\\+?86',''),'^86','') as norm
+                    from customer
+                    where anonymized_at is null
+                    group by norm
+                    having count(*) > 1
+                ) dup)
+            order by created_at asc
+            """, nativeQuery = true)
+    List<DuplicatePhoneRow> findDuplicatePhoneRows();
 }

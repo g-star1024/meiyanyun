@@ -34,6 +34,7 @@ public class CustomerController {
     private final MonthlySpendService monthlySpendService;
     private final LevelInitService levelInitService;
     private final LevelDowngradeNotifier downgradeNotifier;
+    private final MergeCandidateService mergeCandidateService;
 
     @Autowired
     private AuditRecorder audit;
@@ -46,7 +47,8 @@ public class CustomerController {
                               CustomerSearchEventAdminService searchEventAdmin,
                               MonthlySpendService monthlySpendService,
                               LevelInitService levelInitService,
-                              LevelDowngradeNotifier downgradeNotifier) {
+                              LevelDowngradeNotifier downgradeNotifier,
+                              MergeCandidateService mergeCandidateService) {
         this.service = service;
         this.customerRepo = customerRepo;
         this.cardRepo = cardRepo;
@@ -59,6 +61,7 @@ public class CustomerController {
         this.monthlySpendService = monthlySpendService;
         this.levelInitService = levelInitService;
         this.downgradeNotifier = downgradeNotifier;
+        this.mergeCandidateService = mergeCandidateService;
     }
 
     // ---- 客户主数据（分页 + 过滤 + 标签） ----
@@ -461,6 +464,20 @@ public class CustomerController {
             }
         }
         return m;
+    }
+
+    // ---- 撞单合并期1：候选发现（只读，合并写逻辑属后续期） ----
+
+    /**
+     * 疑似撞单候选对：归一化手机号重复的有效客户两两配对（SAME_STORE/POOL/CROSS_STORE）。
+     * 授权对齐 customer:merge（仅超管/区域/店长）而非普授的 customer:view——
+     * 候选暴露跨客户 PII 配对关系，是合并工作流的敏感前置；Service 内再做 pair 级数据域过滤，
+     * 公海组仅超管可见、手机号一律掩码。只读不写、不留审计。
+     */
+    @GetMapping("/merge-candidates")
+    @RequirePerm("customer:merge")
+    public List<MergeCandidatePairDTO> mergeCandidates() {
+        return mergeCandidateService.findCandidates();
     }
 
     // ---- 客户全文检索（ES，ES 不可用降级 DB 内存过滤） ----
