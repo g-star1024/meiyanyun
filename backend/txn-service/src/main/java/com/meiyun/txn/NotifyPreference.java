@@ -13,7 +13,12 @@ import java.time.OffsetDateTime;
  *
  * <p>粒度：员工 × 通知类别一行（staff_id + category 唯一）。category 与 notification 表对齐：
  * APPROVAL/CUSTOMER/INVENTORY/MARKETING/SYSTEM；无记录行 = 系统默认（订阅开启、仅站内信）。
- * channels 存逗号串（INBOX/SMS/WECHAT/EMAIL）——渠道位先落库，短信/企微/邮件发送网关在 B22+ 接入，届时不返工表结构。
+ * channels 存逗号串（INBOX/SMS/WECHAT/EMAIL）——B26/B57 三外部渠道网关已全量落地，
+ * 未配置网关时投递诚实落 SKIPPED。
+ *
+ * <p>B60 增个人级免打扰时段（L65）：quietEnabled + quietStart/quietEnd（HH:mm，可跨午夜）。
+ * 语义与全局 {@link NotificationQuietConfig} 对齐——仅延后非 INBOX 渠道、URGENT 恒豁免；
+ * 业务表由 JPA ddl-auto=update 自动加列，无需 Flyway。
  */
 @Entity
 @Table(name = "notify_preference",
@@ -40,9 +45,21 @@ public class NotifyPreference {
     @Column(name = "is_enabled", nullable = false, columnDefinition = "boolean default true")
     private boolean enabled = true;
 
-    /** 接收渠道逗号串：INBOX/SMS/WECHAT/EMAIL（当前仅 INBOX 有发送链路，其余渠道位待 B22+ 网关）。 */
+    /** 接收渠道逗号串：INBOX/SMS/WECHAT/EMAIL（四渠道均已落地，未配网关的外部渠道投递落 SKIPPED）。 */
     @Column(columnDefinition = "TEXT")
     private String channels;
+
+    /** 个人免打扰开关（仅对非 INBOX 渠道生效，URGENT 恒豁免）。 */
+    @Column(name = "quiet_enabled", nullable = false, columnDefinition = "boolean default false")
+    private boolean quietEnabled = false;
+
+    /** 个人免打扰开始时刻 HH:mm（可跨午夜，如 22:00）。 */
+    @Column(name = "quiet_start", length = 8)
+    private String quietStart;
+
+    /** 个人免打扰结束时刻 HH:mm（可跨午夜，如次日 08:00）。 */
+    @Column(name = "quiet_end", length = 8)
+    private String quietEnd;
 
     @Column(name = "updated_at", nullable = false)
     private OffsetDateTime updatedAt;

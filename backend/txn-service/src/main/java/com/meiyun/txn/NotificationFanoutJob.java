@@ -182,9 +182,17 @@ public class NotificationFanoutJob {
             streamRegistry.push(n.getRecipient(), n); // 实时推铃铛
             return;
         }
-        if (quietConfig.inQuietWindow(n.getLevel())) {
+        // 免打扰：全局（meiyun.notify.quiet.*）或员工个人级（notify_preference.quiet_*，B60 L65）任一命中即延后；
+        // URGENT 恒豁免；仅对非 INBOX 渠道生效（INBOX 分支已在上方恒 SENT 返回）。
+        boolean globalQuiet = quietConfig.inQuietWindow(n.getLevel());
+        boolean personalQuiet = pref != null
+                && pref.isQuietEnabled()
+                && !"URGENT".equals(n.getLevel())
+                && NotificationQuietConfig.inWindow(NotificationQuietConfig.bizNow(),
+                        pref.getQuietStart(), pref.getQuietEnd());
+        if (globalQuiet || personalQuiet) {
             d.setStatus("DEFERRED");
-            d.setLastError("免打扰时段，延后发送");
+            d.setLastError(globalQuiet ? "全局免打扰时段，延后发送" : "个人免打扰时段，延后发送");
             d.setNextAttemptAt(OffsetDateTime.now(BIZ_ZONE).plusSeconds(DEFER_RECHECK_SECONDS));
             deliveryRepo.save(d);
             return;
