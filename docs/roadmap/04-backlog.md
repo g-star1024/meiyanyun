@@ -41,7 +41,7 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | 赠金高级规则（满赠阶梯/有效期/报表） | B18 移交 | 营销规则引擎 | 营销收口批 |
 | 86 张卡开卡首笔流水修复 | B17 移交 | 售卡开卡链路排查 | B21（数据修复） |
 | 去划扣项目智能预填 | B17 移交 | 卡项-项目映射 | 交易收口批 |
-| 撞单合并 | business-flows | 客户查重/合并规则 | 客户域批 |
+| 撞单合并 | business-flows | 客户查重/合并规则。**◑ P5-B62 卡3 期1 候选发现只读端点已就位（2026-09-19，`34bcfeb`，详见 DELIVERY-P5-B62-2026-09-19）**：GET /api/customer/merge-candidates（customer:merge，三层手机号归一/POOL·SAME_STORE·CROSS_STORE 分型/pair 双侧 canReadOwned/掩码前3后4/score 0.95/owner 富化降级/8 纯单测），prod 七角 401×2·200×3·403×2、seed 四视角 3/2/1/0 pair、造数全还原 core 零污染；**合并写期（8 张物理 FK 子表迁移/审批流/合并审计/前端接真）留存，本行不勾销** | 客户域批 |
 | 资产转移 / 合同 | business-flows | 卡资产模型 | 交易域批 |
 | ~~超管 Impersonate（ impersonation 登录）~~ | business-flows | RBAC 扩展 + 审计。**✅ P5-B55 已闭合（2026-09-16，与 L133 合并项，三 commit `8f78169`/`557a20a`/`1331a21`，详见 DELIVERY-P5-B55-2026-09-16）**：真实超管 JWT realSub/act 双 claim 代操作（30min 短 token 不滑动）、AuditBoundary 审计 actor 双通道收敛+payload 双标记、org impersonate/exit 端点+授权矩阵（仅真实 SUPER_ADMIN、禁链式/切超管/切本人/离职、理由必填、DataScope 按目标人收窄）、前端全局危红横幅/一键退出/刷新快照还原/401 本地退回 | ✅ B55（与 L133 合并项） |
 | ~~排队智能候补~~ | business-flows | **B29 已闭合（2026-09-10，arrival_waitlist 新域：WL 单号/手机号锚定会员·散客快照两态/WAITING→NOTIFIED→FULFILLED·CANCELLED、号源释放同事务 FIFO 递补+店长站内信幂等、/queue 第三卡+登记弹层+KPI，同批附带候诊超时自动释放与核销↔预约/划扣勾连，网关 24 项+浏览器两页取证 audit 314–331，详见 DELIVERY-P5-B29）** | ✅ B29 |
@@ -66,8 +66,8 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | 标签自动化规则（按消费/肤质/行为/价值/医疗规则自动打标、摘标与规则审计） | ✅ B25 | 标签定义/人工打标已闭环；B25 完成规则引擎+定时扫描+审计（TA### 规则 / TagAutoRuleJob / 5 类条件），详见 DELIVERY-P5-B25 | 客户运营自动化批 |
 | 消费自动积分与退款回退 | ✅ B25 | 积分账户/流水已闭环；B25 接入 txn 内部只读端点拉取已收款/已退款订单，按积分规则幂等发分与回退（AUTOPOINTS 幂等键），详见 DELIVERY-P5-B25 | 交易-客户联动批 |
 | 等级定时批处理（每月 1 号扫描、执行报告、通知、批处理幂等记录） | ✅ B25 | 自动升级服务与规则已就绪；B25 新增 LevelMonthlyJob（每月1号 cron、autoUpgrade 开关收敛、汇总审计），详见 DELIVERY-P5-B25 | 客户运营自动化批 |
-| 自动降级引擎（连续未达标/保护期/客户通知/审批策略） | B23 移交 | 当前只升不降；需计算周期事实表、保护月逻辑、降级审计与 KPI 口径；引擎上线前本月降级 KPI 仅统计手工降级 | 客户运营自动化批 |
-| 客户详情会员权益真实联动（discount 实际计价 + benefits 可享权益） | B23 新增 | 等级阈值/权益配置已就绪；需订单计价与权益核销链路接入 | 交易计价收口批 |
+| ~~自动降级引擎（连续未达标/保护期/客户通知/审批策略）~~ | B23 移交 | 当前只升不降；需计算周期事实表、保护月逻辑、降级审计与 KPI 口径；引擎上线前本月降级 KPI 仅统计手工降级。**✅ P5-B62 卡1 已闭合（2026-09-19，`003d71e`，详见 DELIVERY-P5-B62-2026-09-19）**：V36 customer_monthly_spend/customer_level_history/monthly_spend_state 三表＋auto_downgrade 列；UTC 闭合月游标事实聚合、连续3月低于保级线/保护期锚最近调级月默认3月/每次只降一级/幂等重放短路、autoUpgrade 切事实表累计 net（total_spend 死字段停用）、降级告知 internal 端点（按店 STORE_MGR/idemKey LEVEL:/公海只审计）、手动双端点 level:edit；seed 预演降级78人=history=通知=唯一键=审计、升级38人、重放0动作、全还原 | ✅ B62 |
+| 客户详情会员权益真实联动（discount 实际计价 + benefits 可享权益） | B23 新增 | 等级阈值/权益配置已就绪；需订单计价与权益核销链路接入。**◑ P5-B62 卡2 discount 半项已闭合（2026-09-19，`59a79f8`，详见 DELIVERY-P5-B62-2026-09-19）**：internal level-discount（批量≤50/缺失兜底/fail-closed）＋member-levels/catalog，TxnOrder 5 列＋OrderItem 2 列等级快照，createOrder/createRetailOrder/signEmr 三计价点 BigDecimal HALF_UP（CARD_SALE 不参与、不与门店会员价叠加），前端折后预估/原价划线＋360 权益区接真（提交传原价后端权威），黑卡 20999→16798；**benefits 权益核销链路无定义/实例/核销底座，留存后续专项，本行不勾销** | 交易计价收口批 |
 | ~~积分/标签/会员等级/积分商城接线~~ | 盘点 | **B23 已闭合（2026-09-09，4 卡网关+PG+浏览器验证，详见 DELIVERY-P5-B23）** | ✅ B23 |
 | ~~财务边角页（发票/预算/税/日结/核销预收）接线~~ | 盘点 | **B24 已闭合（2026-09-09，财务四页去 mock + 发票 CSV、卡余额时间线/核销双签明细内部投影切真，详见 DELIVERY-P5-B24）** | ✅ B24 |
 | ~~工作台/咨询/医师/EMR 会话区接线~~ | 盘点 | **B24 大部分闭合（2026-09-09，工作台 7 项计数真实、咨询草稿接诊、医师 treat 全链路切真；EMR 独立域仍留 Backlog），详见 DELIVERY-P5-B24** | ✅ B24（EMR 除外） |
