@@ -30,6 +30,13 @@ org:
     url: ${ORG_SERVICE_URL:http://127.0.0.1:8086}
 
 meiyun:
+  # 通知全局免打扰运维默认兜底（P5-B60 卡4）：管理端配置窗 NOTIFY_GLOBAL_QUIET
+  # 启用时由 60s 快照覆盖本段；本段仅在配置窗禁用/不可用时生效。
+  notify:
+    quiet:
+      enabled: ${MEIYUN_NOTIFY_QUIET_ENABLED:false}
+      start: ${MEIYUN_NOTIFY_QUIET_START:22:00}
+      end: ${MEIYUN_NOTIFY_QUIET_END:08:00}
   security:
     # 生产经环境变量注入；dev 默认值仅供本地联调
     secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}

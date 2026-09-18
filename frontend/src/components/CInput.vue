@@ -10,7 +10,7 @@ withDefaults(
     placeholder?: string
     disabled?: boolean
     error?: boolean
-    type?: 'text' | 'password' | 'number' | 'date'
+    type?: 'text' | 'password' | 'number' | 'date' | 'time'
   }>(),
   { modelValue: '', label: '', placeholder: '', disabled: false, error: false, type: 'text' },
 )

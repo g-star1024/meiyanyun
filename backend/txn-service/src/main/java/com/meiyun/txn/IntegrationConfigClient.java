@@ -1,5 +1,7 @@
 package com.meiyun.txn;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.security.AuthInterceptor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -14,6 +16,8 @@ import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.regex.Pattern;
 
 /**
  * txn → org 外部依赖配置窗口客户端（P5-B57 卡2）。
@@ -30,6 +34,9 @@ public class IntegrationConfigClient {
 
     private static final long TTL_MILLIS = 60_000L;
     private static final long GRACE_MILLIS = 600_000L;
+
+    private static final Pattern HHMM = Pattern.compile("^([01]\\d|2[0-3]):[0-5]\\d$");
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final RestTemplate restTemplate;
 
@@ -70,6 +77,30 @@ public class IntegrationConfigClient {
             return true;
         }
         return envFallback;
+    }
+
+    /**
+     * 全局免打扰时段（P5-B60 卡4 / L39）：快照行存在且启用、config_json 携带合法非空窗时返回；
+     * 其余情况（行禁用/无快照/格式异常）一律 empty，由调用方回退 yml @Value 兜底。
+     */
+    public Optional<QuietWindow> resolveQuietWindow(String code) {
+        SnapshotLine line = current().get(code);
+        if (line == null || !line.enabled() || !notBlank(line.configJson())) {
+            return Optional.empty();
+        }
+        try {
+            JsonNode node = JSON.readTree(line.configJson());
+            String start = node.path("start").asText(null);
+            String end = node.path("end").asText(null);
+            if (start == null || end == null || !HHMM.matcher(start).matches()
+                    || !HHMM.matcher(end).matches() || start.equals(end)) {
+                return Optional.empty();
+            }
+            return Optional.of(new QuietWindow(start, end));
+        } catch (Exception e) {
+            log.warn("免打扰时段 configJson 解析失败，本次回退 yml 兜底 code={}: {}", code, e.getMessage());
+            return Optional.empty();
+        }
     }
 
     /** 取当前有效快照；TTL 过期则尝试刷新，刷新失败在宽限期内沿用旧快照。 */
@@ -120,7 +151,8 @@ public class IntegrationConfigClient {
                         str(row.get("baseUrl")),
                         str(row.get("secret")),
                         row.get("boolValue") instanceof Boolean b ? b : null,
-                        row.get("updatedAt") == null ? null : parseTime(row.get("updatedAt"))));
+                        row.get("updatedAt") == null ? null : parseTime(row.get("updatedAt")),
+                        str(row.get("configJson"))));
             }
             return out;
         } catch (Exception e) {
@@ -146,6 +178,10 @@ public class IntegrationConfigClient {
     }
 
     private record SnapshotLine(boolean enabled, String baseUrl, String secret,
-                                Boolean boolValue, OffsetDateTime updatedAt) {
+                                Boolean boolValue, OffsetDateTime updatedAt, String configJson) {
+    }
+
+    /** 全局免打扰时段（Asia/Shanghai 业务时区解释，跨午夜由调用方 inWindow 统一处理）。 */
+    public record QuietWindow(String start, String end) {
     }
 }

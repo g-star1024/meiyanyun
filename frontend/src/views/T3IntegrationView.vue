@@ -178,6 +178,8 @@ const logList = computed(() => store.recentLogs)
 const CATEGORY_LABEL: Record<string, string> = {
   NOTIFY: '消息通知',
   AD: '广告回传',
+  AD_CHANNEL: '广告回传',
+  NOTIFY_GATEWAY: '消息通知',
 }
 const integrations = ref<IntegrationDTO[]>([])
 const intLoading = ref(false)
@@ -200,6 +202,15 @@ function intErrMsg(e: unknown, fallback: string): string {
   const anyE = e as { response?: { data?: { message?: string } }; message?: string }
   return anyE?.response?.data?.message || anyE?.message || fallback
 }
+function quietWindowOf(i: IntegrationDTO): { start: string; end: string } {
+  if (i.valueKind !== 'QUIET_WINDOW' || !i.configJson) return { start: '', end: '' }
+  try {
+    const j = JSON.parse(i.configJson) as { start?: string; end?: string }
+    return { start: j.start ?? '', end: j.end ?? '' }
+  } catch {
+    return { start: '', end: '' }
+  }
+}
 function statusPillOf(i: IntegrationDTO): { text: string; status: 'success' | 'disabled' | 'warning' } {
   if (i.code === 'AD_DEV_NO_AUTH') {
     return i.enabled && i.boolValue === true
@@ -209,12 +220,29 @@ function statusPillOf(i: IntegrationDTO): { text: string; status: 'success' | 'd
   if (!i.enabled) return { text: '未启用', status: 'disabled' }
   if (i.valueKind === 'URL') return i.baseUrl ? { text: '已启用', status: 'success' } : { text: '未配置', status: 'disabled' }
   if (i.valueKind === 'SECRET') return i.hasSecret ? { text: '已启用', status: 'success' } : { text: '未配置', status: 'disabled' }
+  if (i.valueKind === 'QUIET_WINDOW') {
+    const w = quietWindowOf(i)
+    return w.start && w.end ? { text: `${w.start}-${w.end}`, status: 'success' } : { text: '未配置', status: 'disabled' }
+  }
   return { text: '已启用', status: 'success' }
 }
 function valueSummary(i: IntegrationDTO): string {
   if (i.valueKind === 'URL') return i.baseUrl || '—'
   if (i.valueKind === 'SECRET') return i.hasSecret ? `已保存密钥 ${i.secretMask ?? '****'}` : '未配置密钥'
+  if (i.valueKind === 'QUIET_WINDOW') {
+    const w = quietWindowOf(i)
+    return w.start && w.end ? `免打扰 ${w.start}-${w.end}（跨午夜）` : '未配置时段'
+  }
   return i.enabled && i.boolValue === true ? '免签（仅联调）' : 'HMAC 验签'
+}
+function kindLabel(kind: string): string {
+  if (kind === 'URL') return '网关 URL'
+  if (kind === 'SECRET') return '密钥'
+  if (kind === 'QUIET_WINDOW') return '免打扰时段'
+  return '开关'
+}
+function isHhmm(v: string): boolean {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(v)
 }
 
 interface IntForm {
@@ -223,15 +251,21 @@ interface IntForm {
   boolValue: boolean
   enabled: boolean
   insecureHttpConfirmed: boolean
+  quietStart: string
+  quietEnd: string
 }
 const intEditOpen = ref(false)
 const intEditing = ref<IntegrationDTO | null>(null)
-const intForm = ref<IntForm>({ baseUrl: '', secret: '', boolValue: false, enabled: false, insecureHttpConfirmed: false })
+const intForm = ref<IntForm>({
+  baseUrl: '', secret: '', boolValue: false, enabled: false,
+  insecureHttpConfirmed: false, quietStart: '22:00', quietEnd: '08:00',
+})
 const intSaving = ref(false)
 const intTesting = ref<string>('')
 const intTestInline = ref<Record<string, { ok: boolean; message: string; at: string }>>({})
 
 function openIntEdit(i: IntegrationDTO) {
+  const w = quietWindowOf(i)
   intEditing.value = i
   intForm.value = {
     baseUrl: i.baseUrl ?? '',
@@ -239,6 +273,8 @@ function openIntEdit(i: IntegrationDTO) {
     boolValue: i.boolValue === true,
     enabled: i.enabled,
     insecureHttpConfirmed: false,
+    quietStart: w.start || '22:00',
+    quietEnd: w.end || '08:00',
   }
   intEditOpen.value = true
 }
@@ -253,6 +289,16 @@ async function saveInt() {
   if (i.valueKind === 'SECRET' && f.enabled && !i.hasSecret && !f.secret.trim()) {
     setFlash('err', '启用前请先填写渠道密钥')
     return
+  }
+  if (i.valueKind === 'QUIET_WINDOW') {
+    if (!isHhmm(f.quietStart) || !isHhmm(f.quietEnd)) {
+      setFlash('err', '免打扰时段格式非法，须为 HH:mm（00:00-23:59）')
+      return
+    }
+    if (f.quietStart === f.quietEnd) {
+      setFlash('err', '免打扰起止时间不能相同（相同等于空窗，不限时段）')
+      return
+    }
   }
   if (
     i.valueKind === 'URL'
@@ -271,6 +317,8 @@ async function saveInt() {
       boolValue: i.valueKind === 'SWITCH' ? f.boolValue : null,
       enabled: f.enabled,
       insecureHttpConfirmed: i.valueKind === 'URL' ? f.insecureHttpConfirmed : undefined,
+      quietStart: i.valueKind === 'QUIET_WINDOW' ? f.quietStart : null,
+      quietEnd: i.valueKind === 'QUIET_WINDOW' ? f.quietEnd : null,
     })
     setFlash('ok', `「${i.name}」配置已保存（约 60 秒内对各服务生效）`)
     intEditOpen.value = false
@@ -392,7 +440,7 @@ watch(tab, () => (flash.value = null))
                 <div class="access-name">{{ i.name }}</div>
                 <div class="mono access-code">{{ i.code }}</div>
               </td>
-              <td class="text-weak">{{ i.valueKind === 'URL' ? '网关 URL' : i.valueKind === 'SECRET' ? '密钥' : '开关' }}</td>
+              <td class="text-weak">{{ kindLabel(i.valueKind) }}</td>
               <td>
                 <div class="mono access-val" :title="valueSummary(i)">{{ valueSummary(i) }}</div>
                 <div v-if="i.remark" class="access-remark">{{ i.remark }}</div>
@@ -700,7 +748,7 @@ watch(tab, () => (flash.value = null))
           <span class="kv-k">{{ CATEGORY_LABEL[intEditing.category] ?? intEditing.category }}</span>
           <CStatusPill status="info">{{ intEditing.code }}</CStatusPill>
           <CStatusPill status="default">
-            {{ intEditing.valueKind === 'URL' ? '网关 URL' : intEditing.valueKind === 'SECRET' ? '密钥' : '开关' }}
+            {{ kindLabel(intEditing.valueKind) }}
           </CStatusPill>
         </div>
 
@@ -728,6 +776,25 @@ watch(tab, () => (flash.value = null))
             :placeholder="intEditing.hasSecret ? intEditing.secretMask ?? '****（留空不修改）' : '未配置（保存后不可读回）'"
             @update:model-value="intForm.secret = $event"
           />
+        </template>
+
+        <template v-else-if="intEditing.valueKind === 'QUIET_WINDOW'">
+          <CInput
+            type="time"
+            :model-value="intForm.quietStart"
+            label="免打扰开始（每天）"
+            @update:model-value="intForm.quietStart = $event"
+          />
+          <CInput
+            type="time"
+            :model-value="intForm.quietEnd"
+            label="免打扰结束（每天）"
+            @update:model-value="intForm.quietEnd = $event"
+          />
+          <div class="form__hint">
+            <CIcon name="shield" :size="14" />
+            <span>时段内非紧急通知的<em>短信/企微/邮件延后发送</em>，站内信与紧急（URGENT）通知不受影响；起止跨午夜（如 22:00-08:00）按跨天窗口判定，两者不能相同。</span>
+          </div>
         </template>
 
         <template v-else>

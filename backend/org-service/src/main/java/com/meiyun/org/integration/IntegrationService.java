@@ -1,5 +1,7 @@
 package com.meiyun.org.integration;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.org.audit.AuditRecorder;
 import com.meiyun.org.integration.security.IntegrationSecretCipher;
 import org.slf4j.Logger;
@@ -35,6 +37,11 @@ public class IntegrationService {
     /** HMAC 共享密钥字符集：可见 ASCII，长度 ≥16（不做假握手，真实联调走 marketing /sample）。 */
     private static final Pattern SECRET_PATTERN = Pattern.compile("^[!-~]{16,}$");
 
+    /** 免打扰时段时间格式：HH:mm（24 小时制）。 */
+    private static final Pattern HHMM_PATTERN = Pattern.compile("^([01]\\d|2[0-3]):[0-5]\\d$");
+
+    private static final ObjectMapper JSON = new ObjectMapper();
+
     private final ExternalIntegrationRepository repo;
     private final IntegrationSecretCipher cipher;
     private final RestTemplate restTemplate;
@@ -65,7 +72,8 @@ public class IntegrationService {
         return new IntegrationView(
                 e.getIntegrationCode(), e.getCategory(), e.getIntegrationName(), e.getValueKind(),
                 e.getBaseUrl(), hasSecret, e.getSecretMask(), e.getBoolValue(), e.isEnabled(),
-                e.getRemark(), e.getLastTestAt(), e.getLastTestOk(), e.getLastTestMsg());
+                e.getRemark(), e.getLastTestAt(), e.getLastTestOk(), e.getLastTestMsg(),
+                e.getConfigJson());
     }
 
     // ==================== upsert ====================
@@ -86,6 +94,7 @@ public class IntegrationService {
 
         boolean urlChanged = false;
         boolean secretChanged = false;
+        boolean windowChanged = false;
         switch (catalog.getValueKind()) {
             case "URL" -> {
                 String url = req.baseUrl() == null ? "" : req.baseUrl().trim();
@@ -97,9 +106,6 @@ public class IntegrationService {
                     e.setBaseUrl(url);
                     urlChanged = true;
                 }
-                if (Boolean.TRUE.equals(req.enabled()) && e.getBaseUrl() == null) {
-                    throw new IllegalArgumentException("启用前必须填写网关地址: " + code);
-                }
             }
             case "SECRET" -> {
                 String secret = req.secret();
@@ -109,14 +115,29 @@ public class IntegrationService {
                     e.setSecretMask(IntegrationSecretCipher.mask(trimmed));
                     secretChanged = true;
                 }
-                if (Boolean.TRUE.equals(req.enabled())
-                        && (e.getSecretCipher() == null || e.getSecretCipher().isBlank())) {
-                    throw new IllegalArgumentException("启用前必须录入签名密钥: " + code);
-                }
             }
             case "SWITCH" -> {
                 if (req.boolValue() != null) {
                     e.setBoolValue(req.boolValue());
+                }
+            }
+            case "QUIET_WINDOW" -> {
+                String start = req.quietStart() == null ? null : req.quietStart().trim();
+                String end = req.quietEnd() == null ? null : req.quietEnd().trim();
+                boolean bothBlank = (start == null || start.isBlank()) && (end == null || end.isBlank());
+                if (!bothBlank) {
+                    if (!isHhmm(start) || !isHhmm(end)) {
+                        throw new IllegalArgumentException("免打扰时段格式非法，须为 HH:mm（00:00-23:59）: " + code);
+                    }
+                    if (start.equals(end)) {
+                        throw new IllegalArgumentException("免打扰起止时间不能相同（空窗语义为不限时段）: " + code);
+                    }
+                    try {
+                        e.setConfigJson(JSON.writeValueAsString(Map.of("start", start, "end", end)));
+                        windowChanged = true;
+                    } catch (Exception ex) {
+                        throw new IllegalStateException("免打扰时段序列化失败: " + ex.getMessage());
+                    }
                 }
             }
             default -> throw new IllegalArgumentException("不支持的值类型: " + catalog.getValueKind());
@@ -124,6 +145,9 @@ public class IntegrationService {
 
         if (req.enabled() != null) {
             e.setEnabled(req.enabled());
+        }
+        if (Boolean.TRUE.equals(req.enabled())) {
+            assertCanEnable(catalog.getValueKind(), e);
         }
         OffsetDateTime now = OffsetDateTime.now();
         e.setUpdatedAt(now);
@@ -135,11 +159,59 @@ public class IntegrationService {
         }
 
         String payload = "{\"code\":\"" + code + "\",\"kind\":\"" + catalog.getValueKind()
-                + "\",\"enabled\":" + saved.isEnabled()
+                + ",\"enabled\":" + saved.isEnabled()
                 + ",\"urlChanged\":" + urlChanged
-                + ",\"secretChanged\":" + secretChanged + "}";
+                + ",\"secretChanged\":" + secretChanged
+                + ",\"windowChanged\":" + windowChanged + "}";
         audit.record("INTEGRATION", code, actor, "integration.update", payload);
         return toView(saved);
+    }
+
+    /** 启用前置条件：URL 须有地址；SECRET 须有密钥；QUIET_WINDOW 须有合法且非空窗的时段。 */
+    private void assertCanEnable(String kind, ExternalIntegration e) {
+        switch (kind) {
+            case "URL" -> {
+                if (e.getBaseUrl() == null || e.getBaseUrl().isBlank()) {
+                    throw new IllegalArgumentException("启用前必须填写网关地址: " + e.getIntegrationCode());
+                }
+            }
+            case "SECRET" -> {
+                if (e.getSecretCipher() == null || e.getSecretCipher().isBlank()) {
+                    throw new IllegalArgumentException("启用前必须录入签名密钥: " + e.getIntegrationCode());
+                }
+            }
+            case "QUIET_WINDOW" -> {
+                String[] window = parseWindow(e.getConfigJson());
+                if (window == null) {
+                    throw new IllegalArgumentException(
+                            "启用前必须填写合法的免打扰时段: " + e.getIntegrationCode());
+                }
+            }
+            default -> {
+            }
+        }
+    }
+
+    private static boolean isHhmm(String value) {
+        return value != null && HHMM_PATTERN.matcher(value).matches();
+    }
+
+    /** 解析 config_json 的 {start,end}，非法/空窗（起止相同）返回 null。 */
+    private static String[] parseWindow(String configJson) {
+        if (configJson == null || configJson.isBlank()) {
+            return null;
+        }
+        try {
+            JsonNode node = JSON.readTree(configJson);
+            String start = node.path("start").asText(null);
+            String end = node.path("end").asText(null);
+            if (!isHhmm(start) || !isHhmm(end) || start.equals(end)) {
+                return null;
+            }
+            return new String[]{start, end};
+        } catch (Exception ex) {
+            return null;
+        }
     }
 
     private void assertHttpUrl(String url, boolean insecureConfirmed) {
@@ -172,6 +244,7 @@ public class IntegrationService {
         TestResult result = switch (catalog.getValueKind()) {
             case "URL" -> probeUrl(e);
             case "SECRET" -> validateSecret(e);
+            case "QUIET_WINDOW" -> validateQuietWindow(e);
             default -> new TestResult(true,
                     "开关类配置无连接测试；当前状态：" + (e.isEnabled() && Boolean.TRUE.equals(e.getBoolValue())
                             ? "已开启（请确认仅在联调环境）" : "已关闭"));
@@ -225,11 +298,21 @@ public class IntegrationService {
         return new TestResult(true, "密钥格式已校验；请用渠道联调样例（/sample）发起真实回调完成端到端验证");
     }
 
+    private TestResult validateQuietWindow(ExternalIntegration e) {
+        String[] window = parseWindow(e.getConfigJson());
+        if (window == null) {
+            return new TestResult(false, "尚未配置合法的免打扰时段（HH:mm，起止不能相同）");
+        }
+        return new TestResult(true, "免打扰时段已校验：" + window[0] + "-" + window[1]
+                + "（跨午夜）；当前状态：" + (e.isEnabled() ? "已启用" : "未启用")
+                + "；约 60 秒内对各服务生效");
+    }
+
     // ==================== 服务间快照 ====================
 
     /**
      * 内部快照（含明文 secret，仅 InternalIntegrationController 系统身份调用）：
-     * 全量 7 行（含禁用项，消费方自行按 enabled 决策）；单行解密失败不影响其他行。
+     * 全量 8 行（含禁用项，消费方自行按 enabled 决策）；单行解密失败不影响其他行。
      */
     @Transactional(readOnly = true)
     public List<SnapshotItem> snapshot() {
@@ -248,7 +331,7 @@ public class IntegrationService {
             }
         }
         return new SnapshotItem(e.getIntegrationCode(), e.isEnabled(), e.getBaseUrl(),
-                secret, e.getBoolValue(), e.getUpdatedAt());
+                secret, e.getBoolValue(), e.getUpdatedAt(), e.getConfigJson());
     }
 
     // ==================== 读模型/入参 ====================
@@ -257,19 +340,22 @@ public class IntegrationService {
     public record IntegrationView(String code, String category, String name, String valueKind,
                                   String baseUrl, boolean hasSecret, String secretMask,
                                   Boolean boolValue, boolean enabled, String remark,
-                                  OffsetDateTime lastTestAt, Boolean lastTestOk, String lastTestMsg) {
+                                  OffsetDateTime lastTestAt, Boolean lastTestOk, String lastTestMsg,
+                                  String configJson) {
     }
 
-    /** upsert 入参：SECRET 留空/含 **** 表示不修改原密钥；非 https 的 URL 须 insecureHttpConfirmed=true。 */
+    /** upsert 入参：SECRET 留空/含 **** 表示不修改原密钥；非 https 的 URL 须 insecureHttpConfirmed=true；QUIET_WINDOW 用 quietStart/quietEnd。 */
     public record UpsertRequest(String baseUrl, String secret, Boolean boolValue,
-                                Boolean enabled, Boolean insecureHttpConfirmed) {
+                                Boolean enabled, Boolean insecureHttpConfirmed,
+                                String quietStart, String quietEnd) {
     }
 
     public record TestResult(boolean ok, String message) {
     }
 
-    /** 服务间快照读模型（含明文 secret，不出内网）。 */
+    /** 服务间快照读模型（含明文 secret，不出内网）；configJson 承载 QUIET_WINDOW 时段等协议扩展字段。 */
     public record SnapshotItem(String code, boolean enabled, String baseUrl,
-                               String secret, Boolean boolValue, OffsetDateTime updatedAt) {
+                               String secret, Boolean boolValue, OffsetDateTime updatedAt,
+                               String configJson) {
     }
 }
