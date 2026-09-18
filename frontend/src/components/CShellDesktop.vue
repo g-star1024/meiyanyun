@@ -5,7 +5,7 @@
  * Wave 8: 业务域在侧栏底部 + 顶栏仅搜索/消息 + 用户下拉菜单
  * 铁律：禁止裸值，全部 tokens.css 变量
  * ============================================================ */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import CSidebar from './CSidebar.vue'
 import CIcon from './CIcon.vue'
@@ -75,6 +75,14 @@ onMounted(() => {
   // 启动无 token 时 main.ts 的预拉取已被 store 门控跳过，此处补齐门店列表与通知。
   if (!storeCtx.loaded) void storeCtx.loadStores()
   void notification.fetch()
+  // B60 卡3：挂载铃铛 SSE，扇出 Job 落 INBOX SENT 后实时增量插头（角标自动跳）；
+  // 离线漏推由上面的 fetch 全量兜底。store 内守卫防重、无 token 不握手。
+  notification.connectStream()
+})
+
+onUnmounted(() => {
+  // 桌面壳卸载（退出登录）即关流，避免坏 token 自动重连刷 401 与连接泄漏
+  notification.disconnectStream()
 })
 
 const currentPage = computed(() => {

@@ -9,7 +9,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
   listNotifications, markNotificationRead, markAllNotificationsRead,
-  getNotificationPreferences, updateNotificationPreference,
+  getNotificationPreferences, updateNotificationPreference, notificationStreamUrl,
   type NotificationDTO, type NotifyPreferenceDTO,
 } from '@/api/notification'
 import { getToken } from '@/api/client'
@@ -261,10 +261,62 @@ export const useNotificationStore = defineStore('notification', () => {
     }
   }
 
+  // ============================================================
+  // B60 卡3：铃铛 SSE 实时推送（GET /api/txn/notifications/stream）
+  // 服务端扇出 Job 对 INBOX 置 SENT 后按工号单人推 "notification" 事件，
+  // 载荷即 notification 实体（与列表 DTO 同构，多个 idemKey 字段无害）。
+  // 离线期间不补推，靠 onMounted 的 fetch() 拉全量；此处仅做增量头插。
+  // ============================================================
+  let es: EventSource | null = null
+  // ready 首帧到达前握手是否成功未知；401 等致命错误浏览器会先 error 后 CLOSED，需主动摘除防死循环重连
+  let streamReady = false
+
+  function connectStream() {
+    // 守卫防重：桌面壳 keep-alive 重复 onMounted 或多组件挂载时不另开连接
+    if (es) return
+    // 无 token（未登录/已退出）不握手，EventSource 不能带 Authorization 头
+    if (!getToken()) return
+    streamReady = false
+    es = new EventSource(notificationStreamUrl())
+    // ready 首帧：{"staffId":"..."}，仅用于标记握手成功，无数据语义
+    es.addEventListener('ready', () => {
+      streamReady = true
+    })
+    es.addEventListener('notification', (ev: MessageEvent) => {
+      try {
+        const d = JSON.parse(ev.data as string) as NotificationDTO
+        // 崩溃自愈路径服务端可能重复 push 同一条（NotificationFanoutJob.retryOne），按主键去重
+        if (items.value.some((n) => n.id === d.id)) return
+        items.value.unshift(adapt(d))
+      } catch (e) {
+        // 单条负载异常丢弃，不影响整条流
+        console.error('[notification] SSE 消息解析失败', e)
+      }
+    })
+    es.onerror = () => {
+      // EventSource 在 CONNECTING 态会由浏览器自动重连（服务端 30min 超时/网络抖动），无需手工干预；
+      // 已握过手（收过 ready）后掉线也交给原生重连。仅当从未收到 ready 首帧且连接 CLOSED，
+      // 多为 401 凭证失效（登出/token 过期），原生自动重连会以坏 token 死循环刷 401，
+      // 主动关闭等下次登录后再连。
+      if (es && !streamReady && es.readyState === EventSource.CLOSED) {
+        es.close()
+        es = null
+        streamReady = false
+      }
+    }
+  }
+
+  function disconnectStream() {
+    es?.close()
+    es = null
+    streamReady = false
+  }
+
   return {
     items, activeCategory, readFilter, preferences,
     unreadCount, unreadByCategory, filtered,
     categoryLabel, CATEGORY_LABEL,
     fetch, fetchPreferences, markRead, markAllRead, togglePreference, toggleChannel, saveQuiet,
+    connectStream, disconnectStream,
   }
 })
