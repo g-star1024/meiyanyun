@@ -1,6 +1,8 @@
 package com.meiyun.txn;
 
 import com.meiyun.security.RequirePerm;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -30,6 +32,8 @@ import java.util.Set;
 @RestController
 @RequestMapping("/api/txn/internal")
 public class InternalNotificationController {
+
+    private static final Logger log = LoggerFactory.getLogger(InternalNotificationController.class);
 
     private static final List<String> LEVELS = List.of("WARN", "CRITICAL");
     private static final String CATEGORY = "SYSTEM";
@@ -105,8 +109,73 @@ public class InternalNotificationController {
         return Map.of("level", level, "recipients", recipients.size(), "sent", sent, "muted", muted);
     }
 
+    /**
+     * 会员等级降级预警写入（域①-B62 卡1，客户域 {@code LevelDowngradeNotifier} → txn 通知中心）。
+     * body {storeCode(可空), title(必填), content(必填), link, bizRef(必填，客户号+降级月)}。
+     * 仅收敛本店 STORE_MGR；storeCode 空（公海客户）调用方应自行只审计不发信，若仍调用则回退全量店长并 warn。
+     * category=SYSTEM、level=WARNING；幂等键 LEVEL:{bizRef}:{staffId}（bizRef 含客户号+降级月，天然防同一轮重发）。
+     * 返回 {recipients, sent, muted}。
+     */
+    @PostMapping("/level-downgrade-alert")
+    @RequirePerm("internal:notify")
+    public Map<String, Object> levelDowngradeAlert(@RequestBody LevelDowngradeAlertRequest req) {
+        String title = req.title() == null ? "" : req.title().trim();
+        String content = req.content() == null ? "" : req.content().trim();
+        if (title.isBlank() || content.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "告警标题与内容不能为空");
+        }
+        String bizRef = req.bizRef() == null ? "" : req.bizRef().trim();
+        if (bizRef.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "降级预警 bizRef 不能为空");
+        }
+        String storeCode = req.storeCode() == null ? "" : req.storeCode().trim();
+        if (storeCode.isBlank()) {
+            log.warn("等级降级预警未带门店码，回退全量 STORE_MGR（公海客户应由调用方只审计不发信）：bizRef={}", bizRef);
+        }
+
+        Set<String> recipients = new LinkedHashSet<>();
+        for (OrgStaffClient.StaffBrief s : orgStaffClient.listStaffByRole("STORE_MGR",
+                storeCode.isBlank() ? null : storeCode, null)) {
+            recipients.add(s.staffId());
+        }
+
+        int sent = 0;
+        int muted = 0;
+        OffsetDateTime now = OffsetDateTime.now();
+        for (String staffId : recipients) {
+            if (preferenceRepo.findByStaffIdAndCategory(staffId, CATEGORY)
+                    .filter(p -> !p.isEnabled()).isPresent()) {
+                muted++;
+                continue;
+            }
+            String idemKey = "LEVEL:" + truncate(bizRef, 32) + ":" + staffId;
+            if (notificationRepo.existsByIdemKey(idemKey)) {
+                continue;
+            }
+            Notification note = new Notification();
+            note.setRecipient(staffId);
+            note.setCategory(CATEGORY);
+            note.setLevel("WARNING");
+            note.setTitle(truncate(title, 128));
+            note.setContent(truncate(content, 500));
+            note.setLink(req.link());
+            note.setBizRef(truncate(bizRef, 32));
+            note.setSender("system");
+            note.setIdemKey(idemKey);
+            note.setCreatedAt(now);
+            notificationRepo.save(note);
+            sent++;
+        }
+        return Map.of("recipients", recipients.size(), "sent", sent, "muted", muted);
+    }
+
     /** 合规巡检告警写入请求体（与客户域调用方字段对齐）。 */
     public record ComplianceAlertRequest(String level, String title, String content, String link, String bizRef) {
+    }
+
+    /** 会员等级降级预警写入请求体（按门店收敛店长；与客户域 LevelDowngradeNotifier 字段对齐）。 */
+    public record LevelDowngradeAlertRequest(String storeCode, String title, String content,
+                                             String link, String bizRef) {
     }
 
     private static String truncate(String s, int max) {

@@ -30,6 +30,10 @@ public class LevelRuleConfig {
     @Column(name = "auto_upgrade")
     private Boolean autoUpgrade;
 
+    /** 连续未达标是否自动降级（与 autoUpgrade 独立；B62 卡1 月批处理读取）。 */
+    @Column(name = "auto_downgrade")
+    private Boolean autoDowngrade;
+
     /** 消费积分倍率（全局规则字段，事件流接入后生效）。 */
     @Column(name = "points_multiplier", precision = 4, scale = 2)
     private BigDecimal pointsMultiplier;

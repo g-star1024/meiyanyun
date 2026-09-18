@@ -31,6 +31,9 @@ public class CustomerController {
     private final CustomerTagRelRepository tagRelRepo;
     private final CustomerSearchService searchService;
     private final CustomerSearchEventAdminService searchEventAdmin;
+    private final MonthlySpendService monthlySpendService;
+    private final LevelInitService levelInitService;
+    private final LevelDowngradeNotifier downgradeNotifier;
 
     @Autowired
     private AuditRecorder audit;
@@ -40,7 +43,10 @@ public class CustomerController {
                               PointsLedgerRepository ledgerRepo, PointsPoolRepository poolRepo,
                               CustomerTagRepository tagRepo, CustomerTagRelRepository tagRelRepo,
                               CustomerSearchService searchService,
-                              CustomerSearchEventAdminService searchEventAdmin) {
+                              CustomerSearchEventAdminService searchEventAdmin,
+                              MonthlySpendService monthlySpendService,
+                              LevelInitService levelInitService,
+                              LevelDowngradeNotifier downgradeNotifier) {
         this.service = service;
         this.customerRepo = customerRepo;
         this.cardRepo = cardRepo;
@@ -50,6 +56,9 @@ public class CustomerController {
         this.tagRelRepo = tagRelRepo;
         this.searchService = searchService;
         this.searchEventAdmin = searchEventAdmin;
+        this.monthlySpendService = monthlySpendService;
+        this.levelInitService = levelInitService;
+        this.downgradeNotifier = downgradeNotifier;
     }
 
     // ---- 客户主数据（分页 + 过滤 + 标签） ----
@@ -135,27 +144,85 @@ public class CustomerController {
         return result.dto();
     }
 
-    /** 按累计消费批量自动升级（手动触发；只升不降），有实际升级时落单条 LEVEL/AUTO_UPGRADE 汇总审计。 */
+    /**
+     * 按累计净消费批量自动升级（手动触发；只升不降）。先把北京时区已闭合月事实补齐并完成 LEVEL_INIT 补种，
+     * 再以「截至 M 全部事实行 net_fen 累计/100」为真源判定；有实际升级时落单条 LEVEL/AUTO_UPGRADE 汇总审计。
+     */
     @PostMapping("/member-levels/auto-upgrade")
     @RequirePerm("level:edit")
     public CustomerService.AutoUpgradeResult autoUpgrade() {
+        MonthlySpendService.AggregateResult agg = monthlySpendService.aggregateClosedMonths();
+        levelInitService.ensureInitialized();
         CustomerService.AutoUpgradeResult result = service.autoUpgrade();
         if (result.upgraded() > 0) {
             StringBuilder sb = new StringBuilder();
-            sb.append("{\"upgraded\":").append(result.upgraded()).append(",\"items\":[");
+            sb.append("{\"closedMonth\":\"").append(esc(result.closedMonth()))
+                    .append("\",\"upgraded\":").append(result.upgraded())
+                    .append(",\"aggMonths\":").append(jsonList(agg.months()))
+                    .append(",\"items\":[");
             for (int i = 0; i < result.items().size(); i++) {
                 CustomerService.UpgradeItem it = result.items().get(i);
                 if (i > 0) sb.append(',');
                 sb.append("{\"customerId\":\"").append(esc(it.customerId()))
                         .append("\",\"name\":\"").append(esc(it.name()))
+                        .append("\",\"storeCode\":\"").append(esc(it.storeCode()))
                         .append("\",\"fromLevel\":\"").append(esc(it.fromLevel()))
                         .append("\",\"toLevel\":\"").append(esc(it.toLevel()))
-                        .append("\",\"totalSpend\":").append(it.totalSpend()).append('}');
+                        .append("\",\"netSpendYuan\":").append(it.netSpendYuan()).append('}');
             }
             sb.append("]}");
             audit.record("LEVEL", "AUTO-UPGRADE", DataScope.currentActor(), "AUTO_UPGRADE", sb.toString());
         }
         return result;
+    }
+
+    /**
+     * 自动降级批处理（手动触发，CARD-D/I）：先聚合闭合月事实 + LEVEL_INIT 补种，再按「保护期 + 连续 3 月
+     * 净消费未达本级保级线、每客户只降一级」跑批。有实际降级时落单条 LEVEL/AUTO-DOWNGRADE 汇总审计，
+     * payload 与 Job 同形（含 runMonth/每人 M-2/M-1/M 三月净消费），供三轨真验重复触发。
+     */
+    @PostMapping("/member-levels/auto-downgrade")
+    @RequirePerm("level:edit")
+    public CustomerService.DowngradeResult autoDowngrade() {
+        MonthlySpendService.AggregateResult agg = monthlySpendService.aggregateClosedMonths();
+        levelInitService.ensureInitialized();
+        CustomerService.DowngradeResult result = service.autoDowngrade();
+        if (result.downgraded() > 0) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("{\"runMonth\":\"").append(esc(result.runMonth()))
+                    .append("\",\"downgraded\":").append(result.downgraded())
+                    .append(",\"aggMonths\":").append(jsonList(agg.months()))
+                    .append(",\"items\":[");
+            for (int i = 0; i < result.items().size(); i++) {
+                CustomerService.DowngradeItem it = result.items().get(i);
+                if (i > 0) sb.append(',');
+                sb.append("{\"customerId\":\"").append(esc(it.customerId()))
+                        .append("\",\"name\":\"").append(esc(it.name()))
+                        .append("\",\"storeCode\":\"").append(esc(it.storeCode()))
+                        .append("\",\"fromLevel\":\"").append(esc(it.fromLevel()))
+                        .append("\",\"toLevel\":\"").append(esc(it.toLevel()))
+                        .append("\",\"netM2\":").append(it.netM2())
+                        .append(",\"netM1\":").append(it.netM1())
+                        .append(",\"netM\":").append(it.netM()).append('}');
+            }
+            sb.append("]}");
+            audit.record("LEVEL", "AUTO-DOWNGRADE", DataScope.currentActor(), "AUTO_DOWNGRADE", sb.toString());
+        }
+        for (CustomerService.DowngradeItem it : result.items()) {
+            downgradeNotifier.notifyOne(it, result.runMonth());
+        }
+        return result;
+    }
+
+    /**
+     * 手动触发月消费事实聚合（运维/初始化用）：把尚未入表的北京时区已闭合自然月逐月回填并推进游标，
+     * 返回本轮聚合月/事实行数/拉取单数；某月失败时 error 非空、游标停在上一成功月（下轮断点续跑）。
+     * 聚合本身不落审计（升降级动作另在调级环节审计）。
+     */
+    @PostMapping("/member-levels/monthly-spend/run")
+    @RequirePerm("level:edit")
+    public MonthlySpendService.AggregateResult runMonthlySpend() {
+        return monthlySpendService.aggregateClosedMonths();
     }
 
     /** 升降级规则读模型：未配置时 service 返回默认值（不落库）。 */
@@ -173,6 +240,7 @@ public class CustomerController {
                 req == null ? null : req.calcPeriod(),
                 req == null ? null : req.downgradeProtectMonths(),
                 req == null ? null : req.autoUpgrade(),
+                req == null ? null : req.autoDowngrade(),
                 req == null ? null : req.pointsMultiplier());
         LevelRuleConfig r = result.rule();
         if (result.changed()) {
@@ -180,6 +248,7 @@ public class CustomerController {
                     "{\"calcPeriod\":\"" + esc(r.getCalcPeriod())
                             + "\",\"downgradeProtectMonths\":" + r.getDowngradeProtectMonths()
                             + ",\"autoUpgrade\":" + r.getAutoUpgrade()
+                            + ",\"autoDowngrade\":" + r.getAutoDowngrade()
                             + ",\"pointsMultiplier\":" + r.getPointsMultiplier() + "}");
         }
         return r;
@@ -452,9 +521,10 @@ public class CustomerController {
     /** 等级阈值/权益更新请求体：阈值必填非负（普通固定 0），权益可空（空数组=无权益）。 */
     public record LevelConfigReq(BigDecimal upgradeThreshold, List<String> benefits) {}
 
-    /** 升降级规则保存请求体：四字段对齐前端 LevelRule（缺省由 service 置默认并校验区间）。 */
+    /** 升降级规则保存请求体：五字段对齐前端 LevelRule（缺省由 service 置默认并校验区间）。 */
     public record LevelRuleReq(String calcPeriod, Integer downgradeProtectMonths,
-                               Boolean autoUpgrade, BigDecimal pointsMultiplier) {}
+                               Boolean autoUpgrade, Boolean autoDowngrade,
+                               BigDecimal pointsMultiplier) {}
 
     /** 手工调级请求体：目标等级为五级中文短名（白名单由 service 校验）；原因必填 ≤64 字。 */
     public record LevelAdjustReq(String targetLevel, String reason) {}

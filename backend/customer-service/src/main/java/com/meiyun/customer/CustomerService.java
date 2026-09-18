@@ -80,6 +80,12 @@ public class CustomerService {
             "黑卡", List.of("项目折扣 8 折", "生日当月 3 倍积分", "专属咨询师 + 免排队", "每月 2 次免费护理"));
     /** 升降级规则单行主键（仿 point_rule rule_id=1）。 */
     private static final int RULE_ID = 1;
+    /** 等级判定统一北京时区（月聚合口径同源）。 */
+    private static final java.time.ZoneId BJ = java.time.ZoneId.of("Asia/Shanghai");
+    /** 连续未达标月数（KPI 过渡口径：连续 3 月净消费养不活本级才降；类常量不新增配置列防过度设计）。 */
+    static final int CONSECUTIVE_MISS_MONTHS = 3;
+    static final String DOWNGRADE_REASON = "连续3月净消费未达本级保级线";
+    private static final BigDecimal HUNDRED = new BigDecimal(100);
 
     private final CustomerRepository customerRepo;
     private final MemberLevelRepository levelRepo;
@@ -91,6 +97,8 @@ public class CustomerService {
     private final CustomerTagRepository tagRepo;
     private final RefNameResolver nameResolver;
     private final CustomerSearchEventPublisher searchEventPublisher;
+    private final CustomerMonthlySpendRepository spendRepo;
+    private final LevelHistoryRecorder historyRecorder;
 
     public CustomerService(CustomerRepository customerRepo, MemberLevelRepository levelRepo,
                            LevelRuleConfigRepository levelRuleRepo,
@@ -98,7 +106,9 @@ public class CustomerService {
                            PointsLedgerRepository ledgerRepo, PointsPoolRepository pointsPoolRepo,
                            CustomerTagRelRepository tagRelRepo, CustomerTagRepository tagRepo,
                            RefNameResolver nameResolver,
-                           CustomerSearchEventPublisher searchEventPublisher) {
+                           CustomerSearchEventPublisher searchEventPublisher,
+                           CustomerMonthlySpendRepository spendRepo,
+                           LevelHistoryRecorder historyRecorder) {
         this.customerRepo = customerRepo;
         this.levelRepo = levelRepo;
         this.levelRuleRepo = levelRuleRepo;
@@ -109,6 +119,8 @@ public class CustomerService {
         this.tagRepo = tagRepo;
         this.nameResolver = nameResolver;
         this.searchEventPublisher = searchEventPublisher;
+        this.spendRepo = spendRepo;
+        this.historyRecorder = historyRecorder;
     }
 
     public List<Customer> listCustomers(String storeCode, String level, String status) {
@@ -674,23 +686,27 @@ public class CustomerService {
         r.setCalcPeriod("自然月（每月1号）");
         r.setDowngradeProtectMonths(3);
         r.setAutoUpgrade(true);
+        r.setAutoDowngrade(true);
         r.setPointsMultiplier(BigDecimal.ONE);
         return r;
     }
 
     /**
-     * 保存升降级规则（四件套）：周期文案必填（≤32 字）、保护期 0~36 月、积分倍率 0.01~10；
+     * 保存升降级规则（五件套）：周期文案必填（≤32 字）、保护期 0~36 月、积分倍率 0.01~10；
+     * 自动升级 / 自动降级两开关独立（缺省均置 true）；
      * 全字段同现值时 changed=false（幂等不审计）；行不存在则按默认值兜底新建。
      */
     @Transactional
     public synchronized RuleSaveResult saveLevelRule(String calcPeriod, Integer protectMonths,
-                                                     Boolean autoUpgrade, BigDecimal pointsMultiplier) {
+                                                     Boolean autoUpgrade, Boolean autoDowngrade,
+                                                     BigDecimal pointsMultiplier) {
         String period = trim(calcPeriod);
         if (period.isEmpty()) throw new BadReq("等级计算周期不能为空");
         if (period.length() > 32) throw new BadReq("等级计算周期不能超过 32 字");
         int protect = protectMonths == null ? 3 : protectMonths;
         if (protect < 0 || protect > 36) throw new BadReq("降级保护期须在 0~36 月之间");
         boolean auto = autoUpgrade == null || autoUpgrade;
+        boolean downgrade = autoDowngrade == null || autoDowngrade;
         BigDecimal mult = pointsMultiplier == null ? BigDecimal.ONE : pointsMultiplier;
         if (mult.compareTo(BigDecimal.ZERO) <= 0 || mult.compareTo(new BigDecimal("10")) > 0) {
             throw new BadReq("消费积分倍率须在 0.01~10 之间");
@@ -700,11 +716,13 @@ public class CustomerService {
         boolean changed = !period.equals(r.getCalcPeriod())
                 || protect != (r.getDowngradeProtectMonths() == null ? 3 : r.getDowngradeProtectMonths())
                 || auto != (r.getAutoUpgrade() == null || r.getAutoUpgrade())
+                || downgrade != (r.getAutoDowngrade() == null || r.getAutoDowngrade())
                 || mult.compareTo(r.getPointsMultiplier() == null ? BigDecimal.ONE : r.getPointsMultiplier()) != 0;
         if (changed) {
             r.setCalcPeriod(period);
             r.setDowngradeProtectMonths(protect);
             r.setAutoUpgrade(auto);
+            r.setAutoDowngrade(downgrade);
             r.setPointsMultiplier(mult);
             r.setUpdatedAt(java.time.OffsetDateTime.now());
             levelRuleRepo.save(r);
@@ -730,20 +748,33 @@ public class CustomerService {
         String from = c.getLevel();
         if (target.equals(from)) return new LevelAdjustResult(c, false, from, target);
         c.setLevel(target);
-        return new LevelAdjustResult(customerRepo.save(c), true, from, target);
+        Customer saved = customerRepo.save(c);
+        // 三调级路径统一单点留痕（手工调级）：与调级同事务，等级变更与历史行同生共死
+        historyRecorder.record(c.getCustomerId(), from, target,
+                CustomerLevelHistory.SOURCE_MANUAL, r, null);
+        return new LevelAdjustResult(saved, true, from, target);
     }
 
     /** 手工调级结果：changed=false 表示与现等级相同（幂等短路）。 */
     public record LevelAdjustResult(Customer customer, boolean changed, String fromLevel, String toLevel) {}
 
     /**
-     * 按累计消费自动升级（手动触发批量重算；定时批处理列 Backlog）。
-     * 规则：遍历五级（sortNo 升序），客户 totalSpend ≥ 目标阈值且当前等级序严格低于目标序才升级——只升不降，
-     * 已在更高等级的客户即使消费不足也绝不回落（降级引擎另列 Backlog）。一次批量升级完成后统一返回明细，
-     * 由 Controller 在 upgraded>0 时落单条 LEVEL/AUTO_UPGRADE 汇总审计。
+     * 按累计净消费自动升级（手动触发批量重算；定时批处理同方法）。
+     *
+     * <p>真源：customer_monthly_spend 截至「北京时区上一闭合月 M」全部已聚合月 net_fen 累计 / 100（元，HALF_UP）。
+     * 调用方（Controller/Job）须先触发 {@link MonthlySpendService#aggregateClosedMonths()} 保证事实闭合，
+     * 本方法不发起跨服务调用。total_spend 历史列保留但不再作为判定依据（全仓无运行时维护，生产为死值）。
+     * 规则：遍历五级（sortNo 升序），客户累计净消费 ≥ 目标阈值且当前等级序严格低于目标序才升级——只升不降，
+     * 已在更高等级的客户即使消费不足也绝不回落（降级见 {@link #autoDowngrade}）。每次调级在 service 单点
+     * 落 history(AUTO_UPGRADE)；由 Controller 在 upgraded>0 时落单条 LEVEL/AUTO_UPGRADE 汇总审计。
      */
     @Transactional
     public synchronized AutoUpgradeResult autoUpgrade() {
+        List<Customer> all = customerRepo.findAll();
+        if (all.isEmpty()) return new AutoUpgradeResult(java.time.YearMonth.now(BJ).minusMonths(1).toString(),
+                0, List.of());
+        String closedMonth = java.time.YearMonth.now(BJ).minusMonths(1).toString();
+
         List<MemberLevel> levels = sortedLevels();
         Map<String, Integer> order = new HashMap<>();
         Map<String, BigDecimal> threshold = new HashMap<>();
@@ -755,16 +786,26 @@ public class CustomerService {
                     ? lv.getUpgradeThreshold()
                     : LEVEL_THRESHOLD.getOrDefault(lv.getLevel(), BigDecimal.ZERO));
         }
+
+        // 一次取全部客户截至 M 的事实行，内存 group 累计净消费（分），避免逐客户 N+1
+        List<String> allIds = all.stream().map(Customer::getCustomerId).toList();
+        Map<String, Long> netByCustomer = new HashMap<>();
+        for (CustomerMonthlySpend s : spendRepo.findByCustomerIdInAndPeriodMonthLessThanEqual(
+                allIds, closedMonth)) {
+            netByCustomer.merge(s.getCustomerId(), s.getNetFen() == null ? 0L : s.getNetFen(), Long::sum);
+        }
+
         List<UpgradeItem> items = new ArrayList<>();
-        for (Customer c : customerRepo.findAll()) {
+        for (Customer c : all) {
             Integer curOrder = order.get(c.getLevel());
             if (curOrder == null) continue;
+            long netFen = netByCustomer.getOrDefault(c.getCustomerId(), 0L);
+            BigDecimal netYuan = fenToYuan(netFen);
             String target = c.getLevel();
             for (MemberLevel lv : levels) {
                 Integer to = order.get(lv.getLevel());
                 if (to > curOrder
-                        && c.getTotalSpend() != null
-                        && c.getTotalSpend().compareTo(threshold.get(lv.getLevel())) >= 0
+                        && netYuan.compareTo(threshold.get(lv.getLevel())) >= 0
                         && to > order.get(target)) {
                     target = lv.getLevel();
                 }
@@ -773,18 +814,132 @@ public class CustomerService {
                 String from = c.getLevel();
                 c.setLevel(target);
                 customerRepo.save(c);
-                items.add(new UpgradeItem(c.getCustomerId(), c.getName(), from, target, c.getTotalSpend()));
+                historyRecorder.record(c.getCustomerId(), from, target,
+                        CustomerLevelHistory.SOURCE_AUTO_UPGRADE,
+                        "截至" + closedMonth + "累计净消费¥" + netYuan.stripTrailingZeros().toPlainString()
+                                + "达标升级", null);
+                items.add(new UpgradeItem(c.getCustomerId(), c.getName(), c.getStoreCode(),
+                        from, target, netYuan));
             }
         }
-        return new AutoUpgradeResult(items.size(), items);
+        return new AutoUpgradeResult(closedMonth, items.size(), items);
     }
 
-    /** 自动升级明细行。 */
-    public record UpgradeItem(String customerId, String name, String fromLevel, String toLevel,
-                              java.math.BigDecimal totalSpend) {}
+    /** 分 → 元（scale 4 HALF_UP，与阈值元口径对齐）。 */
+    private static BigDecimal fenToYuan(long fen) {
+        return BigDecimal.valueOf(fen).divide(HUNDRED, 4, java.math.RoundingMode.HALF_UP);
+    }
 
-    /** 自动升级结果：upgraded=升级人数，items 为全部明细（审计 payload + 接口返回共用）。 */
-    public record AutoUpgradeResult(int upgraded, List<UpgradeItem> items) {}
+    /** 自动升级明细行：netSpendYuan 为截至闭合月的累计净消费（元）。 */
+    public record UpgradeItem(String customerId, String name, String storeCode, String fromLevel,
+                              String toLevel, BigDecimal netSpendYuan) {}
+
+    /** 自动升级结果：closedMonth=判定闭合月（M），upgraded=升级人数，items 为全部明细。 */
+    public record AutoUpgradeResult(String closedMonth, int upgraded, List<UpgradeItem> items) {}
+
+    /**
+     * 自动降级批处理（域①-B62 卡1，CARD-D）。调用方须先聚合闭合月事实并完成 LEVEL_INIT 补种。
+     *
+     * <p>跑批月 M=北京时区当前月的上一闭合月。遍历非「普通」客户：
+     * 保护期——最近一次进入当前等级（来源 LEVEL_INIT/AUTO_UPGRADE/MANUAL）的北京月 P，
+     * M 与 P 的完整月数差 &lt; downgradeProtectMonths（默认 3）则跳过；
+     * 连续未达标——M/M-1/M-2 三个月事实行（缺行按 net=0）每月净消费（元）都 &lt; 本级保级线
+     * （=当前等级 upgradeThreshold）才命中；命中只降一级（sortNo-1，普通不降、不跳级），
+     * 同事务落 history(AUTO_DOWNGRADE)。一次跑批每客户最多降一级，连续不达标下轮再降；
+     * 降级当月即生成新的进入锚点（AUTO_DOWNGRADE 不作锚点），但级别改变后保护期按新级最近合规锚点
+     * 与「只降一级/连续3月」共同约束，重放幂等。
+     */
+    @Transactional
+    public synchronized DowngradeResult autoDowngrade() {
+        String m = java.time.YearMonth.now(BJ).minusMonths(1).toString();
+        java.time.YearMonth ym = java.time.YearMonth.parse(m);
+        List<String> window = List.of(m, ym.minusMonths(1).toString(), ym.minusMonths(2).toString());
+
+        LevelRuleConfig rule = levelRuleRepo.findById(RULE_ID).orElseGet(CustomerService::defaultRule);
+        int protectMonths = rule.getDowngradeProtectMonths() == null ? 3 : rule.getDowngradeProtectMonths();
+
+        List<MemberLevel> levels = sortedLevels();
+        Map<String, Integer> order = new HashMap<>();
+        Map<String, BigDecimal> threshold = new HashMap<>();
+        Map<Integer, String> levelBySort = new HashMap<>();
+        for (MemberLevel lv : levels) {
+            int sort = lv.getSortNo() != null
+                    ? lv.getSortNo()
+                    : LEVEL_ORDER.getOrDefault(lv.getLevel(), 99);
+            order.put(lv.getLevel(), sort);
+            levelBySort.put(sort, lv.getLevel());
+            threshold.put(lv.getLevel(), lv.getUpgradeThreshold() != null
+                    ? lv.getUpgradeThreshold()
+                    : LEVEL_THRESHOLD.getOrDefault(lv.getLevel(), BigDecimal.ZERO));
+        }
+
+        List<Customer> candidates = customerRepo.findAll().stream()
+                .filter(c -> {
+                    Integer o = order.get(c.getLevel());
+                    return o != null && o > 1;
+                })
+                .toList();
+        if (candidates.isEmpty()) return new DowngradeResult(m, 0, List.of());
+
+        List<String> ids = candidates.stream().map(Customer::getCustomerId).toList();
+        Map<String, String> idToLevel = new HashMap<>();
+        for (Customer c : candidates) idToLevel.put(c.getCustomerId(), c.getLevel());
+        Map<String, CustomerLevelHistory> anchors = historyRecorder.latestEntryAnchors(idToLevel);
+
+        // 三月事实行：key = customerId|periodMonth → netFen
+        Map<String, Long> net = new HashMap<>();
+        for (CustomerMonthlySpend s : spendRepo.findByCustomerIdInAndPeriodMonthIn(ids, window)) {
+            net.put(s.getCustomerId() + "|" + s.getPeriodMonth(),
+                    s.getNetFen() == null ? 0L : s.getNetFen());
+        }
+
+        List<DowngradeItem> items = new ArrayList<>();
+        for (Customer c : candidates) {
+            String curLevel = c.getLevel();
+            int curSort = order.get(curLevel);
+
+            // 保护期：无锚点（理论上 LEVEL_INIT 后必有）保守跳过，不冒降
+            CustomerLevelHistory anchor = anchors.get(c.getCustomerId());
+            if (anchor == null) continue;
+            java.time.YearMonth p = java.time.YearMonth.from(anchor.getChangedAt().atZoneSameInstant(BJ));
+            long fullMonths = (long) p.until(ym, java.time.temporal.ChronoUnit.MONTHS);
+            if (fullMonths < protectMonths) continue;
+
+            // 连续 3 月（M/M-1/M-2）每月净消费都 < 本级保级线；缺行按 0
+            BigDecimal keep = threshold.get(curLevel);
+            List<Long> threeNet = new ArrayList<>(3);
+            boolean allMiss = true;
+            for (String period : window) {
+                long fen = net.getOrDefault(c.getCustomerId() + "|" + period, 0L);
+                threeNet.add(fen);
+                if (fenToYuan(fen).compareTo(keep) >= 0) {
+                    allMiss = false;
+                    break;
+                }
+            }
+            if (!allMiss) continue;
+
+            String downLevel = levelBySort.get(curSort - 1);
+            if (downLevel == null) continue;
+            c.setLevel(downLevel);
+            customerRepo.save(c);
+            historyRecorder.record(c.getCustomerId(), curLevel, downLevel,
+                    CustomerLevelHistory.SOURCE_AUTO_DOWNGRADE, DOWNGRADE_REASON, null);
+            items.add(new DowngradeItem(c.getCustomerId(), c.getName(), c.getStoreCode(),
+                    curLevel, downLevel,
+                    fenToYuan(threeNet.get(2)), fenToYuan(threeNet.get(1)), fenToYuan(threeNet.get(0))));
+        }
+        return new DowngradeResult(m, items.size(), items);
+    }
+
+    /**
+     * 自动降级明细行：netM2/netM1/netM 依次为 M-2、M-1、M 三个月净消费（元，缺行按 0）。
+     */
+    public record DowngradeItem(String customerId, String name, String storeCode, String fromLevel,
+                                String toLevel, BigDecimal netM2, BigDecimal netM1, BigDecimal netM) {}
+
+    /** 自动降级结果：runMonth=跑批月 M，downgraded=降级人数（每客户最多降一级），items 为全部明细。 */
+    public record DowngradeResult(String runMonth, int downgraded, List<DowngradeItem> items) {}
 
     private static String trim(String s) {
         return s == null ? "" : s.trim();
