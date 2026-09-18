@@ -5,6 +5,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 
 /**
@@ -30,6 +31,26 @@ public class TxnOrder {
 
     @Column(nullable = false)
     private Long amount;
+
+    /** 折前应收合计（分，B62 卡2 会员等级折扣前；无折扣历史行为空）。 */
+    @Column(name = "original_amount")
+    private Long originalAmount;
+
+    /** 整单优惠金额（分）= originalAmount − amount；无折扣为空。 */
+    @Column(name = "discount_amount")
+    private Long discountAmount;
+
+    /** 成交时会员等级中文快照（普通/银卡/金卡/钻石/黑卡）。 */
+    @Column(name = "member_level", length = 8)
+    private String memberLevel;
+
+    /** 成交时会员等级英文 tier 快照（NORMAL/SILVER/GOLD/DIAMOND/BLACK）。 */
+    @Column(name = "member_tier", length = 16)
+    private String memberTier;
+
+    /** 成交时折扣率快照（1.00=无折扣；0.95=95 折）。 */
+    @Column(name = "member_discount", precision = 4, scale = 2)
+    private BigDecimal memberDiscount;
 
     @Column(length = 32)
     private String consultant;

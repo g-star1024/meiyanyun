@@ -51,6 +51,7 @@ public class ConsultPlanService {
     private final EmrService emrService;
     private final FollowupScheduler followupScheduler;
     private final DispatchCompletion dispatchCompletion;
+    private final MemberDiscountClient memberDiscountClient;
     private final ObjectMapper json = new ObjectMapper();
 
     public ConsultPlanService(PlanRepository planRepo, PlanItemRepository itemRepo,
@@ -58,7 +59,8 @@ public class ConsultPlanService {
                               OrderItemRepository orderItemRepo, OrderNoGenerator orderNoGen,
                               AuditRecorder audit, ApptRefNameResolver names,
                               StoreCatalogClient catalogClient, EmrService emrService,
-                              FollowupScheduler followupScheduler, DispatchCompletion dispatchCompletion) {
+                              FollowupScheduler followupScheduler, DispatchCompletion dispatchCompletion,
+                              MemberDiscountClient memberDiscountClient) {
         this.planRepo = planRepo;
         this.itemRepo = itemRepo;
         this.revRepo = revRepo;
@@ -71,6 +73,7 @@ public class ConsultPlanService {
         this.emrService = emrService;
         this.followupScheduler = followupScheduler;
         this.dispatchCompletion = dispatchCompletion;
+        this.memberDiscountClient = memberDiscountClient;
     }
 
     // ==================== DTO ====================
@@ -482,22 +485,33 @@ public class ConsultPlanService {
 
         // 自动生成缴费单（待收款）。诊疗订单经医生审核+病历，医疗合规已完成，直接待收款；
         // 涉钱双签（M4-X）留给现金收款/退款环节，不在此重复。
+        // 会员等级折扣（B62 卡2）：fail-closed 取折扣率，方案明细折后价生成缴费单
+        MemberDiscountClient.MemberDiscount discount =
+                memberDiscountClient.getForCustomer(p.getCustomerId());
         List<M4FlowController.OrderItemCmd> orderItems = items.stream()
                 .map(pi -> new M4FlowController.OrderItemCmd(pi.getItemName(), pi.getQty(), pi.getUnitPrice()))
                 .toList();
         String project = items.get(0).getItemName();
         TxnOrder order = buildPendingOrder(p.getCustomerId(), p.getStoreCode(), p.getConsultantId(),
-                project, orderItems, contraLevel(p), contraDetail(p));
+                project, orderItems, contraLevel(p), contraDetail(p), discount);
         orderRepo.save(order);
         int ln = 1;
         for (PlanItem pi : items) {
+            int qty = pi.getQty() == null || pi.getQty() < 1 ? 1 : pi.getQty();
+            long price = pi.getUnitPrice() == null ? 0L : pi.getUnitPrice();
+            MemberDiscountClient.PricedLine pl =
+                    MemberDiscountClient.priceLine(price, qty, discount.discount());
             OrderItem oi = new OrderItem();
             oi.setOrderNo(order.getOrderNo());
             oi.setLineNo(ln++);
             oi.setItemName(pi.getItemName());
-            oi.setQty(pi.getQty());
-            oi.setUnitPrice(pi.getUnitPrice());
-            oi.setAmount(pi.getAmount());
+            oi.setQty(qty);
+            oi.setUnitPrice(pl.netUnitPrice());
+            oi.setAmount(pl.netAmount());
+            if (pl.discountAmount() > 0) {
+                oi.setOriginalUnitPrice(pl.originalUnitPrice());
+                oi.setDiscountAmount(pl.discountAmount());
+            }
             orderItemRepo.save(oi);
         }
 
@@ -527,7 +541,12 @@ public class ConsultPlanService {
                 "{\"order\":\"" + order.getOrderNo() + "\",\"amount\":" + order.getAmount() + "}");
         audit.record("ORDER", order.getOrderNo(), actor(cmd == null ? null : cmd.operator()), "CREATE",
                 "{\"source\":\"PLAN\",\"plan\":\"" + planId + "\",\"project\":\"" + esc(project)
-                        + "\",\"amount\":" + order.getAmount() + ",\"items\":" + items.size() + "}");
+                        + "\",\"amount\":" + order.getAmount()
+                        + ",\"originalAmount\":" + order.getOriginalAmount()
+                        + ",\"discountAmount\":" + (order.getDiscountAmount() == null ? 0L : order.getDiscountAmount())
+                        + ",\"memberLevel\":\"" + esc(order.getMemberLevel()) + "\""
+                        + ",\"memberDiscount\":" + order.getMemberDiscount()
+                        + ",\"items\":" + items.size() + "}");
         return orderView(order.getOrderNo());
     }
 
@@ -548,27 +567,37 @@ public class ConsultPlanService {
         String project = blank(cmd.project())
                 ? cmd.items().stream().findFirst().map(M4FlowController.OrderItemCmd::itemName).orElse("零售")
                 : cmd.project();
+        // 会员等级折扣（B62 卡2）：fail-closed 取折扣率，零售明细折后价开单
+        MemberDiscountClient.MemberDiscount discount =
+                memberDiscountClient.getForCustomer(cmd.customerId());
         TxnOrder order = buildPendingOrder(cmd.customerId(), cmd.storeCode(), cmd.consultant(),
-                project, cmd.items(), "GREEN", null);
+                project, cmd.items(), "GREEN", null, discount);
         orderRepo.save(order);
         int ln = 1;
-        long total = 0L;
         for (M4FlowController.OrderItemCmd it : cmd.items()) {
             int qty = it.qty() == null || it.qty() < 1 ? 1 : it.qty();
             long price = it.unitPrice() == null || it.unitPrice() < 0 ? 0L : it.unitPrice();
-            long sub = price * qty;
-            total += sub;
+            MemberDiscountClient.PricedLine pl =
+                    MemberDiscountClient.priceLine(price, qty, discount.discount());
             OrderItem oi = new OrderItem();
             oi.setOrderNo(order.getOrderNo());
             oi.setLineNo(ln++);
             oi.setItemName(it.itemName());
             oi.setQty(qty);
-            oi.setUnitPrice(price);
-            oi.setAmount(sub);
+            oi.setUnitPrice(pl.netUnitPrice());
+            oi.setAmount(pl.netAmount());
+            if (pl.discountAmount() > 0) {
+                oi.setOriginalUnitPrice(pl.originalUnitPrice());
+                oi.setDiscountAmount(pl.discountAmount());
+            }
             orderItemRepo.save(oi);
         }
         audit.record("ORDER", order.getOrderNo(), actor(cmd.operator()), "CREATE",
-                "{\"source\":\"RETAIL\",\"project\":\"" + esc(project) + "\",\"amount\":" + total
+                "{\"source\":\"RETAIL\",\"project\":\"" + esc(project) + "\",\"amount\":" + order.getAmount()
+                        + ",\"originalAmount\":" + order.getOriginalAmount()
+                        + ",\"discountAmount\":" + (order.getDiscountAmount() == null ? 0L : order.getDiscountAmount())
+                        + ",\"memberLevel\":\"" + esc(order.getMemberLevel()) + "\""
+                        + ",\"memberDiscount\":" + order.getMemberDiscount()
                         + ",\"items\":" + cmd.items().size() + "}");
         return orderView(order.getOrderNo());
     }
@@ -868,23 +897,35 @@ public class ConsultPlanService {
 
     private TxnOrder buildPendingOrder(String customerId, String storeCode, String consultant,
                                        String project, List<M4FlowController.OrderItemCmd> items,
-                                       String contraCheck, String contraDetail) {
-        long total = 0L;
+                                       String contraCheck, String contraDetail,
+                                       MemberDiscountClient.MemberDiscount discount) {
+        long originalTotal = 0L;
+        long netTotal = 0L;
         for (M4FlowController.OrderItemCmd it : items) {
             int qty = it.qty() == null || it.qty() < 1 ? 1 : it.qty();
             long price = it.unitPrice() == null || it.unitPrice() < 0 ? 0L : it.unitPrice();
-            total += price * qty;
+            MemberDiscountClient.PricedLine pl =
+                    MemberDiscountClient.priceLine(price, qty, discount.discount());
+            originalTotal += pl.originalAmount();
+            netTotal += pl.netAmount();
         }
         TxnOrder o = new TxnOrder();
         o.setOrderNo(orderNoGen.nextOrderNo());
         o.setCustomerId(customerId);
         o.setStoreCode(storeCode);
         o.setProject(project == null ? "零售" : project);
-        o.setAmount(total);
+        o.setAmount(netTotal);
         o.setConsultant(consultant);
         o.setContraCheck(contraCheck == null ? "GREEN" : contraCheck);
         o.setContraDetail(contraDetail);
         o.setStatus("待收款");
+        o.setOriginalAmount(originalTotal);
+        o.setMemberLevel(discount.level());
+        o.setMemberTier(discount.tier());
+        o.setMemberDiscount(discount.discount());
+        if (originalTotal - netTotal > 0) {
+            o.setDiscountAmount(originalTotal - netTotal);
+        }
         return o;
     }
 
@@ -897,14 +938,18 @@ public class ConsultPlanService {
         Map<String, String> stores = blank(o.getStoreCode()) ? Map.of() : names.storeNames(List.of(o.getStoreCode()));
         Map<String, String> consultants = blank(o.getConsultant()) ? Map.of() : names.staffNames(List.of(o.getConsultant()));
         List<CustomerViewController.OrderItemView> iv = items.stream()
-                .map(it -> new CustomerViewController.OrderItemView(it.getItemName(), it.getQty(), it.getUnitPrice(), it.getAmount()))
+                .map(it -> new CustomerViewController.OrderItemView(it.getItemName(), it.getQty(),
+                        it.getUnitPrice(), it.getAmount(),
+                        it.getOriginalUnitPrice(), it.getDiscountAmount()))
                 .toList();
         return new M4FlowController.OrderView(o.getOrderNo(), o.getCustomerId(), cust.get(o.getCustomerId()), phones.get(o.getCustomerId()),
                 o.getStoreCode(), blank(o.getStoreCode()) ? null : stores.get(o.getStoreCode()),
                 o.getProject(), o.getAmount(), o.getStatus(), o.getBizKind(),
                 blank(o.getConsultant()) ? null : consultants.get(o.getConsultant()),
                 o.getContraCheck(), o.getCreatedAt(), iv,
-                0L, List.of());
+                0L, List.of(),
+                o.getOriginalAmount(), o.getDiscountAmount(),
+                o.getMemberLevel(), o.getMemberDiscount());
     }
 
     private String contraLevel(ConsultPlan p) {

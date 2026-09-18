@@ -45,6 +45,14 @@ public class OrderItem {
     @Column(nullable = false)
     private Long amount;
 
+    /** 折前单价（分，B62 卡2 会员等级折扣前挂牌单价；无折扣历史行为空）。 */
+    @Column(name = "original_unit_price")
+    private Long originalUnitPrice;
+
+    /** 本行优惠金额（分）= 折前单价×qty − amount；无折扣为空。 */
+    @Column(name = "discount_amount")
+    private Long discountAmount;
+
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 

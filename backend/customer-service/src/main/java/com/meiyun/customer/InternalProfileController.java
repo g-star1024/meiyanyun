@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -29,17 +30,24 @@ import java.util.stream.Collectors;
 public class InternalProfileController {
 
     private static final int SEARCH_LIMIT = 10;
+    private static final int DISCOUNT_BATCH_LIMIT = 50;
+    private static final String DEFAULT_LEVEL = "普通";
+    private static final String DEFAULT_TIER = "NORMAL";
+    private static final BigDecimal NO_DISCOUNT = new BigDecimal("1.00");
 
     private final CustomerRepository customerRepo;
     private final CustomerTagRelRepository tagRelRepo;
     private final CustomerTagRepository tagRepo;
+    private final MemberLevelRepository levelRepo;
 
     public InternalProfileController(CustomerRepository customerRepo,
                                      CustomerTagRelRepository tagRelRepo,
-                                     CustomerTagRepository tagRepo) {
+                                     CustomerTagRepository tagRepo,
+                                     MemberLevelRepository levelRepo) {
         this.customerRepo = customerRepo;
         this.tagRelRepo = tagRelRepo;
         this.tagRepo = tagRepo;
+        this.levelRepo = levelRepo;
     }
 
     /**
@@ -94,6 +102,60 @@ public class InternalProfileController {
         return m;
     }
 
+    /**
+     * 会员等级折扣批量投影（B62 卡2，供 txn 开单计价）：
+     * GET /api/customer/internal/level-discount?customerIds=C001,C002。
+     * 回每客户的中文等级/英文 tier/折扣率（1.00=不折），单次最多 50 个；客户或等级缺失兜底 普通/NORMAL/1.00。
+     * 仅回折扣四元组，不回姓名/手机/消费等敏感字段（最小披露）；仅系统身份（internal:customer-directory）可调，
+     * txn 域不直读 customer/member_level 表，拆库后零改动成立。
+     */
+    @GetMapping("/level-discount")
+    @RequirePerm("internal:customer-directory")
+    public List<LevelDiscountDTO> levelDiscount(@RequestParam("customerIds") List<String> customerIds) {
+        if (customerIds == null || customerIds.isEmpty()) {
+            throw new CardLedgerService.BadReq("customerIds 不能为空");
+        }
+        List<String> ids = customerIds.stream()
+                .filter(id -> id != null && !id.isBlank())
+                .map(String::trim).distinct().toList();
+        if (ids.isEmpty()) {
+            throw new CardLedgerService.BadReq("customerIds 不能为空");
+        }
+        if (ids.size() > DISCOUNT_BATCH_LIMIT) {
+            throw new CardLedgerService.BadReq("customerIds 单次最多 " + DISCOUNT_BATCH_LIMIT + " 个");
+        }
+
+        Map<String, Customer> custById = new LinkedHashMap<>();
+        for (Customer c : customerRepo.findAllById(ids)) {
+            custById.put(c.getCustomerId(), c);
+        }
+        Set<String> levelNames = custById.values().stream()
+                .map(Customer::getLevel)
+                .filter(lv -> lv != null && !lv.isBlank())
+                .collect(Collectors.toSet());
+        Map<String, MemberLevel> levelByName = levelNames.isEmpty()
+                ? Map.of()
+                : levelRepo.findAllById(levelNames).stream()
+                .collect(Collectors.toMap(MemberLevel::getLevel, lv -> lv));
+
+        List<LevelDiscountDTO> out = new ArrayList<>(ids.size());
+        for (String id : ids) {
+            Customer c = custById.get(id);
+            if (c == null || c.getLevel() == null || c.getLevel().isBlank()) {
+                out.add(new LevelDiscountDTO(id, DEFAULT_LEVEL, DEFAULT_TIER, NO_DISCOUNT));
+                continue;
+            }
+            MemberLevel ml = levelByName.get(c.getLevel());
+            if (ml == null || ml.getDiscount() == null) {
+                out.add(new LevelDiscountDTO(id, DEFAULT_LEVEL, DEFAULT_TIER, NO_DISCOUNT));
+                continue;
+            }
+            String tier = ml.getTier() == null || ml.getTier().isBlank() ? DEFAULT_TIER : ml.getTier();
+            out.add(new LevelDiscountDTO(id, ml.getLevel(), tier, ml.getDiscount()));
+        }
+        return out;
+    }
+
     private Map<String, List<String>> tagsOf(Set<String> customerIds) {
         Map<String, List<String>> tagsByCust = new HashMap<>();
         if (customerIds.isEmpty()) {
@@ -145,5 +207,11 @@ public class InternalProfileController {
                                     Long points, Integer age, String skinType,
                                     List<String> concerns, List<String> intentProjects,
                                     String intentLevel, String budget, List<String> tags) {
+    }
+
+    /**
+     * 会员等级折扣投影：客户号 + 中文等级 + 英文 tier + 折扣率（1.00 表示无折扣）。
+     */
+    public record LevelDiscountDTO(String customerId, String level, String tier, BigDecimal discount) {
     }
 }

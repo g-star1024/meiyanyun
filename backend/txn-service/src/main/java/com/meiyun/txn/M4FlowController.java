@@ -19,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -55,6 +56,7 @@ public class M4FlowController {
     private final FinanceEventPublisher financeEvents;
     private final CustomerCardClient customerCardClient;
     private final MarketingGrantClient grantClient;
+    private final MemberDiscountClient memberDiscountClient;
 
     public M4FlowController(ConsultationRepository consultRepo, TxnOrderRepository orderRepo,
                             OrderItemRepository itemRepo,
@@ -62,7 +64,8 @@ public class M4FlowController {
                             AuditRecorder audit, ApptRefNameResolver names,
                             ConsultPlanService planService, OrderNoGenerator orderNoGen,
                             PaymentService paymentService, FinanceEventPublisher financeEvents,
-                            CustomerCardClient customerCardClient, MarketingGrantClient grantClient) {
+                            CustomerCardClient customerCardClient, MarketingGrantClient grantClient,
+                            MemberDiscountClient memberDiscountClient) {
         this.consultRepo = consultRepo;
         this.orderRepo = orderRepo;
         this.itemRepo = itemRepo;
@@ -76,6 +79,7 @@ public class M4FlowController {
         this.financeEvents = financeEvents;
         this.customerCardClient = customerCardClient;
         this.grantClient = grantClient;
+        this.memberDiscountClient = memberDiscountClient;
     }
 
     // ==================== M4-06 客情咨询 ====================
@@ -130,7 +134,12 @@ public class M4FlowController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "门店不存在: " + cmd.storeCode());
         }
 
-        // ---- 金额：子项合计 vs 传入 amount 对账 ----
+        // ---- 会员等级折扣（B62 卡2）：fail-closed 取折扣率，售卡以外订单逐行折后计价 ----
+        MemberDiscountClient.MemberDiscount discount =
+                memberDiscountClient.getForCustomer(cmd.customerId());
+
+        // ---- 金额：子项按折后价合计；折前合计用于与传入 amount 对账 ----
+        long itemsOriginal = 0L;
         long itemsTotal = 0L;
         List<OrderItem> items = new ArrayList<>();
         if (cmd.items() != null && !cmd.items().isEmpty()) {
@@ -144,32 +153,45 @@ public class M4FlowController {
                 if (price < 0) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "第 " + line + " 行单价不能为负");
                 }
-                long sub = price * qty;
-                itemsTotal += sub;
+                MemberDiscountClient.PricedLine pl =
+                        MemberDiscountClient.priceLine(price, qty, discount.discount());
+                itemsOriginal += pl.originalAmount();
+                itemsTotal += pl.netAmount();
                 OrderItem oi = new OrderItem();
                 oi.setOrderNo(null); // 订单号生成后回填
                 oi.setLineNo(line);
                 oi.setItemName(it.itemName());
                 oi.setQty(qty);
-                oi.setUnitPrice(price);
-                oi.setAmount(sub);
+                oi.setUnitPrice(pl.netUnitPrice());
+                oi.setAmount(pl.netAmount());
+                if (pl.discountAmount() > 0) {
+                    oi.setOriginalUnitPrice(pl.originalUnitPrice());
+                    oi.setDiscountAmount(pl.discountAmount());
+                }
                 items.add(oi);
                 line++;
             }
         }
         long amount;
+        long originalAmount;
         if (!items.isEmpty()) {
             amount = itemsTotal;
-            if (cmd.amount() != null && cmd.amount() != itemsTotal) {
+            originalAmount = itemsOriginal;
+            if (cmd.amount() != null && cmd.amount() != originalAmount) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "订单金额与收费子项合计不一致：订单 " + cmd.amount() + " 分 ≠ 子项合计 " + itemsTotal + " 分");
+                        "订单金额与收费子项合计不一致：订单 " + cmd.amount() + " 分 ≠ 子项折前合计 " + originalAmount
+                                + " 分（会员折扣以后端实算折后 " + itemsTotal + " 分为准）");
             }
         } else {
             if (cmd.amount() == null || cmd.amount() <= 0) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "订单金额必须为正（单位：分）");
             }
-            amount = cmd.amount();
+            originalAmount = cmd.amount();
+            MemberDiscountClient.PricedLine pl =
+                    MemberDiscountClient.priceLine(cmd.amount(), 1, discount.discount());
+            amount = pl.netAmount();
         }
+        long orderDiscount = originalAmount - amount;
 
         // 取最新客情档案做禁忌判定
         Consultation latest = consultRepo.findTopByCustomerIdOrderByCreatedAtDesc(cmd.customerId()).orElse(null);
@@ -186,6 +208,13 @@ public class M4FlowController {
         o.setAmount(amount);
         o.setConsultant(cmd.consultant());
         o.setStatus("待签核");
+        o.setOriginalAmount(originalAmount);
+        o.setMemberLevel(discount.level());
+        o.setMemberTier(discount.tier());
+        o.setMemberDiscount(discount.discount());
+        if (orderDiscount > 0) {
+            o.setDiscountAmount(orderDiscount);
+        }
 
         if (check.red()) {
             // RED 硬阻断：须带合法双签豁免方可放行
@@ -219,6 +248,10 @@ public class M4FlowController {
         }
         audit.record("ORDER", o.getOrderNo(), DataScope.currentActor(),
                 "CREATE", "{\"project\":\"" + cmd.project() + "\",\"amount\":" + amount
+                        + ",\"originalAmount\":" + originalAmount
+                        + ",\"discountAmount\":" + orderDiscount
+                        + ",\"memberLevel\":\"" + discount.level() + "\""
+                        + ",\"memberDiscount\":" + discount.discount()
                         + ",\"items\":" + items.size() + ",\"contra\":\"" + o.getContraCheck() + "\"}");
         return toOrderView(o, items);
     }
@@ -263,11 +296,13 @@ public class M4FlowController {
                 o.getCreatedAt(),
                 toItemViews(itemsByOrder.getOrDefault(o.getOrderNo(), List.of())),
                 sumPosted(paysByOrder.getOrDefault(o.getOrderNo(), List.of())),
-                toPaymentViews(paysByOrder.getOrDefault(o.getOrderNo(), List.of()))));
+                toPaymentViews(paysByOrder.getOrDefault(o.getOrderNo(), List.of())),
+                o.getOriginalAmount(), o.getDiscountAmount(),
+                o.getMemberLevel(), o.getMemberDiscount()));
     }
 
     @GetMapping("/order/{no}")
-    @RequirePerm("cashier:view")
+    @RequirePerm({ "cashier:view", "emr:create" })
     public OrderView getOrder(@PathVariable String no) {
         TxnOrder o = requireOrder(no);
         List<OrderItem> items = itemRepo.findByOrderNoIn(List.of(no));
@@ -636,7 +671,9 @@ public class M4FlowController {
     private List<CustomerViewController.OrderItemView> toItemViews(List<OrderItem> items) {
         List<CustomerViewController.OrderItemView> out = new ArrayList<>();
         for (OrderItem it : items) {
-            out.add(new CustomerViewController.OrderItemView(it.getItemName(), it.getQty(), it.getUnitPrice(), it.getAmount()));
+            out.add(new CustomerViewController.OrderItemView(it.getItemName(), it.getQty(),
+                    it.getUnitPrice(), it.getAmount(),
+                    it.getOriginalUnitPrice(), it.getDiscountAmount()));
         }
         return out;
     }
@@ -658,7 +695,9 @@ public class M4FlowController {
                 o.getConsultant() == null ? null : consultants.get(o.getConsultant()),
                 o.getContraCheck(),
                 o.getCreatedAt(), toItemViews(items),
-                sumPosted(pays), toPaymentViews(pays));
+                sumPosted(pays), toPaymentViews(pays),
+                o.getOriginalAmount(), o.getDiscountAmount(),
+                o.getMemberLevel(), o.getMemberDiscount());
     }
 
     private Long sumPosted(List<OrderPayment> pays) {
@@ -716,7 +755,15 @@ public class M4FlowController {
             /** 累计已入账（分）；待收款单为部分收款累计，已收款单等于 amount。 */
             Long paidAmount,
             /** 支付明细流水（组合支付/找零）。 */
-            List<PaymentService.PaymentView> payments) {}
+            List<PaymentService.PaymentView> payments,
+            /** 折前合计（分）；B62 卡2 之前的历史单为 null。 */
+            Long originalAmount,
+            /** 会员优惠合计（分）；无优惠/历史单为 null。 */
+            Long discountAmount,
+            /** 成交时会员等级快照明（如「白银」）。 */
+            String memberLevel,
+            /** 成交时折扣率快照（如 0.95）。 */
+            BigDecimal memberDiscount) {}
 
     public record OrderItemCmd(String itemName, Integer qty, Long unitPrice) {}
 

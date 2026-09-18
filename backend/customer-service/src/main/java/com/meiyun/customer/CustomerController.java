@@ -125,6 +125,16 @@ public class CustomerController {
     }
 
     /**
+     * 等级目录（一线开单岗，B62 卡2）：只回折扣/权益/升级条件等展示字段，不含各等级人数/占比等经营统计。
+     * 持有 customer:view 的咨询师/医生即可读，供客户 360 权益卡与开单页折扣预估取权威等级口径。
+     */
+    @GetMapping("/member-levels/catalog")
+    @RequirePerm("customer:view")
+    public List<LevelCatalogDTO> levelCatalog() {
+        return service.listLevelCatalog();
+    }
+
+    /**
      * 更新等级阈值/权益：service 校验 + 同态短路（changed=false 不重复审计）；
      * 落 LEVEL/UPDATE，payload 记录 before/after 全动作。精确路径优先于 /{id} 匹配。
      */

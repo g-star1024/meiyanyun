@@ -13,6 +13,7 @@ import { type OrderItem } from '@/stores/order'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useStoreContext } from '@/stores/storeContext'
+import { useLevelStore } from '@/stores/level'
 import { useToast } from '@/composables/useToast'
 import { listCustomers, type CustomerDTO } from '@/api/customer'
 import { createRetailOrder } from '@/api/order'
@@ -25,6 +26,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const settings = useSettingsStore()
 const storeCtx = useStoreContext()
+const levelStore = useLevelStore()
 const toast = useToast()
 
 const canEdit = computed(() => auth.can('prescription:create') || auth.can('prescription:edit'))
@@ -93,6 +95,8 @@ function onWalkin() {
 
 onMounted(() => {
   if (!storeCtx.loaded) storeCtx.loadStores()
+  // 会员等级折扣率（前端仅预估展示，开单计价以后端为准）
+  levelStore.seed()
 })
 
 // ---- 可选项目目录（演示期静态；后续接 catalog API / 卡项聚合）----
@@ -135,11 +139,32 @@ function removeItem(uid: string) {
   items.value = items.value.filter((i) => i.uid !== uid)
 }
 
-const total = computed(() => items.value.reduce((s, i) => s + i.qty * i.price, 0))
+// ---- 会员等级折扣（前端仅预估展示；提交仍传原价，开单计价以后端为准）----
+const discountLevel = computed(() => selectedCustomer.value?.level ?? null)
+const discountRate = computed(() => levelStore.discountOf(discountLevel.value))
+const hasDiscount = computed(() => discountRate.value < 1)
+const discountText = computed(() => {
+  const d = discountRate.value
+  return d >= 1 ? '' : `${Math.round(d * 100) / 10} 折`
+})
+/** 单行折后额（元）；分口径四舍五入，与后端 MemberDiscountClient.priceLine 一致 */
+function lineNet(price: number, qty: number): number {
+  return levelStore.netYuan(price, discountLevel.value, qty)
+}
+
+// 金额全程以「分」累加再 /100，规避浮点误差；折前 total / 折后 netTotal
+const totalFen = computed(() =>
+  items.value.reduce((s, i) => s + Math.round(i.price * 100) * i.qty, 0))
+const netTotalFen = computed(() =>
+  items.value.reduce((s, i) =>
+    s + levelStore.netFen(Math.round(i.price * 100), discountLevel.value, i.qty), 0))
+const total = computed(() => totalFen.value / 100)
+const netTotal = computed(() => netTotalFen.value / 100)
+const discountAmount = computed(() => Math.max(0, totalFen.value - netTotalFen.value) / 100)
 const totalQty = computed(() => items.value.reduce((s, i) => s + i.qty, 0))
 
-// ---- 双签层级（取自设置中心，禁止硬编码）----
-const tier = computed(() => settings.tierFor(total.value))
+// ---- 双签层级（取自设置中心，禁止硬编码；5 万双签阈值按折后实付口径）----
+const tier = computed(() => settings.tierFor(netTotal.value))
 const tierText = computed(() =>
   tier.value === 'L3' ? 'L3 三签/高审' : tier.value === 'L2' ? 'L2 双签' : 'L1 基础签署',
 )
@@ -182,6 +207,9 @@ function goCashier() {
 }
 
 const money = (n: number) => `¥${n.toLocaleString('zh-CN')}`
+// 折后价以「分」为最小单位，固定两位小数，避免 0.95 折后出现 ¥361 / ¥361.1 混排
+const netMoney = (n: number) =>
+  `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 </script>
 
 <template>
@@ -262,6 +290,7 @@ const money = (n: number) => `¥${n.toLocaleString('zh-CN')}`
           <div class="patient__meta">
             <div class="patient__name">{{ selectedCustomer.name }}
               <span class="patient__id">{{ selectedCustomer.id }}</span>
+              <span v-if="hasDiscount" class="patient__discount">会员 {{ discountText }}</span>
             </div>
             <div class="patient__sub">{{ selectedCustomer.phoneMask }} · {{ selectedCustomer.level }} 级客户</div>
           </div>
@@ -279,13 +308,22 @@ const money = (n: number) => `¥${n.toLocaleString('zh-CN')}`
           <div v-for="i in items" :key="i.uid" class="line">
             <div class="line__info">
               <span class="line__name">{{ i.name }}</span>
-              <span class="line__spec">{{ i.spec }} · {{ money(i.price) }}</span>
+              <span class="line__spec">{{ i.spec }} ·
+                <span :class="{ 'price-old': hasDiscount }">{{ money(i.price) }}</span><span
+                  v-if="hasDiscount" class="price-now"
+                >/{{ netMoney(lineNet(i.price, 1)) }}</span>
+              </span>
             </div>
             <div class="line__ctrl">
               <button class="qty" :disabled="!canEdit" @click="changeQty(i.uid, -1)">−</button>
               <span class="qty__num">{{ i.qty }}</span>
               <button class="qty" :disabled="!canEdit" @click="changeQty(i.uid, 1)">+</button>
-              <span class="line__sum">{{ money(i.qty * i.price) }}</span>
+              <span class="line__sum">
+                <template v-if="hasDiscount">
+                  <span class="line__old">{{ money(i.qty * i.price) }}</span>{{ netMoney(lineNet(i.price, i.qty)) }}
+                </template>
+                <template v-else>{{ money(i.qty * i.price) }}</template>
+              </span>
               <button class="line__del" :disabled="!canEdit" @click="removeItem(i.uid)">
                 <CIcon name="delete" :size="14" />
               </button>
@@ -300,9 +338,18 @@ const money = (n: number) => `¥${n.toLocaleString('zh-CN')}`
             <CStatusPill :status="tierTone">{{ tierText }}</CStatusPill>
             <span class="tier__hint">阈值由设置中心下发 · L1 ¥{{ settings.system.dualSign.l1 }} / L2 ¥{{ settings.system.dualSign.l2 }} / L3 ¥{{ settings.system.dualSign.l3 }}</span>
           </div>
+          <div v-if="hasDiscount" class="discount-row">
+            <span class="discount-row__label">折前合计</span>
+            <span class="discount-row__old">{{ money(total) }}</span>
+          </div>
+          <div v-if="hasDiscount" class="discount-row">
+            <span class="discount-row__label">{{ selectedCustomer?.level }}会员优惠（{{ discountText }}）</span>
+            <span class="discount-row__save">-{{ netMoney(discountAmount) }}</span>
+          </div>
           <div class="total">
-            <span class="total__label">合计 <em>{{ totalQty }}</em> 项</span>
-            <span class="total__num">{{ money(total) }}</span>
+            <span class="total__label">合计 <em>{{ totalQty }}</em> 项<span
+              v-if="hasDiscount" class="total__tip">折后应付</span></span>
+            <span class="total__num">{{ hasDiscount ? netMoney(netTotal) : money(total) }}</span>
           </div>
           <div class="actions">
             <CButton variant="ghost" @click="items = []">清空</CButton>
@@ -372,6 +419,10 @@ const money = (n: number) => `¥${n.toLocaleString('zh-CN')}`
 .patient__name { font-weight: 600; display: flex; align-items: center; gap: var(--s-xs); }
 .patient__id { font-size: var(--t-xs); color: var(--c-text-3); font-weight: 400; }
 .patient__sub { font-size: var(--t-xs); color: var(--c-text-3); margin-top: 2px; }
+.patient__discount { font-size: var(--t-xs); font-weight: 600; color: var(--c-danger-fg, #cf1322); background: var(--c-danger-bg, #fff1f0); border-radius: var(--r-capsule); padding: 1px 8px; }
+
+.price-old { color: var(--c-text-4); text-decoration: line-through; font-variant-numeric: tabular-nums; }
+.price-now { color: var(--c-brand); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 .lines { margin: var(--s-sm) 0; display: flex; flex-direction: column; gap: var(--s-xs); min-height: 80px; }
 .lines__empty { color: var(--c-text-3); font-size: var(--t-sm); text-align: center; padding: var(--s-lg) 0; }
@@ -383,11 +434,17 @@ const money = (n: number) => `¥${n.toLocaleString('zh-CN')}`
 .qty { width: 26px; height: 26px; border-radius: var(--r-md); border: 1px solid var(--c-border); background: var(--c-surface); cursor: pointer; font-size: var(--t-base); line-height: 1; display: flex; align-items: center; justify-content: center; color: var(--c-text-2); }
 .qty:disabled { opacity: .4; cursor: not-allowed; }
 .qty__num { min-width: 20px; text-align: center; font-size: var(--t-sm); }
-.line__sum { min-width: 72px; text-align: right; font-size: var(--t-sm); font-weight: 600; }
+.line__sum { min-width: 72px; text-align: right; font-size: var(--t-sm); font-weight: 600; display: inline-flex; flex-direction: column; align-items: flex-end; line-height: 1.35; font-variant-numeric: tabular-nums; }
+.line__old { font-size: var(--t-xs); font-weight: 400; color: var(--c-text-4); text-decoration: line-through; }
 .line__del { border: none; background: transparent; color: var(--c-text-4); cursor: pointer; padding: 4px; }
 .line__del:hover { color: var(--c-danger); }
 
 .settle { border-top: 1px solid var(--c-border); padding-top: var(--s-sm); }
+.discount-row { display: flex; align-items: baseline; justify-content: space-between; font-size: var(--t-sm); margin-top: var(--s-xs); }
+.discount-row__label { color: var(--c-text-2); }
+.discount-row__old { color: var(--c-text-4); text-decoration: line-through; font-variant-numeric: tabular-nums; }
+.discount-row__save { color: var(--c-danger-fg, #cf1322); font-weight: 600; font-variant-numeric: tabular-nums; }
+.total__tip { font-style: normal; color: var(--c-danger-fg, #cf1322); font-size: var(--t-xs); font-weight: 400; margin-left: 4px; }
 .tier { display: flex; align-items: center; gap: var(--s-xs); font-size: var(--t-sm); flex-wrap: wrap; }
 .tier__label { color: var(--c-text-2); }
 .tier__hint { color: var(--c-text-3); font-size: var(--t-xs); width: 100%; }

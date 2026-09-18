@@ -584,6 +584,35 @@ public class CustomerService {
                 .toList();
     }
 
+    /**
+     * 等级目录（一线开单岗可读，B62 卡2）：五级按 sortNo 升序，只回 id/tier/name/color/阈值/升级条件/
+     * 权益/isTop/discount，不含 memberCount/memberPercent 等经营统计（那些归 level:view 管理端读模型）。
+     * 供客户 360 权益卡与开单页折扣预估取权威等级口径，前端只做预估，开单仍由 txn 后端实算。
+     */
+    @Transactional(readOnly = true)
+    public List<LevelCatalogDTO> listLevelCatalog() {
+        return sortedLevels().stream().map(lv -> {
+            String id = lv.getLevel();
+            BigDecimal threshold = lv.getUpgradeThreshold() != null
+                    ? lv.getUpgradeThreshold()
+                    : LEVEL_THRESHOLD.getOrDefault(id, BigDecimal.ZERO);
+            List<String> benefits = lv.getBenefits() != null && !lv.getBenefits().isEmpty()
+                    ? List.copyOf(lv.getBenefits())
+                    : LEVEL_BENEFITS.getOrDefault(id, List.of());
+            boolean top = lv.getIsTop() != null ? lv.getIsTop() : "黑卡".equals(id);
+            return new LevelCatalogDTO(
+                    id,
+                    lv.getTier() != null ? lv.getTier() : LEVEL_TIER.get(id),
+                    id + "会员",
+                    lv.getColor() != null ? lv.getColor() : LEVEL_COLOR.get(id),
+                    threshold,
+                    upgradeCondition(threshold),
+                    benefits,
+                    top,
+                    lv.getDiscount());
+        }).toList();
+    }
+
     /** 五级按 sortNo 升序；sort_no 为空（回填前）回落到 LEVEL_ORDER 常量序。 */
     private List<MemberLevel> sortedLevels() {
         return levelRepo.findAll().stream()

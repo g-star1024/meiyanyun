@@ -11,10 +11,12 @@ import client from '@/api/client'
 import { listStaff } from '@/api/org'
 import {
   getMemberLevels,
+  getMemberLevelCatalog,
   getLevelRule,
   updateMemberLevel,
   saveLevelRule as apiSaveLevelRule,
   type MemberLevelDTO,
+  type LevelCatalogDTO,
   type LevelRuleDTO,
 } from '@/api/customer'
 import { useAuthStore } from './auth'
@@ -36,6 +38,8 @@ export interface MemberLevel {
   memberCount: number
   memberPercent: number
   isTop?: boolean
+  /** 会员等级折扣率（普通 1.00、银卡 0.95 …）；以后端实算为准，前端仅用于预估展示 */
+  discount: number
 }
 
 export interface LevelRule {
@@ -148,6 +152,25 @@ export const useLevelStore = defineStore('level', () => {
     return levels.value.find((l) => l.id === id)
   }
 
+  /** 按等级中文名取折扣率（未加载/未知等级回落 1，与后端兜底一致；仅用于前端预估） */
+  function discountOf(levelId?: string | null): number {
+    if (!levelId) return 1
+    const d = get(levelId)?.discount
+    return typeof d === 'number' && d > 0 && d <= 1 ? d : 1
+  }
+
+  /** 折后预估（分→分，HALF_UP 与后端 MemberDiscountClient.priceLine 同口径） */
+  function netFen(originalFen: number, levelId?: string | null, qty = 1): number {
+    const d = discountOf(levelId)
+    if (d >= 1) return originalFen * qty
+    return Math.round(originalFen * d) * qty
+  }
+
+  /** 折后金额文案（元） */
+  function netYuan(originalYuan: number, levelId?: string | null, qty = 1): number {
+    return netFen(Math.round(originalYuan * 100), levelId, qty) / 100
+  }
+
   function adaptLevel(d: MemberLevelDTO): MemberLevel {
     return {
       id: d.id,
@@ -160,6 +183,27 @@ export const useLevelStore = defineStore('level', () => {
       memberCount: d.memberCount,
       memberPercent: d.memberPercent,
       isTop: d.isTop,
+      discount: typeof d.discount === 'number' ? d.discount : 1,
+    }
+  }
+
+  /**
+   * 一线开单岗目录适配（B62 卡2）：catalog 无人数/占比经营统计，补 0 占位（这些岗也不看等级管理 KPI）。
+   * 折扣/权益/升级条件等展示字段与管理端读模型同口径，保证 360 权益卡与开单预估取到权威等级口径。
+   */
+  function adaptCatalogLevel(d: LevelCatalogDTO): MemberLevel {
+    return {
+      id: d.id,
+      tier: d.tier as LevelTier,
+      name: d.name,
+      color: d.color,
+      upgradeThreshold: Number(d.upgradeThreshold),
+      upgradeCondition: d.upgradeCondition,
+      benefits: d.benefits ?? [],
+      memberCount: 0,
+      memberPercent: 0,
+      isTop: d.isTop,
+      discount: typeof d.discount === 'number' ? d.discount : 1,
     }
   }
 
@@ -228,17 +272,30 @@ export const useLevelStore = defineStore('level', () => {
     }
   }
 
-  /** 拉取五级读模型 + 升降级规则 + LEVEL 审计链；force=true 保存/重置后强制刷新。 */
+  /**
+   * 拉取五级读模型 + 升降级规则 + LEVEL 审计链；force=true 保存/重置后强制刷新。
+   * 权限分流（B62 卡2）：持 level:view 的管理者走含实时人数/规则的管理端读模型（M3 等级管理页行为不变）；
+   * 咨询师/医生等一线开单岗无 level:view，改拉 customer:view 的等级目录（只含折扣/权益/升级条件），
+   * 规则保持内置默认、不请求 level-rule，保证客户 360 权益卡与开单页能取到权威等级折扣而不触发 403。
+   */
   async function seed(force = false) {
     if (seeded.value && !force) return
     try {
-      const [lv, ru] = await Promise.all([getMemberLevels(), getLevelRule()])
-      levels.value = lv.data.map(adaptLevel)
-      rule.value = adaptRule(ru.data)
+      if (auth.can('level:view')) {
+        const [lv, ru] = await Promise.all([getMemberLevels(), getLevelRule()])
+        levels.value = lv.data.map(adaptLevel)
+        rule.value = adaptRule(ru.data)
+      } else {
+        const { data } = await getMemberLevelCatalog()
+        levels.value = data.map(adaptCatalogLevel)
+        rule.value = { ...DEFAULT_RULE }
+      }
     } catch (e) {
       console.error('会员等级加载失败', e)
     }
-    await loadAuditLogs()
+    if (auth.can('level:view')) {
+      await loadAuditLogs()
+    }
     seeded.value = true
   }
 
@@ -341,6 +398,6 @@ export const useLevelStore = defineStore('level', () => {
   return {
     levels, rule, audits, seeded,
     totalMembers, topLevel, monthUpgraded, monthDowngraded,
-    get, updateLevel, saveRule, resetDefault, seed,
+    get, discountOf, netFen, netYuan, updateLevel, saveRule, resetDefault, seed,
   }
 })

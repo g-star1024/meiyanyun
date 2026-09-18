@@ -10,8 +10,12 @@ import client from './client'
 export interface OrderItemViewDTO {
   itemName: string
   qty: number
-  unitPrice: number // 单价（分）
-  amount: number // 小计（分）
+  unitPrice: number // 折后单价（分）
+  amount: number // 折后小计（分）
+  /** 折前单价（分）；B62 卡2 之前的历史单为 null。 */
+  originalUnitPrice?: number | null
+  /** 本行会员优惠（分）；无优惠/历史单为 null。 */
+  discountAmount?: number | null
 }
 
 export interface OrderViewDTO {
@@ -36,6 +40,14 @@ export interface OrderViewDTO {
   paidAmount?: number
   /** 支付明细流水（组合支付/找零）。 */
   payments?: OrderPaymentDTO[]
+  /** 折前合计（分）；B62 卡2 之前的历史单为 null。 */
+  originalAmount?: number | null
+  /** 会员优惠合计（分）；无优惠/历史单为 null。 */
+  discountAmount?: number | null
+  /** 成交时会员等级快照明（如「银卡」）。 */
+  memberLevel?: string | null
+  /** 成交时折扣率快照（如 0.95）。 */
+  memberDiscount?: number | null
 }
 
 /** 单笔支付明细流水（order_payment）。金额单位「分」。 */

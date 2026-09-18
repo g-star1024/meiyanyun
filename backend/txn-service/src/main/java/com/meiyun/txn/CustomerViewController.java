@@ -44,8 +44,9 @@ public class CustomerViewController {
         this.rfmCalculator = rfmCalculator;
     }
 
-    /** 订单收费子项（读模型）：项目名 + 数量 + 单价（分）+ 小计（分）。 */
-    public record OrderItemView(String itemName, Integer qty, Long unitPrice, Long amount) {}
+    /** 订单收费子项：项目名 + 数量 + 折后单价（分）+ 折后小计（分）+ 折前单价/行优惠（B62 卡2，历史单为 null）。 */
+    public record OrderItemView(String itemName, Integer qty, Long unitPrice, Long amount,
+                                Long originalUnitPrice, Long discountAmount) {}
 
     public record OrderView(String orderNo, String project, Long amount, String status,
                             String consultantName, OffsetDateTime createdAt,
@@ -77,7 +78,8 @@ public class CustomerViewController {
                     .sorted((a, b) -> Integer.compare(a.getLineNo(), b.getLineNo()))
                     .forEach(it -> itemsByOrder
                             .computeIfAbsent(it.getOrderNo(), k -> new ArrayList<>())
-                            .add(new OrderItemView(it.getItemName(), it.getQty(), it.getUnitPrice(), it.getAmount())));
+                            .add(new OrderItemView(it.getItemName(), it.getQty(), it.getUnitPrice(), it.getAmount(),
+                                    it.getOriginalUnitPrice(), it.getDiscountAmount())));
         }
 
         return orders.stream().map(o -> new OrderView(

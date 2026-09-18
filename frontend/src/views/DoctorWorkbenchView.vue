@@ -9,13 +9,15 @@
  *   mock 演示单完成后自动排术后 SOP；真实单术后随访暂无后端域，不自动排程（界面诚实提示）。
  * 合规顺序：病历先于收费、收费先于治疗；治疗解锁双条件＝首程病历已签 + 缴费单已支付。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useConsultationStore } from '@/stores/consultation'
 import { useCustomerStore } from '@/stores/customer'
 import { useOrderStore } from '@/stores/order'
+import { useLevelStore } from '@/stores/level'
 import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
+import { getOrder, type OrderViewDTO } from '@/api/order'
 import { staffName } from '@/config/staff'
 import { RISK_TAG_LABEL } from '@/composables/useCompliance'
 import { useToast } from '@/composables/useToast'
@@ -45,6 +47,7 @@ const route = useRoute()
 const consultation = useConsultationStore()
 const customer = useCustomerStore()
 const order = useOrderStore()
+const levelStore = useLevelStore()
 const auth = useAuthStore()
 const toast = useToast()
 const storeCtx = useStoreContext()
@@ -52,6 +55,7 @@ const storeCtx = useStoreContext()
 onMounted(async () => {
   order.seed()
   customer.seedProfile()
+  levelStore.seed()
   consultation.seed()
   // 从电子病历管理/开方开单等页跳回时，自动定位到对应方案单
   const cid = route.query.fromConsult
@@ -157,6 +161,60 @@ function positiveOf(c: { contraindications?: ConsultContraindication }) {
 const sel = computed(() => consultation.get(selectedId.value))
 const selCustomer = computed(() => (sel.value ? customer.get(sel.value.customerId) : undefined))
 
+// ============================================================
+// 会员等级折扣（卡2）：
+// - 签单前（待审核/待写病历/改单）只做折后「预估」展示，提交仍传原价，签 EMR 时以后端实算为准。
+//   影子客户 level 为占位 'NEW'，真实方案单预估自然不展示（回落 1），折后权威金额由缴费单读模型给出。
+// - 签单后（READY_PAY/PAID）以订单读模型 OrderViewDTO 为权威：金额「分→元」，带折前/优惠/等级快照。
+// ============================================================
+const discountLevel = computed(() => selCustomer.value?.level ?? null)
+const discountRate = computed(() => levelStore.discountOf(discountLevel.value))
+const hasDiscount = computed(() => discountRate.value < 1)
+const discountText = computed(() => {
+  const d = discountRate.value
+  return d >= 1 ? '' : `${Math.round(d * 100) / 10} 折`
+})
+/** 当前方案折后预估合计（元，逐行分口径，与后端 MemberDiscountClient.priceLine 同口径） */
+const planNetEstimate = computed(() => {
+  const items = (editMode.value ? editItems.value : sel.value?.planItems) || []
+  const fen = items.reduce(
+    (s, it) => s + levelStore.netFen(Math.round((it.price || 0) * 100), discountLevel.value, it.qty || 0),
+    0,
+  )
+  return fen / 100
+})
+/** 单行折后预估（元，只读明细用） */
+function lineNetEstimate(price: number, qty: number): number {
+  return levelStore.netYuan(price, discountLevel.value, qty)
+}
+
+/** 缴费单权威读模型（sign-emr 成功即时缓存；选中 READY_PAY/PAID 单时按 orderNo 拉取，刷新可恢复） */
+const signedOrder = ref<OrderViewDTO | null>(null)
+const signedOrderNo = ref('')
+watch(
+  sel,
+  (c) => {
+    const real = c ? isRealPlan(c as any) : false
+    const no = real && c?.orderId ? c.orderId : ''
+    if (!no || no === signedOrderNo.value) return
+    signedOrderNo.value = no
+    signedOrder.value = null
+    if (c!.status === 'READY_PAY' || c!.status === 'PAID' || c!.status === 'TREATING' || c!.status === 'DONE') {
+      getOrder(no)
+        .then((res) => { signedOrder.value = res.data })
+        .catch(() => { signedOrder.value = null })
+    }
+  },
+  { immediate: true },
+)
+const orderNetYuan = computed(() => (signedOrder.value ? signedOrder.value.amount / 100 : null))
+const orderOrigYuan = computed(() =>
+  signedOrder.value?.originalAmount != null ? signedOrder.value.originalAmount / 100 : null)
+const orderDiscountYuan = computed(() =>
+  signedOrder.value?.discountAmount != null ? signedOrder.value.discountAmount / 100 : null)
+const fmtYuan2 = (n: number) =>
+  `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+
 function selectConsult(id: string) {
   selectedId.value = id
   const c = consultation.get(id)
@@ -231,7 +289,14 @@ async function approveWithEmr() {
         treatment: emrTreatment.value,
         prescription: emrPrescription.value,
       })
-      toast.success(`已签署病历，缴费单 ${res.data.orderNo} 已生成，待收银台收款后解锁治疗`)
+      // 缓存缴费单权威读模型（折后金额/会员优惠快照），选中新生成的待支付单时面板直接展示
+      signedOrder.value = res.data
+      signedOrderNo.value = res.data.orderNo
+      const o = res.data
+      const payText = o.discountAmount
+        ? `${o.memberLevel || '会员'} ${Number(o.memberDiscount) < 1 ? `${Math.round(Number(o.memberDiscount) * 100) / 10} 折，` : ''}折后应付 ${fmtYuan2(o.amount / 100)}（优惠 ${fmtYuan2(o.discountAmount / 100)}）`
+        : `金额 ${fmtYuan2(o.amount / 100)}`
+      toast.success(`已签署病历，缴费单 ${o.orderNo} 已生成，${payText}，待收银台收款后解锁治疗`)
       selectedId.value = ''
       await loadRealPlans()
     } catch (e: any) {
@@ -477,6 +542,9 @@ function goEmr() {
                   {{ customer.nameOf(sel.customerId) }}
                   <span class="p360__id">{{ sel.customerId }}</span>
                   <CStatusPill :status="pill(sel.status).s">{{ pill(sel.status).t }}</CStatusPill>
+                  <span v-if="hasDiscount && (sel.status === 'PENDING_REVIEW' || sel.status === 'APPROVED')" class="p360__discount">
+                    会员 {{ discountText }} · 签单按折后实付
+                  </span>
                 </div>
                 <div class="p360__sub">
                   咨询师 {{ staffName(sel.consultantId) }} 提交于 {{ fmtTime(sel.submittedAt) }}
@@ -552,15 +620,16 @@ function goEmr() {
                       <label>单价 ¥
                         <input v-model.number="it.price" type="number" min="0" class="mini-input" />
                       </label>
-                      <span class="item-row__sum">小计 ¥{{ it.qty * it.price }}</span>
+                      <span class="item-row__sum">小计 ¥{{ it.qty * it.price }}<template v-if="hasDiscount"> · 折后 ¥{{ lineNetEstimate(it.price, it.qty) }}</template></span>
                     </div>
                     <div v-else class="item-row__line">
-                      {{ it.spec }} · ×{{ it.qty }} · ¥{{ it.price }} · 小计 ¥{{ it.qty * it.price }}
+                      {{ it.spec }} · ×{{ it.qty }} · ¥{{ it.price }} · 小计 ¥{{ it.qty * it.price }}<template v-if="hasDiscount"> · 折后小计 ¥{{ lineNetEstimate(it.price, it.qty) }}</template>
                     </div>
                   </div>
                 </div>
                 <div class="total-row">
                   方案合计 <strong>¥{{ editMode ? editItems.reduce((s, i) => s + i.qty * i.price, 0) : sel.planAmount ?? 0 }}</strong>
+                  <span v-if="hasDiscount" class="total-row__net">会员 {{ discountText }} · 折后预估 <strong>¥{{ planNetEstimate }}</strong>（签 EMR 时按会员等级实算）</span>
                 </div>
               </section>
 
@@ -655,7 +724,20 @@ function goEmr() {
                   <CIcon name="pos" :size="28" class="pay-panel__ic" />
                   <div class="pay-panel__main">
                     <h4>病历已签 · 缴费单待支付</h4>
-                    <p>缴费单 <strong>{{ orderOf(sel)?.orderNo || sel.orderId || '—' }}</strong> · 金额 <strong>¥{{ sel.planAmount ?? 0 }}</strong> 已推送收银台与客户小程序。</p>
+                    <p>缴费单 <strong>{{ orderOf(sel)?.orderNo || sel.orderId || '—' }}</strong>
+                      <template v-if="signedOrder">
+                        · <template v-if="orderDiscountYuan != null && orderDiscountYuan > 0">
+                          {{ signedOrder.memberLevel || '会员' }}折后应付
+                          <strong>{{ fmtYuan2(orderNetYuan!) }}</strong>
+                          （折前 {{ fmtYuan2(orderOrigYuan!) }}，会员优惠 -{{ fmtYuan2(orderDiscountYuan) }}）
+                        </template>
+                        <template v-else>· 金额 <strong>{{ fmtYuan2(orderNetYuan!) }}</strong></template>
+                      </template>
+                      <template v-else>· 方案金额 <strong>¥{{ sel.planAmount ?? 0 }}</strong></template>
+                      已推送收银台与客户小程序。</p>
+                    <p v-if="signedOrder && orderDiscountYuan != null && orderDiscountYuan > 0" class="pay-panel__discount">
+                      会员折扣已在签单时按等级快照计入口径，收银台以缴费单折后金额为准。
+                    </p>
                     <p class="pay-panel__tip">收款完成后<strong>自动转入待治疗</strong>，未支付不可排治疗。可在收银台核单收款。</p>
                   </div>
                   <CButton variant="primary" size="sm" @click="goCashier">前往收银台收款 →</CButton>
@@ -664,10 +746,24 @@ function goEmr() {
               <section class="blk">
                 <h4 class="blk__title">方案项目</h4>
                 <div class="items">
-                  <div v-for="(it, idx) in sel.planItems" :key="idx" class="item-row">
-                    <div class="item-row__head"><span class="item-row__name">{{ it.name }}</span></div>
-                    <div class="item-row__line">{{ it.spec }} · ×{{ it.qty }} · ¥{{ it.price }} · 小计 ¥{{ it.qty * it.price }}</div>
-                  </div>
+                  <template v-if="signedOrder">
+                    <div v-for="(it, idx) in signedOrder.items" :key="`o-${idx}`" class="item-row">
+                      <div class="item-row__head"><span class="item-row__name">{{ it.itemName }}</span></div>
+                      <div class="item-row__line">
+                        ×{{ it.qty }} · 折后单价 {{ fmtYuan2(it.unitPrice / 100) }}
+                        · 小计 <strong>{{ fmtYuan2(it.amount / 100) }}</strong>
+                        <template v-if="it.originalUnitPrice != null && it.discountAmount">
+                          （折前 ¥{{ (it.originalUnitPrice * it.qty) / 100 }}，优惠 -{{ fmtYuan2(it.discountAmount / 100) }}）
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                  <template v-else>
+                    <div v-for="(it, idx) in sel.planItems" :key="idx" class="item-row">
+                      <div class="item-row__head"><span class="item-row__name">{{ it.name }}</span></div>
+                      <div class="item-row__line">{{ it.spec }} · ×{{ it.qty }} · ¥{{ it.price }} · 小计 ¥{{ it.qty * it.price }}</div>
+                    </div>
+                  </template>
                 </div>
               </section>
             </template>
@@ -677,7 +773,8 @@ function goEmr() {
               <section class="blk">
                 <h4 class="blk__title">治疗方案</h4>
                 <div class="readonly-box">
-                  {{ sel.planItems?.map((i) => `${i.name}×${i.qty}`).join('、') }} · ¥{{ sel.planAmount ?? 0 }}
+                  {{ sel.planItems?.map((i) => `${i.name}×${i.qty}`).join('、') }}
+                  · {{ signedOrder ? `折后实付 ${fmtYuan2(orderNetYuan!)}` : `¥${sel.planAmount ?? 0}` }}
                   · 收款 {{ fmtTime(sel.paidAt) }}
                 </div>
               </section>
@@ -869,6 +966,7 @@ function goEmr() {
 .p360__meta { flex: 1; min-width: 0; }
 .p360__name { font-weight: 700; font-size: var(--t-base); display: flex; align-items: center; gap: var(--s-xs); flex-wrap: wrap; }
 .p360__id { font-size: var(--t-xs); color: var(--c-text-3); font-weight: 400; }
+.p360__discount { font-size: 11px; font-weight: 600; color: #cf1322; background: #fff1f0; border: 1px solid #ffccc7; border-radius: 999px; padding: 1px 8px; }
 .p360__sub { font-size: var(--t-xs); color: var(--c-text-3); margin-top: 3px; line-height: 1.5; }
 .p360__btn { flex-shrink: 0; }
 
@@ -897,8 +995,10 @@ function goEmr() {
 .item-row__line { font-size: var(--t-xs); color: var(--c-text-2); margin-top: 6px; }
 .item-row__sum { margin-left: auto; font-weight: 700; color: var(--c-text); }
 .mini-input { width: 64px; padding: 4px 8px; border: 1px solid var(--c-border-light); border-radius: var(--r-sm); font-size: var(--t-sm); margin-left: 4px; }
-.total-row { display: flex; align-items: center; gap: var(--s-sm); justify-content: flex-end; margin-top: var(--s-md); padding-top: var(--s-sm); border-top: 1px dashed var(--c-border); font-size: var(--t-sm); color: var(--c-text-2); }
+.total-row { display: flex; align-items: center; gap: var(--s-sm); justify-content: flex-end; flex-wrap: wrap; margin-top: var(--s-md); padding-top: var(--s-sm); border-top: 1px dashed var(--c-border); font-size: var(--t-sm); color: var(--c-text-2); }
 .total-row strong { font-size: var(--t-lg); color: var(--c-brand); }
+.total-row__net { width: 100%; text-align: right; font-size: var(--t-xs); color: var(--c-text-3); }
+.total-row__net strong { font-size: var(--t-base); color: #cf1322; }
 
 .issue { border-radius: var(--r-md); padding: 8px 12px; font-size: var(--t-xs); line-height: 1.6; margin-top: var(--s-sm); }
 .issue--block { background: var(--c-danger-soft, #fff1f0); color: var(--c-danger-fg, #cf1322); border: 1px solid var(--c-danger-border, #ffccc7); }
@@ -934,6 +1034,8 @@ function goEmr() {
 .pay-panel__main h4 { margin: 0 0 6px; font-size: var(--t-md); color: var(--c-text); }
 .pay-panel__main p { margin: 2px 0; font-size: var(--t-sm); color: var(--c-text-2); line-height: 1.6; }
 .pay-panel__tip { color: var(--c-warning-fg, #d46b08); }
+.pay-panel__discount { color: #cf1322; }
+.pay-panel__main strong { font-variant-numeric: tabular-nums; }
 
 .timeline { display: flex; flex-direction: column; gap: var(--s-sm); }
 .tl-item { display: flex; gap: var(--s-sm); }

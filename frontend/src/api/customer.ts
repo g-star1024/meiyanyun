@@ -79,8 +79,25 @@ export interface MemberLevelDTO {
   memberPercent: number
   /** 是否最高级（黑卡） */
   isTop: boolean
-  /** 项目折扣（0.8~1.0，供 360 权益卡展示） */
-  discount: number | null
+  /** 会员等级折扣率（1.00/0.95/0.90/0.85/0.80；开单计价以后端为准，前端仅展示/预估） */
+  discount: number
+}
+
+/**
+ * 会员等级目录（GET /customer/member-levels/catalog，B62 卡2）：
+ * MemberLevelDTO 的去敏子集，持有 customer:view 的一线开单岗即可读，
+ * 只含折扣/权益/升级条件等展示字段，不含 memberCount/memberPercent 经营统计（那些归 level:view 管理端读模型）。
+ */
+export interface LevelCatalogDTO {
+  id: string
+  tier: string
+  name: string
+  color: string
+  upgradeThreshold: number
+  upgradeCondition: string
+  benefits: string[]
+  isTop: boolean
+  discount: number
 }
 
 /** 升降级规则（GET/PUT /customer/level-rule，单行 rule_id=1；未配置时后端返回默认不落库） */
@@ -262,9 +279,16 @@ export const createCustomer = (data: Omit<CustomerDTO, 'customerId'> & { custome
 export const searchCustomers = (q: string) =>
   client.get<CustomerDTO[]>('/customer/search', { params: { q } })
 
-/** 会员等级读模型（五级，实时人数） */
+/** 会员等级读模型（五级，实时人数；需 level:view，店长/区经理管理端） */
 export const getMemberLevels = () =>
   client.get<MemberLevelDTO[]>('/customer/member-levels')
+
+/**
+ * 会员等级目录（一线开单岗，B62 卡2）：customer:view 可读的去敏读模型，
+ * 供客户 360 权益卡与开单页取权威等级折扣/权益/升级条件；不含各等级人数/占比。
+ */
+export const getMemberLevelCatalog = () =>
+  client.get<LevelCatalogDTO[]>('/customer/member-levels/catalog')
 
 /** 更新等级阈值/权益（阈值必填非负；benefits 原值回传，页面只改阈值）；同态短路返回未变更 DTO 不审计 */
 export const updateMemberLevel = (

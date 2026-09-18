@@ -16,6 +16,7 @@ import { useRouter } from 'vue-router'
 import { useConsultationStore } from '@/stores/consultation'
 import { usePricelistStore } from '@/stores/pricelist'
 import { useCustomerStore } from '@/stores/customer'
+import { useLevelStore } from '@/stores/level'
 import { useAppointmentStore } from '@/stores/appointment'
 import { useAuthStore } from '@/stores/auth'
 import { estimateCommission } from '@/api/commission'
@@ -47,6 +48,7 @@ const router = useRouter()
 const consultation = useConsultationStore()
 const pricelist = usePricelistStore()
 const customer = useCustomerStore()
+const levelStore = useLevelStore()
 const appointment = useAppointmentStore()
 const auth = useAuthStore()
 const compliance = useCompliance()
@@ -57,6 +59,7 @@ onMounted(async () => {
   appointment.seed()
   pricelist.seed()
   customer.seedProfile()
+  levelStore.seed()
   consultation.seed()
   await loadRealPlans()
 })
@@ -220,6 +223,25 @@ const searchResults = computed(() => {
 })
 
 const planTotal = computed(() => planItems.value.reduce((s, it) => s + it.qty * it.price, 0))
+// 会员等级折扣：方案编辑态仅做折后预估展示；提交仍传原价，医师签 EMR 时以后端实算为准
+const planLevel = computed(() => planCustomer.value?.level ?? null)
+const planDiscountRate = computed(() => levelStore.discountOf(planLevel.value))
+const planHasDiscount = computed(() => planDiscountRate.value < 1)
+const planDiscountText = computed(() => {
+  const d = planDiscountRate.value
+  return d >= 1 ? '' : `${Math.round(d * 100) / 10} 折`
+})
+const planNetTotalFen = computed(() =>
+  planItems.value.reduce((s, it) =>
+    s + levelStore.netFen(Math.round(it.price * 100), planLevel.value, it.qty), 0))
+const planNetTotal = computed(() => planNetTotalFen.value / 100)
+const planDiscountAmount = computed(() =>
+  Math.max(0, Math.round(planTotal.value * 100) - planNetTotalFen.value) / 100)
+function planLineNet(price: number, qty: number): number {
+  return levelStore.netYuan(price, planLevel.value, qty)
+}
+const fmtYuan2 = (n: number) =>
+  `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 const scan = computed(() => compliance.checkPlan(planItems.value, contra.value, planConclusion.value))
 
 // —— 本单提成预估（finance estimate API：按接诊咨询师当前生效薪酬规则，
@@ -228,7 +250,7 @@ const scan = computed(() => compliance.checkPlan(planItems.value, contra.value, 
 const commissionEstimate = ref<{ est: number; rate: number; label: string } | null>(null)
 let estimateSeq = 0
 watch(
-  [planTotal, () => planConsult.value?.consultantId ?? ''],
+  [planNetTotal, () => planConsult.value?.consultantId ?? ''],
   async ([total, sid]) => {
     const seq = ++estimateSeq
     const amountYuan = Number(total)
@@ -848,6 +870,7 @@ onUnmounted(() => {
                 <div class="p360__name">
                   {{ planCustomer.name }} <span class="p360__id">{{ planCustomer.id }}</span>
                   <span class="p360__level">{{ planCustomer.level }} 客</span>
+                  <span v-if="planHasDiscount" class="p360__discount">{{ planDiscountText }}</span>
                   <CStatusPill :status="pill(planConsult.status).s">{{ pill(planConsult.status).t }}</CStatusPill>
                 </div>
                 <div class="p360__sub">
@@ -1084,19 +1107,33 @@ onUnmounted(() => {
                     <label>单价 ¥
                       <input v-model.number="it.price" type="number" min="0" class="mini-input" />
                     </label>
-                    <span class="item-row__sum">小计 ¥{{ it.qty * it.price }}</span>
+                    <span class="item-row__sum">小计
+                      <template v-if="planHasDiscount">
+                        <span class="sum-old">¥{{ it.qty * it.price }}</span>
+                        <span class="sum-net">{{ fmtYuan2(planLineNet(it.price, it.qty)) }}</span>
+                      </template>
+                      <template v-else>¥{{ it.qty * it.price }}</template>
+                    </span>
                   </div>
                   <div v-if="blockedOf(it)?.level === 'BLOCK'" class="issue issue--block">{{ blockedOf(it)?.text }}</div>
                   <div v-else-if="blockedOf(it)?.level === 'WARN'" class="issue issue--warn">{{ blockedOf(it)?.text }}</div>
                 </div>
                 <div v-if="!planItems.length" class="cw__empty">尚未添加项目，搜索后点击加入方案</div>
               </div>
+              <div v-if="planHasDiscount" class="total-row total-row--net">
+                <span>{{ planCustomer?.level }}会员优惠（{{ planDiscountText }}）
+                  折前 <span class="sum-old">¥{{ planTotal }}</span>
+                  优惠 <span class="sum-save">-{{ fmtYuan2(planDiscountAmount) }}</span>
+                </span>
+                <span class="total-row__net-label">折后应付</span>
+              </div>
               <div class="total-row">
-                方案合计 <strong>¥{{ planTotal }}</strong>
-                <span v-if="canSeeMargin" class="total-row__cost">成本约 ¥{{ Math.round(planTotal * 0.35) }}</span>
+                方案合计 <strong>{{ planHasDiscount ? fmtYuan2(planNetTotal) : `¥${planTotal}` }}</strong>
+                <span class="total-row__net-note">（提交仍按原价，签 EMR 时按会员等级实算）</span>
+                <span v-if="canSeeMargin" class="total-row__cost">成本约 ¥{{ Math.round((planHasDiscount ? planNetTotal : planTotal) * 0.35) }}</span>
               </div>
               <!-- 本单提成预估 -->
-              <div v-if="commissionEstimate && planTotal > 0" class="comm-est">
+              <div v-if="commissionEstimate && planNetTotal > 0" class="comm-est">
                 <CIcon name="pos" :size="13" />
                 <span>本单咨询师提成预估 <strong>¥{{ commissionEstimate.est }}</strong>（{{ commissionEstimate.label }} · 本单金额落入费率档 {{ (commissionEstimate.rate * 100).toFixed(0) }}%，按超额累进试算，最终以财务月度结算口径为准）</span>
               </div>
@@ -1248,6 +1285,10 @@ onUnmounted(() => {
 .p360__name { font-weight: 700; font-size: var(--t-base); display: flex; align-items: center; gap: var(--s-xs); flex-wrap: wrap; }
 .p360__id { font-size: var(--t-xs); color: var(--c-text-3); font-weight: 400; }
 .p360__level { font-size: var(--t-xs); color: var(--c-brand); background: var(--c-brand-soft); border-radius: var(--r-sm); padding: 1px 6px; font-weight: 600; }
+.p360__discount { font-size: var(--t-xs); color: var(--c-danger-fg, #cf1322); background: var(--c-danger-bg, #fff1f0); border-radius: var(--r-sm); padding: 1px 6px; font-weight: 600; }
+.sum-old { color: var(--c-text-4); text-decoration: line-through; font-weight: 400; margin-right: 4px; font-variant-numeric: tabular-nums; }
+.sum-net { color: var(--c-brand); font-variant-numeric: tabular-nums; }
+.sum-save { color: var(--c-danger-fg, #cf1322); font-weight: 700; font-variant-numeric: tabular-nums; }
 .p360__sub { font-size: var(--t-xs); color: var(--c-text-3); margin-top: 3px; }
 .p360__allergy { font-size: var(--t-xs); color: var(--c-danger-fg); margin-top: 4px; line-height: 1.5; }
 .p360__btn { flex-shrink: 0; }
@@ -1305,8 +1346,11 @@ onUnmounted(() => {
 .item-row__sum { margin-left: auto; font-weight: 700; color: var(--c-text); }
 .mini-input { width: 64px; padding: 4px 8px; border: 1px solid var(--c-border-light); border-radius: var(--r-sm); font-size: var(--t-sm); margin-left: 4px; }
 .total-row { display: flex; align-items: center; gap: var(--s-sm); justify-content: flex-end; margin-top: var(--s-md); padding-top: var(--s-sm); border-top: 1px dashed var(--c-border); font-size: var(--t-sm); color: var(--c-text-2); }
-.total-row strong { font-size: var(--t-lg); color: var(--c-brand); }
+.total-row strong { font-size: var(--t-lg); color: var(--c-brand); font-variant-numeric: tabular-nums; }
 .total-row__cost { font-size: var(--t-xs); color: var(--c-text-3); font-weight: 400; }
+.total-row--net { border-top: none; padding-top: 0; margin-top: var(--s-sm); margin-bottom: calc(-1 * var(--s-xs)); color: var(--c-text-2); }
+.total-row__net-label { color: var(--c-danger-fg, #cf1322); font-weight: 600; }
+.total-row__net-note { font-size: var(--t-xs); color: var(--c-text-3); font-weight: 400; }
 
 .comm-est { display: flex; align-items: center; gap: 6px; margin-top: var(--s-sm); font-size: var(--t-xs); color: var(--c-teal-fg); background: var(--c-success-soft, #f6ffed); border: 1px solid var(--c-success-border, #b7eb8f); border-radius: var(--r-md); padding: 6px 10px; line-height: 1.5; }
 .comm-est strong { color: var(--c-success-fg, #389e0d); }

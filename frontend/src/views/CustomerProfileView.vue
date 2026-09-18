@@ -47,6 +47,7 @@ import {
   type CustomerRfmView,
 } from '@/api/customerView'
 import { listWriteoffs, type WriteoffRecordDTO } from '@/api/writeoff'
+import { useLevelStore } from '@/stores/level'
 import {
   listDsar,
   createDsar,
@@ -69,6 +70,7 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const toast = useToast()
+const levelStore = useLevelStore()
 
 const customerId = computed(() => (route.params.id as string) || '')
 
@@ -80,6 +82,7 @@ const customer = ref<CustomerDTO | null>(null)
 const cards = ref<MemberCardDTO[]>([])
 const ledgers = ref<PointsLedgerDTO[]>([])
 const ledgerTotal = ref(0)
+const canViewPoints = computed(() => auth.can('points:view'))
 // ---- B23 卡3 客户标签：已打标签（保留 tagId 供删标）+ 全量字典（供打标选择） ----
 const customerTags = ref<CustomerTagDTO[]>([])
 const allTags = ref<CustomerTagDTO[]>([])
@@ -167,6 +170,21 @@ const LEVEL_PILL: Record<string, { status: PillStatus; text: string }> = {
 const levelPill = computed(() =>
   LEVEL_PILL[customer.value?.level ?? ''] ?? { status: 'default' as PillStatus, text: customer.value?.level ?? '—' },
 )
+// P5-B62 卡2：会员权益卡接真实等级读模型（折扣率/权益/升级条件，前端仅预估展示，开单以后端实算为准）
+const memberLevel = computed(() =>
+  customer.value?.level ? levelStore.get(customer.value.level) : undefined,
+)
+const memberDiscountRate = computed(() => levelStore.discountOf(customer.value?.level))
+const memberDiscountText = computed(() => {
+  const d = memberDiscountRate.value
+  if (d >= 1) return '项目基础价（无折扣）'
+  return `${Math.round(d * 100) / 10} 折`
+})
+const memberBenefits = computed<string[]>(() => memberLevel.value?.benefits ?? [])
+const memberUpgradeText = computed(() =>
+  memberLevel.value?.isTop ? '已达最高等级' : memberLevel.value?.upgradeCondition || '',
+)
+
 const statusPill = computed<{ status: PillStatus; text: string }>(() => {
   const s = customer.value?.status
   if (s === '沉睡') return { status: 'warning', text: '沉睡' }
@@ -445,7 +463,7 @@ async function unassignTag(t: CustomerTagDTO) {
 const kpis = computed(() => [
   { label: '累计消费', value: `¥${(customer.value?.totalSpend ?? 0).toLocaleString('zh-CN')}`, sub: `客户状态：${statusPill.value.text}`, tone: 'teal' as const, bg: 'var(--c-success-bg)' },
   { label: '到店频次', value: `${customer.value?.visitCount ?? 0} 次`, sub: `归属 ${ownerText.value}`, tone: 'orange' as const, bg: 'var(--c-draft-bg)' },
-  { label: '积分余额', value: `${(customer.value?.points ?? 0).toLocaleString('zh-CN')}`, sub: `${ledgerTotal.value} 笔积分流水`, tone: 'brand' as const, bg: 'var(--c-info-bg)' },
+  { label: '积分余额', value: `${(customer.value?.points ?? 0).toLocaleString('zh-CN')}`, sub: canViewPoints.value ? `${ledgerTotal.value} 笔积分流水` : '积分流水需店长权限', tone: 'brand' as const, bg: 'var(--c-info-bg)' },
   { label: '卡余额', value: fmtMoneyYuan(cardBalanceTotal.value), sub: `${cards.value.length} 张会员卡`, tone: 'warning' as const, bg: 'var(--c-warning-bg)' },
 ])
 
@@ -473,7 +491,7 @@ async function load() {
     const [custRes, cardRes, ledgerRes, tagRelRes, tagAllRes] = await Promise.all([
       getCustomer(id),
       listCustomerCards(id),
-      listPointsLog(id),
+      canViewPoints.value ? listPointsLog(id) : Promise.resolve({ data: { content: [], totalElements: 0 } }),
       listCustomerTagRels(id),
       listAllTags(),
     ])
@@ -526,7 +544,10 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  levelStore.seed()
+})
 
 function goBack() {
   router.push('/customers')
@@ -844,6 +865,7 @@ const compliance = [
               </div>
             </div>
 
+            <template v-if="canViewPoints">
             <div class="cp__sub-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm);">
               <span>积分流水（{{ ledgerTotal || ledgers.length }}）</span>
               <CButton variant="primary" size="sm" v-perm.disable="'points:edit'" @click="openAdjust">调整积分</CButton>
@@ -855,6 +877,7 @@ const compliance = [
               <span class="ledger-row__bal">余额 {{ l.balanceAfter.toLocaleString('zh-CN') }}</span>
               <span class="ledger-row__date">{{ fmtDate(l.createdAt) }}</span>
             </div>
+            </template>
 
             <div class="cp__sub-title">近期预约（{{ recentAppts.length }}）</div>
             <div v-if="!recentAppts.length" class="cp__empty">暂无预约记录</div>
@@ -1008,8 +1031,28 @@ const compliance = [
         <!-- 右侧栏 -->
         <aside class="cp__side">
           <CCard class="side-card" padding="md">
-            <template #header><h3 class="cp__card-title-sm">会员权益</h3></template>
-            <div class="side-empty">依会员等级（{{ levelPill.text }}）的折扣 / 专享权益规则待配置接入。</div>
+            <template #header>
+              <div class="benefit-card__head">
+                <h3 class="cp__card-title-sm">会员权益</h3>
+                <CStatusPill :status="levelPill.status" dot>{{ levelPill.text }}</CStatusPill>
+              </div>
+            </template>
+            <template v-if="levelStore.seeded">
+              <div class="benefit-card__discount" :class="{ 'benefit-card__discount--none': memberDiscountRate >= 1 }">
+                <span class="benefit-card__discount-label">项目结算折扣</span>
+                <strong>{{ memberDiscountText }}</strong>
+              </div>
+              <ul v-if="memberBenefits.length" class="benefit-card__list">
+                <li v-for="b in memberBenefits" :key="b">
+                  <CIcon name="check" :size="12" class="benefit-card__tick" />{{ b }}
+                </li>
+              </ul>
+              <div v-if="memberUpgradeText" class="benefit-card__upgrade">
+                <span>{{ memberUpgradeText }}</span>
+              </div>
+              <p class="benefit-card__note">折扣仅适用项目 / 零售消费，售卡不参与；开单按会员等级后端实算，此处为权益预估。</p>
+            </template>
+            <div v-else class="side-empty">会员权益规则加载中…</div>
           </CCard>
 
           <CCard class="side-card" padding="md">
@@ -1297,6 +1340,26 @@ const compliance = [
 /* 右侧 */
 .side-card { background: var(--c-surface); }
 .side-empty { font-size: var(--t-xs); color: var(--c-text-3); line-height: 1.6; }
+.benefit-card__head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-xs); }
+.benefit-card__discount {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: var(--s-xs) var(--s-sm); margin-bottom: var(--s-sm);
+  background: var(--c-danger-bg); border-radius: var(--r-sm, 6px);
+}
+.benefit-card__discount--none { background: var(--c-bg, #f5f5f7); }
+.benefit-card__discount-label { font-size: var(--t-xs); color: var(--c-text-3); }
+.benefit-card__discount strong {
+  font-size: var(--t-base); color: var(--c-danger-fg); font-variant-numeric: tabular-nums;
+}
+.benefit-card__discount--none strong { color: var(--c-text-2); }
+.benefit-card__list { display: flex; flex-direction: column; gap: 6px; margin: 0 0 var(--s-sm); padding: 0; list-style: none; }
+.benefit-card__list li { display: flex; align-items: flex-start; gap: 6px; font-size: var(--t-sm); color: var(--c-text-2); line-height: 1.5; }
+.benefit-card__tick { color: var(--c-danger-fg); margin-top: 3px; flex-shrink: 0; }
+.benefit-card__upgrade {
+  font-size: var(--t-xs); color: var(--c-text-2); padding: 6px var(--s-sm);
+  border: 1px dashed var(--c-border); border-radius: var(--r-sm, 6px); margin-bottom: var(--s-sm);
+}
+.benefit-card__note { margin: 0; font-size: var(--t-xs); color: var(--c-text-3); line-height: 1.6; }
 .risks { display: flex; flex-direction: column; gap: var(--s-sm); }
 .comp-cell { display: flex; align-items: center; gap: 6px; padding: 6px var(--s-md); border-radius: var(--r-lg); font-size: var(--t-sm); color: var(--c-text); }
 .comp-cell--success { background: var(--c-success-bg); color: var(--c-teal-fg); }
