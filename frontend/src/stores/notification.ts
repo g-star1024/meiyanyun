@@ -37,7 +37,17 @@ export interface NotifyPreference {
   category: NotifyCategory
   enabled: boolean
   channels: NotifyChannel[]
+  /** 个人免打扰开关（B60：仅非 INBOX 渠道延后，URGENT 恒豁免） */
+  quietEnabled: boolean
+  /** 免打扰开始 HH:mm（可跨午夜） */
+  quietStart: string
+  /** 免打扰结束 HH:mm（可跨午夜） */
+  quietEnd: string
 }
+
+/** 个人免打扰后端默认时段（无落库行回落值，与 NotificationController 常量同构） */
+const DEFAULT_QUIET_START = '22:00'
+const DEFAULT_QUIET_END = '08:00'
 
 const CATEGORY_LABEL: Record<NotifyCategory, string> = {
   APPROVAL: '审批待办',
@@ -76,6 +86,9 @@ export const useNotificationStore = defineStore('notification', () => {
       category: c,
       enabled: true,
       channels: c === 'SYSTEM' ? ['INBOX', 'SMS'] : (['INBOX'] as NotifyChannel[]),
+      quietEnabled: false,
+      quietStart: DEFAULT_QUIET_START,
+      quietEnd: DEFAULT_QUIET_END,
     })),
   )
 
@@ -149,7 +162,14 @@ export const useNotificationStore = defineStore('notification', () => {
     const channels = (d.channels || [])
       .map((c) => c as NotifyChannel)
       .filter((c) => VALID_CHANNELS.includes(c))
-    return { category, enabled: !!d.enabled, channels }
+    return {
+      category,
+      enabled: !!d.enabled,
+      channels,
+      quietEnabled: !!d.quietEnabled,
+      quietStart: d.quietStart || DEFAULT_QUIET_START,
+      quietEnd: d.quietEnd || DEFAULT_QUIET_END,
+    }
   }
 
   /** 拉取服务端持久化偏好（失败静默保留本地默认态——偏好为旁路能力，不阻断页面） */
@@ -163,6 +183,9 @@ export const useNotificationStore = defineStore('notification', () => {
         (c) => rows.find((r) => r.category === c) || {
           category: c, enabled: true,
           channels: c === 'SYSTEM' ? ['INBOX', 'SMS'] : (['INBOX'] as NotifyChannel[]),
+          quietEnabled: false,
+          quietStart: DEFAULT_QUIET_START,
+          quietEnd: DEFAULT_QUIET_END,
         },
       )
     } catch (e) {
@@ -170,7 +193,7 @@ export const useNotificationStore = defineStore('notification', () => {
     }
   }
 
-  /** 类别订阅开关：乐观更新 + 服务端持久化（失败回滚）；关闭订阅时渠道清空由后端归一 */
+  /** 类别订阅开关：乐观更新 + 服务端持久化（失败回滚）；关闭订阅时渠道清空由后端归一；免打扰设置原样透传保留 */
   async function togglePreference(category: NotifyCategory, enabled: boolean) {
     const p = preferences.value.find((x) => x.category === category)
     if (!p || p.enabled === enabled) return
@@ -178,7 +201,10 @@ export const useNotificationStore = defineStore('notification', () => {
     p.enabled = enabled
     const channels = enabled ? (snapshot.channels.length ? snapshot.channels : ['INBOX'] as NotifyChannel[]) : []
     try {
-      const res = await updateNotificationPreference({ category, enabled, channels })
+      const res = await updateNotificationPreference({
+        category, enabled, channels,
+        quietEnabled: p.quietEnabled, quietStart: p.quietStart, quietEnd: p.quietEnd,
+      })
       preferences.value = (res.data.items || []).map(adaptPreference)
     } catch (e) {
       p.enabled = snapshot.enabled
@@ -187,7 +213,7 @@ export const useNotificationStore = defineStore('notification', () => {
     }
   }
 
-  /** 渠道勾选：乐观更新 + 服务端持久化（失败回滚）；后端约束订阅开启须含 INBOX */
+  /** 渠道勾选：乐观更新 + 服务端持久化（失败回滚）；后端约束订阅开启须含 INBOX；免打扰设置原样透传保留 */
   async function toggleChannel(category: NotifyCategory, channel: NotifyChannel) {
     const p = preferences.value.find((x) => x.category === category)
     if (!p) return
@@ -198,6 +224,7 @@ export const useNotificationStore = defineStore('notification', () => {
     try {
       const res = await updateNotificationPreference({
         category, enabled: p.enabled, channels: [...p.channels],
+        quietEnabled: p.quietEnabled, quietStart: p.quietStart, quietEnd: p.quietEnd,
       })
       preferences.value = (res.data.items || []).map(adaptPreference)
     } catch (e) {
@@ -207,10 +234,37 @@ export const useNotificationStore = defineStore('notification', () => {
     }
   }
 
+  /**
+   * 个人免打扰保存（B60 L65）：整类别 quiet 三字段持久化，返回 boolean 供页面 toast。
+   * 非乐观——后端有 HH:mm 格式/起止相等 400 校验，失败时本地时段不动、由调用方提示中文原因。
+   */
+  async function saveQuiet(
+    category: NotifyCategory,
+    quiet: { quietEnabled: boolean; quietStart: string; quietEnd: string },
+  ): Promise<boolean> {
+    const p = preferences.value.find((x) => x.category === category)
+    if (!p) return false
+    try {
+      const res = await updateNotificationPreference({
+        category,
+        enabled: p.enabled,
+        channels: [...p.channels],
+        quietEnabled: quiet.quietEnabled,
+        quietStart: quiet.quietStart,
+        quietEnd: quiet.quietEnd,
+      })
+      preferences.value = (res.data.items || []).map(adaptPreference)
+      return true
+    } catch (e) {
+      console.error('[notification] 免打扰设置保存失败', e)
+      throw e
+    }
+  }
+
   return {
     items, activeCategory, readFilter, preferences,
     unreadCount, unreadByCategory, filtered,
     categoryLabel, CATEGORY_LABEL,
-    fetch, fetchPreferences, markRead, markAllRead, togglePreference, toggleChannel,
+    fetch, fetchPreferences, markRead, markAllRead, togglePreference, toggleChannel, saveQuiet,
   }
 })

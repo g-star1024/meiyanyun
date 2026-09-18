@@ -1,35 +1,97 @@
 <script setup lang="ts">
 /* ============================================================
- * G-06 消息设置（/notif-settings）
- * 1. 通知渠道开关（站内/企微/短信/邮件）
- * 2. 通知类型偏好（5 类 × 4 渠道）
- * 3. 免打扰时段
- * 联动 T3-03 消息通道
+ * G-06 消息设置（/notif-settings）B60 卡2 起接 txn 真实偏好 API
+ * 1. 通知渠道开关（站内/企微/短信/邮件）——按五类偏好聚合派生，开关逐类落库
+ * 2. 通知类型偏好（APPROVAL/CUSTOMER/INVENTORY/MARKETING/SYSTEM × 4 渠道）
+ * 3. 个人免打扰时段（服务端按类别持久化，页面一个开关统管五类；URGENT 恒豁免）
  * ============================================================ */
-import { reactive } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CInput from '@/components/CInput.vue'
 import CButton from '@/components/CButton.vue'
+import {
+  useNotificationStore,
+  type NotifyCategory, type NotifyChannel,
+} from '@/stores/notification'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
 
-const channels = reactive({
-  inbox: { label: '站内消息', on: true, desc: '在站内通知中心接收，实时弹出' },
-  wecom: { label: '企业微信', on: true, desc: '通过企微应用推送，需已绑定企微' },
-  sms: { label: '短信', on: false, desc: '重要提醒以短信发送，可能产生通讯费用' },
-  email: { label: '邮件', on: false, desc: '汇总 / 周报类消息以邮件发送' },
-})
+const ns = useNotificationStore()
+const toast = useToast()
 
-type ChanKey = keyof typeof channels
-const chanKeys = Object.keys(channels) as ChanKey[]
+type ChanKey = 'inbox' | 'wecom' | 'sms' | 'email'
+const CHAN_OF: Record<ChanKey, NotifyChannel> = {
+  inbox: 'INBOX', wecom: 'WECHAT', sms: 'SMS', email: 'EMAIL',
+}
+const chanKeys: ChanKey[] = ['inbox', 'wecom', 'sms', 'email']
 const chanLabels: Record<ChanKey, string> = { inbox: '站内', wecom: '企微', sms: '短信', email: '邮件' }
+const chanMeta: Record<ChanKey, { label: string; desc: string }> = {
+  inbox: { label: '站内消息', desc: '在站内通知中心接收，实时弹出（必达渠道，不可关闭）' },
+  wecom: { label: '企业微信', desc: '通过企微应用推送，需已绑定企微' },
+  sms: { label: '短信', desc: '重要提醒以短信发送，可能产生通讯费用' },
+  email: { label: '邮件', desc: '汇总 / 周报类消息以邮件发送' },
+}
 
-interface Pref { key: string; label: string; desc: string; ch: Record<ChanKey, boolean> }
-const prefs = reactive<Pref[]>([
-  { key: 'approval', label: '审批待办', desc: '退款 / 调价 / 权限申请等待你审批', ch: { inbox: true, wecom: true, sms: false, email: false } },
-  { key: 'workorder', label: '工单提醒', desc: '客诉、设备维修、反馈工单进度', ch: { inbox: true, wecom: true, sms: false, email: false } },
-  { key: 'alert', label: '告警', desc: '库存不足、异常登录、双签拦截等高优先级', ch: { inbox: true, wecom: true, sms: true, email: false } },
-  { key: 'marketing', label: '营销活动', desc: '新玩法上线、节日营销模板推荐', ch: { inbox: true, wecom: false, sms: false, email: false } },
-  { key: 'system', label: '系统公告', desc: '版本更新、停机维护、合规通知', ch: { inbox: true, wecom: true, sms: false, email: true } },
-])
+const CATEGORY_DESC: Record<NotifyCategory, string> = {
+  APPROVAL: '退款 / 调价 / 权限申请等待你审批',
+  CUSTOMER: '回访、随访、生日关怀等客户运营提醒',
+  INVENTORY: '库存不足、耗材预警、双签拦截等高优先级',
+  MARKETING: '新玩法上线、节日营销模板推荐',
+  SYSTEM: '版本更新、停机维护、合规通知',
+}
+
+interface PrefRow {
+  key: NotifyCategory
+  label: string
+  desc: string
+  enabled: boolean
+  ch: Record<ChanKey, boolean>
+}
+
+const prefs = computed<PrefRow[]>(() =>
+  ns.preferences.map((p) => ({
+    key: p.category,
+    label: ns.CATEGORY_LABEL[p.category],
+    desc: CATEGORY_DESC[p.category],
+    enabled: p.enabled,
+    ch: {
+      inbox: p.channels.includes('INBOX'),
+      wecom: p.channels.includes('WECHAT'),
+      sms: p.channels.includes('SMS'),
+      email: p.channels.includes('EMAIL'),
+    },
+  })),
+)
+
+/** 渠道总开关：INBOX 必达恒开；其余渠道=任一已订阅类别勾选了该渠道 */
+function channelOn(k: ChanKey): boolean {
+  if (k === 'inbox') return true
+  const ch = CHAN_OF[k]
+  return ns.preferences.some((p) => p.enabled && p.channels.includes(ch))
+}
+
+/** 渠道总开关：开→所有已订阅类别补该渠道；关→移除；逐类串行 PUT 避免全量回写竞态 */
+async function toggleChan(k: ChanKey) {
+  if (k === 'inbox') {
+    toast.info('站内消息为必达渠道，不可关闭')
+    return
+  }
+  const ch = CHAN_OF[k]
+  const turnOn = !channelOn(k)
+  const targets = ns.preferences.filter(
+    (p) => p.enabled && (turnOn ? !p.channels.includes(ch) : p.channels.includes(ch)),
+  )
+  for (const p of targets) {
+    // 串行：每次 PUT 返回服务端全量偏好并整体替换，并行会互相覆盖
+    // eslint-disable-next-line no-await-in-loop
+    await ns.toggleChannel(p.category, ch)
+  }
+}
+
+function togglePref(row: PrefRow, k: ChanKey) {
+  if (!channelOn(k) || !row.enabled) return
+  ns.toggleChannel(row.key, CHAN_OF[k])
+}
 
 const dnd = reactive({
   enabled: false,
@@ -37,20 +99,65 @@ const dnd = reactive({
   end: '08:00',
 })
 
-function toggleChan(k: ChanKey) {
-  channels[k].on = !channels[k].on
-  if (!channels[k].on) {
-    prefs.forEach((p) => (p.ch[k] = false))
-  }
-}
-function togglePref(p: Pref, k: ChanKey) {
-  if (!channels[k].on) return
-  p.ch[k] = !p.ch[k]
+function syncDndFromPrefs() {
+  const ps = ns.preferences
+  dnd.enabled = ps.length > 0 && ps.every((p) => p.quietEnabled)
+  dnd.start = ps[0]?.quietStart || '22:00'
+  dnd.end = ps[0]?.quietEnd || '08:00'
 }
 
-function save() {
-  alert('消息设置已保存（已同步 T3-03 消息通道）')
+const saving = ref(false)
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/
+
+/** 保存：渠道/类型勾选已在点击时即时落库，此处统一持久化五类个人免打扰 */
+async function save() {
+  if (saving.value) return
+  let start = dnd.start.trim()
+  const end = dnd.end.trim()
+  if (dnd.enabled) {
+    if (!HHMM.test(start) || !HHMM.test(end)) {
+      toast.error('免打扰时刻格式非法，应为 HH:mm（00:00–23:59）')
+      return
+    }
+    if (start === end) {
+      toast.error('免打扰开始与结束时刻不能相同（至少相差 1 分钟，跨午夜请用如 22:00–08:00）')
+      return
+    }
+  } else if (start === end) {
+    // 关闭态下后端仍校验起止相等，回落到系统默认时段避免 400
+    start = '22:00'
+    dnd.end = '08:00'
+  }
+  saving.value = true
+  try {
+    for (const p of ns.preferences) {
+      // eslint-disable-next-line no-await-in-loop
+      const ok = await ns.saveQuiet(p.category, {
+        quietEnabled: dnd.enabled,
+        quietStart: start,
+        quietEnd: dnd.end.trim(),
+      })
+      if (!ok) break
+    }
+    toast.success('消息设置已保存')
+  } catch (e) {
+    toast.error(errMsg(e, '消息设置保存失败'))
+  } finally {
+    saving.value = false
+  }
 }
+
+function resetDefault() {
+  dnd.enabled = false
+  dnd.start = '22:00'
+  dnd.end = '08:00'
+  toast.info('已恢复默认免打扰（22:00–次日 08:00，关闭），点击保存设置生效')
+}
+
+onMounted(async () => {
+  await ns.fetchPreferences()
+  syncDndFromPrefs()
+})
 </script>
 
 <template>
@@ -63,14 +170,14 @@ function save() {
       <div class="chan-list">
         <div v-for="k in chanKeys" :key="k" class="chan">
           <div class="chan__text">
-            <span class="chan__label">{{ channels[k].label }}</span>
-            <span class="chan__desc">{{ channels[k].desc }}</span>
+            <span class="chan__label">{{ chanMeta[k].label }}</span>
+            <span class="chan__desc">{{ chanMeta[k].desc }}</span>
           </div>
           <button
             type="button"
             class="toggle"
-            :class="{ 'is-on': channels[k].on }"
-            :aria-pressed="channels[k].on"
+            :class="{ 'is-on': channelOn(k) }"
+            :aria-pressed="channelOn(k)"
             @click="toggleChan(k)"
           >
             <span class="toggle__dot" />
@@ -99,7 +206,7 @@ function save() {
               type="checkbox"
               class="chk"
               :checked="p.ch[k]"
-              :disabled="!channels[k].on"
+              :disabled="k === 'inbox' || !channelOn(k) || !p.enabled"
               @change="togglePref(p, k)"
             />
           </span>
@@ -137,8 +244,10 @@ function save() {
     </CCard>
 
     <div class="g-notif__foot">
-      <CButton variant="secondary" size="md">恢复默认</CButton>
-      <CButton variant="primary" size="md" @click="save">保存设置</CButton>
+      <CButton variant="secondary" size="md" @click="resetDefault">恢复默认</CButton>
+      <CButton variant="primary" size="md" :disabled="saving" @click="save">
+        {{ saving ? '保存中…' : '保存设置' }}
+      </CButton>
     </div>
   </div>
 </template>

@@ -4,7 +4,7 @@
 // 当前生产源：审批 SLA 超时催办（category=APPROVAL/level=URGENT，sender=system）。
 // 后端实体直接序列化（Jackson camelCase）；id 为数字（主键自增），read 为布尔。
 // ============================================================
-import client from './client'
+import client, { getToken } from './client'
 
 /** 通知实体 DTO（notification 表行）。 */
 export interface NotificationDTO {
@@ -44,6 +44,12 @@ export interface NotifyPreferenceDTO {
   category: string
   enabled: boolean
   channels: string[]
+  /** 个人免打扰开关（B60：仅对非 INBOX 渠道生效，URGENT 恒豁免）。 */
+  quietEnabled: boolean
+  /** 个人免打扰开始时刻 HH:mm（可跨午夜，后端无行回落 22:00）。 */
+  quietStart: string
+  /** 个人免打扰结束时刻 HH:mm（可跨午夜，后端无行回落 08:00）。 */
+  quietEnd: string
 }
 
 /** 我的通知偏好（五大类别全量；未设置类别后端回落系统默认）。 */
@@ -55,4 +61,11 @@ export const updateNotificationPreference = (body: {
   category: string
   enabled: boolean
   channels: string[]
+  quietEnabled: boolean
+  quietStart: string
+  quietEnd: string
 }) => client.put<{ items: NotifyPreferenceDTO[] }>('/txn/notifications/preferences', body)
+
+/** SSE 握手地址（B60 卡3：EventSource 无法设 Authorization 头，走 ?access_token= 查询参）。 */
+export const notificationStreamUrl = () =>
+  `/api/txn/notifications/stream?access_token=${encodeURIComponent(getToken())}`
