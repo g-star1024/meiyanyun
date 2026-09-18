@@ -47,7 +47,7 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | ~~排队智能候补~~ | business-flows | **B29 已闭合（2026-09-10，arrival_waitlist 新域：WL 单号/手机号锚定会员·散客快照两态/WAITING→NOTIFIED→FULFILLED·CANCELLED、号源释放同事务 FIFO 递补+店长站内信幂等、/queue 第三卡+登记弹层+KPI，同批附带候诊超时自动释放与核销↔预约/划扣勾连，网关 24 项+浏览器两页取证 audit 314–331，详见 DELIVERY-P5-B29）** | ✅ B29 |
 | ~~转介绍到期重分配~~ | business-flows | 营销渠道 + 定时任务；**B22 复核：转介绍页 /m5-referral 不在 9 页内仍为 mock，老带新数据未接真实客户关系，维持 Backlog** | 营销二批 |
 | 私域自动化 Flow（随访/SOP/关怀/召回） | business-flows | 流程引擎 + 营销；术后随访 SOP 引擎及随访工作台/SOP 编排两整页（诊疗侧）B30/B31 已闭合，本行余营销侧关怀/沉睡唤醒/复诊召回 Flow | 远期营销阶段 |
-| 角色管理页（RBAC 可视化配置） | permission-matrix | 后端 RBAC 已就绪，缺前端管理页 | 组织收口批 |
+| ~~角色管理页（RBAC 可视化配置）~~ | permission-matrix | 后端 RBAC 已就绪，缺前端管理页（旧登记作为当时时点事实保留不抹）。**✅ P5-B61 已闭合（2026-09-18，详见 DELIVERY-P5-B61-2026-09-18）**：卡0 事实翻转——前端四页 3219 行＋store 609 行五真实端点无 mock＋router/nav 齐备＋RbacAdminController 全套，curl/PG/Chrome 三轨三角全绿（334 码/686 授权/48 兼岗、四角 200/403/401、三账号读写拦三角、零代码数字不变） | ✅ B61 |
 | ~~营销 9 页交付验证收口~~ | 盘点 | **B22 已闭合（2026-09-08，9 页逐页网关+浏览器验证、零控制台报错，详见 DELIVERY-P5-B22）** | ✅ B22 |
 | 外部广告渠道接入（美团/抖音/小红书/大众点评/新氧投放回传） | B22 移交 | m5-channel 7 平台卡片 + m5-roi 渠道区现为前端 mock；**B26 已落通用回传骨架**（ExternalChannelController：HMAC-SHA256 签名/±300s 窗口/限流 60/min/幂等 bizRef/客户硬校验/channel_returnback 落库，双栈冒烟取证）；仍需各平台 OAuth 对接 + 投放 spend 落库 + ROI 联调。**P5-B57 卡2 已实施闭合（2026-09-17，`fc97b37`，见 docs/DESIGN-P5-B57-EXTERNAL-INTEGRATION-2026-09-17.md）**：三渠道 HMAC 密钥与免签开关收口 org external_integration 表＋/integrations 页面，录入即经 60s 内部快照生效（V34、AES-GCM 单点持钥、env 兜底、零重启），验签安全模型一字不动；OAuth/spend/ROI 联调仍 Backlog | 外部集成批（T3）；✅ B57 卡2 |
 | 营销归因模型（首次触点/末次触点/多触点加权） | B22 移交 | m5-roi 归因区现为 mock；依赖客户触点事件流（浏览/咨询/到店/成交）埋点归集，现触点数据未采集 | 数据仓库批（T2） |

@@ -107,7 +107,7 @@
 |---|---|---|---|---|
 | 登录 / JWT | ✅ | M7 | DELIVERY-M7，/api/org/auth/login；B50 卡5 `7f08103` | B50 卡5 登录页全局壳四门控（未登录不预拉 permissions/stores×2/notifications，闭合 B49 卡12 四路 401 观察项，4 files +52/-23，前端 bundle index-SOVxdEZ6.js）；**P5-B55（2026-09-16）纵深安全批**：JWT 增 realSub/act 双 claim 代操作短 token（TTL 1800s 不滑动不续期，常规 token 仍 43200s）、AuditBoundary 单点收敛审计 actor（currentActor/currentRealActor 双通道）且 payload 显式携带 realSub/act/impersonating 双标记、org 新增 /impersonate 与 /impersonate/exit 两端点+授权矩阵（仅真实 SUPER_ADMIN 发起，禁链式/切超管/切本人/切离职，理由必填）、五业务服务 RestAuditRecorder+audit-service JWT 直连+outbox 统一、前端全局危红横幅常驻/一键退出/刷新快照本地还原/代操作态 401 本地退回不重试写（三 commit `8f78169`、`557a20a`、`1331a21`，20 files +644/-108，勾销 04-backlog L133+L46，audit_log 615-626 append-only 留档区分修复前后，进度数字不变，详见 DELIVERY-P5-B55-2026-09-16） |
 | 员工管理 | ✅ | M7 | staff/staff_role 真实 | — |
-| 角色 RBAC / 权限矩阵 | ✅ | M7/B19 | PermissionMatrix | 角色管理页待补（Backlog） |
+| 角色 RBAC / 权限矩阵 | ✅ | M7/B19 | PermissionMatrix | 角色管理页待补（Backlog）；**P5-B61 订正（2026-09-18，零代码纵深，旧注作为当时时点事实保留不抹）**：前端角色/权限矩阵/员工/组织四页 T1 共 3219 行＋t1Rbac.ts 609 行五真实端点＋router L170-175＋nav L353-362 权限中台分组＋后端 RbacAdminController 全套均真实存在，三轨三角实证（334/686/48、无 parent_id、四角门控），数字不变，详见 DELIVERY-P5-B61-2026-09-18 |
 | 房间床位 | ✅ | B13 | DELIVERY-P4-B13 | — |
 | 设备台账 | ✅ | B13 | DELIVERY-P4-B13 | — |
 | 项目 / 品牌 | ✅ | P4 | 主数据真实 | — |
