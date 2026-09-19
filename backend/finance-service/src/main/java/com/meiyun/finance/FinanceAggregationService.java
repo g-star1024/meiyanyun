@@ -368,7 +368,11 @@ public class FinanceAggregationService {
         }
     }
 
-    private List<Map<String, Object>> fetchCards(String storeCode) {
+    /**
+     * 拉取客户域卡余额全量投影（降级空列表）。
+     * 包级可见：{@link PrepayMonitorService} 沉睡卡沉淀扫描复用同一取数口径（中文卡状态映射在各调用方自行收口）。
+     */
+    List<Map<String, Object>> fetchCards(String storeCode) {
         try {
             UriComponentsBuilder b = UriComponentsBuilder
                     .fromHttpUrl(customerBaseUrl + "/api/customer/internal/card-balances");

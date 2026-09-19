@@ -14,7 +14,7 @@ import CDonutChart from '@/components/CDonutChart.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import { useFinanceCoreStore } from '@/stores/financeCore'
 import { useAuthStore } from '@/stores/auth'
-import { shDateStr } from '@/utils/datetime'
+import { shDateStr, fmtDateTime } from '@/utils/datetime'
 
 const fin = useFinanceCoreStore()
 const auth = useAuthStore()
@@ -57,6 +57,17 @@ const ALERT_PILL: Record<AlertLevel, 'danger' | 'warning' | 'info'> = { HIGH: 'd
 const ALERT_LABEL: Record<AlertLevel, string> = { HIGH: '高风险', MEDIUM: '预警', LOW: '提示' }
 const alerts = computed<PrepayAlert[]>(() => {
   const list: PrepayAlert[] = []
+  // B63 卡3：预收合规监控 Job 落库的真实 OPEN 事件优先展示（服务端已按登录人门店域收敛）；
+  // 端点未换载/无事件时为空数组，下方本地派生三告警行为不变。
+  fin.openAlerts.forEach((a) => {
+    const store = a.storeName ? `【${a.storeName}】` : ''
+    list.push({
+      id: `PM-${a.id}`, level: a.level, type: a.type,
+      desc: `${store}${a.desc}`,
+      amount: a.amount != null && a.amount > 0 ? a.amount : undefined,
+      at: fmtDateTime(a.at, true),
+    })
+  })
   pendingRefunds.value.forEach((r, i) => {
     list.push({
       id: `PR-${i + 1}`, level: 'HIGH', type: '大额退款待核销',

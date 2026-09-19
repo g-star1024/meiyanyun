@@ -59,6 +59,9 @@ meiyun:
     secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}
     internal-token: ${MEIYUN_INTERNAL_TOKEN:meiyun-dev-internal-token-please-change-in-prod}
     dev-login: ${MEIYUN_DEV_LOGIN:false}
+    # B63 卡3 预收合规监控扫描时刻（北京时区，默认每日 02:20 与 customer 合规巡检 02:00 错峰）
+    prepay-monitor:
+      cron: ${MEIYUN_PREPAY_MONITOR_CRON:0 20 2 * * ?}
     # public-paths 整体覆盖默认列表，须显式带全默认公共路径
     public-paths:
       - /api/org/auth/login

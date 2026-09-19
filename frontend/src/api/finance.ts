@@ -804,3 +804,87 @@ export const createAbnormalBill = (cmd: FinAbnormalCreateCmd) =>
 /** 处置入账：仅 APPROVED 可调，补 ADJUST 调整分录（幂等）→ DISPOSED */
 export const disposeAbnormalBill = (billNo: string) =>
   client.post<FinAbnormalBillDTO>(`/finance/abnormal/bills/${billNo}/dispose`, {})
+
+// ============================================================
+// B63 卡3 L85：预收合规监控（账龄扫描 Job 落库的 OPEN 事件读模型 + 监控规则管理）
+// overview 金额后端已换算「元」；规则阈值 thresholdValue 配合 DAY/FEN 单位（FEN 为分）。
+// 规则管理仅后端端点（curl 真验覆盖），本卡不接管理 UI，守「无新页面」契约。
+// ============================================================
+
+/** 预收监控级别：HIGH 高风险 / MEDIUM 预警 / LOW 提示 */
+export type PrepayMonitorLevel = 'HIGH' | 'MEDIUM' | 'LOW'
+/** 监控规则类型：DEPOSIT_AGE 充值沉淀超账龄 / REFUND_PENDING 退款待核销超限 / DORMANT_CARD 沉睡卡沉淀超限 */
+export type PrepayMonitorRuleType = 'DEPOSIT_AGE' | 'REFUND_PENDING' | 'DORMANT_CARD'
+
+/** overview 单条 OPEN 事件（对齐后端 eventAlertView，金额「元」；at 为 ISO-8601） */
+export interface PrepayMonitorAlertDTO {
+  id: string
+  ruleCode: string
+  level: PrepayMonitorLevel
+  /** 中文类型标签（充值沉淀超账龄/退款待核销超限/沉睡卡沉淀超限） */
+  type: string
+  desc: string
+  storeCode?: string | null
+  storeName?: string | null
+  /** 触发金额（元）；无金额口径的规则缺省 */
+  amount?: number | null
+  at: string
+}
+
+/** GET /finance/prepay-monitor/overview 读模型（门店域服务端收敛，仅 OPEN 事件上限 20 条） */
+export interface PrepayMonitorOverview {
+  generatedAt: string
+  openCount: number
+  alerts: PrepayMonitorAlertDTO[]
+}
+
+/** 监控规则视图（对齐后端 ruleView；storeCode 空 = 全店全局规则，FEN 阈值单位为分） */
+export interface PrepayMonitorRuleDTO {
+  code: string
+  ruleName: string
+  type: PrepayMonitorRuleType
+  storeCode?: string | null
+  storeName?: string | null
+  thresholdValue: number
+  thresholdUnit: 'DAY' | 'FEN'
+  level: PrepayMonitorLevel
+  enabled: boolean
+  remark?: string | null
+  createdBy?: string | null
+  updatedBy?: string | null
+  createdAt?: string | null
+  updatedAt?: string | null
+}
+
+/** 规则新建/编辑入参（编辑时 type 不可变、storeCode 传 null = 全店） */
+export interface PrepayMonitorRuleCmd {
+  code?: string
+  ruleName: string
+  type?: PrepayMonitorRuleType
+  storeCode?: string | null
+  thresholdValue: number
+  thresholdUnit?: 'DAY' | 'FEN'
+  level?: PrepayMonitorLevel
+  enabled?: boolean
+  remark?: string | null
+}
+
+/** 监管页读模型：OPEN 事件已按登录人门店域收敛（finance:prepay:view） */
+export const getPrepayMonitorOverview = () =>
+  client.get<PrepayMonitorOverview>('/finance/prepay-monitor/overview')
+
+/** 监控规则列表（全局规则对所有数据域可见，门店规则按数据域过滤；finance:settings:view） */
+export const listPrepayMonitorRules = () =>
+  client.get<PrepayMonitorRuleDTO[]>('/finance/prepay-monitor/rules')
+
+/** 监控规则详情（不存在/越权统一 404） */
+export const getPrepayMonitorRule = (code: string) =>
+  client.get<PrepayMonitorRuleDTO>(`/finance/prepay-monitor/rules/${encodeURIComponent(code)}`)
+
+/** 新建监控规则（code 冲突 409、入参非法 422；finance:settings:edit） */
+export const createPrepayMonitorRule = (cmd: PrepayMonitorRuleCmd) =>
+  client.post<PrepayMonitorRuleDTO>('/finance/prepay-monitor/rules', cmd)
+
+/** 编辑监控规则（type 不可变，其余字段按 body 键存在与否更新；finance:settings:edit） */
+export const updatePrepayMonitorRule = (code: string, cmd: Partial<PrepayMonitorRuleCmd>) =>
+  client.put<PrepayMonitorRuleDTO>(`/finance/prepay-monitor/rules/${encodeURIComponent(code)}`, cmd)

@@ -39,4 +39,25 @@ public interface FundEntryRepository extends JpaRepository<FundEntry, Long> {
             "and occurred_at >= :from and occurred_at < :to and store_code is not null", nativeQuery = true)
     List<String> findCarryStoreCodes(@Param("from") OffsetDateTime from,
                                      @Param("to") OffsetDateTime to);
+
+    /**
+     * B63 卡3 预收账龄扫描投影：按门店聚合 RF-DEPOSIT 净沉淀（IN 充值 − OUT 核销/退卡冲回）
+     * 与「仍有净沉淀前提下最早一笔充值发生时间」，仅取发生时间早于账龄截止线（:cutoff）的门店。
+     * 调用方以净沉淀 &gt; 0 且最早充值距今 ≥ 阈值天作为命中条件；cutoff 由调用方按 Asia/Shanghai
+     * 业务日换算为 OffsetDateTime 传入，SQL 本身只做半开上界比较。
+     */
+    @Query(value = "select store_code as storeCode, " +
+            "sum(case when direction = 'IN' then amount else -amount end) as netFen, " +
+            "min(case when direction = 'IN' then occurred_at end) as oldestInAt " +
+            "from fund_entry where subject = 'RF-DEPOSIT' and store_code is not null " +
+            "and occurred_at < :cutoff " +
+            "group by store_code", nativeQuery = true)
+    List<DepositAgeRow> depositAgeScan(@Param("cutoff") OffsetDateTime cutoff);
+
+    /** 预收账龄扫描行投影：门店码 / RF-DEPOSIT 净沉淀（分）/ 最早一笔 IN 的发生时间（可空）。 */
+    interface DepositAgeRow {
+        String getStoreCode();
+        Long getNetFen();
+        java.time.OffsetDateTime getOldestInAt();
+    }
 }

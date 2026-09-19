@@ -23,9 +23,13 @@ import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import {
   getLedger, getCardsBalance, getOutbox, getCosts,
+  getPrepayPool, getPrepayMonitorOverview,
   markReconciled as apiMarkReconciled, markDiff as apiMarkDiff, adjustOutbox as apiAdjustOutbox,
 } from '@/api/finance'
-import type { LedgerEntryDTO, OutboxRecord, CardBalanceDTO, CostAggregate } from '@/api/finance'
+import type {
+  LedgerEntryDTO, OutboxRecord, CardBalanceDTO, CostAggregate,
+  PrepayMonitorAlertDTO, PrepayPool,
+} from '@/api/finance'
 
 /** 分 → 元（两位小数） */
 const fen2yuan = (fen: number) => Math.round((Number(fen) || 0)) / 100
@@ -283,6 +287,17 @@ export const useFinanceCoreStore = defineStore('financeCore', () => {
   const dormantCount = computed(() => dormantCards.value.length)
   const dormantAmount = computed(() => dormantCards.value.reduce((s, c) => s + c.balance, 0))
 
+  /**
+   * B63 卡3 L85 预收合规监控：账龄扫描 Job 落库的 OPEN 事件读模型（服务端按登录人门店域收敛）。
+   * 仅作监管页告警并入来源，独立容错；V38 未换载/端点不可用时为 []，页面行为与现状完全一致。
+   */
+  const openAlerts = ref<PrepayMonitorAlertDTO[]>([])
+  /**
+   * /finance/prepay-pool 只读镜像（Long 分；940 万口径期初聚合，≠会员卡储值合计真值）。
+   * 仅供派生/对账引用，绝不灌入 4 KPI（余额真值锚定 cardStoredTotal）；seed 空表回落全 null，归一化为 0。
+   */
+  const prepayPool = ref<PrepayPool | null>(null)
+
   let seeded = false
   let seeding: Promise<void> | null = null
   /** 从 finance-service 拉取真实台账、卡余额与 outbox 镜像（幂等；force 强制刷新）；失败静默回落演示 seed */
@@ -321,6 +336,27 @@ export const useFinanceCoreStore = defineStore('financeCore', () => {
       } catch (e) {
         console.error('[financeCore] 加载成本聚合 /finance/cost 失败，成本回落台账口径', e)
         if (seeded) costAggs.value = null
+      }
+      // B63 卡3 预收监控 OPEN 事件独立容错：V38 未换载前 overview 端点 404/500，失败置 []，绝不拖垮监管页
+      try {
+        const ov = await getPrepayMonitorOverview()
+        openAlerts.value = ov.data?.alerts ?? []
+      } catch (e) {
+        console.error('[financeCore] 加载预收监控 overview 失败，监管页仅显示本地派生告警', e)
+        if (seeded) openAlerts.value = []
+      }
+      // /finance/prepay-pool 独立容错只读镜像（消除闲置端点）：seed 空表回落全 null，此处 null 归一化为 0
+      try {
+        const p = (await getPrepayPool()).data
+        prepayPool.value = {
+          total: p?.total ?? 0,
+          pendingConsume: p?.pendingConsume ?? 0,
+          refundable: p?.refundable ?? 0,
+          earnedPending: p?.earnedPending ?? 0,
+        }
+      } catch (e) {
+        console.error('[financeCore] 加载 /finance/prepay-pool 镜像失败，置 null（不影响 4 KPI）', e)
+        if (seeded) prepayPool.value = null
       }
     })()
     return seeding
@@ -515,6 +551,7 @@ export const useFinanceCoreStore = defineStore('financeCore', () => {
     materialCost, depreciationCost, lossCost, laborCost, totalCost, grossProfit, grossRate,
     outboxMatched, outboxLong, outboxShort, outboxPending, outboxDiffCount, outboxLiveCount,
     identities, allIdentitiesPassed,
+    openAlerts, prepayPool,
     runReconcile, markReconciled, markDiff, adjustOutbox, toggleReconciled,
     seed,
   }
