@@ -1,12 +1,15 @@
 <script setup lang="ts">
 /* ============================================================
- * M6 异常账务 /m6-abnormal
- * 4 KPI（异常笔数/长款 outboxLong/短款 outboxShort/待处置）
- * 左：异常清单（LONG/SHORT/REVERSED/PENDING）；右：三方金额对比 + 人工处置双签
- * 红线：从 financeCore.outbox 只读镜像；处置仅登记记录，不反向动账。
+ * M6 异常账务 /m6-abnormal（B63 卡1 L84 接真）
+ * 4 KPI（异常笔数/长款金额/短款金额/待处置）
+ * 左：异常账单清单（SHORT 短款/LONG 长款/WRONG 错账）
+ * 右：账单详情＝登记信息 + 审批状态卡（PENDING_APPROVAL/APPROVED/REJECTED/DISPOSED）
+ * 闭环：登记（POST /finance/abnormal/bills）→ txn 审批 FIN_ADJUSTMENT
+ *       → 终审回调 APPROVED/REJECTED → APPROVED 单「处置入账」落 ADJUST 调整分录。
+ * 红线：禁直接人工 MATERIAL/LOSS 分录；动账只走终审后 ADJUST（RF-REVENUE），
+ *       SHORT→OUT 冲减、LONG→IN 补收、WRONG 取登记方向。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
@@ -14,15 +17,18 @@ import CSelect from '@/components/CSelect.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
-import { useFinAbnormalStore, type AbnormalItem, type DisposeMethod } from '@/stores/finReports'
+import { useToast } from '@/composables/useToast'
+import { useStoreContext } from '@/stores/storeContext'
+import { useFinAbnormalStore, type AbnormalItem, type AbnormalType } from '@/stores/finReports'
 
 const store = useFinAbnormalStore()
-const router = useRouter()
-onMounted(() => store.seed())
+const ctx = useStoreContext()
+const toast = useToast()
+onMounted(() => { void ctx.loadStores(); void store.seed() })
 
-const selectedId = ref<string | null>(null)
+const selectedNo = ref<string | null>(null)
 const selected = computed<AbnormalItem | null>(() => {
-  if (selectedId.value) return store.get(selectedId.value) ?? null
+  if (selectedNo.value) return store.get(selectedNo.value) ?? null
   return store.filtered[0] ?? null
 })
 
@@ -35,60 +41,85 @@ const kpis = computed(() => [
 
 const typeOptions = [
   { value: 'ALL', label: '全部类型' },
-  { value: 'LONG', label: '长款' },
   { value: 'SHORT', label: '短款' },
-  { value: 'REVERSED', label: '冲正' },
-  { value: 'PENDING', label: '待对账' },
-  { value: 'DIFF', label: '人工标记差异' },
+  { value: 'LONG', label: '长款' },
+  { value: 'WRONG', label: '错账' },
 ]
 
 function money(n: number | null | undefined) {
-  return n == null ? '回单未接入' : `¥${n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  const v = n == null ? 0 : n
+  return `¥${v.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
-/** 差异金额：真实台账三方回单 B6 未接入（bankAck=null），差异金额以回单核对为准，不臆造 */
-function diff(it: AbnormalItem): number | null {
-  if (it.bankAck == null) return null
-  return Math.abs(it.bankAck - it.cashier)
+/** 分 → 元（账单金额后端 Long 存分） */
+function yuan(fen: number | null | undefined) {
+  return (fen == null ? 0 : Math.round(fen) / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
-function diffText(it: AbnormalItem) {
-  const d = diff(it)
-  return d == null ? '待回单核对' : money(d)
+/** 列表/详情带符号金额：短款 −（红）、长款 +（绿）、错账按登记方向 */
+function signed(it: AbnormalItem) {
+  const sign = it.type === 'SHORT' ? '−' : it.type === 'LONG' ? '+' : (it.direction === 'IN' ? '+' : '−')
+  return `${sign}¥${yuan(it.amountFen)}`
 }
-/** 三方回单侧标签文案：null = 回单未接入（真实台账），否则按一致/差异 */
-function ackText(it: AbnormalItem, side: 'channel' | 'bank') {
-  const v = side === 'channel' ? it.channelAck : it.bankAck
-  if (v == null) return '回单未接入'
-  if (v === it.cashier) return '一致'
-  return side === 'bank' ? (it.type === 'LONG' ? '长款' : '短款') : '差异'
+function storeName(code: string) {
+  return ctx.stores.find((s) => s.storeCode === code)?.storeName ?? code
 }
-function ackCls(it: AbnormalItem, side: 'channel' | 'bank') {
-  const v = side === 'channel' ? it.channelAck : it.bankAck
-  if (v == null) return 'tri__tag--warn'
-  return v === it.cashier ? 'tri__tag--ok' : side === 'bank' ? 'tri__tag--danger' : 'tri__tag--warn'
-}
-/** 真实台账人工标记差异（DIFF）：调平动作在对账中心双签完成，本页仅登记处置记录 */
-function goReconcile() {
-  router.push('/m6-reconcile')
+function dt(s?: string | null) {
+  return s ? s.slice(0, 16).replace('T', ' ') : '—'
 }
 
-// 处置双签
-const showDispose = ref(false)
-const form = ref({ method: 'ADJUST' as DisposeMethod, reviewer: '', remark: '' })
-const methodOptions = [
-  { value: 'ADJUST', label: '调平入账' },
-  { value: 'LOSS', label: '报损核销' },
-  { value: 'ACCOUNTABILITY', label: '追责赔偿' },
-  { value: 'PENDING', label: '挂账待查' },
+// ----- 登记异常账单 -----
+const showCreate = ref(false)
+const form = ref({ storeCode: '', type: 'SHORT' as AbnormalType, direction: 'IN' as 'IN' | 'OUT', amount: '', reason: '' })
+const formError = ref('')
+const storeOptions = computed(() => ctx.stores.map((s) => ({ label: s.storeName, value: s.storeCode })))
+const typeFormOptions = [
+  { value: 'SHORT', label: '短款（实收 < 账面）' },
+  { value: 'LONG', label: '长款（实收 > 账面）' },
+  { value: 'WRONG', label: '错账（科目/方向记错）' },
 ]
-function openDispose() {
-  form.value = { method: 'ADJUST', reviewer: '', remark: '' }
-  showDispose.value = true
+const directionOptions = [
+  { value: 'IN', label: '补收（IN）' },
+  { value: 'OUT', label: '冲减（OUT）' },
+]
+function openCreate() {
+  form.value = { storeCode: ctx.currentStoreCode || ctx.stores[0]?.storeCode || '', type: 'SHORT', direction: 'IN', amount: '', reason: '' }
+  formError.value = ''
+  showCreate.value = true
 }
-const canSubmit = computed(() => form.value.reviewer.trim().length >= 2 && form.value.remark.trim().length > 0)
-function submitDispose() {
-  if (!selected.value || !canSubmit.value) return
-  store.dispose(selected.value.id, form.value.method, form.value.reviewer, form.value.remark)
-  showDispose.value = false
+async function submitCreate() {
+  formError.value = ''
+  const amountYuan = Number(form.value.amount)
+  try {
+    const data = await store.create({
+      storeCode: form.value.storeCode,
+      type: form.value.type,
+      direction: form.value.type === 'WRONG' ? form.value.direction : undefined,
+      amountYuan,
+      reason: form.value.reason,
+    })
+    showCreate.value = false
+    selectedNo.value = data.billNo
+    toast.success(`异常账单 ${data.billNo} 已登记，审批单 ${data.approvalNo || '流转中'}`)
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || '登记失败，请稍后重试'
+    formError.value = msg
+    toast.error(msg)
+  }
+}
+
+// ----- 处置入账（终审通过后，落 ADJUST 调整分录） -----
+const showDispose = ref(false)
+function openDispose() { showDispose.value = true }
+async function submitDispose() {
+  if (!selected.value) return
+  const billNo = selected.value.billNo
+  try {
+    const data = await store.dispose(billNo)
+    showDispose.value = false
+    toast.success(`账单 ${billNo} 已处置入账（ADJUST 调整分录 #${data.disposeFundEntryId ?? '-'}）`)
+  } catch (e: any) {
+    const msg = e?.response?.data?.message || e?.message || '处置失败，请稍后重试'
+    toast.error(msg)
+  }
 }
 </script>
 
@@ -99,30 +130,37 @@ function submitDispose() {
     </div>
 
     <div class="ab__body">
-      <!-- 左：异常清单 -->
+      <!-- 左：异常账单清单 -->
       <CCard class="ab__list" padding="none">
         <div class="filters">
-          <CSelect v-model="store.filterType" width="130px" :options="typeOptions" />
+          <CSelect v-model="store.filterType" width="120px" :options="typeOptions" />
+          <CButton variant="primary" size="sm" v-perm.disable="'finance:abnormal:dispose'" @click="openCreate">
+            <CIcon name="alert" :size="14" />登记异常
+          </CButton>
         </div>
         <div class="list">
-          <div v-if="store.filtered.length === 0" class="empty">
+          <div v-if="store.loading" class="empty">
+            <CIcon name="loading" :size="28" class="empty__icon" />
+            <div>正在加载异常账单…</div>
+          </div>
+          <div v-else-if="store.filtered.length === 0" class="empty">
             <CIcon name="check-square" :size="28" class="empty__icon" />
-            <div>暂无异常账务</div>
-            <div class="empty__hint">真实台账三方回单（渠道/银行）待 B6 接入，回单长短款不臆造；对账中心人工标记的差异将在此列出</div>
+            <div>暂无异常账单</div>
+            <div class="empty__hint">长短款/错账在此登记，提交后进入审批中心（FIN_ADJUSTMENT），终审通过方可处置入账</div>
           </div>
           <button
-            v-for="it in store.filtered" :key="it.id"
-            class="row" :class="{ 'row--active': selected?.id === it.id, 'row--resolved': it.status === 'RESOLVED' }"
-            @click="selectedId = it.id"
+            v-for="it in store.filtered" :key="it.billNo"
+            class="row" :class="{ 'row--active': selected?.billNo === it.billNo, 'row--resolved': it.status === 'DISPOSED' }"
+            @click="selectedNo = it.billNo"
           >
             <div class="row__top">
-              <span class="row__no">{{ it.txnNo }}</span>
+              <span class="row__no">{{ it.billNo }}</span>
               <CStatusPill :status="store.ABNORMAL_TYPE_PILL[it.type]">{{ store.ABNORMAL_TYPE_LABEL[it.type] }}</CStatusPill>
             </div>
-            <div class="row__sub">{{ it.channel }} · {{ it.occurredAt }}</div>
+            <div class="row__sub">{{ storeName(it.storeCode) }} · {{ dt(it.createdAt) }}</div>
             <div class="row__bottom">
-              <span class="row__amt" :class="{ 'row__amt--long': it.type === 'LONG', 'row__amt--short': it.type === 'SHORT' || it.type === 'DIFF' }">
-                {{ diff(it) == null ? '待回单核对' : `${it.type === 'LONG' ? '+' : it.type === 'SHORT' ? '−' : ''}${money(diff(it))}` }}
+              <span class="row__amt" :class="{ 'row__amt--long': it.type === 'LONG' || (it.type === 'WRONG' && it.direction === 'IN'), 'row__amt--short': it.type === 'SHORT' || (it.type === 'WRONG' && it.direction === 'OUT') }">
+                {{ signed(it) }}
               </span>
               <CStatusPill :status="store.ABNORMAL_STATUS_PILL[it.status]">{{ store.ABNORMAL_STATUS_LABEL[it.status] }}</CStatusPill>
             </div>
@@ -135,119 +173,156 @@ function submitDispose() {
         <template #header>
           <div class="ab__detail-head">
             <div>
-              <h3 class="ab__no">{{ selected.txnNo }}</h3>
-              <div class="ab__sub">{{ selected.channel }} · {{ selected.occurredAt }}</div>
+              <h3 class="ab__no">{{ selected.billNo }}</h3>
+              <div class="ab__sub">{{ storeName(selected.storeCode) }} · 登记于 {{ dt(selected.createdAt) }} · {{ selected.createdBy || '—' }}</div>
             </div>
             <div class="ab__detail-ops">
               <CStatusPill :status="store.ABNORMAL_STATUS_PILL[selected.status]" dot>{{ store.ABNORMAL_STATUS_LABEL[selected.status] }}</CStatusPill>
-              <CButton variant="secondary" size="sm" @click="void store.seed(true)">
+              <CButton variant="secondary" size="sm" :disabled="store.loading" @click="void store.refresh()">
                 <CIcon name="loading" :size="14" />同步
-              </CButton>
-              <CButton variant="secondary" size="sm" v-perm.disable="'finance:export'">
-                <CIcon name="export" :size="14" />导出
               </CButton>
             </div>
           </div>
         </template>
 
         <div class="detail-body">
-          <!-- 三方金额对比 -->
+          <!-- 登记信息 -->
           <div class="block">
-            <div class="block__title"><span>三方金额对比（Outbox 对账）</span></div>
+            <div class="block__title"><span>登记信息</span></div>
             <div class="tri">
               <div class="tri__col">
-                <div class="tri__label">收银记账</div>
-                <div class="tri__value">{{ money(selected.cashier) }}</div>
-                <div class="tri__tag tri__tag--ok">已记录</div>
+                <div class="tri__label">异常类型</div>
+                <div class="tri__value">{{ store.ABNORMAL_TYPE_LABEL[selected.type] }}</div>
+                <div class="tri__tag tri__tag--warn">{{ selected.type === 'WRONG' ? store.ABNORMAL_DIRECTION_LABEL[selected.direction ?? 'IN'] : (selected.type === 'LONG' ? '处置补收 IN' : '处置冲减 OUT') }}</div>
               </div>
               <div class="tri__op">
                 <CIcon name="chevron-right" :size="16" />
               </div>
               <div class="tri__col">
-                <div class="tri__label">渠道回单</div>
-                <div class="tri__value" :class="{ 'tri__value--diff': selected.channelAck != null && selected.channelAck !== selected.cashier, 'tri__value--miss': selected.channelAck == null }">{{ money(selected.channelAck) }}</div>
-                <div class="tri__tag" :class="ackCls(selected, 'channel')">{{ ackText(selected, 'channel') }}</div>
+                <div class="tri__label">涉及金额</div>
+                <div class="tri__value">{{ signed(selected) }}</div>
+                <div class="tri__tag" :class="selected.type === 'LONG' ? 'tri__tag--ok' : 'tri__tag--danger'">{{ selected.source === 'RECONCILE' ? '对账转入' : '人工登记' }}</div>
               </div>
               <div class="tri__op">
                 <CIcon name="chevron-right" :size="16" />
               </div>
               <div class="tri__col">
-                <div class="tri__label">银行到账</div>
-                <div class="tri__value" :class="{ 'tri__value--diff': selected.bankAck != null && selected.bankAck !== selected.cashier, 'tri__value--miss': selected.bankAck == null }">{{ money(selected.bankAck) }}</div>
-                <div class="tri__tag" :class="ackCls(selected, 'bank')">{{ ackText(selected, 'bank') }}</div>
+                <div class="tri__label">审批单号</div>
+                <div class="tri__value" :class="{ 'tri__value--miss': !selected.approvalNo }">{{ selected.approvalNo || '流转中' }}</div>
+                <div class="tri__tag" :class="selected.status === 'DISPOSED' ? 'tri__tag--ok' : selected.status === 'REJECTED' ? 'tri__tag--danger' : 'tri__tag--warn'">{{ store.ABNORMAL_STATUS_LABEL[selected.status] }}</div>
               </div>
             </div>
             <div class="diff-bar">
-              <span>差异金额</span>
-              <b :class="selected.type === 'LONG' ? 'is-long' : 'is-short'">
-                {{ diffText(selected) }}
-              </b>
+              <span>异常事由</span>
+              <b :class="selected.type === 'LONG' ? 'is-long' : 'is-short'">{{ selected.reason || '—' }}</b>
             </div>
           </div>
 
-          <!-- 处置信息 -->
-          <div v-if="selected.status === 'RESOLVED'" class="resolved">
+          <!-- 审批/处置状态 -->
+          <div v-if="selected.status === 'DISPOSED'" class="resolved">
             <div class="resolved__head">
               <CIcon name="check-square" :size="16" />
-              <span>已于 {{ selected.disposedAt?.slice(0, 16).replace('T', ' ') }} 处置</span>
+              <span>已于 {{ dt(selected.disposedAt) }} 处置入账</span>
             </div>
-            <div class="resolved__row"><span>处置方式</span><b>{{ store.DISPOSE_LABEL[selected.disposeMethod!] }}</b></div>
-            <div class="resolved__row"><span>复核人</span><b>{{ selected.reviewer }}</b></div>
-            <div class="resolved__row"><span>处置说明</span><b>{{ selected.remark }}</b></div>
+            <div class="resolved__row"><span>终审人</span><b>{{ selected.reviewer || '—' }}</b></div>
+            <div class="resolved__row"><span>终审时间</span><b>{{ dt(selected.approvedAt) }}</b></div>
+            <div class="resolved__row"><span>ADJUST 调整分录</span><b>#{{ selected.disposeFundEntryId ?? '-' }}（RF-REVENUE / {{ selected.type === 'LONG' || (selected.type === 'WRONG' && selected.direction === 'IN') ? 'IN 补收' : 'OUT 冲减' }}）</b></div>
+          </div>
+
+          <div v-else-if="selected.status === 'APPROVED'" class="resolved">
+            <div class="resolved__head">
+              <CIcon name="shield" :size="16" />
+              <span>终审通过（{{ dt(selected.approvedAt) }}），待处置入账</span>
+            </div>
+            <div class="resolved__row"><span>终审人</span><b>{{ selected.reviewer || '—' }}</b></div>
+            <div class="resolved__row"><span>审批单号</span><b>{{ selected.approvalNo || '—' }}</b></div>
+          </div>
+
+          <div v-else-if="selected.status === 'REJECTED'" class="resolved">
+            <div class="resolved__head">
+              <CIcon name="alert" :size="16" />
+              <span>审批已驳回，不可处置</span>
+            </div>
+            <div class="resolved__row"><span>驳回时间</span><b>{{ dt(selected.approvedAt) }}</b></div>
+            <div class="resolved__row"><span>审批单号</span><b>{{ selected.approvalNo || '—' }}</b></div>
           </div>
 
           <!-- 操作 -->
-          <div v-if="selected.status !== 'RESOLVED'" class="ops">
-            <template v-if="selected.writable">
-              <CButton variant="primary" size="sm" v-perm.disable="'finance:reconcile:approve'" @click="goReconcile">
-                <CIcon name="shield" :size="14" />前往对账中心调平（双签）
-              </CButton>
-              <CButton variant="secondary" size="sm" v-perm.disable="'finance:abnormal:dispose'" @click="openDispose">
-                <CIcon name="check-square" :size="14" />登记处置记录
-              </CButton>
-            </template>
-            <CButton v-else variant="primary" size="sm" v-perm.disable="'finance:abnormal:dispose'" @click="openDispose">
-              <CIcon name="shield" :size="14" />人工处置（双签）
+          <div v-if="selected.status === 'APPROVED'" class="ops">
+            <CButton variant="primary" size="sm" v-perm.disable="'finance:abnormal:dispose'" @click="openDispose">
+              <CIcon name="check-square" :size="14" />处置入账（ADJUST 调整分录）
             </CButton>
-            <span class="ops__hint">{{ selected.writable ? '真实调平在对账中心补调平分录（需 finance:reconcile:approve 双签）；本页仅登记处置留痕' : '需 finance:abnormal:dispose 权限 + 复核人双签' }}</span>
+            <span class="ops__hint">终审已通过：{{ selected.type === 'LONG' || (selected.type === 'WRONG' && selected.direction === 'IN') ? '补收 IN' : '冲减 OUT' }} ¥{{ yuan(selected.amountFen) }}，幂等可重放</span>
+          </div>
+          <div v-else-if="selected.status === 'PENDING_APPROVAL'" class="ops">
+            <CButton variant="secondary" size="sm" disabled>
+              <CIcon name="loading" :size="14" />审批中心流转中…
+            </CButton>
+            <span class="ops__hint">账单已提交审批（FIN_ADJUSTMENT），终审通过后本页出现「处置入账」按钮</span>
           </div>
 
           <p class="redline">
             <CIcon name="shield" :size="14" />
-            异常数据从 Outbox 三方对账镜像读取；人工处置仅登记调平/报损/追责记录，不反向修改资金流水。
+            红线：长短款/错账禁止直接人工 MATERIAL/LOSS 分录；动账只走终审通过后的 ADJUST 调整（科目 RF-REVENUE），短款冲减、长款补收、错账按登记方向。
           </p>
         </div>
       </CCard>
 
-      <CCard v-else class="ab__detail ab__detail--empty" title="异常详情" padding="lg">
+      <CCard v-else class="ab__detail ab__detail--empty" title="异常账单详情" padding="lg">
         <div class="detail-empty">
           <CIcon name="check-square" :size="40" class="detail-empty__icon" />
-          <p>当前无异常记录</p>
-          <p class="detail-empty__hint">真实台账三方回单（渠道回单 / 银行到账）待 B6 接入，长短款不臆造；对账中心人工标记的差异（DIFF）将在此列出，并引导前往对账中心双签调平。</p>
+          <p>当前无异常账单</p>
+          <p class="detail-empty__hint">点击左上角「登记异常」登记长短款/错账，账单进入审批中心（FIN_ADJUSTMENT）；终审通过后处置入账，全程留痕可审计。</p>
         </div>
       </CCard>
     </div>
 
-    <!-- 处置双签弹层 -->
-    <div v-if="showDispose" class="modal-mask" @click.self="showDispose = false">
-      <CCard class="modal" :title="selected?.writable ? '异常处置登记（双签留痕）' : '异常人工处置（双签）'" padding="lg">
+    <!-- 登记异常账单弹层 -->
+    <div v-if="showCreate" class="modal-mask" @click.self="showCreate = false">
+      <CCard class="modal" title="登记异常账单（提交审批）" padding="lg">
         <div class="form">
           <div class="sign-box">
-            <div class="sign-box__title"><CIcon name="shield" :size="16" /> 双签确认</div>
-            <div class="sign-box__text">异常单：{{ selected?.txnNo }}（{{ selected ? store.ABNORMAL_TYPE_LABEL[selected.type] : '' }}）</div>
-            <div class="sign-box__text">差异金额：<b>{{ selected ? diffText(selected) : '' }}</b></div>
+            <div class="sign-box__title"><CIcon name="shield" :size="16" /> 登记即提交审批</div>
+            <div class="sign-box__text">短款＝实收少于账面（处置冲减 OUT）；长款＝实收多于账面（处置补收 IN）；错账须选择调整方向。</div>
           </div>
-          <label class="form__label">处置方式</label>
-          <CSelect v-model="form.method" width="100%" :options="methodOptions" />
-          <label class="form__label">复核人 <span class="req">*</span></label>
-          <CInput v-model="form.reviewer" placeholder="请输入复核人姓名，如：陈雅琳（财务主管）" />
-          <label class="form__label">处置说明 <span class="req">*</span></label>
-          <CInput v-model="form.remark" placeholder="说明差异原因与处置依据" />
-          <p class="form__tip form__tip--warn">{{ selected?.writable ? '真实调平请先在对账中心完成双签（补调平分录并留痕），再回本页登记处置记录；本页不直接修改资金。' : '处置仅登记记录，不直接修改资金；提交后状态置为「已处置」。' }}</p>
+          <label class="form__label">登记门店 <span class="req">*</span></label>
+          <CSelect v-model="form.storeCode" width="100%" :options="storeOptions" placeholder="请选择门店" />
+          <label class="form__label">异常类型 <span class="req">*</span></label>
+          <CSelect v-model="form.type" width="100%" :options="typeFormOptions" />
+          <template v-if="form.type === 'WRONG'">
+            <label class="form__label">调整方向 <span class="req">*</span></label>
+            <CSelect v-model="form.direction" width="100%" :options="directionOptions" />
+          </template>
+          <label class="form__label">涉及金额（元） <span class="req">*</span></label>
+          <CInput v-model="form.amount" type="number" placeholder="差额绝对值，如 86.50" />
+          <label class="form__label">异常事由 <span class="req">*</span></label>
+          <CInput v-model="form.reason" placeholder="说明发生场景与初步原因，如：夜班交班现金短款 86.5 元" />
+          <p v-if="formError" class="form__tip form__tip--warn">{{ formError }}</p>
+          <p class="form__tip">提交后账单进入审批中心（FIN_ADJUSTMENT，按金额 ¥1000/5000/20000 走 L1/L2/L3），终审通过前不动任何账务。</p>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showCreate = false">取消</CButton>
+          <CButton variant="primary" :disabled="store.submitting" v-perm.disable="'finance:abnormal:dispose'" @click="submitCreate">提交登记</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- 处置入账确认弹层 -->
+    <div v-if="showDispose" class="modal-mask" @click.self="showDispose = false">
+      <CCard class="modal" title="处置入账确认（终审后 ADJUST）" padding="lg">
+        <div class="form">
+          <div class="sign-box">
+            <div class="sign-box__title"><CIcon name="shield" :size="16" /> 动账双确认</div>
+            <div class="sign-box__text">异常账单：{{ selected?.billNo }}（{{ selected ? store.ABNORMAL_TYPE_LABEL[selected.type] : '' }}）</div>
+            <div class="sign-box__text">
+              调整方向/金额：<b>{{ selected ? (selected.type === 'LONG' || (selected.type === 'WRONG' && selected.direction === 'IN') ? '补收 IN' : '冲减 OUT') : '' }} ¥{{ selected ? yuan(selected.amountFen) : '0.00' }}</b>
+            </div>
+          </div>
+          <p class="form__tip form__tip--warn">处置将经内部资金接口写一条 ADJUST 调整分录（科目 RF-REVENUE，来源 MANUAL，幂等键 ABNORMAL:{{ selected?.billNo }}），账单置「已处置入账」。此动作不可重复动账。</p>
         </div>
         <template #footer>
           <CButton variant="ghost" @click="showDispose = false">取消</CButton>
-          <CButton variant="primary" :disabled="!canSubmit" v-perm.disable="'finance:abnormal:dispose'" @click="submitDispose">确认处置</CButton>
+          <CButton variant="primary" :disabled="store.disposing" v-perm.disable="'finance:abnormal:dispose'" @click="submitDispose">确认处置入账</CButton>
         </template>
       </CCard>
     </div>
@@ -301,16 +376,16 @@ function submitDispose() {
 .tri__tag--warn { background: var(--c-warning-bg); color: var(--c-warning-fg); }
 .tri__tag--danger { background: var(--c-danger-bg); color: var(--c-danger-fg); }
 .tri__op { color: var(--c-text-4); display: flex; }
-.diff-bar { display: flex; align-items: center; justify-content: space-between; padding: var(--s-sm) var(--s-md); background: var(--c-warn-soft-bg); border-radius: var(--r-sm); margin-top: var(--s-xs); }
-.diff-bar span { font-size: var(--t-xs); color: var(--c-text-3); }
-.diff-bar b { font-size: var(--t-md); font-variant-numeric: tabular-nums; }
+.diff-bar { display: flex; align-items: center; justify-content: space-between; gap: var(--s-md); padding: var(--s-sm) var(--s-md); background: var(--c-warn-soft-bg); border-radius: var(--r-sm); margin-top: var(--s-xs); }
+.diff-bar span { font-size: var(--t-xs); color: var(--c-text-3); flex-shrink: 0; }
+.diff-bar b { font-size: var(--t-sm); font-weight: 500; color: var(--c-text-2); text-align: right; }
 .diff-bar b.is-long { color: var(--c-success-fg); }
 .diff-bar b.is-short { color: var(--c-danger-fg); }
 
 .resolved { background: var(--c-success-bg); border-radius: var(--r-md); padding: var(--s-md); display: flex; flex-direction: column; gap: var(--s-xs); }
 .resolved__head { display: flex; align-items: center; gap: 6px; font-size: var(--t-sm); font-weight: 600; color: var(--c-success-fg); margin-bottom: var(--s-xs); }
-.resolved__row { display: flex; justify-content: space-between; font-size: var(--t-sm); }
-.resolved__row span { color: var(--c-text-3); }
+.resolved__row { display: flex; justify-content: space-between; gap: var(--s-md); font-size: var(--t-sm); }
+.resolved__row span { color: var(--c-text-3); flex-shrink: 0; }
 .resolved__row b { color: var(--c-text-2); font-weight: 500; text-align: right; }
 
 .ops { display: flex; align-items: center; gap: var(--s-sm); flex-wrap: wrap; }

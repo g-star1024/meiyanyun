@@ -23,6 +23,7 @@ export type ApprovalBizType =
   | 'PRICE_CHANGE'  // 价格变更
   | 'LOSS_REPORT'   // 损耗报损（M2 库存）
   | 'REQUISITION'   // 物料申领（M2 库存）
+  | 'FIN_ADJUSTMENT' // 异常账务调整（B63 卡1 L84：长短款/错账终审后 ADJUST 动账）
 
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'TRANSFERRED'
 /** 审批阶段：REVIEW=店长初审；REGION=区域经理复审（B19，仅 L3 退款/退卡）；FINANCE=财务终审（L1 直达） */
@@ -74,6 +75,7 @@ const BIZ_LABEL: Record<ApprovalBizType, string> = {
   PRICE_CHANGE: '价格变更',
   LOSS_REPORT: '损耗报损',
   REQUISITION: '物料申领',
+  FIN_ADJUSTMENT: '异常账务调整',
 }
 
 const BIZ_PERM: Record<ApprovalBizType, string> = {
@@ -85,6 +87,7 @@ const BIZ_PERM: Record<ApprovalBizType, string> = {
   PRICE_CHANGE: 'brand:approve',
   LOSS_REPORT: 'inventory:approve',
   REQUISITION: 'inventory:approve',
+  FIN_ADJUSTMENT: 'finance:abnormal:dispose',
 }
 
 /**

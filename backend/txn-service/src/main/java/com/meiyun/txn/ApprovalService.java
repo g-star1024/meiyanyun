@@ -50,6 +50,7 @@ public class ApprovalService {
     private final FinanceEventPublisher financeEventPublisher;
     private final ApptRefNameResolver nameResolver;
     private final OrgStaffClient orgStaffClient;
+    private final FinanceAbnormalClient financeAbnormalClient;
 
     /**
      * B20 SLA 各阶段审批时长（小时，可配置 meiyun.approval.sla.*）：
@@ -67,7 +68,8 @@ public class ApprovalService {
                            StoreConsumableClient storeConsumableClient,
                            FinanceEventPublisher financeEventPublisher,
                            ApptRefNameResolver nameResolver,
-                           OrgStaffClient orgStaffClient) {
+                           OrgStaffClient orgStaffClient,
+                           FinanceAbnormalClient financeAbnormalClient) {
         this.repo = repo;
         this.txnService = txnService;
         this.audit = audit;
@@ -75,6 +77,7 @@ public class ApprovalService {
         this.financeEventPublisher = financeEventPublisher;
         this.nameResolver = nameResolver;
         this.orgStaffClient = orgStaffClient;
+        this.financeAbnormalClient = financeAbnormalClient;
     }
 
     // ---------------- 提交待办（退款/退卡创建同事务联动） ----------------
@@ -144,6 +147,88 @@ public class ApprovalService {
         guardWriteStore(cmd.storeCode());
         String reason = nz(cmd.reason(), "耗材报损");
         return submitConsumable("LOSS_REPORT", cmd.storeCode(), reason, "耗材报损", lines, cmd.amount());
+    }
+
+    /**
+     * 异常账务调整提交（B63 卡1 L84）：finance 登记长短款/错账单后，以系统身份经内部端点联动建审批待办。
+     * bizType=FIN_ADJUSTMENT、bizNo=账单号（AB...，非待办号），签署层级按登记金额 tierFor；
+     * 仅 FINANCE 终审通过才回调 finance 置 APPROVED（人工处置才动账），任一阶段驳回回调 REJECTED。
+     * 幂等：同一 billNo 重放（登记重试/网络重发）回返原待办，不造重复审批单。
+     *
+     * @param applicant 登记人工号（finance 透传；内部调用为空时回落当前身份 system）
+     */
+    @Transactional
+    public ApprovalTodo submitFinAdjustment(String billNo, String storeCode, String type,
+                                            long amountFen, String reason, String applicant) {
+        if (billNo == null || billNo.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "异常账单号不能为空（billNo 必填）");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "异常账务登记必须填写原因（reason 必填）");
+        }
+        if (amountFen <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "异常账务金额必须大于 0（分）");
+        }
+        guardWriteStore(storeCode);
+        for (ApprovalTodo exists : repo.findByBizNo(billNo)) {
+            if ("FIN_ADJUSTMENT".equals(exists.getBizType())) {
+                return exists;
+            }
+        }
+        String tier = TxnService.tierFor(amountFen);
+        String todoNo = nextNo();
+        String who = (applicant == null || applicant.isBlank()) ? currentActor() : applicant.trim();
+        ApprovalTodo t = new ApprovalTodo();
+        t.setTodoNo(todoNo);
+        t.setBizType("FIN_ADJUSTMENT");
+        t.setBizNo(billNo);
+        t.setTitle(truncate("异常账务调整 · " + abnormalTypeLabel(type) + " · " + reason, 128));
+        t.setSummary(truncate("账单 " + billNo + "（" + abnormalTypeLabel(type) + " ¥" + (amountFen / 100.0) + "）" + reason, 255));
+        t.setAmount(amountFen);
+        t.setStoreCode(storeCode);
+        t.setStoreName(storeName(storeCode));
+        t.setApplicant(who);
+        t.setApplicantRole("OPERATOR");
+        t.setSignTier(tier);
+        t.setStatus("PENDING");
+        t.setStage("L1".equals(tier) ? "FINANCE" : "REVIEW");
+        t.setPriority(amountFen >= 2_000_000L ? "HIGH" : "MEDIUM");
+        OffsetDateTime now = OffsetDateTime.now();
+        t.setSubmittedAt(now);
+        t.setDueAt(now.plusHours(stageSlaHours(t.getStage())));
+        t.setCoSigners("");
+        t.setHistory(historyJson(new HistoryEntry(who, "SUBMIT", "提交审批", now)));
+        t.setPayload(finAdjustmentPayload(billNo, type, reason, amountFen));
+        repo.save(t);
+        audit.record("APPROVAL", todoNo, currentActor(), "SUBMIT",
+                String.format(
+                        "{\"bizType\":\"FIN_ADJUSTMENT\",\"bizNo\":\"%s\",\"tier\":\"%s\",\"stage\":\"%s\",\"amount\":%d,\"applicant\":%s}",
+                        billNo, tier, t.getStage(), amountFen, jsonStr(who)));
+        return t;
+    }
+
+    /** 异常账务类型码转中文（标题/摘要留痕；未知码原样展示）。 */
+    private static String abnormalTypeLabel(String type) {
+        return switch (type == null ? "" : type) {
+            case "SHORT" -> "短款";
+            case "LONG" -> "长款";
+            case "WRONG" -> "错账";
+            default -> type == null ? "异常账务" : type;
+        };
+    }
+
+    /** FIN_ADJUSTMENT payload：账单号/类型/原因/金额 JSON（终审回调与留痕依据）；序列化失败快速失败回滚。 */
+    private static String finAdjustmentPayload(String billNo, String type, String reason, long amountFen) {
+        try {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("billNo", billNo);
+            m.put("type", type);
+            m.put("reason", reason);
+            m.put("amount", amountFen);
+            return MAPPER.writeValueAsString(m);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "异常账务明细内容序列化失败");
+        }
     }
 
     /** 领用/报损统一建单：tier 报损按金额（tierFor）、领用固定 L2；payload 存 SKU 行 JSON（终审扣库依据）。 */
@@ -352,6 +437,10 @@ public class ApprovalService {
                 && finalStage) {
             // 领用/报损：REVIEW 一审仅推进财务无下游；FINANCE 终审通过回调库存域扣库 + 成本入 outbox（失败抛异常回滚）
             deductOnFinalApprove(t, actor);
+        } else if ("FIN_ADJUSTMENT".equals(t.getBizType()) && finalStage) {
+            // 异常账务调整：REVIEW/REGION 中途同意仅推进阶段无下游；FINANCE 终审通过回调 finance 置 APPROVED
+            // （账单进入待人工处置，动账只走处置端点的 ADJUST 分录；回调失败抛异常回滚，待办不置 APPROVED）
+            financeAbnormalClient.applyResult(t.getBizNo(), true, actor, comment);
         }
 
         if (finalStage) {
@@ -360,8 +449,9 @@ public class ApprovalService {
             t.setRemindCount(0);
             t.setLastRemindedAt(null);
         } else if ("REVIEW".equals(stage) && "L3".equals(t.getSignTier())
-                && ("REFUND".equals(t.getBizType()) || "CARD_CANCEL".equals(t.getBizType()))) {
-            // B19：L3 退款/退卡插入区域经理复审阶段
+                && ("REFUND".equals(t.getBizType()) || "CARD_CANCEL".equals(t.getBizType())
+                    || "FIN_ADJUSTMENT".equals(t.getBizType()))) {
+            // B19：L3 退款/退卡/异常账务调整插入区域经理复审阶段
             t.setStage("REGION");
             t.setAssignee(null);
             resetStageSla(t, now);
@@ -399,6 +489,9 @@ public class ApprovalService {
 
         if ("REFUND".equals(t.getBizType()) || "CARD_CANCEL".equals(t.getBizType())) {
             txnService.reject(t.getBizNo(), new TxnService.ApprovalCmd(actor, cmd.comment()));
+        } else if ("FIN_ADJUSTMENT".equals(t.getBizType())) {
+            // 异常账务调整：任一阶段驳回即回调 finance 置 REJECTED（账单终结，不可处置动账；回调失败回滚）
+            financeAbnormalClient.applyResult(t.getBizNo(), false, actor, cmd.comment());
         }
         repo.save(t);
         audit.record("APPROVAL", todoNo, actor, "REJECT",

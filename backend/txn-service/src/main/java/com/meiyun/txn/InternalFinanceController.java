@@ -60,11 +60,13 @@ public class InternalFinanceController {
     private final CustomerCardClient customerCardClient;
     private final DualSignTicketRepository ticketRepo;
     private final AuditRecorder audit;
+    private final ApprovalService approvalService;
 
     public InternalFinanceController(TxnOrderRepository orderRepo, TxnRefundRepository refundRepo,
                                      WriteoffRepository writeoffRepo, TxnCardCancelRepository cardCancelRepo,
                                      PaymentService paymentService, CustomerCardClient customerCardClient,
-                                     DualSignTicketRepository ticketRepo, AuditRecorder audit) {
+                                     DualSignTicketRepository ticketRepo, AuditRecorder audit,
+                                     ApprovalService approvalService) {
         this.orderRepo = orderRepo;
         this.refundRepo = refundRepo;
         this.writeoffRepo = writeoffRepo;
@@ -73,6 +75,7 @@ public class InternalFinanceController {
         this.customerCardClient = customerCardClient;
         this.ticketRepo = ticketRepo;
         this.audit = audit;
+        this.approvalService = approvalService;
     }
 
     /**
@@ -436,6 +439,46 @@ public class InternalFinanceController {
         return new BackfillResult(runId, before, after, List.copyOf(backfilled), List.copyOf(skipped), warning);
     }
 
+    /**
+     * 异常账务调整审批联动提交（B63 卡1 L84）：POST /api/txn/internal/finance/abnormal-approvals。
+     * finance-service 登记长短款/错账单后以系统身份（X-Internal-Token）联动建 FIN_ADJUSTMENT 审批待办。
+     * body：{@code {"billNo":"AB...","storeCode":"SST01","type":"SHORT","amountFen":1000,
+     * "reason":"...","applicant":"S0001"}}，回 {@code {"approvalNo":"AP..."}}。
+     * 基础字段 400 中文校验；金额签署层级/幂等（同 billNo 回返原单）/门店域/审计均在
+     * {@link ApprovalService#submitFinAdjustment} 内收口。
+     */
+    @PostMapping("/finance/abnormal-approvals")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> submitAbnormalApproval(@RequestBody(required = false) Map<String, Object> body) {
+        if (body == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请求体不能为空（账单/门店/类型/金额/原因必填）");
+        }
+        String billNo = str(body.get("billNo"));
+        String storeCode = str(body.get("storeCode"));
+        String type = str(body.get("type"));
+        String reason = str(body.get("reason"));
+        String applicant = str(body.get("applicant"));
+        if (billNo == null || billNo.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "异常账单号不能为空（billNo 必填）");
+        }
+        if (storeCode == null || storeCode.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "必须指定所属门店（storeCode 必填）");
+        }
+        if (type == null || type.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "异常账务类型不能为空（type：SHORT/LONG/WRONG）");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "异常账务登记必须填写原因（reason 必填）");
+        }
+        Object rawAmount = body.get("amountFen");
+        if (!(rawAmount instanceof Number n) || n.longValue() <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "异常账务金额必须为大于 0 的整数（amountFen，分）");
+        }
+        ApprovalTodo todo = approvalService.submitFinAdjustment(
+                billNo.trim(), storeCode.trim(), type.trim(), n.longValue(), reason, applicant);
+        return Map.of("approvalNo", todo.getTodoNo());
+    }
+
     /** 双账核对核心：txn DONE 划扣 × customer WO 流水比对，只读。 */
     private ReconcileResult reconcile(Specification<WriteoffRecord> spec) {
         List<WriteoffRecord> done = writeoffRepo.findAll(spec).stream()
@@ -509,6 +552,10 @@ public class InternalFinanceController {
         } catch (NumberFormatException e) {
             return null;
         }
+    }
+
+    private static String str(Object o) {
+        return o == null ? null : String.valueOf(o);
     }
 
     /** 回填请求体（字段均可选，缺省全量扫描）。 */

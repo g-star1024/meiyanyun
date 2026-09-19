@@ -41,6 +41,7 @@ const BIZ_LABEL: Record<ApprovalBizType, string> = {
   PRICE_CHANGE: '价格变更',
   LOSS_REPORT: '损耗报损',
   REQUISITION: '物料申领',
+  FIN_ADJUSTMENT: '异常账务调整',
 }
 const BIZ_PERM: Record<ApprovalBizType, string> = {
   REFUND: 'refund:approve',
@@ -51,6 +52,7 @@ const BIZ_PERM: Record<ApprovalBizType, string> = {
   PRICE_CHANGE: 'brand:approve',
   LOSS_REPORT: 'inventory:approve',
   REQUISITION: 'inventory:approve',
+  FIN_ADJUSTMENT: 'finance:abnormal:dispose',
 }
 
 // 工号 → 中文姓名补全：E/SE 真实工号已由 config/staff.ts ROSTER 覆盖；

@@ -49,6 +49,7 @@ public class FinanceController {
     private final TripartiteReconcileService tripartiteService;
     private final SettlementService settlementService;
     private final FinanceExportService exportService;
+    private final FinAbnormalBillService abnormalBillService;
 
     public FinanceController(PrepayPoolRepository poolRepo, TaxRepository taxRepo,
                              AccountMirrorRepository acctRepo, RevenueMonthlyRepository revRepo,
@@ -57,7 +58,8 @@ public class FinanceController {
                              FundEntryService fundEntryService,
                              TripartiteReconcileService tripartiteService,
                              SettlementService settlementService,
-                             FinanceExportService exportService) {
+                             FinanceExportService exportService,
+                             FinAbnormalBillService abnormalBillService) {
         this.poolRepo = poolRepo;
         this.taxRepo = taxRepo;
         this.acctRepo = acctRepo;
@@ -69,6 +71,7 @@ public class FinanceController {
         this.tripartiteService = tripartiteService;
         this.settlementService = settlementService;
         this.exportService = exportService;
+        this.abnormalBillService = abnormalBillService;
     }
 
     /**
@@ -487,5 +490,57 @@ public class FinanceController {
         String memo = body.get("memo") == null ? null : String.valueOf(body.get("memo"));
         return fundEntryService.adjustOutbox(id, direction, amountFen, subject, channel, memo,
                 SecurityContext.currentStaffId());
+    }
+
+    // ==================== 异常账务处置（B63 卡1 L84） ====================
+
+    /**
+     * 异常账务登记：POST /api/finance/abnormal/bills。
+     * body：storeCode/type(SHORT 短款|LONG 长款|WRONG 错账)/amountFen/reason，
+     * WRONG 必填 direction(IN|OUT)；idemKey 可选（连点/重传去重）。
+     * 落 PENDING_APPROVAL 并同步提 txn 审批（FIN_ADJUSTMENT），txn 失败整笔回滚。
+     * 权限 finance:abnormal:dispose（区域经理/店长/财务）。
+     */
+    @PostMapping("/abnormal/bills")
+    @RequirePerm("finance:abnormal:dispose")
+    public Map<String, Object> createAbnormalBill(@RequestBody Map<String, Object> body) {
+        String storeCode = body.get("storeCode") == null ? null : String.valueOf(body.get("storeCode"));
+        String type = body.get("type") == null ? null : String.valueOf(body.get("type"));
+        String direction = body.get("direction") == null ? null : String.valueOf(body.get("direction"));
+        Long amountFen = body.get("amountFen") == null ? null
+                : Long.valueOf(String.valueOf(body.get("amountFen")));
+        String reason = body.get("reason") == null ? null : String.valueOf(body.get("reason"));
+        String idemKey = body.get("idemKey") == null ? null : String.valueOf(body.get("idemKey"));
+        return abnormalBillService.createBill(storeCode, type, direction, amountFen, reason, idemKey,
+                SecurityContext.currentStaffId());
+    }
+
+    /**
+     * 异常账务列表：GET /api/finance/abnormal/bills。
+     * 参数均可选：storeCode/status/type；按登录人门店域逐行收敛，创建时间倒序。
+     */
+    @GetMapping("/abnormal/bills")
+    @RequirePerm("finance:abnormal:view")
+    public List<FinAbnormalBill> abnormalBills(@RequestParam(required = false) String storeCode,
+                                               @RequestParam(required = false) String status,
+                                               @RequestParam(required = false) String type) {
+        return abnormalBillService.list(storeCode, status, type);
+    }
+
+    /** 异常账务详情：GET /api/finance/abnormal/bills/{billNo}；不存在/越权统一 404。 */
+    @GetMapping("/abnormal/bills/{billNo}")
+    @RequirePerm("finance:abnormal:view")
+    public FinAbnormalBill abnormalBill(@PathVariable("billNo") String billNo) {
+        return abnormalBillService.get(billNo);
+    }
+
+    /**
+     * 异常账务处置入账：POST /api/finance/abnormal/bills/{billNo}/dispose。
+     * 仅终审通过（APPROVED）可处置，补一条 ADJUST 调整分录（幂等）→ DISPOSED。
+     */
+    @PostMapping("/abnormal/bills/{billNo}/dispose")
+    @RequirePerm("finance:abnormal:dispose")
+    public Map<String, Object> disposeAbnormalBill(@PathVariable("billNo") String billNo) {
+        return abnormalBillService.dispose(billNo, SecurityContext.currentStaffId());
     }
 }

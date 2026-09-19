@@ -10,10 +10,14 @@ import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { useFinanceCoreStore } from './financeCore'
 import { useStoreContext } from './storeContext'
-import { getCardsBalance, getTax, getCosts, getCardTimeline, listWriteoffDetails } from '@/api/finance'
+import {
+  getCardsBalance, getTax, getCosts, getCardTimeline, listWriteoffDetails,
+  listAbnormalBills, createAbnormalBill, disposeAbnormalBill,
+} from '@/api/finance'
 import type {
   CardBalanceDTO, Tax as TaxDTO, CostAggregate,
   CardTxnDTO, CardTimelineDTO, WriteoffDetailDTO,
+  FinAbnormalType, FinAbnormalStatus, FinAbnormalBillDTO,
 } from '@/api/finance'
 
 /** 分 → 元（finance 卡余额/税务镜像金额以「分」存储，台账聚合已换算为元） */
@@ -88,32 +92,12 @@ export interface MemberCard {
   txns: CardTxn[]
 }
 
-// ============ 异常账务 ============
-// LONG/SHORT/REVERSED/PENDING 为演示 seed 的三方回单差异态；DIFF 为真实台账人工标记差异（待双签调平）
-export type AbnormalType = 'LONG' | 'SHORT' | 'REVERSED' | 'PENDING' | 'DIFF'
-export type AbnormalStatus = 'OPEN' | 'PROCESSING' | 'RESOLVED'
-export type DisposeMethod = 'ADJUST' | 'LOSS' | 'ACCOUNTABILITY' | 'PENDING'
-
-export interface AbnormalItem {
-  id: string
-  txnNo: string
-  type: AbnormalType
-  amount: number
-  channel: string
-  occurredAt: string
-  status: AbnormalStatus
-  cashier: number   // 收银记账
-  /** 渠道回单金额：真实台账三方回单 B6 接入前为 null（不伪造） */
-  channelAck: number | null
-  /** 银行到账金额：真实台账三方回单 B6 接入前为 null（不伪造） */
-  bankAck: number | null
-  /** 真实 finance-service outbox 项（可人工标记/调平）；演示 seed 为 false */
-  writable?: boolean
-  disposeMethod?: DisposeMethod
-  reviewer?: string
-  remark?: string
-  disposedAt?: string
-}
+// ============ 异常账务处置单（B63 卡1 L84，真源 /finance/abnormal/bills） ============
+// 类型/状态/入参全部对齐 finance FinAbnormalBill 实体与 toView（铁律1 三处一致）。
+// 旧 Outbox 镜像假长短款（LONG/SHORT/REVERSED/PENDING/DIFF + 伪造三方金额 + 本地 dispose 态）已消灭。
+export type AbnormalType = FinAbnormalType
+export type AbnormalStatus = FinAbnormalStatus
+export type AbnormalItem = FinAbnormalBillDTO
 
 // ============ 税务 ============
 export interface TaxRow {
@@ -169,19 +153,20 @@ const CARD_TXN_LABEL: Record<CardTxn['type'], string> = {
 }
 
 const ABNORMAL_TYPE_LABEL: Record<AbnormalType, string> = {
-  LONG: '长款', SHORT: '短款', REVERSED: '冲正', PENDING: '待对账', DIFF: '人工标记差异',
+  SHORT: '短款', LONG: '长款', WRONG: '错账',
 }
 const ABNORMAL_TYPE_PILL: Record<AbnormalType, 'success' | 'warning' | 'danger' | 'primary'> = {
-  LONG: 'success', SHORT: 'danger', REVERSED: 'warning', PENDING: 'primary', DIFF: 'danger',
+  SHORT: 'danger', LONG: 'success', WRONG: 'warning',
 }
 const ABNORMAL_STATUS_LABEL: Record<AbnormalStatus, string> = {
-  OPEN: '待处置', PROCESSING: '处置中', RESOLVED: '已处置',
+  PENDING_APPROVAL: '待审批', APPROVED: '审批通过·待处置', REJECTED: '已驳回', DISPOSED: '已处置入账',
 }
-const ABNORMAL_STATUS_PILL: Record<AbnormalStatus, 'danger' | 'warning' | 'success'> = {
-  OPEN: 'danger', PROCESSING: 'warning', RESOLVED: 'success',
+const ABNORMAL_STATUS_PILL: Record<AbnormalStatus, 'danger' | 'warning' | 'success' | 'primary' | 'info'> = {
+  PENDING_APPROVAL: 'warning', APPROVED: 'primary', REJECTED: 'danger', DISPOSED: 'success',
 }
-const DISPOSE_LABEL: Record<DisposeMethod, string> = {
-  ADJUST: '调平入账', LOSS: '报损核销', ACCOUNTABILITY: '追责赔偿', PENDING: '挂账待查',
+/** 调整方向（SHORT 处置固定 OUT 冲减；LONG 固定 IN 补收；WRONG 取登记方向） */
+const ABNORMAL_DIRECTION_LABEL: Record<'IN' | 'OUT', string> = {
+  IN: '补收（IN）', OUT: '冲减（OUT）',
 }
 
 // ============================================================
@@ -290,115 +275,138 @@ export const useFinCardBalanceStore = defineStore('finCardBalance', () => {
 })
 
 // ============================================================
-// Store 2: 异常账务
+// Store 2: 异常账务处置单（B63 卡1 L84，真源 finance /abnormal/bills）
+// 登记 → txn 审批（FIN_ADJUSTMENT）→ 终审回调 APPROVED/REJECTED → APPROVED 单 dispose 落 ADJUST 分录。
+// 金额后端 Long「分」，对外派生金额一律 fen2yuan；禁止本地伪造长短款/处置态。
 // ============================================================
 export const useFinAbnormalStore = defineStore('finAbnormal', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
-  const core = useFinanceCoreStore()
+  const ctx = useStoreContext()
 
   const items = ref<AbnormalItem[]>([])
+  const loading = ref(false)
+  const error = ref('')
   const filterType = ref<AbnormalType | 'ALL'>('ALL')
+  /** 登记抽屉提交中（连点去重，另配 idemKey 双保险） */
+  const submitting = ref(false)
+  /** 处置入账提交中 */
+  const disposing = ref(false)
 
   const totalCount = computed(() => items.value.length)
-  const openCount = computed(() => items.value.filter((i) => i.status === 'OPEN' || i.status === 'PROCESSING').length)
-  const resolvedCount = computed(() => items.value.filter((i) => i.status === 'RESOLVED').length)
-  const longAmount = computed(() => core.outboxLong)
-  const shortAmount = computed(() => core.outboxShort)
+  /** 待处置 = 待审批 + 审批通过待处置（REJECTED/DISPOSED 已闭环） */
+  const openCount = computed(() =>
+    items.value.filter((i) => i.status === 'PENDING_APPROVAL' || i.status === 'APPROVED').length)
+  const resolvedCount = computed(() => items.value.filter((i) => i.status === 'DISPOSED').length)
+  /** 长款（LONG）登记金额合计（元）；短款（SHORT）合计（元）。错账不计入长短款 */
+  const longAmount = computed(() =>
+    fen2yuan(items.value.filter((i) => i.type === 'LONG').reduce((s, i) => s + (i.amountFen ?? 0), 0)))
+  const shortAmount = computed(() =>
+    fen2yuan(items.value.filter((i) => i.type === 'SHORT').reduce((s, i) => s + (i.amountFen ?? 0), 0)))
 
-  const filtered = computed(() => {
-    let list = items.value
-    if (filterType.value !== 'ALL') list = list.filter((i) => i.type === filterType.value)
-    return [...list].sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : -1))
-  })
+  /** 服务端已按创建时间倒序；前端仅做类型筛选（ALL/SHORT/LONG/WRONG） */
+  const filtered = computed(() =>
+    filterType.value === 'ALL' ? items.value : items.value.filter((i) => i.type === filterType.value))
 
-  function get(id: string) { return items.value.find((i) => i.id === id) }
+  function get(billNo: string) { return items.value.find((i) => i.billNo === billNo) }
 
-  /** 从 financeCore.outbox 同步异常，幂等。
-   *  演示 seed（writable=false）：LONG/SHORT/REVERSED/PENDING 为本地演示的三方回单差异，保留伪造 triad。
-   *  真实台账（writable=true）：仅 DIFF（人工标记差异，待双签调平）纳入；PENDING 属正常待对账（回单 B6 未接入，
-   *  不臆造差异），MATCHED/ADJUSTED 已闭环跳过；回单金额一律 null，页面诚实展示「回单未接入」。 */
-  function syncFromCore() {
-    for (const o of core.outbox) {
-      if (o.writable) {
-        if (o.status !== 'DIFF') continue
-        if (!items.value.some((i) => i.txnNo === o.txnNo)) {
-          items.value.unshift({
-            id: nextId('ab'),
-            txnNo: o.txnNo,
-            type: 'DIFF',
-            amount: o.amount,
-            channel: o.channel,
-            occurredAt: o.occurredAt,
-            status: 'OPEN',
-            cashier: o.amount,
-            channelAck: null,
-            bankAck: null,
-            writable: true,
-          })
-        }
-        continue
-      }
-      if (o.status === 'MATCHED' || o.status === 'ADJUSTED') continue
-      const type: AbnormalType =
-        o.status === 'LONG' ? 'LONG' :
-        o.status === 'SHORT' ? 'SHORT' :
-        o.status === 'REVERSED' ? 'REVERSED' :
-        o.status === 'DIFF' ? 'DIFF' : 'PENDING'
-      if (!items.value.some((i) => i.txnNo === o.txnNo)) {
-        const base = o.amount
-        items.value.unshift({
-          id: nextId('ab'),
-          txnNo: o.txnNo,
-          type,
-          amount: type === 'LONG' ? Math.round(base * 0.0185 * 100) / 100 : type === 'SHORT' ? 6 : base,
-          channel: o.channel,
-          occurredAt: o.occurredAt,
-          status: 'OPEN',
-          cashier: base,
-          channelAck: type === 'LONG' ? base : base - 6,
-          bankAck: type === 'LONG' ? base + Math.round(base * 0.0185 * 100) / 100 : base - 6,
-          writable: false,
-        })
-      }
+  /** 用登记/处置回包就地 upsert（列表实体无 message/entry，多余字段随 DTO 保留无害） */
+  function upsert(bill: AbnormalItem) {
+    const idx = items.value.findIndex((i) => i.billNo === bill.billNo)
+    if (idx >= 0) items.value.splice(idx, 1, bill)
+    else items.value.unshift(bill)
+  }
+
+  /** 拉取真实异常账单（门店域由服务端收敛）；失败诚实空态，不回落假数据 */
+  async function fetchRows() {
+    loading.value = true
+    error.value = ''
+    try {
+      await ctx.loadStores()
+      const { data } = await listAbnormalBills()
+      items.value = data ?? []
+    } catch (e) {
+      console.error('[finAbnormal] 加载异常账单失败，保持空态', e)
+      error.value = '异常账单加载失败，请稍后重试'
+    } finally {
+      loading.value = false
     }
   }
 
-  /** 人工处置（双签：处置方式 + 复核人），仅登记，不反向动账 */
-  function dispose(id: string, method: DisposeMethod, reviewer: string, remark: string): boolean {
-    if (!auth.can('finance:abnormal:dispose')) return false
-    const it = items.value.find((i) => i.id === id)
-    if (!it || it.status === 'RESOLVED') return false
-    it.status = 'RESOLVED'
-    it.disposeMethod = method
-    it.reviewer = reviewer.trim()
-    it.remark = remark.trim()
-    it.disposedAt = new Date().toISOString()
-    activity.log(auth.user.name, `处置异常 ${it.txnNo}（${DISPOSE_LABEL[method]}）：${remark}`, it.id)
-    return true
+  /**
+   * 登记异常账单：门店/类型/金额(元→分)/事由，WRONG 必带方向；
+   * idemKey 前端生成连点去重，成功后审批由 txn 异步流转，重新拉取保证状态权威。
+   * 失败抛错（含后端中文 message），由视图 toast 呈现，不本地造单。
+   */
+  async function create(input: {
+    storeCode: string
+    type: AbnormalType
+    direction?: 'IN' | 'OUT'
+    amountYuan: number
+    reason: string
+  }): Promise<AbnormalItem> {
+    if (submitting.value) throw new Error('正在提交，请勿重复点击')
+    if (!input.storeCode) throw new Error('请选择登记门店')
+    if (!input.reason.trim()) throw new Error('请填写异常事由')
+    const amountFen = Math.round((Number(input.amountYuan) || 0) * 100)
+    if (!(amountFen > 0)) throw new Error('金额必须为大于 0 的数字')
+    if (input.type === 'WRONG' && input.direction !== 'IN' && input.direction !== 'OUT') {
+      throw new Error('错账单必须选择调整方向（补收/冲减）')
+    }
+    submitting.value = true
+    try {
+      const idemKey = `WEB:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`
+      const { data } = await createAbnormalBill({
+        storeCode: input.storeCode,
+        type: input.type,
+        direction: input.type === 'WRONG' ? input.direction : undefined,
+        amountFen,
+        reason: input.reason.trim(),
+        idemKey,
+      })
+      upsert(data)
+      activity.log(auth.user?.name || '当前用户',
+        `登记异常账单 ${data.billNo}（${ABNORMAL_TYPE_LABEL[data.type]} ¥${fen2yuan(data.amountFen)}）已提交审批 ${data.approvalNo ?? ''}`,
+        data.billNo)
+      await fetchRows()
+      return data
+    } finally {
+      submitting.value = false
+    }
+  }
+
+  /** 处置入账：仅 APPROVED 单可调；后端落 ADJUST 调整分录（幂等）→ DISPOSED */
+  async function dispose(billNo: string): Promise<AbnormalItem> {
+    if (disposing.value) throw new Error('正在处置，请勿重复点击')
+    disposing.value = true
+    try {
+      const { data } = await disposeAbnormalBill(billNo)
+      upsert(data)
+      activity.log(auth.user?.name || '当前用户',
+        `异常账单 ${billNo} 处置入账（ADJUST 调整分录 #${data.disposeFundEntryId ?? '-'}）`, billNo)
+      await fetchRows()
+      return data
+    } finally {
+      disposing.value = false
+    }
   }
 
   let seeded = false
   let seeding: Promise<void> | null = null
-  /** 先确保 financeCore 真实台账拉取完成，再从 outbox 镜像派生异常（幂等；force 强制刷新）。
-   *  注意：core 的台账是 store 初始化时 void seed() 触发的异步 fetch，本函数必须 await core.seed()
-   *  之后再 syncFromCore()，否则会在 outbox 仍为空时快照成永久空列表（异步竞态）。
-   *  镜像无三方回单差异时列表为空（不插入演示样例，避免伪造收银/渠道/银行三方金额与处置记录）。 */
+  /** 拉取真实异常账单（幂等；force 强制刷新）；失败诚实空态，绝不编造账单 */
   function seed(force = false): Promise<void> {
     if (seeding && !force) return seeding
     if (seeded && !force) return Promise.resolve()
-    seeding = (async () => {
-      await core.seed(force)
-      syncFromCore()
-      seeded = true
-    })()
+    seeding = fetchRows().then(() => { seeded = true })
     return seeding
   }
 
   return {
-    items, filterType, totalCount, openCount, resolvedCount, longAmount, shortAmount,
-    filtered, get, syncFromCore, dispose, seed,
-    ABNORMAL_TYPE_LABEL, ABNORMAL_TYPE_PILL, ABNORMAL_STATUS_LABEL, ABNORMAL_STATUS_PILL, DISPOSE_LABEL,
+    items, loading, error, submitting, disposing, filterType,
+    totalCount, openCount, resolvedCount, longAmount, shortAmount,
+    filtered, get, create, dispose, seed, refresh: fetchRows,
+    ABNORMAL_TYPE_LABEL, ABNORMAL_TYPE_PILL, ABNORMAL_STATUS_LABEL, ABNORMAL_STATUS_PILL,
+    ABNORMAL_DIRECTION_LABEL,
   }
 })
 

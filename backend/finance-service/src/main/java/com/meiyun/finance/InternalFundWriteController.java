@@ -30,11 +30,14 @@ public class InternalFundWriteController {
 
     private final FundEntryService fundEntryService;
     private final FinanceInternalOpsService internalOps;
+    private final FinAbnormalBillService abnormalBillService;
 
     public InternalFundWriteController(FundEntryService fundEntryService,
-                                       FinanceInternalOpsService internalOps) {
+                                       FinanceInternalOpsService internalOps,
+                                       FinAbnormalBillService abnormalBillService) {
         this.fundEntryService = fundEntryService;
         this.internalOps = internalOps;
+        this.abnormalBillService = abnormalBillService;
     }
 
     /**
@@ -93,5 +96,20 @@ public class InternalFundWriteController {
     @PostMapping("/backfill")
     public Map<String, Object> backfill(@RequestParam String from, @RequestParam String to) {
         return internalOps.backfill(from, to);
+    }
+
+    /**
+     * 异常账务审批终审回调（B63 卡1 L84）：POST /api/finance/internal/abnormal/approval-callback。
+     * txn 审批中心对 FIN_ADJUSTMENT 终审/驳回后投递；body：billNo/approved/reviewer/comment。
+     * 幂等：非 PENDING_APPROVAL 态（含重复投递）回返当前状态，不覆盖终审结论。
+     */
+    @PostMapping("/abnormal/approval-callback")
+    public Map<String, Object> abnormalApprovalCallback(@RequestBody Map<String, Object> body) {
+        String billNo = body.get("billNo") == null ? null : String.valueOf(body.get("billNo"));
+        boolean approved = Boolean.TRUE.equals(body.get("approved"));
+        String reviewer = body.get("reviewer") == null ? null : String.valueOf(body.get("reviewer"));
+        String comment = body.get("comment") == null ? null : String.valueOf(body.get("comment"));
+        return abnormalBillService.applyApprovalCallback(billNo, approved,
+                reviewer != null ? reviewer : SecurityContext.currentStaffId(), comment);
     }
 }

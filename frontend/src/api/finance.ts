@@ -739,3 +739,68 @@ export const importChannelBills = (cmd: { channel: string; storeCode?: string; i
 /** 月勾兑：month=yyyy-MM-01、channel 必传（wxpay/alipay/transfer）、storeCode 可选 */
 export const getChannelReconcile = (params: { month: string; channel: string; storeCode?: string }) =>
   client.get<ChannelReconcileResult>('/finance/channel-reconcile', { params })
+
+// ============================================================
+// B63 卡1 L84：异常账务处置单（长短款/错账登记 → 审批 → 终审后处置入账）
+// 金额全部 Long「分」；列表/详情直接序列化实体，登记/处置返回 toView（多 duplicated/message/entry）
+// ============================================================
+
+/** 异常账务类型：SHORT 短款 / LONG 长款 / WRONG 错账（WRONG 必须指定调整方向） */
+export type FinAbnormalType = 'SHORT' | 'LONG' | 'WRONG'
+/** 异常账单状态机：待审批 → 终审通过/驳回 → 通过单处置入账 */
+export type FinAbnormalStatus = 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED' | 'DISPOSED'
+
+/** 异常账务处置单（对齐后端 FinAbnormalBill 实体 JSON 字段） */
+export interface FinAbnormalBillDTO {
+  billNo: string
+  idemKey?: string | null
+  storeCode: string
+  type: FinAbnormalType
+  /** WRONG 登记必填 IN 补收/OUT 冲减；SHORT/LONG 为空（处置时由类型推导） */
+  direction?: 'IN' | 'OUT' | null
+  amountFen: number
+  /** MANUAL 手工登记 / RECONCILE 对账差异转入 */
+  source?: string
+  outboxId?: number | null
+  reason: string
+  status: FinAbnormalStatus
+  /** txn 审批单号 AP+yyyyMMdd-xxxxxx */
+  approvalNo?: string | null
+  disposeFundEntryId?: number | null
+  createdBy?: string
+  reviewer?: string | null
+  createdAt?: string
+  approvedAt?: string | null
+  disposedAt?: string | null
+  /** 以下仅登记/处置 toView 返回（列表实体不含） */
+  duplicated?: boolean
+  message?: string
+  entry?: Record<string, unknown>
+}
+
+/** 异常账务登记入参（amountYuan 视图层元，store 层换算 amountFen 分） */
+export interface FinAbnormalCreateCmd {
+  storeCode: string
+  type: FinAbnormalType
+  direction?: 'IN' | 'OUT'
+  amountFen: number
+  reason: string
+  /** 连点/重传去重幂等键（前端生成） */
+  idemKey?: string
+}
+
+/** 异常账单列表（storeCode/status/type 均可选，门店域服务端收敛，创建时间倒序） */
+export const listAbnormalBills = (params?: { storeCode?: string; status?: FinAbnormalStatus; type?: FinAbnormalType }) =>
+  client.get<FinAbnormalBillDTO[]>('/finance/abnormal/bills', { params })
+
+/** 异常账单详情（不存在/越权统一 404） */
+export const getAbnormalBill = (billNo: string) =>
+  client.get<FinAbnormalBillDTO>(`/finance/abnormal/bills/${billNo}`)
+
+/** 异常账务登记：落 PENDING_APPROVAL 并同步提 txn 审批（txn 失败整笔回滚），返 toView 含 approvalNo */
+export const createAbnormalBill = (cmd: FinAbnormalCreateCmd) =>
+  client.post<FinAbnormalBillDTO>('/finance/abnormal/bills', cmd)
+
+/** 处置入账：仅 APPROVED 可调，补 ADJUST 调整分录（幂等）→ DISPOSED */
+export const disposeAbnormalBill = (billNo: string) =>
+  client.post<FinAbnormalBillDTO>(`/finance/abnormal/bills/${billNo}/dispose`, {})
