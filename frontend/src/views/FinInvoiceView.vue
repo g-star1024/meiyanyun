@@ -15,15 +15,35 @@ import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import { useFinInvoiceStore } from '@/stores/finInvoice'
+import { useFinInputInvoiceStore, type RegisterForm, type InputNondeductReason } from '@/stores/finInputInvoice'
 import { useAuthStore } from '@/stores/auth'
+import { useStoreContext } from '@/stores/storeContext'
 import { useToast } from '@/composables/useToast'
 import { exportInvoiceCsv, type InvoiceStatus, type InvoiceType } from '@/api/finance'
 
 const store = useFinInvoiceStore()
+const inputStore = useFinInputInvoiceStore()
 const auth = useAuthStore()
+const storeCtx = useStoreContext()
 const toast = useToast()
 const exporting = ref(false)
 onMounted(() => store.seed())
+
+// B63 卡4：销项/进项顶层页签（标准 .tabs/.tab 母本，不新增路由）
+const tab = ref<'output' | 'input'>('output')
+const tabs = [
+  { k: 'output' as const, label: '销项发票' },
+  { k: 'input' as const, label: '进项发票' },
+]
+function selectTab(k: 'output' | 'input') {
+  if (tab.value === k) return
+  tab.value = k
+  if (k === 'input' && inputStore.items.length === 0 && !inputStore.loading) {
+    void inputStore.loadList(0).catch((e) => {
+      toast.error('进项发票加载失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+    })
+  }
+}
 
 async function onExport() {
   if (exporting.value) return
@@ -137,10 +157,211 @@ function submitVoid() {
   store.voidInvoice(selected.value.id, voidReason.value.trim())
   showVoid.value = false
 }
+
+// ==================== B63 卡4 进项发票 ====================
+const inputSelectedId = ref<number | null>(null)
+const inputSelected = computed(() => {
+  if (inputSelectedId.value !== null) return inputStore.get(inputSelectedId.value) ?? null
+  return inputStore.items[0] ?? null
+})
+
+const inputStatusFilter = computed({
+  get: () => inputStore.filterStatus,
+  set: (v) => { inputStore.filterStatus = v },
+})
+const inputKindFilter = computed({
+  get: () => inputStore.filterKind,
+  set: (v) => { inputStore.filterKind = v },
+})
+const inputPurposeFilter = computed({
+  get: () => inputStore.filterPurpose,
+  set: (v) => { inputStore.filterPurpose = v },
+})
+const inputFilterStatusOptions = [{ value: '', label: '全部状态' }, ...inputStore.STATUS_OPTIONS]
+const inputFilterKindOptions = [{ value: '', label: '全部票种' }, ...inputStore.KIND_OPTIONS]
+const inputFilterPurposeOptions = [
+  { value: '', label: '全部用途' },
+  { value: 'DEDUCT', label: '抵扣' },
+  { value: 'NO_DEDUCT', label: '不抵扣' },
+  { value: 'REFUND', label: '退税' },
+  { value: 'PENDING', label: '待确认' },
+]
+const inputStoreOptions = computed(() => storeCtx.stores.map((s) => ({ value: s.storeName, label: s.storeName })))
+const inputRateOptions = inputStore.RATES.map((r) => ({ value: String(r), label: r === 0 ? '免税 0%' : `${(r * 100).toFixed(0)}%` }))
+const inputReasonOptions = inputStore.REASON_OPTIONS
+const inputPages = computed(() => Math.max(1, Math.ceil(inputStore.total / inputStore.size)))
+
+function onInputFilter() {
+  void inputStore.loadList(0).catch((e: unknown) => toast.error('进项发票加载失败：' + errMsg(e)))
+}
+function onInputKeyword() {
+  void inputStore.loadList(0).catch((e: unknown) => toast.error('进项发票加载失败：' + errMsg(e)))
+}
+function gotoPage(p: number) {
+  if (p < 0 || p >= inputPages.value || p === inputStore.page) return
+  void inputStore.loadList(p).catch((e: unknown) => toast.error('进项发票加载失败：' + errMsg(e)))
+}
+function errMsg(e: unknown) {
+  const anyE = e as { response?: { data?: { message?: string } }; message?: string }
+  return anyE?.response?.data?.message || anyE?.message || '网络异常'
+}
+
+// 登记进项发票弹层
+const showInputCreate = ref(false)
+function todayStr() {
+  const d = new Date()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
+}
+const inputForm = ref<RegisterForm>({
+  invoiceKind: 'SPECIAL',
+  category: 'SERVICE',
+  sellerName: '', sellerTaxNo: '', invoiceNo: '', invoiceCode: '',
+  supplierId: null, store: '', invoiceDate: todayStr(),
+  amount: 0, taxRate: 0.06, remark: '',
+})
+const inputFormTax = computed(() => {
+  const r = inputForm.value.taxRate
+  return r > 0 ? Math.round(inputForm.value.amount - inputForm.value.amount / (1 + r)) : 0
+})
+function openInputCreate() {
+  inputForm.value = {
+    invoiceKind: 'SPECIAL', category: 'SERVICE',
+    sellerName: '', sellerTaxNo: '', invoiceNo: '', invoiceCode: '',
+    supplierId: null,
+    store: storeCtx.currentStoreName || storeCtx.stores[0]?.storeName || '',
+    invoiceDate: todayStr(), amount: 0, taxRate: 0.06, remark: '',
+  }
+  showInputCreate.value = true
+}
+const canSubmitInputCreate = computed(() =>
+  inputForm.value.sellerName.trim()
+  && inputForm.value.sellerTaxNo.trim()
+  && inputForm.value.invoiceNo.trim()
+  && inputForm.value.store
+  && inputForm.value.invoiceDate
+  && inputForm.value.amount > 0)
+async function submitInputCreate() {
+  if (!canSubmitInputCreate.value) return
+  try {
+    const d = await inputStore.register(inputForm.value)
+    if (d) toast.success(`登记成功：${d.registerNo}`)
+    showInputCreate.value = false
+  } catch (e) {
+    toast.error('登记失败：' + errMsg(e))
+  }
+}
+
+// 用途确认弹层
+const showInputConfirm = ref(false)
+const confirmPurpose = ref<'DEDUCT' | 'NO_DEDUCT' | 'REFUND'>('DEDUCT')
+const confirmReason = ref<InputNondeductReason>('WELFARE')
+const confirmRemark = ref('')
+function openInputConfirm() {
+  confirmPurpose.value = 'DEDUCT'
+  confirmReason.value = 'WELFARE'
+  confirmRemark.value = ''
+  showInputConfirm.value = true
+}
+async function submitInputConfirm() {
+  if (!inputSelected.value) return
+  try {
+    await inputStore.confirm(
+      inputSelected.value.id,
+      confirmPurpose.value,
+      confirmPurpose.value === 'NO_DEDUCT' ? confirmReason.value : undefined,
+      confirmRemark.value,
+    )
+    toast.success('用途确认成功')
+    showInputConfirm.value = false
+  } catch (e) {
+    toast.error('用途确认失败：' + errMsg(e))
+  }
+}
+
+// 撤销确认
+async function onInputRevoke() {
+  if (!inputSelected.value) return
+  try {
+    await inputStore.revokeConfirm(inputSelected.value.id)
+    toast.success('已撤销用途确认')
+  } catch (e) {
+    toast.error('撤销失败：' + errMsg(e))
+  }
+}
+
+// 抵扣（periodId 缺省，后端懒创建当前月 OPEN 期）
+const deducting = ref(false)
+async function onInputDeduct() {
+  if (!inputSelected.value || deducting.value) return
+  deducting.value = true
+  try {
+    await inputStore.deduct(inputSelected.value.id)
+    toast.success('申报抵扣成功')
+  } catch (e) {
+    toast.error('抵扣失败：' + errMsg(e))
+  } finally {
+    deducting.value = false
+  }
+}
+
+// 进项转出弹层
+const showTransferOut = ref(false)
+const transferAmount = ref(0)
+const transferReason = ref<InputNondeductReason>('WELFARE')
+const transferRemark = ref('')
+function openTransferOut() {
+  transferAmount.value = inputSelected.value?.taxAmount ?? 0
+  transferReason.value = 'WELFARE'
+  transferRemark.value = ''
+  showTransferOut.value = true
+}
+const canSubmitTransfer = computed(() =>
+  inputSelected.value !== null
+  && transferAmount.value > 0
+  && transferAmount.value <= inputSelected.value.taxAmount)
+async function submitTransferOut() {
+  if (!inputSelected.value || !canSubmitTransfer.value) return
+  try {
+    await inputStore.transferOut(inputSelected.value.id, transferAmount.value, transferReason.value, transferRemark.value)
+    toast.success('进项转出成功')
+    showTransferOut.value = false
+  } catch (e) {
+    toast.error('进项转出失败：' + errMsg(e))
+  }
+}
+
+// 标记不抵扣弹层
+const showNonDeduct = ref(false)
+const nonDeductReason = ref<InputNondeductReason>('WELFARE')
+const nonDeductRemark = ref('')
+function openNonDeduct() {
+  nonDeductReason.value = 'WELFARE'
+  nonDeductRemark.value = ''
+  showNonDeduct.value = true
+}
+async function submitNonDeduct() {
+  if (!inputSelected.value) return
+  try {
+    await inputStore.markNonDeductible(inputSelected.value.id, nonDeductReason.value, nonDeductRemark.value)
+    toast.success('已标记不抵扣')
+    showNonDeduct.value = false
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
+}
 </script>
 
 <template>
   <div class="inv">
+    <!-- B63 卡4：销项/进项顶层页签（标准 tabs 母本） -->
+    <div class="tabs">
+      <button v-for="t in tabs" :key="t.k" class="tab"
+        :class="{ 'tab--active': tab === t.k }" @click="selectTab(t.k)">{{ t.label }}</button>
+    </div>
+
+    <div v-if="tab === 'output'" class="inv__output">
     <div class="inv__head">
       <CKpi v-for="k in kpis" :key="k.label" :label="k.label" :value="k.value" :tone="k.tone" :icon="k.icon" />
     </div>
@@ -264,6 +485,137 @@ function submitVoid() {
         </div>
       </CCard>
     </div>
+    </div>
+    <!-- /B63 卡4 销项整块包裹结束（销项样式零改） -->
+
+    <!-- ==================== B63 卡4 进项发票 ==================== -->
+    <div v-if="tab === 'input'" class="inv__body">
+      <!-- 左：进项发票列表 -->
+      <CCard class="inv__list" padding="none">
+        <div class="filters">
+          <CInput v-model="inputStore.keyword" placeholder="登记号/票号/销方" @keyup.enter="onInputKeyword" />
+          <CButton variant="secondary" size="sm" @click="onInputKeyword">查询</CButton>
+          <CButton v-if="auth.can('finance:input:edit')" variant="primary" size="sm" @click="openInputCreate">
+            <CIcon name="plus" :size="14" />登记进项
+          </CButton>
+        </div>
+        <div class="filters filters--2">
+          <CSelect v-model="inputKindFilter" width="100%" :options="inputFilterKindOptions" @update:model-value="onInputFilter" />
+          <CSelect v-model="inputStatusFilter" width="100%" :options="inputFilterStatusOptions" @update:model-value="onInputFilter" />
+          <CSelect v-model="inputPurposeFilter" width="100%" :options="inputFilterPurposeOptions" @update:model-value="onInputFilter" />
+        </div>
+        <div class="list">
+          <div v-if="inputStore.loading" class="empty">加载中…</div>
+          <div v-else-if="inputStore.items.length === 0" class="empty">
+            <CIcon name="order" :size="28" class="empty__icon" />
+            <div>暂无进项发票数据</div>
+          </div>
+          <button
+            v-for="inv in inputStore.items" :key="inv.id"
+            class="row" :class="{ 'row--active': inputSelected?.id === inv.id }"
+            @click="inputSelectedId = inv.id"
+          >
+            <div class="row__top">
+              <span class="row__no">{{ inv.registerNo }}</span>
+              <CStatusPill :status="inputStore.STATUS_PILL[inv.status]" dot>{{ inv.statusLabel }}</CStatusPill>
+            </div>
+            <div class="row__title">{{ inv.sellerName }}</div>
+            <div class="row__sub">{{ inv.invoiceKindLabel }} · 票号 {{ inv.invoiceNo }}</div>
+            <div class="row__bottom">
+              <span class="row__amt">{{ money(inv.amount) }}</span>
+              <span class="row__date">税额 {{ money(inv.taxAmount) }} · {{ inv.invoiceDate }}</span>
+            </div>
+          </button>
+        </div>
+        <div v-if="inputStore.total > 0" class="pager">
+          <CButton variant="ghost" size="sm" :disabled="inputStore.page === 0" @click="gotoPage(inputStore.page - 1)">上一页</CButton>
+          <span class="pager__info">{{ inputStore.page + 1 }} / {{ inputPages }}（共 {{ inputStore.total }} 条）</span>
+          <CButton variant="ghost" size="sm" :disabled="inputStore.page + 1 >= inputPages" @click="gotoPage(inputStore.page + 1)">下一页</CButton>
+        </div>
+      </CCard>
+
+      <!-- 右：进项发票详情 + 状态机操作 -->
+      <CCard v-if="inputSelected" class="inv__detail" padding="none">
+        <template #header>
+          <div class="inv__detail-head">
+            <div class="inv__who">
+              <h3 class="inv__no">{{ inputSelected.registerNo }}</h3>
+              <div class="inv__sub">{{ inputSelected.sellerName }} · {{ inputSelected.invoiceKindLabel }}</div>
+            </div>
+            <CStatusPill :status="inputStore.STATUS_PILL[inputSelected.status]" dot>{{ inputSelected.statusLabel }}</CStatusPill>
+          </div>
+        </template>
+
+        <div class="detail-body">
+          <div class="stat-grid">
+            <div class="stat">
+              <div class="stat__label">价税合计</div>
+              <div class="stat__value stat__value--brand">{{ money(inputSelected.amount) }}</div>
+            </div>
+            <div class="stat">
+              <div class="stat__label">税额</div>
+              <div class="stat__value">{{ money(inputSelected.taxAmount) }}</div>
+            </div>
+            <div class="stat">
+              <div class="stat__label">不含税金额</div>
+              <div class="stat__value">{{ money(inputSelected.netAmount) }}</div>
+            </div>
+            <div class="stat">
+              <div class="stat__label">税率</div>
+              <div class="stat__value">{{ inputSelected.taxRate === 0 ? '免税' : (inputSelected.taxRate * 100).toFixed(0) + '%' }}</div>
+            </div>
+          </div>
+
+          <div class="kv">
+            <div class="kv__row"><span class="kv__k">发票号码</span><span class="kv__v">{{ inputSelected.invoiceNo }}</span></div>
+            <div class="kv__row"><span class="kv__k">开票方</span><span class="kv__v">{{ inputSelected.sellerName }}</span></div>
+            <div class="kv__row"><span class="kv__k">销方税号</span><span class="kv__v">{{ inputSelected.sellerTaxNo }}</span></div>
+            <div class="kv__row"><span class="kv__k">开票日期</span><span class="kv__v">{{ inputSelected.invoiceDate }}（入账账龄 {{ inputSelected.ageDays }} 天）</span></div>
+            <div class="kv__row"><span class="kv__k">采购用途</span><span class="kv__v">{{ inputSelected.categoryLabel }} · 当前用途：{{ inputSelected.purposeLabel }}</span></div>
+            <div class="kv__row"><span class="kv__k">归属门店</span><span class="kv__v">{{ inputSelected.store }}</span></div>
+            <div class="kv__row"><span class="kv__k">登记人 / 确认人</span><span class="kv__v">{{ inputSelected.operator }}<template v-if="inputSelected.confirmer"> / {{ inputSelected.confirmer }}</template></span></div>
+            <div v-if="inputSelected.periodId" class="kv__row"><span class="kv__k">抵扣期间</span><span class="kv__v">#{{ inputSelected.periodId }}</span></div>
+            <div v-if="inputSelected.transferOutAmount > 0" class="kv__row"><span class="kv__k">累计进项转出</span><span class="kv__v kv__v--danger">{{ money(inputSelected.transferOutAmount) }}</span></div>
+            <div v-if="inputSelected.nondeductReasonLabel" class="kv__row"><span class="kv__k">不抵扣/转出原因</span><span class="kv__v kv__v--danger">{{ inputSelected.nondeductReasonLabel }}</span></div>
+            <div v-if="inputSelected.remark" class="kv__row"><span class="kv__k">备注</span><span class="kv__v">{{ inputSelected.remark }}</span></div>
+          </div>
+
+          <div class="block">
+            <div class="block__title"><span>状态机操作</span></div>
+            <div class="ops">
+              <template v-if="inputSelected.status === 'UNCONFIRMED'">
+                <CButton variant="primary" size="sm" v-perm.disable="'finance:input:confirm'" @click="openInputConfirm">
+                  <CIcon name="check" :size="14" />用途确认
+                </CButton>
+                <CButton variant="secondary" size="sm" v-perm.disable="'finance:input:edit'" @click="openNonDeduct">
+                  <CIcon name="close" :size="14" />标记不抵扣
+                </CButton>
+              </template>
+              <template v-if="inputSelected.status === 'CONFIRMED'">
+                <CButton v-if="inputSelected.purpose === 'DEDUCT'" variant="primary" size="sm"
+                  :disabled="deducting" v-perm.disable="'finance:input:confirm'" @click="onInputDeduct">
+                  <CIcon name="check" :size="14" />{{ deducting ? '抵扣中…' : '申报抵扣' }}
+                </CButton>
+                <CButton variant="ghost" size="sm" v-perm.disable="'finance:input:confirm'" @click="onInputRevoke">撤销确认</CButton>
+                <span v-if="inputSelected.purpose === 'REFUND'" class="ops__hint">退税勾选不在本卡办理抵扣，请走退税申报流程</span>
+              </template>
+              <CButton v-if="inputSelected.status === 'DEDUCTED'" variant="danger" size="sm" v-perm.disable="'finance:input:confirm'" @click="openTransferOut">
+                <CIcon name="alert" :size="14" />进项转出
+              </CButton>
+              <span v-if="inputSelected.status === 'TRANSFERRED_OUT'" class="ops__hint ops__hint--danger">已进项转出（终态）</span>
+              <span v-if="inputSelected.status === 'NON_DEDUCTIBLE'" class="ops__hint ops__hint--danger">不抵扣（终态）</span>
+            </div>
+          </div>
+        </div>
+      </CCard>
+
+      <CCard v-else class="inv__detail inv__detail--empty" title="进项发票详情" padding="lg">
+        <div class="detail-empty">
+          <CIcon name="order" :size="40" class="detail-empty__icon" />
+          <p>请选择一张进项发票</p>
+        </div>
+      </CCard>
+    </div>
 
     <!-- 申请开票弹层 -->
     <div v-if="showCreate" class="modal-mask" @click.self="showCreate = false">
@@ -380,6 +732,157 @@ function submitVoid() {
         <template #footer>
           <CButton variant="ghost" @click="showFlush = false">取消</CButton>
           <CButton variant="danger" :disabled="!canFlush" @click="submitFlush">确认红冲</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- B63 卡4 进项：登记弹层 -->
+    <div v-if="showInputCreate" class="modal-mask" @click.self="showInputCreate = false">
+      <CCard class="modal" title="登记进项发票" padding="lg">
+        <div class="form">
+          <div class="form__row form__row--2">
+            <div>
+              <label class="form__label">扣税凭证种类 <span class="req">*</span></label>
+              <CSelect v-model="inputForm.invoiceKind" width="100%" :options="inputStore.KIND_OPTIONS" />
+            </div>
+            <div>
+              <label class="form__label">采购用途</label>
+              <CSelect v-model="inputForm.category" width="100%" :options="inputStore.CATEGORY_OPTIONS" />
+            </div>
+          </div>
+          <div class="form__row form__row--2">
+            <div>
+              <label class="form__label">开票方名称 <span class="req">*</span></label>
+              <CInput v-model="inputForm.sellerName" placeholder="销方企业全称" />
+            </div>
+            <div>
+              <label class="form__label">销方纳税人识别号 <span class="req">*</span></label>
+              <CInput v-model="inputForm.sellerTaxNo" placeholder="统一社会信用代码/税号" />
+            </div>
+          </div>
+          <div class="form__row form__row--2">
+            <div>
+              <label class="form__label">发票号码 <span class="req">*</span></label>
+              <CInput v-model="inputForm.invoiceNo" placeholder="发票号码" />
+            </div>
+            <div>
+              <label class="form__label">发票代码</label>
+              <CInput v-model="inputForm.invoiceCode" placeholder="选填" />
+            </div>
+          </div>
+          <div class="form__row form__row--2">
+            <div>
+              <label class="form__label">开票日期 <span class="req">*</span></label>
+              <CInput v-model="inputForm.invoiceDate" placeholder="yyyy-MM-dd" />
+            </div>
+            <div>
+              <label class="form__label">归属门店 <span class="req">*</span></label>
+              <CSelect v-model="inputForm.store" width="100%" :options="inputStoreOptions" />
+            </div>
+          </div>
+          <div class="form__row form__row--2">
+            <div>
+              <label class="form__label">价税合计（元）<span class="req">*</span></label>
+              <CInput :model-value="String(inputForm.amount)" @update:model-value="inputForm.amount = Number($event) || 0" placeholder="0" />
+            </div>
+            <div>
+              <label class="form__label">税率</label>
+              <CSelect :model-value="String(inputForm.taxRate)" @update:model-value="inputForm.taxRate = Number($event)" width="100%" :options="inputRateOptions" />
+            </div>
+          </div>
+          <div class="form__calc">预计税额：<b>{{ money(inputFormTax) }}</b>　不含税：<b>{{ money(Math.max(0, inputForm.amount - inputFormTax)) }}</b></div>
+          <div class="form__row">
+            <label class="form__label">备注</label>
+            <CInput v-model="inputForm.remark" placeholder="选填" />
+          </div>
+          <p class="form__tip">税额由服务端按五档税率价税分离，登记后进入「待确认」，需再做用途确认方可申报抵扣。</p>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showInputCreate = false">取消</CButton>
+          <CButton variant="primary" :disabled="!canSubmitInputCreate" @click="submitInputCreate">提交登记</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- B63 卡4 进项：用途确认弹层 -->
+    <div v-if="showInputConfirm" class="modal-mask" @click.self="showInputConfirm = false">
+      <CCard class="modal modal--sm" title="进项用途确认" padding="lg">
+        <div class="form">
+          <div class="sign-box">
+            <div class="sign-box__title"><CIcon name="shield" :size="16" /> 用途确认</div>
+            <div class="sign-box__text">登记号：{{ inputSelected?.registerNo }}　|　{{ inputSelected?.sellerName }}</div>
+            <div class="sign-box__text">税额：<b>{{ inputSelected ? money(inputSelected.taxAmount) : '' }}</b></div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">用途 <span class="req">*</span></label>
+            <CSelect v-model="confirmPurpose" width="100%" :options="inputStore.PURPOSE_OPTIONS" />
+          </div>
+          <div v-if="confirmPurpose === 'NO_DEDUCT'" class="form__row">
+            <label class="form__label">不抵扣原因（七码）<span class="req">*</span></label>
+            <CSelect v-model="confirmReason" width="100%" :options="inputReasonOptions" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">备注</label>
+            <CInput v-model="confirmRemark" placeholder="选填" />
+          </div>
+          <p v-if="confirmPurpose === 'REFUND'" class="form__tip">退税勾选只确认用途，不在本卡办理抵扣，请走退税申报流程。</p>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showInputConfirm = false">取消</CButton>
+          <CButton variant="primary" @click="submitInputConfirm">确认</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- B63 卡4 进项：进项转出弹层 -->
+    <div v-if="showTransferOut" class="modal-mask" @click.self="showTransferOut = false">
+      <CCard class="modal modal--sm" title="进项转出" padding="lg">
+        <div class="form">
+          <div class="sign-box">
+            <div class="sign-box__title"><CIcon name="alert" :size="16" /> 转出后为终态</div>
+            <div class="sign-box__text">登记号：{{ inputSelected?.registerNo }}</div>
+            <div class="sign-box__text sign-box__text--danger">票面税额：{{ inputSelected ? money(inputSelected.taxAmount) : '' }}（转出额不得超过）</div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">进项转出额（元）<span class="req">*</span></label>
+            <CInput :model-value="String(transferAmount)" @update:model-value="transferAmount = Number($event) || 0" placeholder="0" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">转出原因（七码）<span class="req">*</span></label>
+            <CSelect v-model="transferReason" width="100%" :options="inputReasonOptions" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">备注</label>
+            <CInput v-model="transferRemark" placeholder="选填" />
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showTransferOut = false">取消</CButton>
+          <CButton variant="danger" :disabled="!canSubmitTransfer" @click="submitTransferOut">确认转出</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- B63 卡4 进项：标记不抵扣弹层 -->
+    <div v-if="showNonDeduct" class="modal-mask" @click.self="showNonDeduct = false">
+      <CCard class="modal modal--sm" title="标记不抵扣" padding="lg">
+        <div class="form">
+          <div class="sign-box">
+            <div class="sign-box__title"><CIcon name="shield" :size="16" /> 终态操作</div>
+            <div class="sign-box__text">登记号：{{ inputSelected?.registerNo }}　税额：{{ inputSelected ? money(inputSelected.taxAmount) : '' }}</div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">不抵扣原因（七码）<span class="req">*</span></label>
+            <CSelect v-model="nonDeductReason" width="100%" :options="inputReasonOptions" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">备注</label>
+            <CInput v-model="nonDeductRemark" placeholder="选填" />
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showNonDeduct = false">取消</CButton>
+          <CButton variant="danger" @click="submitNonDeduct">确认不抵扣</CButton>
         </template>
       </CCard>
     </div>

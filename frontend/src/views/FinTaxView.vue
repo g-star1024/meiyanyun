@@ -48,7 +48,7 @@ const totalTax = computed(() => store.taxRows.reduce((s, r) => s + r.amount, 0))
       <CCard class="tax__table" padding="none">
         <template #header>
           <div class="card-head">
-            <h3 class="card-head__title">税种明细（2026-08）</h3>
+            <h3 class="card-head__title">税种明细<template v-if="store.currentPeriodLabel">（{{ store.currentPeriodLabel }}）</template></h3>
             <CButton variant="secondary" size="sm" v-perm.disable="'finance:export'">
               <CIcon name="export" :size="14" />导出报表
             </CButton>
@@ -70,7 +70,7 @@ const totalTax = computed(() => store.taxRows.reduce((s, r) => s + r.amount, 0))
               <td class="tar">{{ r.base.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</td>
               <td class="tar">{{ (r.rate * 100).toFixed(0) }}%</td>
               <td class="tar"><b>{{ r.amount.toLocaleString('zh-CN', { minimumFractionDigits: 2 }) }}</b></td>
-              <td><CStatusPill status="info">待申报</CStatusPill></td>
+              <td><CStatusPill :status="store.currentPeriodStatusTone">{{ store.currentPeriodStatusLabel }}</CStatusPill></td>
             </tr>
             <tr class="ttable__sum">
               <td>合计</td>
@@ -87,6 +87,7 @@ const totalTax = computed(() => store.taxRows.reduce((s, r) => s + r.amount, 0))
         <div class="calc-row"><span>销项税额合计</span><b>{{ money(store.outputTax) }}</b></div>
         <div class="calc-row"><span>减：进项税额抵扣</span><b class="is-teal">−{{ money(store.inputDeduct) }}</b></div>
         <div class="calc-row calc-row--sum"><span>本期应纳税额</span><b>{{ money(store.taxPayable) }}</b></div>
+        <div v-if="store.retainedAmount > 0" class="calc-row"><span>期末留抵（结转下期）</span><b class="is-teal">{{ money(store.retainedAmount) }}</b></div>
         <p class="redline">
           <CIcon name="shield" :size="14" />
           本页为税务申报辅助报表，数据单向镜像自税控/业务系统，申报与缴款以电子税务局为准，本系统不碰资金。

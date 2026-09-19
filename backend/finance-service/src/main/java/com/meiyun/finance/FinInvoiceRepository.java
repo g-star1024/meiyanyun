@@ -2,7 +2,10 @@ package com.meiyun.finance;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
+import java.time.OffsetDateTime;
 import java.util.Optional;
 
 public interface FinInvoiceRepository
@@ -20,4 +23,12 @@ public interface FinInvoiceRepository
             value = "select coalesce(max(cast(substring(invoice_no from 14) as integer)), 0) " +
                     "from fin_invoice where invoice_no like :prefix", nativeQuery = true)
     int maxSeqOfDay(@org.springframework.data.repository.query.Param("prefix") String prefix);
+
+    /**
+     * 申报快照销项税额（分）：开具时间落在 [from, to) 且当期状态为 ISSUED 的销项票。
+     * 已红冲（RED_FLUSHED）与作废（VOIDED）票不计当期销项。
+     */
+    @Query("select coalesce(sum(i.taxAmount), 0) from FinInvoice i "
+            + "where i.issuedAt >= :from and i.issuedAt < :to and i.status = 'ISSUED'")
+    long sumIssuedTaxBetween(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
 }

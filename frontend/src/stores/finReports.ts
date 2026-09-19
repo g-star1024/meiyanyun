@@ -13,11 +13,13 @@ import { useStoreContext } from './storeContext'
 import {
   getCardsBalance, getTax, getCosts, getCardTimeline, listWriteoffDetails,
   listAbnormalBills, createAbnormalBill, disposeAbnormalBill,
+  getInputInvoiceSummary, getCurrentTaxPeriod,
 } from '@/api/finance'
 import type {
   CardBalanceDTO, Tax as TaxDTO, CostAggregate,
   CardTxnDTO, CardTimelineDTO, WriteoffDetailDTO,
   FinAbnormalType, FinAbnormalStatus, FinAbnormalBillDTO,
+  InputInvoiceSummary, TaxPeriodDTO,
 } from '@/api/finance'
 
 /** 分 → 元（finance 卡余额/税务镜像金额以「分」存储，台账聚合已换算为元） */
@@ -429,13 +431,33 @@ export const useFinReportsStore = defineStore('finReports', () => {
   /** 门店编码 → 中文名（台账 store 为中文名，成本聚合为编码，需对齐） */
   const nameOf = (code: string) => ctx.stores.find((s) => s.storeCode === code)?.storeName ?? code
 
-  // ----- 税务（finance 镜像端点；种子库 tax 表空→空态，金额「分」→「元」） -----
+  // ----- 税务（销项取 finance 镜像端点；进项抵扣/留抵取申报期 summary 真源，元） -----
   const taxRows = ref<TaxRow[]>([])
   const taxableRevenue = computed(() => taxRows.value.reduce((s, r) => s + r.base, 0))
   const outputTax = computed(() => taxRows.value.reduce((s, r) => s + r.amount, 0))
-  // 进项抵扣无数据源（采购/供应商发票未建），诚实为 0
-  const inputDeduct = ref(0)
+  // 进项抵扣＝当前申报期净抵扣（已抵扣－进项转出）；拉取失败诚实回落 0，不再写死假值
+  const inputSummary = ref<InputInvoiceSummary | null>(null)
+  const inputDeduct = computed(() => r2(inputSummary.value?.netDeductible ?? 0))
+  /** 期末留抵（净抵扣 > 销项时结转下期），供税务页副文案列示 */
+  const retainedAmount = computed(() => r2(inputSummary.value?.retainedAmount ?? 0))
   const taxPayable = computed(() => Math.max(0, outputTax.value - inputDeduct.value))
+
+  // ----- 当前申报期（/finance/tax-periods/current；未登记为 exists=false 预填骨架） -----
+  const currentPeriod = ref<TaxPeriodDTO | null>(null)
+  /** 期间标题，如「2026-09」；拉取失败不显示期间号 */
+  const currentPeriodLabel = computed(() => currentPeriod.value?.period ?? '')
+  /** 申报状态中文文案（后端权威：未申报/已申报/逾期补申报/更正申报/已归档） */
+  const currentPeriodStatusLabel = computed(() => currentPeriod.value?.statusLabel ?? '未申报')
+  /** 申报状态 pill 色调：未申报→info，已申报→success，逾期/更正→warning，归档→default */
+  const currentPeriodStatusTone = computed<'info' | 'success' | 'warning' | 'default'>(() => {
+    switch (currentPeriod.value?.status) {
+      case 'FILED': return 'success'
+      case 'LATE_FILED':
+      case 'AMENDED': return 'warning'
+      case 'CLOSED': return 'default'
+      default: return 'info'
+    }
+  })
 
   // ----- 资金日报（从真实台账派生） -----
   // 收入 = RF-REVENUE IN；支出 = RF-REFUND/TK* OUT（RF-DEPOSIT OUT 为预收内部转出，不重复计流出）
@@ -594,12 +616,24 @@ export const useFinReportsStore = defineStore('finReports', () => {
       } catch (e) {
         console.error('[finReports] 加载税务/成本镜像失败，回落空态', e)
       }
+      // 进项抵扣汇总＋当前申报期：独立 best-effort，失败仅静默回落零值/空态，不拖垮销项与成本
+      try {
+        const [summary, period] = await Promise.all([
+          getInputInvoiceSummary(),
+          getCurrentTaxPeriod('MONTH'),
+        ])
+        inputSummary.value = summary.data ?? null
+        currentPeriod.value = period.data ?? null
+      } catch (e) {
+        console.error('[finReports] 加载进项抵扣/申报期失败，进项口径回落 0', e)
+      }
     })()
     return seeding
   }
 
   return {
-    taxRows, taxableRevenue, outputTax, inputDeduct, taxPayable,
+    taxRows, taxableRevenue, outputTax, inputDeduct, taxPayable, retainedAmount,
+    currentPeriodLabel, currentPeriodStatusLabel, currentPeriodStatusTone,
     dailyFlows, channelFlows, latestDate, todayIncome, todayExpense, todayNet, endBalance,
     monthlyTrend, storeMonthly, seed,
   }

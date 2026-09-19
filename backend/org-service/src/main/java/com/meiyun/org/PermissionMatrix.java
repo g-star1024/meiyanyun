@@ -99,6 +99,7 @@ public final class PermissionMatrix {
             "finance:cardbalance:view",
             "finance:abnormal:view",
             "finance:tax:view",
+            "finance:input:view",
             "finance:cashdaily:view",
             "finance:monthly:view",
             "finance:budget:view",
@@ -313,6 +314,8 @@ public final class PermissionMatrix {
             "finance:settlement:edit",
             "finance:invoice:edit",
             "finance:invoice:approve",
+            "finance:input:edit",
+            "finance:input:confirm",
             "finance:commission:edit"
     );
 
@@ -1007,12 +1010,15 @@ public final class PermissionMatrix {
                 "finance:monthly:view",
                 "finance:budget:view",
                 "finance:settings:view",
+                "finance:input:view",
                 "finance:reconcile",
                 "finance:reconcile:approve",
                 "finance:settlement:approve",
                 "finance:settlement:edit",
                 "finance:invoice:edit",
                 "finance:invoice:approve",
+                "finance:input:edit",
+                "finance:input:confirm",
                 "finance:commission:edit",
                 "finance:commission:approve",
                 "finance:cost:edit",

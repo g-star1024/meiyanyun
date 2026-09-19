@@ -888,3 +888,222 @@ export const createPrepayMonitorRule = (cmd: PrepayMonitorRuleCmd) =>
 /** 编辑监控规则（type 不可变，其余字段按 body 键存在与否更新；finance:settings:edit） */
 export const updatePrepayMonitorRule = (code: string, cmd: Partial<PrepayMonitorRuleCmd>) =>
   client.put<PrepayMonitorRuleDTO>(`/finance/prepay-monitor/rules/${encodeURIComponent(code)}`, cmd)
+
+// ============================================================
+// B63 卡4 L86 进项税抵扣链路（V39：fin_input_invoice / fin_tax_period）
+// 金额视图一律「元」；登记价税合计亦传「元」，税额由服务端按五档税率价税分离
+// ============================================================
+
+/** 进项票扣税凭证种类（对齐后端 KINDS） */
+export type InputInvoiceKind = 'SPECIAL' | 'CUSTOMS' | 'TOLL' | 'PASSENGER' | 'OTHER'
+/** 采购用途分类 */
+export type InputInvoiceCategory = 'SERVICE' | 'PRODUCT' | 'MEMBERSHIP'
+/** 用途确认结果 */
+export type InputInvoicePurpose = 'PENDING' | 'DEDUCT' | 'NO_DEDUCT' | 'REFUND'
+/** 进项票状态机：待确认→已用途确认→已抵扣→已进项转出（终态）；不抵扣为终态旁路 */
+export type InputInvoiceStatus =
+  | 'UNCONFIRMED' | 'CONFIRMED' | 'DEDUCTED' | 'TRANSFERRED_OUT' | 'NON_DEDUCTIBLE'
+/** 不抵扣/进项转出七码原因 */
+export type InputNondeductReason =
+  | 'WELFARE' | 'LOSS_GOODS' | 'LOSS_PRODUCT' | 'LOSS_REAL_ESTATE'
+  | 'LOSS_CONSTRUCTION' | 'LOAN_DAILY' | 'OTHER'
+/** 申报频率 */
+export type TaxPeriodType = 'MONTH' | 'QUARTER'
+/** 申报期状态机：未申报→已申报/逾期补申报→更正申报 */
+export type TaxPeriodStatus = 'OPEN' | 'FILED' | 'LATE_FILED' | 'AMENDED' | 'CLOSED'
+
+/** GET /finance/input-invoices 行视图（对齐后端 invoiceView，金额为元） */
+export interface InputInvoiceDTO {
+  id: number
+  registerNo: string
+  invoiceCode: string
+  invoiceNo: string
+  invoiceKind: InputInvoiceKind
+  invoiceKindLabel: string
+  sellerName: string
+  sellerTaxNo: string
+  supplierId: number | null
+  amount: number
+  netAmount: number
+  taxAmount: number
+  /** 税率小数（0.13 表示 13%） */
+  taxRate: number
+  category: InputInvoiceCategory
+  categoryLabel: string
+  purpose: InputInvoicePurpose
+  purposeLabel: string
+  status: InputInvoiceStatus
+  statusLabel: string
+  nondeductReason: string
+  nondeductReasonLabel: string
+  transferOutAmount: number
+  periodId: number | null
+  invoiceDate: string
+  ageDays: number
+  confirmedAt: string | null
+  deductedAt: string | null
+  transferredAt: string | null
+  storeCode: string
+  store: string
+  operator: string
+  confirmer: string
+  remark: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** Spring Data Page 序列化结构（进项票分页） */
+export interface InputInvoicePage {
+  content: InputInvoiceDTO[]
+  totalElements: number
+  totalPages: number
+  number: number
+  size: number
+}
+
+/** GET /finance/input-invoices/summary 汇总（元；exists=false 为未登记零金额骨架） */
+export interface InputInvoiceSummary {
+  periodType: TaxPeriodType
+  period: string
+  periodStart?: string
+  periodEnd?: string
+  deadline?: string
+  periodId: number | null
+  exists: boolean
+  status?: TaxPeriodStatus
+  statusLabel?: string
+  /** 期间进项价税合计 */
+  inputAmount: number
+  /** 已抵扣（含已转出部分的历史抵扣税额） */
+  deducted: number
+  /** 累计进项转出 */
+  transferredOut: number
+  /** 净抵扣额＝已抵扣－转出 */
+  netDeductible: number
+  outputAmount: number
+  payableAmount: number
+  /** 期末留抵（净抵扣 > 销项时结转下期） */
+  retainedAmount: number
+  /** 全局待抵扣：已确认抵扣用途但尚未抵扣的税额（不受期间影响） */
+  deductibleConfirmed: number
+}
+
+/** 登记入参（元；idemKey 必填幂等，taxAmount 选填仅允许与算定税额相差 ≤1 分） */
+export interface InputInvoiceRegisterCmd {
+  idemKey: string
+  invoiceKind: InputInvoiceKind
+  category: InputInvoiceCategory
+  sellerName: string
+  sellerTaxNo: string
+  invoiceNo: string
+  invoiceCode?: string | null
+  supplierId?: number | null
+  storeCode: string
+  invoiceDate: string
+  amount: number
+  taxRate: number
+  taxAmount?: number | null
+  remark?: string | null
+}
+
+/** GET /finance/tax-periods 期间视图（对齐后端 periodViewWithLive，金额为元） */
+export interface TaxPeriodDTO {
+  id: number
+  exists: boolean
+  periodType: TaxPeriodType
+  period: string
+  periodStart: string
+  periodEnd: string
+  deadline: string
+  status: TaxPeriodStatus
+  statusLabel: string
+  filedAt: string | null
+  filer: string | null
+  remark: string | null
+  createdAt?: string
+  updatedAt?: string
+  outputAmount: number
+  inputAmount: number
+  transferOutAmount: number
+  payableAmount: number
+  retainedAmount: number
+  /** true＝已申报读落库快照；false＝OPEN 期实时预览 */
+  snapshot: boolean
+}
+
+/** Spring Data Page 序列化结构（申报期分页） */
+export interface TaxPeriodPage {
+  content: TaxPeriodDTO[]
+  totalElements: number
+  totalPages: number
+  number: number
+  size: number
+}
+
+/** 进项票分页查询参数（全部可选；空串不下发） */
+export interface InputInvoiceQuery {
+  storeCode?: string
+  status?: InputInvoiceStatus | ''
+  invoiceKind?: InputInvoiceKind | ''
+  purpose?: InputInvoicePurpose | ''
+  periodId?: number | null
+  keyword?: string
+  page?: number
+  size?: number
+}
+
+/** 进项票分页（finance:input:view） */
+export const listInputInvoices = (params: InputInvoiceQuery = {}) =>
+  client.get<InputInvoicePage>('/finance/input-invoices', { params })
+
+/** 进项抵扣汇总（finance:tax:view；periodId 优先，其次 type＋period，缺省当前月开放期） */
+export const getInputInvoiceSummary = (params: { periodId?: number; type?: TaxPeriodType; period?: string } = {}) =>
+  client.get<InputInvoiceSummary>('/finance/input-invoices/summary', { params })
+
+/** 登记进项发票（finance:input:edit；idemKey 重复 409，活跃同票重复 422 中文） */
+export const registerInputInvoice = (cmd: InputInvoiceRegisterCmd) =>
+  client.post<InputInvoiceDTO>('/finance/input-invoices', cmd)
+
+/** 进项发票详情（finance:input:view） */
+export const getInputInvoice = (id: number) =>
+  client.get<InputInvoiceDTO>(`/finance/input-invoices/${id}`)
+
+/** 用途确认（finance:input:confirm；NO_DEDUCT 须带七码 reason） */
+export const confirmInputInvoice = (id: number, cmd: { purpose: 'DEDUCT' | 'NO_DEDUCT' | 'REFUND'; reason?: InputNondeductReason; remark?: string }) =>
+  client.post<InputInvoiceDTO>(`/finance/input-invoices/${id}/confirm`, cmd)
+
+/** 撤销用途确认（finance:input:confirm；无 body；已抵扣/已转出 422 中文） */
+export const revokeConfirmInputInvoice = (id: number) =>
+  client.post<InputInvoiceDTO>(`/finance/input-invoices/${id}/revoke-confirm`, {})
+
+/** 申报抵扣（finance:input:confirm；periodId 缺省由后端懒创建当前月 OPEN 期） */
+export const deductInputInvoice = (id: number, periodId?: number | null) =>
+  client.post<InputInvoiceDTO>(`/finance/input-invoices/${id}/deduct`, periodId ? { periodId } : {})
+
+/** 进项转出（finance:input:confirm；amount 元 1..票面税额，reason 七码必填） */
+export const transferOutInputInvoice = (id: number, cmd: { amount: number; reason: InputNondeductReason; remark?: string }) =>
+  client.post<InputInvoiceDTO>(`/finance/input-invoices/${id}/transfer-out`, cmd)
+
+/** 标记不抵扣（finance:input:edit；reason 七码必填，终态旁路） */
+export const markInputInvoiceNonDeductible = (id: number, cmd: { reason: InputNondeductReason; remark?: string }) =>
+  client.post<InputInvoiceDTO>(`/finance/input-invoices/${id}/non-deductible`, cmd)
+
+/** 申报期分页（finance:tax:view） */
+export const listTaxPeriods = (params: { type?: TaxPeriodType; year?: number; page?: number; size?: number } = {}) =>
+  client.get<TaxPeriodPage>('/finance/tax-periods', { params })
+
+/** 当前开放期＋五金额（finance:tax:view；未登记返 exists=false 骨架，不抛 404） */
+export const getCurrentTaxPeriod = (type: TaxPeriodType = 'MONTH') =>
+  client.get<TaxPeriodDTO>('/finance/tax-periods/current', { params: { type } })
+
+/** 幂等确保期间存在（finance:input:edit；periodType/period 缺省当前月期） */
+export const ensureTaxPeriod = (cmd: { periodType?: TaxPeriodType; period?: string } = {}) =>
+  client.post<TaxPeriodDTO>('/finance/tax-periods/ensure', cmd)
+
+/** 申报：OPEN → FILED/LATE_FILED，五金额快照落库并锁抵扣（finance:input:confirm） */
+export const fileTaxPeriod = (id: number, remark?: string) =>
+  client.post<TaxPeriodDTO>(`/finance/tax-periods/${id}/file`, { remark: remark ?? '' })
+
+/** 更正申报：FILED/LATE_FILED/AMENDED → AMENDED（finance:input:confirm；note 必填） */
+export const amendTaxPeriod = (id: number, note: string) =>
+  client.post<TaxPeriodDTO>(`/finance/tax-periods/${id}/amend`, { note })
