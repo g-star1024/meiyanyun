@@ -1,31 +1,33 @@
 <script setup lang="ts">
 /* ============================================================
- * 异常处理 /m2-exception（M2-18）
- * 系统/业务/设备/客诉异常事件流，分级告警，升级闭环。
+ * 通用异常中心 /m2-exception（M2-18 / P5-B63 卡2 L83）
+ * 三源只读归集：耗材扣料 / 划扣核销 / 异常账务。
+ * 中心零写操作：不升级、不闭环；点击「前往处置」按来源跳源处置视图。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CSelect from '@/components/CSelect.vue'
-import CTextarea from '@/components/CTextarea.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CFab from '@/components/CFab.vue'
-import { useAuthStore } from '@/stores/auth'
-import { useExceptionStore, type ExceptionEvent, type ExLevel } from '@/stores/exception'
+import { useExceptionStore, type ExceptionEvent, type ExLevel, type ExSource } from '@/stores/exception'
 import { EXCEPTION_STATUS, RISK_LEVEL, dictPill } from '@/config/dictionary'
-import { useToast } from '@/composables/useToast'
 
-const auth = useAuthStore()
+const router = useRouter()
 const store = useExceptionStore()
-const toast = useToast()
-onMounted(() => store.seed())
+onMounted(() => store.load())
 
 const selectedId = ref<string | null>(null)
 const selected = computed<ExceptionEvent | null>(() => {
   if (selectedId.value) return store.get(selectedId.value) ?? null
   return store.filtered[0] ?? null
+})
+
+watch(() => store.filtered, (list) => {
+  if (selectedId.value && !list.some((e) => e.id === selectedId.value)) selectedId.value = null
 })
 
 const kpis = computed(() => [
@@ -35,12 +37,11 @@ const kpis = computed(() => [
   { label: '今日闭环', icon: 'calendar', value: String(store.todayClosed.length), tone: 'success' as const },
 ])
 
-const typeOptions = [
-  { value: 'ALL', label: '全部类型' },
-  { value: 'SYSTEM', label: '系统异常' },
-  { value: 'BUSINESS', label: '业务异常' },
-  { value: 'DEVICE', label: '设备异常' },
-  { value: 'COMPLAINT', label: '客诉' },
+const sourceOptions = [
+  { value: 'ALL', label: '全部来源' },
+  { value: 'BOM_DEDUCT', label: '耗材扣料' },
+  { value: 'WRITEOFF', label: '划扣核销' },
+  { value: 'FIN_ABNORMAL', label: '异常账务' },
 ]
 const statusOptions = [
   { value: 'ALL', label: '全部状态' },
@@ -54,48 +55,20 @@ const levelMap: Record<ExLevel, { text: string; cls: string }> = {
   LOW: { text: '低', cls: 'lv--low' },
 }
 
+function sourceLabel(s: ExSource) {
+  return store.SOURCE_LABEL[s]
+}
+
 function fmtTime(iso?: string) {
   if (!iso) return '—'
   const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return '—'
   return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// 处理弹层（升级/闭环/备注）
-const showHandle = ref(false)
-const handleMode = ref<'ESCALATE' | 'CLOSE'>('CLOSE')
-const handleText = ref('')
-const canHandle = computed(() => handleText.value.trim().length > 0)
-function openHandle(mode: 'ESCALATE' | 'CLOSE') {
-  if (!selected.value || selected.value.status === 'CLOSED') return
-  handleMode.value = mode
-  handleText.value = ''
-  showHandle.value = true
-}
-function submitHandle() {
-  if (!selected.value || !canHandle.value) return
-  if (handleMode.value === 'ESCALATE') {
-    store.escalate(selected.value.id, handleText.value.trim())
-  } else {
-    store.close(selected.value.id, handleText.value.trim())
-  }
-  showHandle.value = false
-}
-
-function doStart() {
-  if (!selected.value) {
-    toast.warning('请先选择一条异常事件')
-    return
-  }
-  if (selected.value.status === 'CLOSED') {
-    toast.info('该事件已闭环，无需重复处理')
-    return
-  }
-  if (selected.value.status === 'PENDING') {
-    store.start(selected.value.id)
-    toast.success(`已开始处理告警「${selected.value.title}」`)
-  } else if (selected.value.status === 'PROCESSING') {
-    openHandle('CLOSE')
-  }
+function goDispose() {
+  if (!selected.value) return
+  router.push(selected.value.disposeRoute)
 }
 </script>
 
@@ -109,11 +82,19 @@ function doStart() {
       <!-- 左：事件流 -->
       <CCard class="ex__list" padding="none">
         <div class="filters">
-          <CSelect v-model="store.filterType" :options="typeOptions" width="130px" />
+          <CSelect v-model="store.filterSource" :options="sourceOptions" width="130px" />
           <CSelect v-model="store.filterStatus" :options="statusOptions" width="120px" />
         </div>
         <div class="list">
-          <div v-if="store.filtered.length === 0" class="empty">
+          <div v-if="store.loading" class="empty">
+            <CIcon name="dashboard" :size="28" class="empty__icon" />
+            <div>异常数据加载中…</div>
+          </div>
+          <div v-else-if="store.error" class="empty">
+            <CIcon name="shield" :size="28" class="empty__icon" />
+            <div>{{ store.error }}</div>
+          </div>
+          <div v-else-if="store.filtered.length === 0" class="empty">
             <CIcon name="shield" :size="28" class="empty__icon" />
             <div>暂无异常事件</div>
           </div>
@@ -124,7 +105,7 @@ function doStart() {
           >
             <div class="row__top">
               <span class="row__type">
-                <CIcon :name="(store.TYPE_ICON[e.type]) as any" :size="13" /> {{ store.TYPE_LABEL[e.type] }}
+                <CIcon :name="(store.TYPE_ICON[e.type]) as any" :size="13" /> {{ sourceLabel(e.source) }}
               </span>
               <span class="lv" :class="levelMap[e.level].cls">{{ levelMap[e.level].text }}</span>
             </div>
@@ -135,7 +116,7 @@ function doStart() {
             </div>
           </button>
           <CFab
-            :actions="[{ icon: 'bell', label: '处理告警', disabled: !auth.can('exception:edit') || !selected, onClick: doStart }]"
+            :actions="[{ icon: 'tool', label: '前往处置', disabled: !selected, onClick: goDispose }]"
           />
         </div>
       </CCard>
@@ -157,8 +138,8 @@ function doStart() {
               {{ selected.title }}
             </div>
             <div class="detail__sub">
-              <span class="tag tag--type">{{ store.TYPE_LABEL[selected.type] }}</span>
-              <span class="tag"><CIcon name="bell" :size="12" /> {{ selected.source }}</span>
+              <span class="tag tag--type">{{ sourceLabel(selected.source) }}</span>
+              <span class="tag"><CIcon name="bell" :size="12" /> {{ selected.storeName }}</span>
             </div>
           </div>
           <div class="detail__assign">
@@ -187,20 +168,9 @@ function doStart() {
         </div>
 
         <div class="detail__ops">
-          <template v-if="selected.status === 'PENDING'">
-            <CButton variant="ghost" v-perm.disable="'exception:edit'" @click="openHandle('ESCALATE')">
-              <CIcon name="trend-up" :size="16" />升级
-            </CButton>
-            <CButton variant="primary" v-perm.disable="'exception:edit'" @click="doStart">
-              <CIcon name="check" :size="16" />开始处理
-            </CButton>
-          </template>
-          <template v-else-if="selected.status === 'PROCESSING'">
-            <CButton variant="ghost" v-perm.disable="'exception:edit'" @click="openHandle('ESCALATE')">
-              <CIcon name="trend-up" :size="16" />升级
-            </CButton>
-            <CButton variant="primary" v-perm.disable="'exception:edit'" @click="openHandle('CLOSE')">
-              <CIcon name="check-square" :size="16" />闭环
+          <template v-if="selected.status !== 'CLOSED'">
+            <CButton variant="primary" @click="goDispose">
+              <CIcon name="tool" :size="16" />前往处置
             </CButton>
           </template>
           <div v-else class="ops__done">
@@ -214,24 +184,6 @@ function doStart() {
           <CIcon name="shield" :size="40" class="detail-empty__icon" />
           <p>请选择一条异常事件</p>
         </div>
-      </CCard>
-    </div>
-
-    <!-- 处理弹层（升级/闭环） -->
-    <div v-if="showHandle" class="modal-mask" @click.self="showHandle = false">
-      <CCard class="modal modal--sm" :title="handleMode === 'ESCALATE' ? '升级处理' : '异常闭环'" padding="lg">
-        <div class="form">
-          <div class="form__row">
-            <label class="form__label">{{ handleMode === 'ESCALATE' ? '升级原因' : '闭环说明' }} <span class="req">*</span></label>
-            <CTextarea v-model="handleText" :placeholder="handleMode === 'ESCALATE' ? '说明升级原因，将通知店长介入' : '说明处理结果与验证情况'" />
-          </div>
-        </div>
-        <template #footer>
-          <CButton variant="ghost" @click="showHandle = false">取消</CButton>
-          <CButton :variant="handleMode === 'ESCALATE' ? 'danger' : 'primary'" :disabled="!canHandle" @click="submitHandle">
-            {{ handleMode === 'ESCALATE' ? '确认升级' : '确认闭环' }}
-          </CButton>
-        </template>
       </CCard>
     </div>
   </div>
@@ -303,13 +255,6 @@ function doStart() {
 
 .detail-empty { display: flex; flex-direction: column; align-items: center; gap: var(--s-md); padding: var(--s-xxl) var(--s-lg); color: var(--c-text-3); }
 .detail-empty__icon { color: var(--c-text-4); }
-
-.modal-mask { position: fixed; inset: 0; background: rgba(20, 21, 43, .45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: var(--s-lg); }
-.modal { width: 440px; max-width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-pop); }
-.form { display: flex; flex-direction: column; gap: var(--s-md); }
-.form__row { display: flex; flex-direction: column; gap: var(--s-xs); }
-.form__label { font-size: var(--t-xs); color: var(--c-text-3); }
-.req { color: var(--c-danger-fg); }
 
 @media (max-width: 1024px) {
   .ex__body { grid-template-columns: 1fr; }
