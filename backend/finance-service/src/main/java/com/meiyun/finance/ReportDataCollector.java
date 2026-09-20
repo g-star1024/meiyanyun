@@ -6,6 +6,8 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -42,6 +44,7 @@ public class ReportDataCollector {
         return switch (templateId) {
             case "R01" -> collectR01(period);
             case "R02" -> collectR02(period);
+            case "R05" -> collectR05(period);
             case "R07" -> collectR07(period);
             default -> throw new IllegalArgumentException("unsupported template: " + templateId);
         };
@@ -114,6 +117,52 @@ public class ReportDataCollector {
                     fen(rev), fen(cost),
                     rate == null ? "" : rate.multiply(BigDecimal.valueOf(100)).setScale(1, RoundingMode.HALF_UP).toPlainString() + "%",
                     mom));
+        }
+        return new ReportData(headers, rows);
+    }
+
+    private ReportData collectR05(String month) {
+        List<Map<String, Object>> allCards = aggregation.fetchCards(null);
+        LocalDate today = LocalDate.now();
+        LocalDate expiryThreshold = today.plusDays(30);
+        Map<String, long[]> byKey = new LinkedHashMap<>();
+        for (Map<String, Object> c : allCards) {
+            String cardType = c.get("cardType") == null ? "" : c.get("cardType").toString();
+            if (!"COURSE".equals(cardType)) continue;
+            String sc = c.get("storeCode") == null ? "" : c.get("storeCode").toString();
+            if (!sc.isBlank() && !DataScope.canReadStore(sc)) continue;
+            String item = c.get("cardItem") == null ? "未命名" : c.get("cardItem").toString();
+            long[] acc = byKey.computeIfAbsent(sc + "|" + item, k -> new long[5]);
+            int total = c.get("totalTimes") instanceof Number n ? n.intValue() : 0;
+            int remain = c.get("remainTimes") instanceof Number n ? n.intValue() : 0;
+            acc[0] += total;
+            acc[1] += remain;
+            String status = c.get("status") == null ? "" : c.get("status").toString();
+            String expiresRaw = c.get("expiresAt") == null ? null : c.get("expiresAt").toString();
+            if ("在用".equals(status) && expiresRaw != null) {
+                try {
+                    LocalDate exp = OffsetDateTime.parse(expiresRaw)
+                            .atZoneSameInstant(ZoneId.of("Asia/Shanghai")).toLocalDate();
+                    if (!exp.isAfter(expiryThreshold)) acc[2]++;
+                } catch (Exception ignored) {}
+            }
+            acc[3] = 1;
+        }
+        List<String> storeCodes = byKey.keySet().stream()
+                .map(k -> k.split("\\|", 2)[0]).filter(s -> !s.isBlank()).distinct().toList();
+        Map<String, String> names = aggregation.resolveStoreNames(storeCodes);
+        List<String> headers = List.of("门店", "项目/卡项", "总次数", "已消耗", "剩余次数", "核销率(%)", "即将到期(张)");
+        List<List<String>> rows = new ArrayList<>();
+        for (Map.Entry<String, long[]> en : byKey.entrySet()) {
+            String[] key = en.getKey().split("\\|", 2);
+            long[] acc = en.getValue();
+            String storeName = names.getOrDefault(key[0], key[0].isBlank() ? "未知" : key[0]);
+            long consumed = acc[0] - acc[1];
+            String rate = acc[0] == 0 ? "—"
+                    : String.format(Locale.ROOT, "%.1f", consumed * 100.0 / acc[0]);
+            rows.add(List.of(storeName, key[1],
+                    String.valueOf(acc[0]), String.valueOf(consumed), String.valueOf(acc[1]),
+                    rate, String.valueOf(acc[2])));
         }
         return new ReportData(headers, rows);
     }
