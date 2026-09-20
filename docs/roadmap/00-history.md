@@ -3,6 +3,8 @@
 > 属于美研云整体开发台账分册；索引、状态判定口径与读写规则见 [../DEVELOPMENT-ROADMAP.md](../DEVELOPMENT-ROADMAP.md)（铁律 9 / 10）。
 > 本区为每批交付后追加的一行式批次简报（倒序，最新在最上）。每闭合一批在顶部新增一条，不改写旧条目。
 
+> **最近更新**：2026-09-20（P5-B71 M1 报表 XLSX·PDF 导出批：策略模式 ReportBuilder 接口＋ReportBuilderRegistry 自动收集＋ReportDataCollector 数据收集器＋ReportXlsxBuilder（EasyExcel）＋ReportPdfBuilder（openPDF）＋ReportCsvBuilder 重构实现接口＋ReportService/ReportController/ReportAsyncRunner 瘦身适配＋pom.xml 依赖＋前端启用导出按钮；feat commit `d118952`（12 files +335/-254）；mvn compile OK；04-backlog L138 勾销；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B71 卡2 批末落账中）
+
 > **最近更新**：2026-09-20（P5-B70 M1 报表口径微调批：mapPayMethod transfer 映射三处统一（FinanceAggregationService/TripartiteReconcileService/FinanceInternalOpsService 加 "transfer" 分支）＋R02 毛利率%格式化（ReportCsvBuilder ×100＋"%"）；feat commit `0f06204`（4 files +5/-4）；mvn compile OK；04-backlog L140/L141 勾销＋L132/L133 补勾销；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B70 卡2 批末落账中）
 
 > **最近更新**：2026-09-20（P5-B69 卡1 施工完成：L133 REJECTED──reset()──▶DRAFT 状态守卫（BizTargetService.reset()＋POST /{targetId}/reset 端点＋前端退回修改按钮）＋L132 aggregatedRevenue 读时聚合（view() 默认值＋list() computeAggregatedRevenue()＋RevenueMonthlyRepository 区间查询）＋L54 StorageService 存储抽象接口＋LocalStorageService 本地实现＋application.yml storage 配置段；feat commit `363bb1d`＋fix commit `832a1fa`（resetTarget 导出＋CButton variant 类型修复）；三轨真验全绿（vue-tsc 0 error / 50 tests pass / mvn compile OK）；数字 ✅109/🔧1/⬜55=166 不动；B69 卡2 批末落账中）
