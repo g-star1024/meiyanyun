@@ -32,4 +32,9 @@ public interface ArrivalRepository
      */
     List<Arrival> findFirst50ByStatusAndArrivedAtBeforeOrderByArrivedAtAsc(
             String status, OffsetDateTime cutoff);
+
+    @Query("SELECT a.storeCode, a.channel, COUNT(a) FROM Arrival a " +
+            "WHERE a.arrivedAt >= :from AND a.arrivedAt < :to " +
+            "GROUP BY a.storeCode, a.channel")
+    List<Object[]> funnelArrivals(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
 }

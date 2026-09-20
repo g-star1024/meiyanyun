@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
@@ -37,4 +38,15 @@ public interface PlanRepository extends JpaRepository<ConsultPlan, String>, JpaS
     @Query(value = "select coalesce(max(cast(substring(plan_id from 12) as bigint)),0) "
             + "from consult_plan where plan_id like :prefix", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);
+
+    @Query("SELECT p.storeCode, COUNT(p) FROM ConsultPlan p " +
+            "WHERE p.createdAt >= :from AND p.createdAt < :to AND p.status <> 'ABANDONED' " +
+            "GROUP BY p.storeCode")
+    List<Object[]> funnelConsults(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
+
+    @Query("SELECT p.storeCode, COUNT(p) FROM ConsultPlan p " +
+            "WHERE p.createdAt >= :from AND p.createdAt < :to " +
+            "AND p.status IN ('PAID','TREATING','DONE') " +
+            "GROUP BY p.storeCode")
+    List<Object[]> funnelDeals(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
 }

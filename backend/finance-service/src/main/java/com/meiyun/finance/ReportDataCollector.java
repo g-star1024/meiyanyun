@@ -47,6 +47,7 @@ public class ReportDataCollector {
         return switch (templateId) {
             case "R01" -> collectR01(period);
             case "R02" -> collectR02(period);
+            case "R03" -> collectR03(period);
             case "R05" -> collectR05(period);
             case "R07" -> collectR07(period);
             case "R09" -> collectR09(period);
@@ -221,6 +222,67 @@ public class ReportDataCollector {
             rows.add(List.of(storeName, staffName,
                     fen(br.writeoffAmount()), String.valueOf(br.writeoffCount()),
                     commission, "—"));
+        }
+        return new ReportData(headers, rows);
+    }
+
+    private ReportData collectR03(String week) {
+        int wIdx = week.indexOf("-W");
+        int year = Integer.parseInt(week.substring(0, wIdx));
+        int weekNum = Integer.parseInt(week.substring(wIdx + 2));
+        java.time.temporal.WeekFields wf = java.time.temporal.WeekFields.ISO;
+        LocalDate weekDate = LocalDate.of(year, 1, 4).with(wf.weekOfWeekBasedYear(), weekNum);
+        LocalDate monday = weekDate.with(wf.dayOfWeek(), 1);
+        LocalDate nextMonday = monday.plusWeeks(1);
+        String from = monday.toString();
+        String to = nextMonday.toString();
+
+        List<Map<String, Object>> funnelRows = aggregation.fetchFunnelStats(from, to);
+
+        Map<String, long[]> byKey = new LinkedHashMap<>();
+        for (Map<String, Object> r : funnelRows) {
+            String sc = r.get("storeCode") == null ? "" : r.get("storeCode").toString();
+            String ch = r.get("channel") == null ? "" : r.get("channel").toString();
+            long[] acc = byKey.computeIfAbsent(sc + "|" + ch, k -> new long[3]);
+            acc[0] = r.get("arrivalCount") instanceof Number n ? n.longValue() : 0L;
+            acc[1] = r.get("consultCount") instanceof Number n ? n.longValue() : 0L;
+            acc[2] = r.get("dealCount") instanceof Number n ? n.longValue() : 0L;
+        }
+
+        Map<String, long[]> byStore = new LinkedHashMap<>();
+        for (Map.Entry<String, long[]> en : byKey.entrySet()) {
+            String sc = en.getKey().split("\\|", 2)[0];
+            long[] storeAcc = byStore.computeIfAbsent(sc, k -> new long[2]);
+            storeAcc[0] += en.getValue()[1];
+            storeAcc[1] += en.getValue()[2];
+        }
+
+        Map<String, String> channelCn = Map.of(
+                "WALK_IN", "自然到店", "REFERRAL", "转介绍",
+                "MARKETING", "营销渠道", "APPOINTMENT", "预约到店");
+
+        List<String> storeCodes = byKey.keySet().stream()
+                .map(k -> k.split("\\|", 2)[0]).filter(s -> !s.isBlank()).distinct().toList();
+        Map<String, String> storeNames = aggregation.resolveStoreNames(storeCodes);
+
+        List<String> headers = List.of("渠道", "门店", "到店数", "咨询数", "成交数", "转化率(%)");
+        List<List<String>> rows = new ArrayList<>();
+        for (Map.Entry<String, long[]> en : byKey.entrySet()) {
+            String[] parts = en.getKey().split("\\|", 2);
+            String sc = parts[0];
+            if (!sc.isBlank() && !DataScope.canReadStore(sc)) continue;
+            long[] acc = en.getValue();
+            long[] storeAcc = byStore.getOrDefault(sc, new long[2]);
+            String storeName = storeNames.getOrDefault(sc, sc.isBlank() ? "未知" : sc);
+            String rate = acc[0] == 0 ? "—"
+                    : String.format(Locale.ROOT, "%.1f", storeAcc[1] * 100.0 / Math.max(acc[0], 1));
+            rows.add(List.of(
+                    channelCn.getOrDefault(parts[1], parts[1]),
+                    storeName,
+                    String.valueOf(acc[0]),
+                    String.valueOf(storeAcc[0]),
+                    String.valueOf(storeAcc[1]),
+                    rate));
         }
         return new ReportData(headers, rows);
     }

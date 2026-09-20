@@ -432,6 +432,32 @@ public class FinanceAggregationService {
         }
     }
 
+    List<Map<String, Object>> fetchFunnelStats(String from, String to) {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(txnBaseUrl + "/api/txn/internal/funnel-stats");
+            b.queryParam("from", from);
+            b.queryParam("to", to);
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            if (resp.getBody() != null && resp.getBody().get("rows") instanceof List<?> list) {
+                List<Map<String, Object>> out = new ArrayList<>();
+                for (Object item : list) {
+                    if (item instanceof Map<?, ?> m) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        m.forEach((k, v) -> row.put(String.valueOf(k), v));
+                        out.add(row);
+                    }
+                }
+                return out;
+            }
+            return List.of();
+        } catch (Exception e) {
+            log.warn("拉取交易域漏斗统计失败（降级空列表）from={} to={} : {}", from, to, e.getMessage());
+            return List.of();
+        }
+    }
+
     List<Map<String, Object>> fetchRefundSummary(String month) {
         try {
             UriComponentsBuilder b = UriComponentsBuilder

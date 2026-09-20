@@ -190,6 +190,24 @@ const periodOptions = computed(() => {
       const v = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
       opts.push({ label: i === 0 ? `本月 (${v})` : v, value: v })
     }
+  } else if (sel.value?.period === 'WEEK') {
+    const day = now.getDay() || 7
+    const thisMon = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1)
+    for (let i = 1; i <= 4; i++) {
+      const mon = new Date(thisMon)
+      mon.setDate(mon.getDate() - 7 * i)
+      const sun = new Date(mon)
+      sun.setDate(sun.getDate() + 6)
+      const thu = new Date(mon)
+      thu.setDate(thu.getDate() + 3)
+      const thuYear = thu.getFullYear()
+      const jan1 = new Date(thuYear, 0, 1)
+      const daysSinceJan1 = Math.floor((thu.getTime() - jan1.getTime()) / 86400000)
+      const weekNum = Math.floor(daysSinceJan1 / 7) + 1
+      const v = `${thuYear}-W${weekNum}`
+      const label = `第${weekNum}周(${mon.getMonth() + 1}/${mon.getDate()}-${sun.getMonth() + 1}/${sun.getDate()})`
+      opts.push({ label, value: v })
+    }
   }
   return opts
 })

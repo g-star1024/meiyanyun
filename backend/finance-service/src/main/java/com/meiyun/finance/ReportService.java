@@ -20,7 +20,7 @@ import java.util.Set;
 @Service
 public class ReportService {
 
-    static final Set<String> SUPPORTED = Set.of("R01", "R02", "R05", "R07", "R09");
+    static final Set<String> SUPPORTED = Set.of("R01", "R02", "R03", "R05", "R07", "R09");
 
     private static final DateTimeFormatter VIEW_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final ZoneId CN_ZONE = ZoneId.of("Asia/Shanghai");
@@ -263,6 +263,13 @@ public class ReportService {
         if ("MONTH".equals(t.getPeriod())) {
             return YearMonth.now().minusMonths(1).toString();
         }
+        if ("WEEK".equals(t.getPeriod())) {
+            java.time.temporal.WeekFields wf = java.time.temporal.WeekFields.ISO;
+            LocalDate lastWeek = LocalDate.now().with(wf.dayOfWeek(), 1).minusWeeks(1);
+            int wYear = lastWeek.get(wf.weekBasedYear());
+            int wNum = lastWeek.get(wf.weekOfWeekBasedYear());
+            return String.format("%d-W%d", wYear, wNum);
+        }
         throw err422("该模板需显式指定期段");
     }
 
@@ -276,10 +283,16 @@ public class ReportService {
                 YearMonth.parse(period);
                 return;
             }
+            if ("WEEK".equals(t.getPeriod())) {
+                if (!period.matches("^\\d{4}-W\\d{1,2}$")) {
+                    throw err422("期段格式不正确（周报需 yyyy-Www）");
+                }
+                return;
+            }
         } catch (java.time.format.DateTimeParseException e) {
             // 落到统一中文错误
         }
-        throw err422("期段格式不正确（日报需 yyyy-MM-dd / 月报需 yyyy-MM）");
+        throw err422("期段格式不正确（日报需 yyyy-MM-dd / 月报需 yyyy-MM / 周报需 yyyy-Www）");
     }
 
     private String nextJobId() {
