@@ -20,7 +20,7 @@ import java.util.Set;
 @Service
 public class ReportService {
 
-    static final Set<String> SUPPORTED = Set.of("R01", "R02");
+    static final Set<String> SUPPORTED = Set.of("R01", "R02", "R07");
 
     private static final DateTimeFormatter VIEW_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final ZoneId CN_ZONE = ZoneId.of("Asia/Shanghai");

@@ -42,6 +42,7 @@ public class ReportDataCollector {
         return switch (templateId) {
             case "R01" -> collectR01(period);
             case "R02" -> collectR02(period);
+            case "R07" -> collectR07(period);
             default -> throw new IllegalArgumentException("unsupported template: " + templateId);
         };
     }
@@ -115,6 +116,29 @@ public class ReportDataCollector {
                     mom));
         }
         return new ReportData(headers, rows);
+    }
+
+    private ReportData collectR07(String month) {
+        List<Map<String, Object>> rows = aggregation.fetchRefundSummary(month);
+        List<String> storeCodes = rows.stream()
+                .map(r -> r.get("storeCode") == null ? "" : r.get("storeCode").toString())
+                .filter(s -> !s.isBlank())
+                .distinct().toList();
+        Map<String, String> names = aggregation.resolveStoreNames(storeCodes);
+        List<String> headers = List.of("门店", "退款原因", "退款笔数", "退款金额(元)", "平均处理时长(天)");
+        List<List<String>> data = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            String sc = r.get("storeCode") == null ? "" : r.get("storeCode").toString();
+            if (!sc.isBlank() && !DataScope.canReadStore(sc)) continue;
+            String storeName = names.getOrDefault(sc, sc.isBlank() ? "未知" : sc);
+            String reason = r.get("reason") == null ? "未标注" : r.get("reason").toString();
+            long count = r.get("count") instanceof Number n ? n.longValue() : 0L;
+            long totalAmt = r.get("totalRefundAmt") instanceof Number n ? n.longValue() : 0L;
+            double avgDays = r.get("avgProcessingDays") instanceof Number n ? n.doubleValue() : 0.0;
+            String avgStr = avgDays == 0.0 ? "—" : String.format(Locale.ROOT, "%.1f", avgDays);
+            data.add(List.of(storeName, reason, String.valueOf(count), fen(totalAmt), avgStr));
+        }
+        return new ReportData(headers, data);
     }
 
     private String fen(long v) {

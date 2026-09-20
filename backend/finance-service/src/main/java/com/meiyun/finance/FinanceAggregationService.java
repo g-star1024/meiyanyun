@@ -429,6 +429,20 @@ public class FinanceAggregationService {
         }
     }
 
+    List<Map<String, Object>> fetchRefundSummary(String month) {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(txnBaseUrl + "/api/txn/internal/refund-summary");
+            b.queryParam("month", month);
+            ResponseEntity<List<Map<String, Object>>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), LIST_MAP_TYPE);
+            return resp.getBody() != null ? resp.getBody() : List.of();
+        } catch (Exception e) {
+            log.warn("拉取交易域退款汇总失败（降级空列表）month={} : {}", month, e.getMessage());
+            return List.of();
+        }
+    }
+
     /**
      * 客户号 → 客户姓名批量解析（customer /api/customer/name-map，internal:name-map；
      * 服务不可用/超时回落空 Map，调用方保守回落客户号本身）。

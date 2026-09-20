@@ -336,6 +336,56 @@ public class InternalFinanceController {
         return resp;
     }
 
+    @GetMapping("/refund-summary")
+    @RequirePerm("internal:finance-flow")
+    public List<Map<String, Object>> refundSummary(@RequestParam String month) {
+        String ym = month.trim().substring(0, Math.min(7, month.trim().length()));
+        if (!ym.matches("\\d{4}-\\d{2}")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "月份参数 month 格式非法，需 yyyy-MM（如 2026-09）：" + month);
+        }
+        OffsetDateTime from = LocalDate.parse(ym + "-01").atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime to = from.plusMonths(1);
+        Specification<TxnRefund> spec = (root, q, cb) -> {
+            List<Predicate> ps = new ArrayList<>();
+            ps.add(cb.greaterThanOrEqualTo(root.get("createdAt"), from));
+            ps.add(cb.lessThan(root.get("createdAt"), to));
+            return cb.and(ps.toArray(new Predicate[0]));
+        };
+        List<TxnRefund> refunds = refundRepo.findAll(spec);
+        Map<String, long[]> grouped = new LinkedHashMap<>();
+        Map<String, Integer> refundedCount = new LinkedHashMap<>();
+        Map<String, Long> processingDaysSum = new LinkedHashMap<>();
+        for (TxnRefund r : refunds) {
+            String sc = r.getStoreCode() == null ? "" : r.getStoreCode();
+            String reason = r.getReason() == null || r.getReason().isBlank() ? "未标注" : r.getReason();
+            String key = sc + "|" + reason;
+            long[] acc = grouped.computeIfAbsent(key, k -> new long[2]);
+            acc[0]++;
+            acc[1] += r.getRefundAmt() == null ? 0L : r.getRefundAmt();
+            if ("REFUNDED".equals(r.getStatus()) && r.getCreatedAt() != null && r.getRefundedAt() != null) {
+                refundedCount.merge(key, 1, Integer::sum);
+                long days = java.time.Duration.between(r.getCreatedAt(), r.getRefundedAt()).toHours();
+                processingDaysSum.merge(key, days, Long::sum);
+            }
+        }
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (Map.Entry<String, long[]> entry : grouped.entrySet()) {
+            String[] parts = entry.getKey().split("\\|", 2);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", parts[0]);
+            row.put("reason", parts[1]);
+            row.put("count", entry.getValue()[0]);
+            row.put("totalRefundAmt", entry.getValue()[1]);
+            Integer rc = refundedCount.getOrDefault(entry.getKey(), 0);
+            Long daysSum = processingDaysSum.getOrDefault(entry.getKey(), 0L);
+            double avgDays = rc > 0 ? daysSum / (rc * 24.0) : 0.0;
+            row.put("avgProcessingDays", Math.round(avgDays * 100.0) / 100.0);
+            result.add(row);
+        }
+        return result;
+    }
+
     /** 提成聚合行：按顾问工号取行（惰性初始化，分量单位分/笔）。 */
     private Map<String, Object> commissionRow(Map<String, Map<String, Object>> rows, String staffId, String storeCode) {
         Map<String, Object> row = rows.get(staffId);
