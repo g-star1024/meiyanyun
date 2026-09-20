@@ -49,7 +49,7 @@ export const useM1ReportStore = defineStore('m1Report', () => {
   const subscribedCount = computed(() => templates.value.filter((t) => t.subscribed).length)
 
   // 首卡仅 R01 门店营收日报 / R02 月度经营分析真实生成（其余模板后端 422「数据源待建」，已登记 backlog）
-  const SUPPORTED_IDS = new Set(['R01', 'R02', 'R03', 'R04', 'R08'])
+  const SUPPORTED_IDS = new Set(['R01', 'R02', 'R03', 'R04', 'R06', 'R08'])
   function isSupported(id: string) { return SUPPORTED_IDS.has(id) }
 
   async function toggleSubscribe(id: string) {

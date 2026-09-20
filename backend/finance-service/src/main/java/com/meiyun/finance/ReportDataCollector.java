@@ -50,6 +50,7 @@ public class ReportDataCollector {
             case "R03" -> collectR03(period);
             case "R04" -> collectR04(period);
             case "R05" -> collectR05(period);
+            case "R06" -> collectR06(period);
             case "R07" -> collectR07(period);
             case "R08" -> collectR08(period);
             case "R09" -> collectR09(period);
@@ -363,6 +364,34 @@ public class ReportDataCollector {
                     rate));
         }
         return new ReportData(headers, rows);
+    }
+
+    private ReportData collectR06(String month) {
+        List<Map<String, Object>> rows = aggregation.fetchAgingStats();
+
+        List<String> storeCodes = rows.stream()
+                .map(r -> r.get("storeCode") == null ? "" : r.get("storeCode").toString())
+                .filter(s -> !s.isBlank())
+                .distinct().toList();
+        Map<String, String> names = aggregation.resolveStoreNames(storeCodes);
+
+        List<String> headers = List.of("门店", "应收余额(元)", "0-30天(元)", "31-60天(元)", "61-90天(元)", "逾期金额(元)", "逾期率(%)");
+        List<List<String>> data = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            String sc = r.get("storeCode") == null ? "" : r.get("storeCode").toString();
+            if (!sc.isBlank() && !DataScope.canReadStore(sc)) continue;
+            String storeName = names.getOrDefault(sc, sc.isBlank() ? "未知" : sc);
+            long receivableFen = r.get("receivableFen") instanceof Number n ? n.longValue() : 0L;
+            long bucket0_30 = r.get("bucket0_30Fen") instanceof Number n ? n.longValue() : 0L;
+            long bucket31_60 = r.get("bucket31_60Fen") instanceof Number n ? n.longValue() : 0L;
+            long bucket61_90 = r.get("bucket61_90Fen") instanceof Number n ? n.longValue() : 0L;
+            long overdueFen = r.get("overdueFen") instanceof Number n ? n.longValue() : 0L;
+            String overdueRate = receivableFen == 0 ? "—"
+                    : String.format(Locale.ROOT, "%.1f", overdueFen * 100.0 / receivableFen);
+            data.add(List.of(storeName, fen(receivableFen), fen(bucket0_30), fen(bucket31_60),
+                    fen(bucket61_90), fen(overdueFen), overdueRate));
+        }
+        return new ReportData(headers, data);
     }
 
     private String fen(long v) {

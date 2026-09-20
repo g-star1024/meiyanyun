@@ -441,6 +441,54 @@ public class InternalFinanceController {
         return resp;
     }
 
+    @GetMapping("/aging-report")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> agingReport() {
+        Specification<TxnOrder> spec = (root, cq, cb) -> cb.equal(root.get("status"), "待收款");
+        List<TxnOrder> pendingOrders = orderRepo.findAll(spec);
+        LocalDate today = LocalDate.now(ZoneOffset.ofHours(8));
+
+        Map<String, long[]> byStore = new LinkedHashMap<>();
+        for (TxnOrder o : pendingOrders) {
+            String sc = o.getStoreCode() == null ? "" : o.getStoreCode();
+            long[] acc = byStore.computeIfAbsent(sc, k -> new long[5]);
+            long ar = o.getOriginalAmount() != null ? o.getOriginalAmount()
+                    : (o.getAmount() != null ? o.getAmount() : 0L);
+            acc[0] += ar;
+            LocalDate created = o.getCreatedAt() != null
+                    ? o.getCreatedAt().atZoneSameInstant(ZoneOffset.ofHours(8)).toLocalDate()
+                    : today;
+            int age = (int) java.time.temporal.ChronoUnit.DAYS.between(created, today);
+            if (age <= 30) {
+                acc[1] += ar;
+            } else if (age <= 60) {
+                acc[2] += ar;
+            } else if (age <= 90) {
+                acc[3] += ar;
+            } else {
+                acc[4] += ar;
+            }
+        }
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map.Entry<String, long[]> e : byStore.entrySet()) {
+            long[] acc = e.getValue();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", e.getKey());
+            row.put("receivableFen", acc[0]);
+            row.put("bucket0_30Fen", acc[1]);
+            row.put("bucket31_60Fen", acc[2]);
+            row.put("bucket61_90Fen", acc[3]);
+            row.put("overdueFen", acc[4]);
+            rows.add(row);
+        }
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("asOf", today.toString());
+        resp.put("rows", rows);
+        return resp;
+    }
+
     /** 提成聚合行：按顾问工号取行（惰性初始化，分量单位分/笔）。 */
     private Map<String, Object> commissionRow(Map<String, Map<String, Object>> rows, String staffId, String storeCode) {
         Map<String, Object> row = rows.get(staffId);

@@ -794,6 +794,30 @@ public class FinanceAggregationService {
         }
     }
 
+    List<Map<String, Object>> fetchAgingStats() {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(txnBaseUrl + "/api/txn/internal/aging-report");
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            if (resp.getBody() != null && resp.getBody().get("rows") instanceof List<?> list) {
+                List<Map<String, Object>> out = new ArrayList<>();
+                for (Object item : list) {
+                    if (item instanceof Map<?, ?> m) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        m.forEach((k, v) -> row.put(String.valueOf(k), v));
+                        out.add(row);
+                    }
+                }
+                return out;
+            }
+            return List.of();
+        } catch (Exception e) {
+            log.warn("拉取交易域账龄统计失败（降级空列表）: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
     /** ISO OffsetDateTime → yyyy-MM-dd HH:mm:ss（业务本地时区 Asia/Shanghai，供卡流水时间线展示）。 */
     private static String dateTimeOf(Object iso) {
         if (iso == null) return "";
