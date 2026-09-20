@@ -12,4 +12,7 @@ public interface RevenueMonthlyRepository
     List<RevenueMonthly> findByPeriodMonthOrderByStoreCodeAsc(java.time.LocalDate periodMonth);
 
     List<RevenueMonthly> findByStoreCodeOrderByPeriodMonthAsc(String storeCode);
+
+    List<RevenueMonthly> findByStoreCodeInAndPeriodMonthBetween(
+            List<String> storeCodes, java.time.LocalDate start, java.time.LocalDate end);
 }

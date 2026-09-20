@@ -73,4 +73,11 @@ public class TargetController {
         String reason = body == null ? null : String.valueOf(body.getOrDefault("reason", ""));
         return targetService.reject(targetId, reason, SecurityContext.currentStaffName());
     }
+
+    /** B69 卡1（L133）：退回修改——REJECTED → DRAFT。 */
+    @PostMapping("/{targetId}/reset")
+    @RequirePerm("target:approve")
+    public Map<String, Object> reset(@PathVariable String targetId) {
+        return targetService.reset(targetId, SecurityContext.currentStaffName());
+    }
 }

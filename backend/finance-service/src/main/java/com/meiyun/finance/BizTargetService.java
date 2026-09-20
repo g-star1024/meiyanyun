@@ -4,12 +4,21 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.security.DataScope;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -17,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 /**
  * B49 卡8 目标管理业务服务：集团目标 → 区域/门店分解树 + 进度追踪 + 审批状态机。
@@ -36,28 +46,47 @@ public class BizTargetService {
             "REVENUE", "NEW_CUSTOMER", "REPURCHASE_RATE", "PROCEDURE_COUNT", "SATISFACTION");
     private static final Set<String> PERIODS = Set.of("YEAR", "QUARTER", "MONTH");
 
+    private static final ParameterizedTypeReference<List<Map<String, Object>>> LIST_MAP_TYPE =
+            new ParameterizedTypeReference<>() {};
+
     private final BizTargetRepository targetRepo;
+    private final RevenueMonthlyRepository revenueMonthlyRepo;
     private final FinanceAuditRecorder audit;
     private final ObjectMapper objectMapper;
+    private final RestTemplate restTemplate;
 
-    public BizTargetService(BizTargetRepository targetRepo, FinanceAuditRecorder audit,
-                            ObjectMapper objectMapper) {
+    @Value("${store.service.url:http://127.0.0.1:8085}")
+    private String storeServiceUrl;
+
+    @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
+    private String internalToken;
+
+    public BizTargetService(BizTargetRepository targetRepo, RevenueMonthlyRepository revenueMonthlyRepo,
+                            FinanceAuditRecorder audit, ObjectMapper objectMapper,
+                            RestTemplate restTemplate) {
         this.targetRepo = targetRepo;
+        this.revenueMonthlyRepo = revenueMonthlyRepo;
         this.audit = audit;
         this.objectMapper = objectMapper;
+        this.restTemplate = restTemplate;
     }
 
     /** 目标列表（ownerType/metric/period/approval 可选过滤，按 id 升序）。 */
     public List<Map<String, Object>> list(String ownerType, String metric, String period, String approval) {
+        List<BizTarget> all = targetRepo.findAllByOrderByIdAsc();
+        Map<String, String> storeRegionMap = fetchStoreRegionMap();
         List<Map<String, Object>> out = new ArrayList<>();
-        for (BizTarget t : targetRepo.findAllByOrderByIdAsc()) {
-            // B50 卡4（L132）：集团→区域→门店三级行级数据域收窄，防 REGION/STORE 账号越权看他域目标
+        for (BizTarget t : all) {
             if (!DataScope.canReadTarget(t.getOwnerType(), t.getOwnerId(), t.getOwnerName())) continue;
             if (ownerType != null && !ownerType.isBlank() && !ownerType.equals(t.getOwnerType())) continue;
             if (metric != null && !metric.isBlank() && !metric.equals(t.getMetric())) continue;
             if (period != null && !period.isBlank() && !period.equals(t.getPeriod())) continue;
             if (approval != null && !approval.isBlank() && !approval.equals(t.getApproval())) continue;
-            out.add(view(t));
+            Map<String, Object> v = view(t);
+            if ("REVENUE".equals(t.getMetric())) {
+                v.put("aggregatedRevenue", computeAggregatedRevenue(t, storeRegionMap));
+            }
+            out.add(v);
         }
         return out;
     }
@@ -230,6 +259,29 @@ public class BizTargetService {
         return view(t);
     }
 
+    /** B69 卡1（L133）：退回修改——REJECTED → DRAFT（target:approve，保留 rejectReason 审计溯源）。 */
+    @Transactional
+    public Map<String, Object> reset(String targetId, String actor) {
+        BizTarget t = mustTarget(targetId);
+        if (!"REJECTED".equals(t.getApproval())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "仅已驳回（REJECTED）目标可退回修改，当前状态：" + t.getApproval());
+        }
+        String keptReason = t.getRejectReason();
+        t.setApproval("DRAFT");
+        t.setSubmittedBy(null);
+        t.setSubmittedAt(null);
+        t.setApprovedBy(null);
+        t.setApprovedAt(null);
+        t.setUpdatedBy(actor);
+        t.setUpdatedAt(OffsetDateTime.now());
+        targetRepo.save(t);
+        record(t.getTargetId(), actor, "RESET",
+                Map.of("targetId", t.getTargetId(), "actor", actor,
+                        "previousRejectReason", keptReason == null ? "" : keptReason));
+        return view(t);
+    }
+
     // ==================== 内部 ====================
 
     /** 前端 TargetLine 视图契约：id 为可读业务 id，children 为业务 id 数组。 */
@@ -251,6 +303,7 @@ public class BizTargetService {
         v.put("submittedBy", t.getSubmittedBy());
         v.put("approvedBy", t.getApprovedBy());
         v.put("rejectReason", t.getRejectReason());
+        v.put("aggregatedRevenue", null);
         return v;
     }
 
@@ -325,5 +378,76 @@ public class BizTargetService {
     private static String truncate(String s, int max) {
         if (s == null) return null;
         return s.length() <= max ? s : s.substring(0, max);
+    }
+
+    private BigDecimal computeAggregatedRevenue(BizTarget t, Map<String, String> storeRegionMap) {
+        LocalDate[] range = parsePeriodRange(t.getPeriodLabel());
+        if (range == null) return null;
+        List<String> storeCodes = resolveStoreCodes(t, storeRegionMap);
+        if (storeCodes.isEmpty()) return BigDecimal.ZERO;
+        long totalCents = revenueMonthlyRepo
+                .findByStoreCodeInAndPeriodMonthBetween(storeCodes, range[0], range[1])
+                .stream().mapToLong(r -> r.getRevenue() == null ? 0L : r.getRevenue()).sum();
+        return BigDecimal.valueOf(totalCents).divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
+    }
+
+    private LocalDate[] parsePeriodRange(String label) {
+        if (label == null || label.isBlank()) return null;
+        try {
+            if (label.endsWith("年度")) {
+                int y = Integer.parseInt(label.substring(0, 4));
+                return new LocalDate[] { LocalDate.of(y, 1, 1), LocalDate.of(y, 12, 1) };
+            }
+            if (label.contains("-Q")) {
+                int y = Integer.parseInt(label.substring(0, 4));
+                int q = Integer.parseInt(label.substring(label.indexOf('Q') + 1));
+                int sm = (q - 1) * 3 + 1;
+                return new LocalDate[] { LocalDate.of(y, sm, 1), LocalDate.of(y, sm + 2, 1) };
+            }
+            String[] p = label.split("-");
+            if (p.length == 2) {
+                LocalDate m = LocalDate.of(Integer.parseInt(p[0]), Integer.parseInt(p[1]), 1);
+                return new LocalDate[] { m, m };
+            }
+        } catch (Exception e) {
+            log.warn("期间解析失败 periodLabel={} : {}", label, e.getMessage());
+        }
+        return null;
+    }
+
+    private List<String> resolveStoreCodes(BizTarget t, Map<String, String> storeRegionMap) {
+        if ("STORE".equals(t.getOwnerType())) return List.of(t.getOwnerId());
+        if ("GROUP".equals(t.getOwnerType())) return new ArrayList<>(storeRegionMap.keySet());
+        if ("REGION".equals(t.getOwnerType())) {
+            return storeRegionMap.entrySet().stream()
+                    .filter(e -> {
+                        String r = e.getValue();
+                        return r != null && (r.contains(t.getOwnerName()) || t.getOwnerName().contains(r));
+                    })
+                    .map(Map.Entry::getKey).collect(Collectors.toList());
+        }
+        return List.of();
+    }
+
+    private Map<String, String> fetchStoreRegionMap() {
+        try {
+            HttpHeaders h = new HttpHeaders();
+            h.set("X-Internal-Token", internalToken);
+            ResponseEntity<List<Map<String, Object>>> resp = restTemplate.exchange(
+                    storeServiceUrl + "/api/stores", HttpMethod.GET,
+                    new HttpEntity<>(h), LIST_MAP_TYPE);
+            Map<String, String> out = new LinkedHashMap<>();
+            if (resp.getBody() != null) {
+                for (Map<String, Object> s : resp.getBody()) {
+                    String code = str(s.get("storeCode"));
+                    String region = str(s.get("region"));
+                    if (code != null) out.put(code, region == null ? "" : region);
+                }
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("门店区域映射获取失败（回落空映射）: {}", e.getMessage());
+            return Map.of();
+        }
     }
 }

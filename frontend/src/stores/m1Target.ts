@@ -5,7 +5,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import {
-  listTargets, updateTargetProgress, submitTarget, approveTarget, rejectTarget,
+  listTargets, updateTargetProgress, submitTarget, approveTarget, rejectTarget, resetTarget,
   type TargetLineDTO,
 } from '@/api/target'
 import { useToast } from '@/composables/useToast'
@@ -164,8 +164,18 @@ export const useM1TargetStore = defineStore('m1Target', () => {
     }
   }
 
+  async function reset(id: string) {
+    try {
+      const resp = await resetTarget(id)
+      replaceLine(toLine(resp.data))
+      toast.success('已重置')
+    } catch (e) {
+      toast.error(errMsg(e, '重置失败'))
+    }
+  }
+
   return {
     lines, seeded, loading, seed, progress, groupLines, regionLines, storeLines,
-    pendingApprovals, overallProgress, updateProgress, submit, approve, reject,
+    pendingApprovals, overallProgress, updateProgress, submit, approve, reject, reset,
   }
 })

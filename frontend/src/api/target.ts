@@ -28,6 +28,7 @@ export interface TargetLineDTO {
   submittedBy?: string | null
   approvedBy?: string | null
   rejectReason?: string | null
+  aggregatedRevenue?: number | null
 }
 
 /** 新建目标入参（targetId 缺省后端生成 T-XXXXXXXX；idemKey 幂等键，重放返回 duplicated=true） */
