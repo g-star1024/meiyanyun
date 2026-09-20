@@ -72,3 +72,6 @@ export const approveTarget = (targetId: string) =>
 
 export const rejectTarget = (targetId: string, reason: string) =>
   client.post<TargetLineDTO>(`/finance/targets/${encodeURIComponent(targetId)}/reject`, { reason })
+
+export const resetTarget = (targetId: string) =>
+  client.post<TargetLineDTO>(`/finance/targets/${encodeURIComponent(targetId)}/reset`)

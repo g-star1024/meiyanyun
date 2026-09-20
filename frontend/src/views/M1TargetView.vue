@@ -103,7 +103,7 @@
             <CButton variant="primary" @click="tg.submit(sel.id)">提交审批</CButton>
           </div>
           <div v-else-if="sel.approval === 'REJECTED' && canApprove" class="ops">
-            <CButton variant="warning" @click="tg.reset(sel.id)">退回修改</CButton>
+            <CButton variant="ghost" @click="tg.reset(sel.id)">退回修改</CButton>
           </div>
 
           <div class="status-hint">
