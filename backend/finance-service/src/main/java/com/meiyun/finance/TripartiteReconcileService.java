@@ -307,7 +307,7 @@ public class TripartiteReconcileService {
     private static String mapPayMethod(String payMethod) {
         if (payMethod == null) return null;
         return switch (payMethod) {
-            case "cash", "card", "wxpay", "alipay", "balance" -> payMethod;
+            case "cash", "card", "wxpay", "alipay", "balance", "transfer" -> payMethod;
             default -> null;
         };
     }

@@ -4,6 +4,7 @@ import com.meiyun.security.DataScope;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -141,7 +142,7 @@ public class ReportCsvBuilder {
             rows.add(List.of(
                     names.getOrDefault(r.getStoreCode(), r.getStoreCode()),
                     fen(rev), fen(cost),
-                    rate == null ? "" : rate.stripTrailingZeros().toPlainString(),
+                    rate == null ? "" : rate.multiply(BigDecimal.valueOf(100)).setScale(1, RoundingMode.HALF_UP).toPlainString() + "%",
                     mom));
         }
         return csv(headers, rows);
