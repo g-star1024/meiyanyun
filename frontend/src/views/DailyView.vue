@@ -20,8 +20,8 @@ import { useAuthStore } from '@/stores/auth'
 const store = useDailyStore()
 const auth = useAuthStore()
 const canEdit = computed(() => auth.can('daily:edit'))
-onMounted(() => {
-  store.seed()
+onMounted(async () => {
+  await store.seed()
   // seed 会把今日空草稿填充为带数据的草稿，此时再把已保存值同步到本地编辑态
   syncForm()
   syncNotes()
@@ -48,9 +48,9 @@ function syncForm() {
     inventoryAlerts: report.value.inventoryAlerts,
   }
 }
-function applyForm() {
+async function applyForm() {
   if (!isDraft.value) return
-  store.save({
+  await store.save({
     footfall: Number(form.value.footfall) || 0,
     orders: Number(form.value.orders) || 0,
     services: Number(form.value.services) || 0,
@@ -69,13 +69,13 @@ const peakHour = computed(() => {
 
 // 待办
 const newTodo = ref({ kind: 'TASK' as DailyTodoKind, content: '', urgent: false })
-function addTodo() {
+async function addTodo() {
   if (!newTodo.value.content.trim()) return
-  store.addTodo({ content: newTodo.value.content, kind: newTodo.value.kind, urgent: newTodo.value.urgent })
+  await store.addTodo({ content: newTodo.value.content, kind: newTodo.value.kind, urgent: newTodo.value.urgent })
   newTodo.value = { kind: 'TASK', content: '', urgent: false }
 }
-function removeTodo(id: string) { store.removeTodo(id) }
-function toggleTodo(id: string) { store.toggleTodo(id) }
+async function removeTodo(id: string) { await store.removeTodo(id) }
+async function toggleTodo(id: string) { await store.toggleTodo(id) }
 const todoKindLabel = (k: DailyTodoKind) => store.TODO_KIND_LABEL[k]
 const todoKindClass: Record<DailyTodoKind, string> = {
   TASK: 'todo__kind--task', CUSTOMER: 'todo__kind--customer', ISSUE: 'todo__kind--issue',
@@ -88,9 +88,9 @@ function syncNotes() {
   exceptions.value = report.value.exceptions
   note.value = report.value.note
 }
-function applyNotes() {
+async function applyNotes() {
   if (!isDraft.value) return
-  store.save({ exceptions: exceptions.value, note: note.value })
+  await store.save({ exceptions: exceptions.value, note: note.value })
 }
 
 // 提交
@@ -99,9 +99,9 @@ function askSubmit() {
   if (!isDraft.value) return
   confirm.value = { show: true }
 }
-function doSubmit() {
-  applyForm(); applyNotes()
-  store.submit()
+async function doSubmit() {
+  await applyForm(); await applyNotes()
+  await store.submit()
   confirm.value = null
 }
 
