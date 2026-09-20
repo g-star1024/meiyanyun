@@ -65,8 +65,7 @@
               <label>导出格式</label>
               <div class="fmts">
                 <button v-for="f in (['CSV','XLSX','PDF'] as const)" :key="f"
-                        :class="{ 'is-active': fmt === f }" :disabled="f !== 'CSV'"
-                        :title="f !== 'CSV' ? '已登记 backlog，首卡仅支持 CSV' : ''"
+                        :class="{ 'is-active': fmt === f }"
                         @click="fmt = f">{{ FORMAT_LABEL[f] }}</button>
               </div>
             </div>

@@ -17,33 +17,19 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * 报表中心编排（B49 卡11，M1 集团屏 /m1-report）。
- *
- * <p><b>首卡收窄</b>：真实数据源仅 R01（门店营收日报，台账收银口径）/ R02（月度经营，revenue_monthly），
- * 其余模板 422「数据源待建」（登记 backlog）；format 仅 CSV 真实生成，XLSX/PDF 400（登记 backlog）。
- *
- * <p><b>generate/retry 非 @Transactional</b>：job 落库即提交（save 原子），异步线程立即可见；
- * 异步执行前把操作人 {@link com.meiyun.security.LoginUser} 显式传入 runner 复原数据域（防越权，
- * 见 ReportAsyncRunner 类注释）。
- *
- * <p><b>download 不校验属主</b>：任务列表本为共享视图，内容已按生成人数据域收敛（如实标注）。
- * 审计五 action：GENERATE / RETRY / DOWNLOAD / SUBSCRIBE / VERIFY（bizType=REPORT，payload 手写受控 JSON）。
- *
- * <p><b>B56 哈希验真</b>：CSV 字节口径本就确定（ReportCsvBuilder 固定 UTF-8 BOM+CRLF、R01/R02
- * 无生成时刻列），冻结点收敛为「文件名锚 createdAt 落库 + content_hash（SHA-256 含 BOM 字节）落库」；
- * verify 重算当前 content 与落库指纹常量时间比对，历史 content NULL 行诚实返回 HISTORICAL_NOT_RETAINED。
- */
 @Service
 public class ReportService {
 
-    /** 首卡真实数据源仅 R01/R02。 */
     static final Set<String> SUPPORTED = Set.of("R01", "R02");
 
     private static final DateTimeFormatter VIEW_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
-    /** 验真时刻显式锚东八区（容器 TZ=UTC，VIEW_TS 直刷 OffsetDateTime 会落 UTC 墙钟）。 */
     private static final ZoneId CN_ZONE = ZoneId.of("Asia/Shanghai");
     private static final int PREVIEW_LIMIT = 50;
+
+    static final Map<String, String> CONTENT_TYPE = Map.of(
+            "CSV", "text/csv; charset=UTF-8",
+            "XLSX", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "PDF", "application/pdf");
 
     private final ReportTemplateRepository tplRepo;
     private final ReportJobRepository jobRepo;
@@ -61,12 +47,8 @@ public class ReportService {
         this.audit = audit;
     }
 
-    /** 下载载荷：文件名 + 含 BOM 字节。 */
-    public record CsvDownload(String filename, byte[] content) {}
+    public record FileDownload(String filename, String contentType, byte[] content) {}
 
-    // ==================== 只读 ====================
-
-    /** 模板列表（id 升序；view key 照前端 mock：desc/dimensions/metrics 数组/lastRunAt 条件出现）。 */
     public List<Map<String, Object>> templates() {
         List<Map<String, Object>> out = new ArrayList<>();
         for (ReportTemplate t : tplRepo.findAllByOrderByIdAsc()) {
@@ -75,7 +57,6 @@ public class ReportService {
         return out;
     }
 
-    /** 生成历史（闭投影，createdAt 倒序；fileSize 字节→'248 KB' 串照 mock 展示形态）。 */
     public List<Map<String, Object>> jobs() {
         List<Map<String, Object>> out = new ArrayList<>();
         for (ReportJobRepository.ReportJobSummary s : jobRepo.findAllProjectedByOrderByCreatedAtDesc()) {
@@ -98,7 +79,6 @@ public class ReportService {
         return out;
     }
 
-    /** 数据预览（同步生成截 50 行；登录人数据域自动收敛）。 */
     public Map<String, Object> preview(String id, String period) {
         ReportTemplate t = tplRepo.findById(id)
                 .orElseThrow(() -> err404("模板不存在：" + id));
@@ -107,7 +87,7 @@ public class ReportService {
         }
         String p = resolvePeriod(t, period);
         validatePeriod(t, p);
-        ReportCsvBuilder.CsvData data = csvBuilder.build(t.getId(), p);
+        ReportCsvBuilder.CsvData data = csvBuilder.buildCsvData(t.getId(), p);
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("headers", data.headers());
         m.put("rows", data.rows().size() > PREVIEW_LIMIT
@@ -115,9 +95,6 @@ public class ReportService {
         return m;
     }
 
-    // ==================== 写操作 ====================
-
-    /** 订阅/退订（body.subscribed 缺省则取反；report:view 即可，与前端 toggle 语义一致）。 */
     public Map<String, Object> subscribe(String id, Map<String, Object> body) {
         ReportTemplate t = tplRepo.findById(id)
                 .orElseThrow(() -> err404("模板不存在：" + id));
@@ -131,7 +108,6 @@ public class ReportService {
         return view(t);
     }
 
-    /** 触发生成：建 GENERATING 任务 → 审计 → 异步生成（操作人上下文随参传递）。 */
     public Map<String, Object> generate(Map<String, Object> body) {
         String templateId = requireText(body, "templateId");
         ReportTemplate t = tplRepo.findById(templateId)
@@ -139,10 +115,9 @@ public class ReportService {
         if (!SUPPORTED.contains(t.getId())) {
             throw err422("该模板数据源待建，已登记 backlog");
         }
-        String format = body.get("format") == null ? "CSV" : String.valueOf(body.get("format"));
-        if (!"CSV".equalsIgnoreCase(format)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "首卡仅支持 CSV 真实生成，XLSX/PDF 已登记 backlog");
+        String format = body.get("format") == null ? "CSV" : String.valueOf(body.get("format")).toUpperCase();
+        if (!CONTENT_TYPE.containsKey(format)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持的导出格式：" + format);
         }
         String period = resolvePeriod(t, body.get("period") == null ? null : String.valueOf(body.get("period")));
         validatePeriod(t, period);
@@ -154,17 +129,16 @@ public class ReportService {
         job.setCategory(t.getCategory());
         job.setPeriod(period);
         job.setStatus("GENERATING");
-        job.setFormat("CSV");
+        job.setFormat(format);
         job.setCreatedAt(OffsetDateTime.now());
         job.setCreatedBy(operatorName());
         jobRepo.save(job);
         audit.record("REPORT", job.getId(), job.getCreatedBy(), "GENERATE",
-                "{\"templateId\":\"" + t.getId() + "\",\"period\":\"" + period + "\",\"format\":\"CSV\"}");
+                "{\"templateId\":\"" + t.getId() + "\",\"period\":\"" + period + "\",\"format\":\"" + format + "\"}");
         asyncRunner.run(job.getId(), SecurityContext.get());
         return jobView(job);
     }
 
-    /** 失败重试：仅 FAILED 可重试；数据源收窄判断先于状态外的其余校验。 */
     public Map<String, Object> retry(String jobId) {
         ReportJob job = jobRepo.findById(jobId)
                 .orElseThrow(() -> err404("任务不存在：" + jobId));
@@ -183,8 +157,7 @@ public class ReportService {
         return jobView(job);
     }
 
-    /** 下载：content NULL（历史种子行）404 提示重新生成；GENERATING/FAILED 422。 */
-    public CsvDownload download(String jobId) {
+    public FileDownload download(String jobId) {
         ReportJob job = jobRepo.findById(jobId)
                 .orElseThrow(() -> err404("任务不存在：" + jobId));
         if ("GENERATING".equals(job.getStatus())) {
@@ -198,17 +171,13 @@ public class ReportService {
         }
         audit.record("REPORT", job.getId(), operatorName(), "DOWNLOAD",
                 "{\"templateId\":\"" + job.getTemplateId() + "\",\"period\":\"" + job.getPeriod() + "\"}");
-        // B56：文件名读生成时冻结列；B56 前已生成任务（file_name NULL）回退锚 createdAt 同名规则
         String filename = job.getFileName() != null ? job.getFileName()
                 : ReportCsvBuilder.downloadFileName(
-                        job.getTemplateName(), job.getPeriod(), job.getCreatedAt());
-        return new CsvDownload(filename, job.getContent());
+                        job.getTemplateName(), job.getPeriod(), job.getCreatedAt(), job.getFormat());
+        String contentType = CONTENT_TYPE.getOrDefault(job.getFormat(), "application/octet-stream");
+        return new FileDownload(filename, contentType, job.getContent());
     }
 
-    /**
-     * 哈希验真（B56，report:view 只读）：对当前落库 content 重算 SHA-256，与生成时指纹常量时间比对。
-     * 任务不存在 404；生成中/失败 422；content 或指纹缺失（历史种子行）诚实返回空态不当异常。
-     */
     public Map<String, Object> verify(String jobId) {
         ReportJob job = jobRepo.findById(jobId)
                 .orElseThrow(() -> err404("任务不存在：" + jobId));
@@ -250,9 +219,6 @@ public class ReportService {
         return m;
     }
 
-    // ==================== 内部工具 ====================
-
-    /** 模板 view（key 与前端 ReportTemplate 接口对齐：desc 而非 description）。 */
     private Map<String, Object> view(ReportTemplate t) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", t.getId());
@@ -269,7 +235,6 @@ public class ReportService {
         return m;
     }
 
-    /** 任务 view（generate/retry 返回实体路径，与列表投影同形）。 */
     private Map<String, Object> jobView(ReportJob j) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", j.getId());
@@ -288,7 +253,6 @@ public class ReportService {
         return m;
     }
 
-    /** 期段解析：入参空时按模板周期给默认（日报→昨天，月报→上月）。 */
     private String resolvePeriod(ReportTemplate t, String period) {
         if (period != null && !period.isBlank()) {
             return period.trim();
@@ -302,7 +266,6 @@ public class ReportService {
         throw err422("该模板需显式指定期段");
     }
 
-    /** 期段格式校验：日报 yyyy-MM-dd、月报 yyyy-MM（其余周期首卡不支持真实生成）。 */
     private void validatePeriod(ReportTemplate t, String period) {
         try {
             if ("DAY".equals(t.getPeriod())) {
@@ -319,7 +282,6 @@ public class ReportService {
         throw err422("期段格式不正确（日报需 yyyy-MM-dd / 月报需 yyyy-MM）");
     }
 
-    /** 'J%02d' max+1 取号（只取 id 列；非 J 前缀忽略）。 */
     private String nextJobId() {
         int max = 0;
         for (String id : jobRepo.findAllIds()) {
@@ -330,12 +292,10 @@ public class ReportService {
         return String.format(Locale.ROOT, "J%02d", max + 1);
     }
 
-    /** OffsetDateTime → 'yyyy-MM-dd HH:mm' 展示串（显式锚东八区，不随容器 TZ 漂移）。 */
     private static String viewTs(OffsetDateTime t) {
         return t == null ? null : t.atZoneSameInstant(CN_ZONE).format(VIEW_TS);
     }
 
-    /** 字节 → '248 KB' 展示串（照 mock 形态；<1KB 显 B）。 */
     static String fileSizeStr(int bytes) {
         if (bytes < 1024) {
             return bytes + " B";
