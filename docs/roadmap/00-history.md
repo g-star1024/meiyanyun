@@ -3,6 +3,8 @@
 > 属于美研云整体开发台账分册；索引、状态判定口径与读写规则见 [../DEVELOPMENT-ROADMAP.md](../DEVELOPMENT-ROADMAP.md)（铁律 9 / 10）。
 > 本区为每批交付后追加的一行式批次简报（倒序，最新在最上）。每闭合一批在顶部新增一条，不改写旧条目。
 
+> **最近更新**：2026-09-20（P5-B74 R05 项目疗程消耗报表接真批：finance-service ReportDataCollector collectR05 基于 fetchCards 聚合（cardType=COURSE 过滤、按门店×项目/卡项 GROUP BY、totalTimes/remainTimes/consumedTimes/核销率/即将到期聚合）＋ReportService SUPPORTED 扩展含 R05；feat commit `d9c08d1`（2 files +50/-1）；mvn compile OK；04-backlog L137 R05 接真注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B74 卡2 批末落账 DONE）
+
 > **最近更新**：2026-09-20（P5-B73 R07 退款与纠纷台账接真批：txn InternalFinanceController refund-summary 端点＋finance FinanceAggregationService fetchRefundSummary 跨域取数＋ReportDataCollector collectR07＋ReportService SUPPORTED 扩展含 R07；feat commit `01b71bc`（4 files +89/-1）；mvn compile OK；04-backlog L137 R07 接真注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B73 卡2 批末落账 DONE）
 
 > **最近更新**：2026-09-20（P5-B72 R02 区域维度扩展批：store-service regionMap 内部端点＋finance-service resolveStoreRegions 跨域区域解析＋ReportDataCollector collectR02 五列扩六列（区域插第一列）；feat commit `4dbede4`（3 files +38/-3）；mvn compile OK；04-backlog L139 品类维度保留注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B72 卡2 批末落账 DONE）
