@@ -17,8 +17,8 @@ import { useToast } from '@/composables/useToast'
 
 const store = useWeeklyStore()
 const toast = useToast()
-onMounted(() => {
-  store.seed()
+onMounted(async () => {
+  await store.seed()
   if (store.current) selectedId.value = store.current.id
   syncForm()
 })
@@ -60,28 +60,36 @@ function syncForm() {
 }
 watch(selected, syncForm)
 
-function applyForm() {
+async function applyForm() {
   if (!selected.value || !isDraft.value) return
-  store.save(selected.value.id, { ...form.value })
+  const ok = await store.save(selected.value.id, { ...form.value })
+  if (ok) toast.success('草稿已保存')
 }
 
 const confirm = ref<{ show: boolean } | null>(null)
-function askSubmit() {
-  if (!isDraft.value) return
-  applyForm()
-  confirm.value = { show: true }
+async function askSubmit() {
+  if (!isDraft.value || !selected.value) return
+  const ok = await store.save(selected.value.id, { ...form.value })
+  if (ok) confirm.value = { show: true }
 }
-function doSubmit() {
-  if (selected.value) store.submit(selected.value.id)
+async function doSubmit() {
+  if (selected.value) {
+    const ok = await store.submit(selected.value.id)
+    if (ok) {
+      toast.success('周报已提交')
+      syncForm()
+    }
+  }
   confirm.value = null
 }
 
-function doCreateWeekly() {
-  const ok = store.createWeekly()
+async function doCreateWeekly() {
+  const ok = await store.createWeekly()
   if (ok) {
     toast.success('已创建新一周经营周报')
     if (store.sorted.length > 0) {
       selectedId.value = store.sorted[0].id
+      syncForm()
     }
   }
 }
