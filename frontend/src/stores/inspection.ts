@@ -1,11 +1,15 @@
 // ============================================================
 // Inspection 巡店检查 store（M2-10）
 // 覆盖环境 / 服务 / 合规三类巡店单，含检查项打分明细与整改跟踪。
+// 切真：列表/新建/整改指派/完成走后端，单号与整改派生由后端计算。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
-import { useAuthStore } from './auth'
+import * as inspectionApi from '@/api/inspection'
+import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
+import { errMsg } from '@/stores/m5Coupon'
+import { useStoreContext } from '@/stores/storeContext'
 
 export type InspectionType = 'ENV' | 'SERVICE' | 'COMPLIANCE'
 export type InspectionStatus = 'PENDING' | 'IN_PROGRESS' | 'DONE'
@@ -13,7 +17,7 @@ export type RectifyStatus = 'OPEN' | 'DOING' | 'DONE'
 
 export interface InspectionItem {
   name: string
-  score: number // 0-10
+  score: number
   note?: string
 }
 
@@ -63,13 +67,69 @@ const RECTIFY_LABEL: Record<RectifyStatus, string> = {
   DONE: '已完成',
 }
 
+const STORE_NAME: Record<string, string> = {
+  SST01: '上海徐汇店',
+  SST02: '上海浦东店',
+  SST03: '北京国贸店',
+}
+
+function shortInsNo(no: string): string {
+  const parts = no.split('-')
+  const tail = parts[parts.length - 1]
+  const seq = parseInt(tail, 10)
+  if (!Number.isFinite(seq) || seq > 999) return no
+  return `${parts[0]}-${parts[1]}-${String(seq).padStart(3, '0')}`
+}
+
+function adapt(d: inspectionApi.InspectionDto): Inspection {
+  return {
+    id: String(d.id),
+    no: shortInsNo(d.no),
+    store: STORE_NAME[d.storeCode] ?? d.storeCode,
+    inspectedAt: d.inspectedAt,
+    type: d.type as InspectionType,
+    totalScore: d.totalScore,
+    issueCount: d.issueCount,
+    status: d.status as InspectionStatus,
+    inspector: d.inspector,
+    items: d.items.map((it) => ({ name: it.name, score: it.score, note: it.note ?? undefined })),
+    issues: d.issues.map((iss) => ({
+      id: String(iss.id),
+      desc: iss.desc,
+      owner: iss.owner,
+      status: iss.status as RectifyStatus,
+      dueAt: iss.dueAt,
+      hasPhoto: iss.hasPhoto,
+    })),
+    createdAt: d.createdAt,
+    completedAt: d.completedAt ?? undefined,
+  }
+}
+
 export const useInspectionStore = defineStore('inspection', () => {
   const auth = useAuthStore()
-  const activity = useActivityStore()
+  const ctx = useStoreContext()
+  const toast = useToast()
 
   const orders = ref<Inspection[]>([])
   const filterType = ref<InspectionType | 'ALL'>('ALL')
   const filterStatus = ref<InspectionStatus | 'ALL'>('ALL')
+
+  async function load() {
+    try {
+      const sc = ctx.currentStoreCode
+      const { data } = await inspectionApi.listInspections({ storeCode: sc || undefined })
+      orders.value = data.map(adapt)
+    } catch (e) {
+      orders.value = []
+      toast.error(errMsg(e, '巡店检查加载失败，请稍后重试'))
+    }
+  }
+
+  async function seed() {
+    await ctx.loadStores()
+    await load()
+  }
 
   const pending = computed(() => orders.value.filter((o) => o.status === 'PENDING'))
   const inProgress = computed(() => orders.value.filter((o) => o.status === 'IN_PROGRESS'))
@@ -101,207 +161,79 @@ export const useInspectionStore = defineStore('inspection', () => {
     let list = orders.value
     if (filterType.value !== 'ALL') list = list.filter((o) => o.type === filterType.value)
     if (filterStatus.value !== 'ALL') list = list.filter((o) => o.status === filterStatus.value)
-    return list.sort((a, b) => new Date(b.inspectedAt).getTime() - new Date(a.inspectedAt).getTime())
+    return [...list].sort((a, b) => new Date(b.inspectedAt).getTime() - new Date(a.inspectedAt).getTime())
   })
 
   function get(id: string) {
     return orders.value.find((o) => o.id === id)
   }
 
-  function create(input: {
+  async function create(input: {
     store: string
     type: InspectionType
     inspector: string
     inspectedAt: string
     items: InspectionItem[]
-  }): Inspection | null {
+  }): Promise<Inspection | null> {
     if (!auth.can('inspection:create')) {
-      console.warn('[inspection] 无 inspection:create 权限')
+      toast.error('无创建巡检单权限，请联系管理员')
       return null
     }
-    const totalScore = Math.round(
-      (input.items.reduce((s, it) => s + it.score, 0) / (input.items.length * 10)) * 100,
-    )
-    const issueCount = input.items.filter((it) => it.score < 7).length
-    const now = new Date().toISOString()
-    const seq = orders.value.length + 1
-    const o: Inspection = {
-      id: nextId('ins'),
-      no: `INS-${input.inspectedAt.slice(0, 10).replace(/-/g, '')}-${String(seq).padStart(3, '0')}`,
-      store: input.store,
-      inspectedAt: input.inspectedAt,
-      type: input.type,
-      totalScore,
-      issueCount,
-      status: issueCount > 0 ? 'PENDING' : 'DONE',
-      inspector: input.inspector,
-      items: input.items,
-      issues: input.items
-        .filter((it) => it.score < 7)
-        .map((it) => ({
-          id: nextId('iss'),
-          desc: `${it.name} 未达标（${it.score}/10）${it.note ? '：' + it.note : ''}`,
-          owner: '待分配',
-          status: 'OPEN' as RectifyStatus,
-          dueAt: new Date(Date.now() + 7 * 86400_000).toISOString(),
-          hasPhoto: false,
-        })),
-      createdAt: now,
-      completedAt: issueCount === 0 ? now : undefined,
-    }
-    orders.value.unshift(o)
-    activity.log(auth.user.name, `创建巡店检查 ${o.no}（${TYPE_LABEL[o.type]}，得分 ${o.totalScore}）`, o.id)
-    return o
-  }
-
-  function assignIssue(inspectionId: string, issueId: string, owner: string): boolean {
-    const o = orders.value.find((x) => x.id === inspectionId)
-    const iss = o?.issues.find((x) => x.id === issueId)
-    if (!o || !iss || !auth.can('inspection:edit')) return false
-    iss.owner = owner
-    if (iss.status === 'OPEN') iss.status = 'DOING'
-    if (o.status === 'PENDING') o.status = 'IN_PROGRESS'
-    activity.log(auth.user.name, `指派整改：${iss.desc} → ${owner}`, o.id)
-    return true
-  }
-
-  function completeIssue(inspectionId: string, issueId: string, note?: string): boolean {
-    const o = orders.value.find((x) => x.id === inspectionId)
-    const iss = o?.issues.find((x) => x.id === issueId)
-    if (!o || !iss || !auth.can('inspection:edit')) return false
-    iss.status = 'DONE'
-    iss.hasPhoto = true
-    if (o.issues.every((x) => x.status === 'DONE')) {
-      o.status = 'DONE'
-      o.completedAt = new Date().toISOString()
-    } else {
-      o.status = 'IN_PROGRESS'
-    }
-    activity.log(auth.user.name, `完成整改 ${o.no}：${iss.desc}${note ? '（' + note + '）' : ''}`, o.id)
-    return true
-  }
-
-  // ===== 种子 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const today = new Date()
-    const daysAgo = (d: number) => {
-      const x = new Date(today)
-      x.setDate(x.getDate() - d)
-      return x.toISOString()
-    }
-    const daysLater = (d: number) => {
-      const x = new Date(today)
-      x.setDate(x.getDate() + d)
-      return x.toISOString()
-    }
-    const base: Array<{
-      type: InspectionType
-      store: string
-      inspector: string
-      inspectedAt: string
-      status: InspectionStatus
-      items: InspectionItem[]
-    }> = [
-      {
-        type: 'ENV', store: '静安旗舰店', inspector: '陈野', inspectedAt: daysAgo(2), status: 'PENDING',
-        items: [
-          { name: '大厅整洁度', score: 8 },
-          { name: '治疗室消毒', score: 6, note: 'A03 台面有污渍' },
-          { name: '卫生间物资', score: 5, note: '纸巾缺失' },
-          { name: '灯光空调', score: 9 },
-          { name: '香氛氛围', score: 8 },
-        ],
-      },
-      {
-        type: 'SERVICE', store: '静安旗舰店', inspector: '苏晴', inspectedAt: daysAgo(5), status: 'IN_PROGRESS',
-        items: [
-          { name: '接待话术', score: 9 },
-          { name: '术前告知', score: 7 },
-          { name: '术后回访', score: 6, note: '24h 内回访率 82%' },
-          { name: '客诉响应', score: 8 },
-          { name: '仪容仪表', score: 9 },
-        ],
-      },
-      {
-        type: 'COMPLIANCE', store: '静安旗舰店', inspector: '周岚', inspectedAt: daysAgo(12), status: 'DONE',
-        items: [
-          { name: '医师资质公示', score: 10 },
-          { name: '器械消毒记录', score: 9 },
-          { name: '麻醉药品台账', score: 9 },
-          { name: '知情同意书', score: 10 },
-          { name: '消防设施', score: 9 },
-        ],
-      },
-      {
-        type: 'ENV', store: '徐汇店', inspector: '陈野', inspectedAt: daysAgo(18), status: 'DONE',
-        items: [
-          { name: '大厅整洁度', score: 9 },
-          { name: '治疗室消毒', score: 9 },
-          { name: '卫生间物资', score: 8 },
-          { name: '灯光空调', score: 9 },
-          { name: '香氛氛围', score: 8 },
-        ],
-      },
-      {
-        type: 'SERVICE', store: '陆家嘴店', inspector: '苏晴', inspectedAt: daysAgo(22), status: 'IN_PROGRESS',
-        items: [
-          { name: '接待话术', score: 7 },
-          { name: '术前告知', score: 6, note: '部分项目未逐条告知' },
-          { name: '术后回访', score: 8 },
-          { name: '客诉响应', score: 9 },
-          { name: '仪容仪表', score: 8 },
-        ],
-      },
-      {
-        type: 'COMPLIANCE', store: '静安旗舰店', inspector: '周岚', inspectedAt: daysAgo(35), status: 'DONE',
-        items: [
-          { name: '医师资质公示', score: 10 },
-          { name: '器械消毒记录', score: 10 },
-          { name: '麻醉药品台账', score: 8, note: '一项记录签名缺失' },
-          { name: '知情同意书', score: 10 },
-          { name: '消防设施', score: 10 },
-        ],
-      },
-    ]
-    base.forEach((s, i) => {
-      const totalScore = Math.round(
-        (s.items.reduce((sum, it) => sum + it.score, 0) / (s.items.length * 10)) * 100,
+    try {
+      const sc = ctx.currentStoreCode
+      if (!sc) {
+        toast.error('未获取到当前门店，请稍后重试')
+        return null
+      }
+      const { data } = await inspectionApi.createInspection(
+        { storeCode: sc },
+        {
+          type: input.type,
+          inspector: input.inspector.trim(),
+          inspectedAt: input.inspectedAt,
+          items: input.items.map((it) => ({
+            name: it.name,
+            score: it.score,
+            note: it.note?.trim() || null,
+          })),
+        },
       )
-      const issueCount = s.items.filter((it) => it.score < 7).length
-      const issues: RectifyIssue[] = s.items
-        .filter((it) => it.score < 7)
-        .map((it, idx) => ({
-          id: nextId('iss'),
-          desc: `${it.name} 未达标（${it.score}/10）${it.note ? '：' + it.note : ''}`,
-          owner: idx % 2 === 0 ? '李娜（前台主管）' : '吴桐（运营）',
-          status:
-            s.status === 'DONE'
-              ? 'DONE'
-              : idx % 2 === 0
-                ? 'DOING'
-                : 'OPEN',
-          dueAt: daysLater(s.status === 'DONE' ? -1 : 5 + i),
-          hasPhoto: s.status === 'DONE' || idx === 0,
-        }))
-      orders.value.push({
-        id: nextId('ins'),
-        no: `INS-${s.inspectedAt.slice(0, 10).replace(/-/g, '')}-${String(i + 1).padStart(3, '0')}`,
-        store: s.store,
-        inspectedAt: s.inspectedAt,
-        type: s.type,
-        totalScore,
-        issueCount,
-        status: s.status,
-        inspector: s.inspector,
-        items: s.items,
-        issues,
-        createdAt: s.inspectedAt,
-        completedAt: s.status === 'DONE' ? daysAgo(i + 1) : undefined,
-      })
-    })
+      await load()
+      return adapt(data)
+    } catch (e) {
+      toast.error(errMsg(e, '创建巡检单失败，请稍后重试'))
+      return null
+    }
+  }
+
+  async function assignIssue(_inspectionId: string, issueId: string, owner: string): Promise<boolean> {
+    if (!auth.can('inspection:edit')) {
+      toast.error('无操作权限，请联系管理员')
+      return false
+    }
+    try {
+      await inspectionApi.assignIssue(issueId, owner)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '整改指派失败，请稍后重试'))
+      return false
+    }
+  }
+
+  async function completeIssue(_inspectionId: string, issueId: string): Promise<boolean> {
+    if (!auth.can('inspection:edit')) {
+      toast.error('无操作权限，请联系管理员')
+      return false
+    }
+    try {
+      await inspectionApi.completeIssue(issueId)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '完成整改失败，请稍后重试'))
+      return false
+    }
   }
 
   return {

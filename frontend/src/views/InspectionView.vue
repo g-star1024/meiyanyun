@@ -23,7 +23,9 @@ import { shDateStr } from '@/utils/datetime'
 
 const auth = useAuthStore()
 const store = useInspectionStore()
-onMounted(() => store.seed())
+onMounted(async () => {
+  await store.seed()
+})
 
 const selectedId = ref<string | null>(null)
 const selected = computed<Inspection | null>(() => {
@@ -77,8 +79,8 @@ function setScore(idx: number, delta: number) {
   const it = form.value.items[idx]
   it.score = Math.max(0, Math.min(10, it.score + delta))
 }
-function submitForm() {
-  const o = store.create({
+async function submitForm() {
+  const o = await store.create({
     store: form.value.store,
     type: form.value.type,
     inspector: form.value.inspector,
@@ -108,13 +110,15 @@ const ownerOptions = [
 function openAssign(inspectionId: string, issueId: string) {
   showAssign.value = { inspectionId, issueId }
 }
-function submitAssign() {
+async function submitAssign() {
   if (!showAssign.value) return
-  store.assignIssue(showAssign.value.inspectionId, showAssign.value.issueId, assignOwner.value)
-  showAssign.value = null
+  const ok = await store.assignIssue(
+    showAssign.value.inspectionId, showAssign.value.issueId, assignOwner.value,
+  )
+  if (ok) showAssign.value = null
 }
-function doComplete(inspectionId: string, issueId: string) {
-  store.completeIssue(inspectionId, issueId)
+async function doComplete(inspectionId: string, issueId: string) {
+  await store.completeIssue(inspectionId, issueId)
 }
 </script>
 
