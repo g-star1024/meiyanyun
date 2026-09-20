@@ -93,6 +93,19 @@ public class StoreController {
         return out;
     }
 
+    @GetMapping("/internal/region-map")
+    @RequirePerm("internal:name-map")
+    public Map<String, String> regionMap(@RequestParam(value = "codes", required = false) List<String> codes) {
+        Map<String, String> out = new LinkedHashMap<>();
+        if (codes == null) return out;
+        List<String> distinct = codes.stream()
+                .filter(s -> s != null && !s.isBlank()).map(String::trim).distinct().toList();
+        if (distinct.isEmpty()) return out;
+        storeRepository.findAllById(distinct)
+                .forEach(s -> out.put(s.getStoreCode(), s.getRegion() == null ? "" : s.getRegion()));
+        return out;
+    }
+
     /** 六大区分布（含三层口径汇总，ID-2）。 */
     @GetMapping("/regions/dist")
     @RequirePerm("org:view")

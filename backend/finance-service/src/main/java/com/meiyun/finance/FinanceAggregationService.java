@@ -478,6 +478,26 @@ public class FinanceAggregationService {
         }
     }
 
+    public Map<String, String> resolveStoreRegions(List<String> storeCodes) {
+        List<String> codes = storeCodes.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();
+        if (codes.isEmpty()) return Collections.emptyMap();
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(storeBaseUrl + "/api/stores/internal/region-map");
+            codes.forEach(c -> b.queryParam("codes", c));
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            Map<String, String> out = new LinkedHashMap<>();
+            if (resp.getBody() != null) {
+                resp.getBody().forEach((k, v) -> out.put(k, v == null ? "" : v.toString()));
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("区域解析失败（回落空串），数量={} : {}", codes.size(), e.getMessage());
+            return Collections.emptyMap();
+        }
+    }
+
     /**
      * 门店存在性严格校验（封账等不可逆写操作前置用）：调 store 服务 name-map，
      * HTTP 200 且返回 Map 含该码 → 存在；200 但缺 key → 确定不存在（findAllById 只回存在门店）；

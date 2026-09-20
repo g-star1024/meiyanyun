@@ -94,10 +94,11 @@ public class ReportDataCollector {
         for (RevenueMonthly p : revRepo.findByPeriodMonthOrderByStoreCodeAsc(m.minusMonths(1))) {
             prevRev.put(p.getStoreCode(), p.getRevenue() == null ? 0L : p.getRevenue());
         }
-        Map<String, String> names = aggregation.resolveStoreNames(
-                visible.stream().map(RevenueMonthly::getStoreCode).toList());
+        List<String> storeCodes = visible.stream().map(RevenueMonthly::getStoreCode).toList();
+        Map<String, String> names = aggregation.resolveStoreNames(storeCodes);
+        Map<String, String> regions = aggregation.resolveStoreRegions(storeCodes);
 
-        List<String> headers = List.of("门店", "营收(元)", "成本(元)", "毛利率(%)", "环比(%)");
+        List<String> headers = List.of("区域", "门店", "营收(元)", "成本(元)", "毛利率(%)", "环比(%)");
         List<List<String>> rows = new ArrayList<>();
         for (RevenueMonthly r : visible) {
             long rev = r.getRevenue() == null ? 0L : r.getRevenue();
@@ -107,6 +108,7 @@ public class ReportDataCollector {
             String mom = prev == null || prev == 0L ? "—"
                     : String.format(Locale.ROOT, "%+.2f%%", (rev - prev) * 100.0 / prev);
             rows.add(List.of(
+                    regions.getOrDefault(r.getStoreCode(), ""),
                     names.getOrDefault(r.getStoreCode(), r.getStoreCode()),
                     fen(rev), fen(cost),
                     rate == null ? "" : rate.multiply(BigDecimal.valueOf(100)).setScale(1, RoundingMode.HALF_UP).toPlainString() + "%",
