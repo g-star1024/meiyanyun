@@ -3,6 +3,8 @@
 > 属于美研云整体开发台账分册；索引、状态判定口径与读写规则见 [../DEVELOPMENT-ROADMAP.md](../DEVELOPMENT-ROADMAP.md)（铁律 9 / 10）。
 > 本区为每批交付后追加的一行式批次简报（倒序，最新在最上）。每闭合一批在顶部新增一条，不改写旧条目。
 
+> **最近更新**：2026-09-20（P5-B70 M1 报表口径微调批：mapPayMethod transfer 映射三处统一（FinanceAggregationService/TripartiteReconcileService/FinanceInternalOpsService 加 "transfer" 分支）＋R02 毛利率%格式化（ReportCsvBuilder ×100＋"%"）；feat commit `0f06204`（4 files +5/-4）；mvn compile OK；04-backlog L140/L141 勾销＋L132/L133 补勾销；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B70 卡2 批末落账中）
+
 > **最近更新**：2026-09-20（P5-B69 卡1 施工完成：L133 REJECTED──reset()──▶DRAFT 状态守卫（BizTargetService.reset()＋POST /{targetId}/reset 端点＋前端退回修改按钮）＋L132 aggregatedRevenue 读时聚合（view() 默认值＋list() computeAggregatedRevenue()＋RevenueMonthlyRepository 区间查询）＋L54 StorageService 存储抽象接口＋LocalStorageService 本地实现＋application.yml storage 配置段；feat commit `363bb1d`＋fix commit `832a1fa`（resetTarget 导出＋CButton variant 类型修复）；三轨真验全绿（vue-tsc 0 error / 50 tests pass / mvn compile OK）；数字 ✅109/🔧1/⬜55=166 不动；B69 卡2 批末落账中）
 
 > **最近更新**：2026-09-20（P5-B69 B 类产品口径/状态机/选型决策＋竞品调研：卡0 侦察＋五向竞品调研（规则引擎/对象存储/撞单合并/营销自动化 Flow/报表导出，23 候选方案）＋DESIGN 定案文档 501 行产出（§0 调研总述→§1 口径定义 8 项→§2 状态机 2 套（L133 reset/L44 撞单合并）→§3 选型决策 5 项（L54 StorageService/L138 报表策略/L49 自动化 Flow/L53 归因/L132 聚合）→§4 实施优先级→§5 不做 9 条→§6-§8 关系/交付/勾销）；零施工纯定案批，数字 ✅109/🔧1/⬜55=166 不动；卡1 待施工 L133+L132+L54）
