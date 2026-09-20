@@ -3,6 +3,8 @@
 > 属于美研云整体开发台账分册；索引、状态判定口径与读写规则见 [../DEVELOPMENT-ROADMAP.md](../DEVELOPMENT-ROADMAP.md)（铁律 9 / 10）。
 > 本区为每批交付后追加的一行式批次简报（倒序，最新在最上）。每闭合一批在顶部新增一条，不改写旧条目。
 
+> **最近更新**：2026-09-20（P5-B78 R04 客户复购与RFM分层接真批：txn-service InternalFinanceController rfm-report 端点（RfmCalculator 八象限分层＋按 storeCode×segment 聚合）＋finance-service FinanceAggregationService fetchRfmStats 跨域取数＋ReportDataCollector collectR04 六列统计（门店/客户分层/客户数/复购率%/客单价元/LTV元）＋ReportService SUPPORTED 扩展含 R04＋前端 m1Report.ts SUPPORTED_IDS 加 R04；feat commit `9bdc92f`（5 files +123/-3）；mvn compile OK；04-backlog L137 R04 接真注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B78 卡2 批末落账 DONE）
+
 > **最近更新**：2026-09-20（P5-B77 R08 合规检查月报接真批：audit-service ComplianceCheckRepository complianceStats 聚合查询＋InternalComplianceController 新建 compliance-stats 端点＋finance FinanceAggregationService +auditBaseUrl +fetchComplianceStats 跨域取数＋ReportDataCollector collectR08 六类×门店合规统计＋ReportService SUPPORTED 扩展含 R08；feat commit `7cd8b74`（6 files +141/-2）；mvn compile OK；04-backlog L137 R08 接真注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B77 卡2 批末落账 DONE）
 
 > **最近更新**：2026-09-20（P5-B76 R03 新客转化漏斗接真批：txn ArrivalRepository funnelArrivals＋PlanRepository funnelConsults/funnelDeals 聚合查询＋InternalFunnelController 新建 funnel-stats 端点＋finance FinanceAggregationService fetchFunnelStats 跨域取数＋ReportDataCollector collectR03＋ReportService SUPPORTED 扩展含 R03＋WEEK 周期支持；feat commit `481bd0d`（8 files +218/-3）；mvn compile OK；04-backlog L137 R03 接真注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B76 卡2 批末落账 DONE）
