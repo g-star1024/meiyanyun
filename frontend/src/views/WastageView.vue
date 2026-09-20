@@ -88,25 +88,25 @@ function openForm() {
   form.value = { itemName: '', spec: '', qty: 1, unit: '件', amount: 0, reason: 'BROKEN', description: '', location: '' }
   showForm.value = true
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
-  const o = store.create({ ...form.value, itemName: form.value.itemName.trim() })
+  const o = await store.create({ ...form.value, itemName: form.value.itemName.trim() })
   if (o) {
     showForm.value = false
     selectedId.value = o.id
   }
 }
 
-function doSubmit() {
-  if (selected.value) store.submit(selected.value.id)
+async function doSubmit() {
+  if (selected.value) await store.submit(selected.value.id)
 }
-function doApprove() {
-  if (selected.value) store.approve(selected.value.id)
+async function doApprove() {
+  if (selected.value) await store.approve(selected.value.id)
 }
-function doReject() {
+async function doReject() {
   if (!selected.value) return
   const reason = window.prompt('请填写驳回原因', '说明不充分，请补充凭证')
-  if (reason) store.reject(selected.value.id, reason)
+  if (reason) await store.reject(selected.value.id, reason)
 }
 
 const confirm = ref<{ show: boolean; title: string; action: () => void } | null>(null)
