@@ -24,7 +24,7 @@ import { useToast } from '@/composables/useToast'
 const auth = useAuthStore()
 const store = useWorkOrderStore()
 const toast = useToast()
-onMounted(() => store.seed())
+onMounted(async () => { await store.seed() })
 
 const selectedId = ref<string | null>(null)
 const selected = computed<WorkOrder | null>(() => {
@@ -91,10 +91,10 @@ const assigneeOptions = [
   ...ALL_STAFF.map((s) => ({ value: s.name, label: `${s.name}（${s.title}）` })),
 ]
 const canSubmit = computed(() => form.value.title.trim() && form.value.description.trim())
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
   const f = form.value
-  const o = store.create({
+  const o = await store.create({
     type: f.type,
     title: f.title,
     description: f.description,
@@ -114,17 +114,23 @@ function submitForm() {
 }
 
 // 操作
-function doStart() { if (selected.value) { store.start(selected.value.id); toast.success('工单已开始处理') } }
-function doComplete() { if (selected.value) { store.complete(selected.value.id, '已按要求处理完毕'); toast.success('工单已完成并关闭') } }
-function doEscalate() { if (selected.value) { store.escalate(selected.value.id, '问题复杂，需店长介入'); toast.warning('工单已升级，请店长协调') } }
+async function doStart() {
+  if (selected.value && await store.start(selected.value.id)) toast.success('工单已开始处理')
+}
+async function doComplete() {
+  if (selected.value && await store.complete(selected.value.id, '已按要求处理完毕')) toast.success('工单已完成并关闭')
+}
+async function doEscalate() {
+  if (selected.value && await store.escalate(selected.value.id, '问题复杂，需店长介入')) toast.warning('工单已升级，请店长协调')
+}
 
 // 确认弹层
-const confirm = ref<{show:boolean; title:string; action:()=>void} | null>(null)
-function ask(title: string, action: () => void) {
+const confirm = ref<{show:boolean; title:string; action:()=>Promise<void>|void} | null>(null)
+function ask(title: string, action: () => Promise<void>|void) {
   confirm.value = { show: true, title, action }
 }
-function runConfirm() {
-  confirm.value?.action()
+async function runConfirm() {
+  await confirm.value?.action()
   confirm.value = null
 }
 </script>
