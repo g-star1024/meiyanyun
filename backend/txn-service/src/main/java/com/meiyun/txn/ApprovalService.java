@@ -51,6 +51,7 @@ public class ApprovalService {
     private final ApptRefNameResolver nameResolver;
     private final OrgStaffClient orgStaffClient;
     private final FinanceAbnormalClient financeAbnormalClient;
+    private final RepurchaseService repurchaseService;
 
     /**
      * B20 SLA 各阶段审批时长（小时，可配置 meiyun.approval.sla.*）：
@@ -69,7 +70,8 @@ public class ApprovalService {
                            FinanceEventPublisher financeEventPublisher,
                            ApptRefNameResolver nameResolver,
                            OrgStaffClient orgStaffClient,
-                           FinanceAbnormalClient financeAbnormalClient) {
+                           FinanceAbnormalClient financeAbnormalClient,
+                           @Lazy RepurchaseService repurchaseService) {
         this.repo = repo;
         this.txnService = txnService;
         this.audit = audit;
@@ -78,6 +80,7 @@ public class ApprovalService {
         this.nameResolver = nameResolver;
         this.orgStaffClient = orgStaffClient;
         this.financeAbnormalClient = financeAbnormalClient;
+        this.repurchaseService = repurchaseService;
     }
 
     // ---------------- 提交待办（退款/退卡创建同事务联动） ----------------
@@ -205,6 +208,77 @@ public class ApprovalService {
                         "{\"bizType\":\"FIN_ADJUSTMENT\",\"bizNo\":\"%s\",\"tier\":\"%s\",\"stage\":\"%s\",\"amount\":%d,\"applicant\":%s}",
                         billNo, tier, t.getStage(), amountFen, jsonStr(who)));
         return t;
+    }
+
+    /**
+     * 复购/资产转移大额审批提交（P5-B64 卡1 L87）：三方签核齐后由 RepurchaseService 同事务调用。
+     * bizType=REPURCHASE、bizNo=复购单号（RP...），签署层级按转移金额 tierFor（调用方保证 ≥ L1 ¥1000 才进入）；
+     * L1 直达 FINANCE 单签；L2 REVIEW→FINANCE；L3 REVIEW→REGION→FINANCE（HIGH）。
+     * 审批中不并账；FINANCE 终审通过同事务回调 RepurchaseService 搬卡账置「已完成」，任一阶段驳回置「已拒绝」不并账。
+     * 幂等：同一复购单号重放回返原待办，不造重复审批单。
+     */
+    @Transactional
+    public ApprovalTodo submitRepurchase(Repurchase r) {
+        long amountFen = r.getTransferAmount() == null ? 0L : r.getTransferAmount();
+        if (amountFen <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "复购审批金额必须大于 0（分）");
+        }
+        String repurchaseNo = r.getRepurchaseNo();
+        guardWriteStore(r.getStoreCode());
+        for (ApprovalTodo exists : repo.findByBizNo(repurchaseNo)) {
+            if ("REPURCHASE".equals(exists.getBizType())) {
+                return exists;
+            }
+        }
+        String tier = TxnService.tierFor(amountFen);
+        String todoNo = nextNo();
+        String who = currentActor();
+        String label = "资产转移".equals(r.getBizType()) ? "资产转移" : "复购";
+        ApprovalTodo t = new ApprovalTodo();
+        t.setTodoNo(todoNo);
+        t.setBizType("REPURCHASE");
+        t.setBizNo(repurchaseNo);
+        t.setTitle(truncate(label + "审批 · " + nz(r.getTargetProject(), repurchaseNo), 128));
+        t.setSummary(truncate("复购单 " + repurchaseNo + "（" + label + " ¥" + (amountFen / 100.0) + "）"
+                + nz(r.getTargetProject(), ""), 255));
+        t.setAmount(amountFen);
+        t.setStoreCode(r.getStoreCode());
+        t.setStoreName(storeName(r.getStoreCode()));
+        t.setApplicant(who);
+        t.setApplicantRole("OPERATOR");
+        t.setSignTier(tier);
+        t.setStatus("PENDING");
+        t.setStage("L1".equals(tier) ? "FINANCE" : "REVIEW");
+        t.setPriority(amountFen >= 2_000_000L ? "HIGH" : "MEDIUM");
+        OffsetDateTime now = OffsetDateTime.now();
+        t.setSubmittedAt(now);
+        t.setDueAt(now.plusHours(stageSlaHours(t.getStage())));
+        t.setCoSigners("");
+        t.setHistory(historyJson(new HistoryEntry(who, "SUBMIT", "提交审批", now)));
+        t.setPayload(repurchasePayload(r, amountFen));
+        repo.save(t);
+        audit.record("APPROVAL", todoNo, who, "SUBMIT",
+                String.format(
+                        "{\"bizType\":\"REPURCHASE\",\"bizNo\":\"%s\",\"tier\":\"%s\",\"stage\":\"%s\",\"amount\":%d}",
+                        repurchaseNo, tier, t.getStage(), amountFen));
+        return t;
+    }
+
+    /** REPURCHASE payload：复购单要素 JSON（终审回调与留痕依据）；序列化失败快速失败回滚。 */
+    private static String repurchasePayload(Repurchase r, long amountFen) {
+        try {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("repurchaseNo", r.getRepurchaseNo());
+            m.put("bizType", r.getBizType());
+            m.put("targetProject", r.getTargetProject());
+            m.put("fromCardNo", r.getFromCardNo());
+            m.put("toCardNo", r.getToCardNo());
+            m.put("transferTimes", r.getTransferTimes());
+            m.put("transferAmount", amountFen);
+            return MAPPER.writeValueAsString(m);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "复购明细内容序列化失败");
+        }
     }
 
     /** 异常账务类型码转中文（标题/摘要留痕；未知码原样展示）。 */
@@ -441,6 +515,10 @@ public class ApprovalService {
             // 异常账务调整：REVIEW/REGION 中途同意仅推进阶段无下游；FINANCE 终审通过回调 finance 置 APPROVED
             // （账单进入待人工处置，动账只走处置端点的 ADJUST 分录；回调失败抛异常回滚，待办不置 APPROVED）
             financeAbnormalClient.applyResult(t.getBizNo(), true, actor, comment);
+        } else if ("REPURCHASE".equals(t.getBizType()) && finalStage) {
+            // 复购/资产转移：REVIEW/REGION 中途同意仅推进阶段无下游；FINANCE 终审通过同 JVM 直调
+            // RepurchaseService 搬卡账并置复购单「已完成」（账实校验失败抛 400 整事务回滚，待办不置 APPROVED）
+            repurchaseService.applyApproved(t.getBizNo(), actor, comment);
         }
 
         if (finalStage) {
@@ -450,8 +528,8 @@ public class ApprovalService {
             t.setLastRemindedAt(null);
         } else if ("REVIEW".equals(stage) && "L3".equals(t.getSignTier())
                 && ("REFUND".equals(t.getBizType()) || "CARD_CANCEL".equals(t.getBizType())
-                    || "FIN_ADJUSTMENT".equals(t.getBizType()))) {
-            // B19：L3 退款/退卡/异常账务调整插入区域经理复审阶段
+                    || "FIN_ADJUSTMENT".equals(t.getBizType()) || "REPURCHASE".equals(t.getBizType()))) {
+            // B19：L3 退款/退卡/异常账务调整/复购大额插入区域经理复审阶段
             t.setStage("REGION");
             t.setAssignee(null);
             resetStageSla(t, now);
@@ -492,6 +570,9 @@ public class ApprovalService {
         } else if ("FIN_ADJUSTMENT".equals(t.getBizType())) {
             // 异常账务调整：任一阶段驳回即回调 finance 置 REJECTED（账单终结，不可处置动账；回调失败回滚）
             financeAbnormalClient.applyResult(t.getBizNo(), false, actor, cmd.comment());
+        } else if ("REPURCHASE".equals(t.getBizType())) {
+            // 复购/资产转移：任一阶段驳回置复购单「已拒绝」不并账（同 JVM 直调，失败回滚）
+            repurchaseService.applyRejected(t.getBizNo(), actor, cmd.comment());
         }
         repo.save(t);
         audit.record("APPROVAL", todoNo, actor, "REJECT",
@@ -577,8 +658,9 @@ public class ApprovalService {
      * 数据域：storeSpec 按门店码注入；todo tab 额外做「我的待办」服务端过滤——
      * 指派人为空（按角色路由，当前人凭权限可处理）/ 指派给我 / 会签含我 / 我提交的。
      */
-    public List<ApprovalTodo> list(String tab, String bizType) {
+    public List<ApprovalTodo> list(String tab, String bizType, String bizNo) {
         boolean hasType = bizType != null && !bizType.isBlank() && !"ALL".equals(bizType);
+        boolean hasNo = bizNo != null && !bizNo.isBlank();
         boolean done = "done".equalsIgnoreCase(tab);
         boolean todo = "todo".equalsIgnoreCase(tab);
         Specification<ApprovalTodo> spec = DataScope.storeSpec("storeCode");
@@ -589,6 +671,9 @@ public class ApprovalService {
         }
         if (hasType) {
             spec = spec.and((r, q, cb) -> cb.equal(r.get("bizType"), bizType));
+        }
+        if (hasNo) {
+            spec = spec.and((r, q, cb) -> cb.equal(r.get("bizNo"), bizNo.trim()));
         }
         if (todo) {
             var u = DataScope.current();

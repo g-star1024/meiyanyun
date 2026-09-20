@@ -20,6 +20,7 @@ import { useCustomerStore } from '@/stores/customer'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
 import { searchCustomers, listCustomerCards, type CustomerDTO, type MemberCardDTO } from '@/api/customer'
+import { listApprovals, type ApprovalTodoDTO } from '@/api/approval'
 
 const repurchase = useRepurchaseStore()
 const customer = useCustomerStore()
@@ -29,19 +30,21 @@ onMounted(async () => {
   await repurchase.load()
 })
 
-type Tab = 'pending' | 'completed' | 'rejected'
+type Tab = 'pending' | 'approving' | 'completed' | 'rejected'
 const tab = ref<Tab>('pending')
 const selectedNo = ref<string | null>(null)
 const keyword = ref('')
 
 const tabs = computed(() => [
   { k: 'pending' as Tab, label: `待签核 (${repurchase.pending.length})` },
+  { k: 'approving' as Tab, label: `审批中 (${repurchase.approving.length})` },
   { k: 'completed' as Tab, label: `已完成 (${repurchase.completed.length})` },
   { k: 'rejected' as Tab, label: `已拒绝 (${repurchase.rejected.length})` },
 ])
 
 const baseList = computed<RepurchaseRecord[]>(() => {
   if (tab.value === 'pending') return [...repurchase.pending].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  if (tab.value === 'approving') return [...repurchase.approving].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   if (tab.value === 'completed') return [...repurchase.completed].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   return [...repurchase.rejected].sort((a, b) => b.createdAt.localeCompare(a.createdAt))
 })
@@ -64,14 +67,16 @@ function customerNameOf(r: RepurchaseRecord) {
   return repurchase.customerName(r.customerId)
 }
 
-const STATUS_PILL: Record<string, 'warning' | 'success' | 'danger'> = {
+const STATUS_PILL: Record<string, 'warning' | 'info' | 'success' | 'danger'> = {
   待签核: 'warning',
+  审批中: 'info',
   已完成: 'success',
   已拒绝: 'danger',
 }
 
 const kpis = computed(() => [
   { label: '待签核', value: String(repurchase.pending.length), tone: 'warning' as const, icon: 'sign' },
+  { label: '审批中', value: String(repurchase.approving.length), tone: 'brand' as const, icon: 'check-square' },
   { label: '本月已完成', value: String(repurchase.completed.length), tone: 'success' as const, icon: 'check-square' },
   { label: '已拒绝', value: String(repurchase.rejected.length), tone: 'danger' as const, icon: 'alert' },
   { label: '单据总数', value: String(repurchase.records.length), tone: 'brand' as const, icon: 'order' },
@@ -262,6 +267,62 @@ async function doSign(reject: boolean) {
   submitting.value = false
   if (ok) toast.success(reject ? '单据已拒签并留痕' : '三方双签完成，单据已生效')
 }
+
+// ==================== 大额多级审批轨迹（B64 卡1：GET /txn/approval?bizNo= 复用，零新端点） ====================
+interface ApprovalTrackEntry { actor: string; action: string; comment: string; at: string }
+const approvalTodo = ref<ApprovalTodoDTO | null>(null)
+const trackLoading = ref(false)
+let trackNo = ''
+
+const STAGE_LABEL: Record<string, string> = {
+  REVIEW: '店长初审',
+  REGION: '区域经理复审',
+  FINANCE: '财务终审',
+}
+const approvalStageText = computed(() => {
+  const t = approvalTodo.value
+  if (!t) return '审批流程处理中'
+  return `${STAGE_LABEL[t.stage] || t.stage}（${t.signTier}）`
+})
+const approvalTrack = computed<ApprovalTrackEntry[]>(() => {
+  const t = approvalTodo.value
+  if (!t) return []
+  try {
+    const parsed = t.history ? JSON.parse(t.history) : []
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+})
+function actionLabel(a: string) {
+  return { SUBMIT: '提交', APPROVE: '通过', REJECT: '驳回', TRANSFER: '转交', ADD_SIGN: '加签' }[a] || a
+}
+async function loadApprovalTrack(no: string) {
+  if (trackNo === no) return
+  trackNo = no
+  trackLoading.value = true
+  approvalTodo.value = null
+  try {
+    const res = await listApprovals({ tab: 'all', bizNo: no })
+    approvalTodo.value = (res.data ?? []).find((d) => d.bizType === 'REPURCHASE' && d.bizNo === no) ?? null
+  } catch {
+    approvalTodo.value = null
+  } finally {
+    trackLoading.value = false
+  }
+}
+watch(
+  selected,
+  (r) => {
+    if (r && r.status === '审批中') {
+      loadApprovalTrack(r.repurchaseNo)
+    } else {
+      trackNo = ''
+      approvalTodo.value = null
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -383,6 +444,26 @@ async function doSign(reject: boolean) {
             </div>
           </div>
         </div>
+
+        <!-- 大额多级审批轨迹（仅审批中展示：终审后轨迹沉淀于审批中心，本页 foot 只留终态文案，复用既有区块样式，零新 CSS） -->
+        <div v-if="selected.status === '审批中'" class="sec-block">
+          <div class="sec-block__title">资金审批（大额划转，终审通过前卡账不动）</div>
+          <div class="consent-bar">
+            <CIcon name="shield" :size="16" />
+            <span>当前审批段：<strong>{{ approvalStageText }}</strong>；审批中三方签核区已锁定，请勿重复签核或重新落单。</span>
+          </div>
+          <div v-if="trackLoading" class="nform__hint">审批轨迹加载中…</div>
+          <template v-else>
+            <div v-if="approvalTrack.length === 0" class="nform__hint">暂无审批轨迹记录</div>
+            <div v-else class="sign-grid">
+              <div v-for="(h, i) in approvalTrack" :key="i" class="sign-cell">
+                <span class="sign-cell__role">{{ actionLabel(h.action) }} · {{ h.actor }}</span>
+                <span class="sign-cell__name">{{ h.comment || '—' }}</span>
+                <span class="sign-cell__time">{{ h.at ? fmtDateTime(h.at) : '—' }}</span>
+              </div>
+            </div>
+          </template>
+        </div>
       </template>
 
       <template #foot>
@@ -401,6 +482,12 @@ async function doSign(reject: boolean) {
           <CButton variant="primary" :disabled="!!signError || submitting" v-perm.disable="'followup:edit'" @click="doSign(false)">
             <CIcon name="sign" :size="16" />三方签核通过
           </CButton>
+        </template>
+        <template v-else-if="selected && selected.status === '审批中'">
+          <span class="wbs-foot-done">
+            <CIcon name="shield" :size="15" />
+            单据大额划转已提交多级审批（{{ approvalStageText }}），终审通过前卡账不动，签核区已锁定
+          </span>
         </template>
         <template v-else-if="selected">
           <span class="wbs-foot-done">

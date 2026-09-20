@@ -6,13 +6,15 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 /**
- * 审批中心 REST（T3-01）：统一聚合八类双签业务待办。
+ * 审批中心 REST（T3-01）：统一聚合十类双签/多级审批业务待办
+ * （REFUND/CARD_CANCEL/TRANSFER/LEAVE/PROCUREMENT/PRICE_CHANGE/LOSS_REPORT/
+ * REQUISITION/FIN_ADJUSTMENT/REPURCHASE）。
  * 网关 /api/txn 前缀已路由至 txn-service，无需改网关。
  *
  * <p>M7 权限闸门：读动作统一 approval:view（矩阵中仅管理层持该码）；同意/驳回须持
- * refund:approve 或 cardcancel:approve（矩阵中店长/财务/超管持有，区域经理仅 view 不可审批），
- * 阶段签核资格（REVIEW 店长 / FINANCE 财务）与指派人校验在服务层 guardStageAssignee 完成，
- * 操作人一律取 JWT 登录人（请求体 actor 字段忽略）。
+ * refund:approve 或 cardcancel:approve（矩阵中店长/区域经理/财务/超管均持有；L3 REGION 阶段
+ * 另在服务层校验 REGION_MGR 角色），阶段签核资格（REVIEW 店长 / REGION 区域经理 / FINANCE 财务）
+ * 与指派人校验在服务层 guardStageAssignee 完成，操作人一律取 JWT 登录人（请求体 actor 字段忽略）。
  */
 @RestController
 @RequestMapping("/api/txn/approval")
@@ -25,11 +27,12 @@ public class ApprovalController {
         this.approvalService = approvalService;
     }
 
-    /** 待办列表：tab=todo（待处理）/ done（已办结）/ all（全部）；可叠加 bizType 过滤。 */
+    /** 待办列表：tab=todo（待处理）/ done（已办结）/ all（全部）；可叠加 bizType / bizNo 过滤（bizNo 供业务单侧查审批轨迹）。 */
     @GetMapping
     public List<ApprovalTodo> list(@RequestParam(required = false) String tab,
-                                   @RequestParam(required = false) String bizType) {
-        return approvalService.list(tab, bizType);
+                                   @RequestParam(required = false) String bizType,
+                                   @RequestParam(required = false) String bizNo) {
+        return approvalService.list(tab, bizType, bizNo);
     }
 
     @GetMapping("/{todoNo}")

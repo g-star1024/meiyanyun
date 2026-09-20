@@ -63,6 +63,7 @@ export const useRepurchaseStore = defineStore('repurchase', () => {
   function seed() {}
 
   const pending = computed(() => records.value.filter((r) => r.status === '待签核'))
+  const approving = computed(() => records.value.filter((r) => r.status === '审批中'))
   const completed = computed(() => records.value.filter((r) => r.status === '已完成'))
   const rejected = computed(() => records.value.filter((r) => r.status === '已拒绝'))
 
@@ -214,7 +215,7 @@ export const useRepurchaseStore = defineStore('repurchase', () => {
   }
 
   return {
-    records, loading, pending, completed, rejected,
+    records, loading, pending, approving, completed, rejected,
     get, customerName, yuan, seed,
     load, create, sign,
   }

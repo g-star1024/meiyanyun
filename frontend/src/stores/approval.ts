@@ -24,6 +24,7 @@ export type ApprovalBizType =
   | 'LOSS_REPORT'   // 损耗报损（M2 库存）
   | 'REQUISITION'   // 物料申领（M2 库存）
   | 'FIN_ADJUSTMENT' // 异常账务调整（B63 卡1 L84：长短款/错账终审后 ADJUST 动账）
+  | 'REPURCHASE'    // 复购/转卡大额多级审批（B64 卡1 L87：≥L1 三签后入审批流，终审同事务并账）
 
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'TRANSFERRED'
 /** 审批阶段：REVIEW=店长初审；REGION=区域经理复审（B19，仅 L3 退款/退卡）；FINANCE=财务终审（L1 直达） */
@@ -76,6 +77,7 @@ const BIZ_LABEL: Record<ApprovalBizType, string> = {
   LOSS_REPORT: '损耗报损',
   REQUISITION: '物料申领',
   FIN_ADJUSTMENT: '异常账务调整',
+  REPURCHASE: '复购/转卡审批',
 }
 
 const BIZ_PERM: Record<ApprovalBizType, string> = {
@@ -88,6 +90,8 @@ const BIZ_PERM: Record<ApprovalBizType, string> = {
   LOSS_REPORT: 'inventory:approve',
   REQUISITION: 'inventory:approve',
   FIN_ADJUSTMENT: 'finance:abnormal:dispose',
+  // B64 卡1：不新增权限码，审批动作沿用退款/退卡双 approve 码任一（后端 @RequirePerm 双码）
+  REPURCHASE: 'refund:approve',
 }
 
 /**

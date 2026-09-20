@@ -9,7 +9,6 @@ import com.meiyun.security.RequirePerm;
 import com.meiyun.txn.audit.AuditRecorder;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
@@ -27,6 +26,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * M4-18 复购回访（复购/资产转移，三方双签 + 知情同意书）
  * + 双签 5 类补齐（耗材领用/报损/现金交接，不看金额一律双签）。
  *
+ * <p>P5-B64 卡1：复购落单/签核/查询逻辑已下沉 {@link RepurchaseService}（大额转移金额
+ * ≥¥1000 三签齐置「审批中」走 ApprovalService 多级审批，终审才并账；小额三签即完成），
+ * 本控制器仅保留 HTTP 边界；双签工单/现金日结端点维持原样。
+ *
  * 红线：
  * ① 知情同意书未签（consentAck=false）不得创建复购/资产转移单；
  * ② 三方签：客户确认 + 经办 + 店长，三方不得同一人；
@@ -43,18 +46,15 @@ public class M4RepurchaseController {
             "报损", BizType.SCRAP,
             "现金交接", BizType.CASH_HANDOVER);
 
-    private final RepurchaseRepository repurchaseRepo;
+    private final RepurchaseService repurchaseService;
     private final DualSignTicketRepository ticketRepo;
-    private final MemberCardRepository cardRepo;
     private final AuditRecorder audit;
     private final AtomicLong seq = new AtomicLong(System.nanoTime() % 1_000_000);
 
-    public M4RepurchaseController(RepurchaseRepository repurchaseRepo,
-                                  DualSignTicketRepository ticketRepo,
-                                  MemberCardRepository cardRepo, AuditRecorder audit) {
-        this.repurchaseRepo = repurchaseRepo;
+    public M4RepurchaseController(RepurchaseService repurchaseService,
+                                  DualSignTicketRepository ticketRepo, AuditRecorder audit) {
+        this.repurchaseService = repurchaseService;
         this.ticketRepo = ticketRepo;
-        this.cardRepo = cardRepo;
         this.audit = audit;
     }
 
@@ -62,129 +62,31 @@ public class M4RepurchaseController {
 
     @PostMapping("/repurchase")
     @RequirePerm("followup:create")
-    public Repurchase createRepurchase(@RequestBody @Valid RepurchaseCmd cmd) {
-        if (!cmd.consentAck()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "知情同意书未签署，不得创建复购/资产转移单");
-        }
-        if ("资产转移".equals(cmd.bizType())
-                && (cmd.fromCardNo() == null || cmd.toCardNo() == null)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "资产转移须指定来源卡与目标卡");
-        }
-        Repurchase r = new Repurchase();
-        r.setRepurchaseNo(nextNo("RP"));
-        r.setCustomerId(cmd.customerId());
-        r.setStoreCode(cmd.storeCode());
-        r.setBizType(cmd.bizType());
-        r.setTargetProject(cmd.targetProject());
-        r.setFromCardNo(cmd.fromCardNo());
-        r.setToCardNo(cmd.toCardNo());
-        r.setTransferTimes(cmd.transferTimes() == null ? 0 : cmd.transferTimes());
-        r.setTransferAmount(cmd.transferAmount() == null ? 0L : cmd.transferAmount());
-        r.setConsentAck(true);
-        r.setConsentText(cmd.consentText());
-        r.setStatus("待签核");
-        r.setCreatedAt(OffsetDateTime.now());
-        r.setNote(cmd.note());
-        repurchaseRepo.save(r);
-        audit.record("REPURCHASE", r.getRepurchaseNo(), DataScope.currentActor(),
-                "CREATE", "{\"bizType\":\"" + cmd.bizType() + "\",\"consent\":true}");
-        return r;
+    public Repurchase createRepurchase(@RequestBody @Valid RepurchaseService.RepurchaseCmd cmd) {
+        return repurchaseService.create(cmd);
     }
 
     @GetMapping("/repurchase")
     @RequirePerm("followup:view")
     public List<Repurchase> listRepurchase() {
-        return repurchaseRepo.findAll(DataScope.storeSpec("storeCode"),
-                Sort.by(Sort.Order.desc("createdAt")));
+        return repurchaseService.list();
     }
 
     @GetMapping("/repurchase/{no}")
     @RequirePerm("followup:view")
     public Repurchase getRepurchase(@PathVariable String no) {
-        Repurchase r = repurchaseRepo.findById(no)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看"));
-        if (!DataScope.canReadStore(r.getStoreCode())) {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看");
-        }
-        return r;
+        return repurchaseService.require(no);
     }
 
     /**
      * 三方双签：sign1 客户确认 + sign2 经办（咨询师/前台）+ sign3 店长。
-     * 三方不得同一人；资产转移完成时同事务搬移卡余额/次数。
+     * 三方不得同一人；小额（&lt;¥1000）即时并账完成，大额（≥¥1000）置「审批中」转多级审批，终审通过才并账。
      */
     @PostMapping("/repurchase/{no}/sign")
     @RequirePerm("followup:edit")
-    @Transactional
-    public Repurchase signRepurchase(@PathVariable String no, @RequestBody @Valid TripleSignCmd cmd) {
-        Repurchase r = getRepurchase(no);
-        if (!"待签核".equals(r.getStatus())) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                    "单据状态须为「待签核」，当前: " + r.getStatus());
-        }
-        if (!r.isConsentAck()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "知情同意书未签，禁止签核");
-        }
-        if (cmd.sign1() == null || cmd.sign2() == null || cmd.sign3() == null) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "三方双签须三签齐全");
-        }
-        if (cmd.sign1().equals(cmd.sign2()) || cmd.sign1().equals(cmd.sign3()) || cmd.sign2().equals(cmd.sign3())) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "三方签不得有同一人");
-        }
-        if (cmd.reject()) {
-            r.setStatus("已拒绝");
-            r.setSign1(cmd.sign1());
-            r.setSign1Role(cmd.sign1Role());
-            r.setSignedAt1(OffsetDateTime.now());
-            repurchaseRepo.save(r);
-            audit.record("REPURCHASE", no, DataScope.currentActor(), "REJECT",
-                    "{\"sign1\":\"" + cmd.sign1() + "\"}");
-            return r;
-        }
-
-        OffsetDateTime now = OffsetDateTime.now();
-        r.setSign1(cmd.sign1()); r.setSign1Role(nvl(cmd.sign1Role(), "客户"));
-        r.setSign2(cmd.sign2()); r.setSign2Role(nvl(cmd.sign2Role(), "经办"));
-        r.setSign3(cmd.sign3()); r.setSign3Role(nvl(cmd.sign3Role(), "店长"));
-        r.setSignedAt1(now); r.setSignedAt2(now); r.setSignedAt3(now);
-        r.setStatus("已完成");
-
-        // 资产转移：同事务搬移卡余额/次数（账实校验）
-        if ("资产转移".equals(r.getBizType())) {
-            MemberCard from = cardRepo.findById(r.getFromCardNo())
-                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
-                            "来源卡不存在: " + r.getFromCardNo()));
-            MemberCard to = cardRepo.findById(r.getToCardNo())
-                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
-                            "目标卡不存在: " + r.getToCardNo()));
-            if (from.getRemainTimes() < r.getTransferTimes()) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "账实校验失败：来源卡剩余次数 " + from.getRemainTimes()
-                                + " < 转移次数 " + r.getTransferTimes());
-            }
-            if (from.getBalance() < r.getTransferAmount()) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                        "账实校验失败：来源卡余额 " + from.getBalance()
-                                + " 分 < 转移金额 " + r.getTransferAmount() + " 分");
-            }
-            from.setRemainTimes(from.getRemainTimes() - r.getTransferTimes());
-            from.setBalance(from.getBalance() - r.getTransferAmount());
-            if (from.getRemainTimes() == 0 && from.getBalance() == 0) {
-                from.setStatus("已用完");
-            }
-            to.setRemainTimes(to.getRemainTimes() + r.getTransferTimes());
-            to.setBalance(to.getBalance() + r.getTransferAmount());
-            cardRepo.save(from);
-            cardRepo.save(to);
-        }
-
-        repurchaseRepo.save(r);
-        audit.record("REPURCHASE", no, DataScope.currentActor(), "TRIPLE_SIGN",
-                "{\"sign1\":\"" + cmd.sign1() + "\",\"sign2\":\"" + cmd.sign2()
-                        + "\",\"sign3\":\"" + cmd.sign3() + "\",\"bizType\":\"" + r.getBizType() + "\"}");
-        return r;
+    public Repurchase signRepurchase(@PathVariable String no,
+                                     @RequestBody @Valid RepurchaseService.TripleSignCmd cmd) {
+        return repurchaseService.sign(no, cmd);
     }
 
     // ==================== 双签工单（耗材领用/报损/现金交接） ====================
@@ -345,19 +247,6 @@ public class M4RepurchaseController {
     }
 
     // ==================== 命令 DTO ====================
-
-    public record RepurchaseCmd(
-            @NotBlank String customerId, @NotBlank String storeCode,
-            @NotBlank String bizType, String targetProject,
-            String fromCardNo, String toCardNo,
-            Integer transferTimes, Long transferAmount,
-            @NotNull Boolean consentAck, String consentText, String note) {}
-
-    public record TripleSignCmd(
-            String sign1, String sign1Role,
-            String sign2, String sign2Role,
-            String sign3, String sign3Role,
-            boolean reject) {}
 
     public record TicketCmd(
             @NotBlank String bizType, @NotBlank String storeCode,

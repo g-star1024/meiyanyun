@@ -42,6 +42,7 @@ const BIZ_LABEL: Record<ApprovalBizType, string> = {
   LOSS_REPORT: '损耗报损',
   REQUISITION: '物料申领',
   FIN_ADJUSTMENT: '异常账务调整',
+  REPURCHASE: '复购/转卡审批',
 }
 const BIZ_PERM: Record<ApprovalBizType, string> = {
   REFUND: 'refund:approve',
@@ -53,6 +54,7 @@ const BIZ_PERM: Record<ApprovalBizType, string> = {
   LOSS_REPORT: 'inventory:approve',
   REQUISITION: 'inventory:approve',
   FIN_ADJUSTMENT: 'finance:abnormal:dispose',
+  REPURCHASE: 'refund:approve',
 }
 
 // 工号 → 中文姓名补全：E/SE 真实工号已由 config/staff.ts ROSTER 覆盖；
@@ -399,9 +401,13 @@ function actionLabel(a: string) {
 }
 
 function stageHint(t: ApprovalTask): string {
-  const threeStage = t.signTier === 'L3' && (t.bizType === 'REFUND' || t.bizType === 'CARD_CANCEL')
+  const threeStage = t.signTier === 'L3'
+    && (t.bizType === 'REFUND' || t.bizType === 'CARD_CANCEL' || t.bizType === 'REPURCHASE')
   if (t.stage === 'FINANCE') {
-    return '当前为财务终审阶段，通过即办结（确认退款/退卡）；操作将写入审计日志。'
+    const tail = t.bizType === 'REPURCHASE'
+      ? '通过即办结并执行复购/转卡并账'
+      : '通过即办结（确认退款/退卡）'
+    return `当前为财务终审阶段，${tail}；操作将写入审计日志。`
   }
   if (t.stage === 'REGION') {
     return '当前为区域经理复审阶段（L3 大额第三签留痕），通过后流转财务终审；操作将写入审计日志。'

@@ -8,7 +8,7 @@ import client from './client'
 /** 审批待办实体 DTO（approval_todo 表行）。金额单位「分」。 */
 export interface ApprovalTodoDTO {
   todoNo: string
-  bizType: string // REFUND/CARD_CANCEL/TRANSFER/LEAVE/PROCUREMENT/PRICE_CHANGE/LOSS_REPORT/REQUISITION
+  bizType: string // REFUND/CARD_CANCEL/TRANSFER/LEAVE/PROCUREMENT/PRICE_CHANGE/LOSS_REPORT/REQUISITION/FIN_ADJUSTMENT/REPURCHASE
   bizNo: string
   title: string
   summary: string
@@ -70,8 +70,8 @@ export interface LossReportSubmitCmd {
   lines: ConsumableLineCmd[]
 }
 
-/** 待办列表：tab=todo/done/all；bizType 可选过滤。 */
-export const listApprovals = (params: { tab?: string; bizType?: string }) =>
+/** 待办列表：tab=todo/done/all；bizType 可选过滤；bizNo 可选按业务单号精确过滤（B64 卡1 复购单轨迹复用）。 */
+export const listApprovals = (params: { tab?: string; bizType?: string; bizNo?: string }) =>
   client.get<ApprovalTodoDTO[]>('/txn/approval', { params })
 
 export const getApproval = (todoNo: string) =>

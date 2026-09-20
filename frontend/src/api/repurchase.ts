@@ -6,12 +6,14 @@
 // ② 三方双签 = 客户确认 + 经办 + 店长，三方不得同一人；
 // ③ 资产转移完成时后端同事务搬移来源卡余额(分)/次数到目标卡（账实校验）；
 // ④ 全部动作落 append-only 审计链（REPURCHASE/CREATE|TRIPLE_SIGN|REJECT）。
-// 状态机：待签核 → 已完成 / 已拒绝（终态）。
+// 状态机（B64 卡1 接入多级审批）：
+//   待签核 →（金额<L1 三签即并账）已完成／（金额≥L1 三签）审批中（不并账）
+//          → 终审 APPROVED 同事务并账置已完成／任一阶段驳回置已拒绝。
 // 权限：读 followup:view / 建 followup:create / 签核 followup:edit；门店由后端 JWT 锁定。
 // ============================================================
 import client from './client'
 
-export type RepurchaseStatus = '待签核' | '已完成' | '已拒绝'
+export type RepurchaseStatus = '待签核' | '审批中' | '已完成' | '已拒绝'
 export type RepurchaseBizType = '复购' | '资产转移'
 
 /** 复购/资产转移单据读模型（字段与后端 Repurchase 实体同名驼峰）。 */
