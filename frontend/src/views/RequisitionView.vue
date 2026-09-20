@@ -22,7 +22,9 @@ import {
 
 const auth = useAuthStore()
 const store = useRequisitionStore()
-onMounted(() => store.seed())
+onMounted(() => {
+  void store.seed()
+})
 
 const selectedId = ref<string | null>(null)
 const selected = computed<Requisition | null>(() => {
@@ -81,12 +83,12 @@ function openForm() {
   }
   showForm.value = true
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
   const items: RequisitionItem[] = form.value.rows
     .filter((r) => r.name.trim() && r.qty > 0)
     .map((r) => ({ name: r.name.trim(), spec: r.spec.trim() || undefined, qty: Number(r.qty), unit: r.unit || '件' }))
-  const o = store.create({ purpose: form.value.purpose.trim(), remark: form.value.remark.trim() || undefined, items })
+  const o = await store.create({ purpose: form.value.purpose.trim(), remark: form.value.remark.trim() || undefined, items })
   if (o) {
     showForm.value = false
     selectedId.value = o.id
@@ -94,19 +96,19 @@ function submitForm() {
 }
 
 // 操作
-function doSubmit() {
-  if (selected.value) store.submit(selected.value.id)
+async function doSubmit() {
+  if (selected.value) await store.submit(selected.value.id)
 }
-function doApprove() {
-  if (selected.value) store.approve(selected.value.id)
+async function doApprove() {
+  if (selected.value) await store.approve(selected.value.id)
 }
-function doReject() {
+async function doReject() {
   if (!selected.value) return
   const reason = window.prompt('请填写驳回原因', '数量或用途需调整')
-  if (reason) store.reject(selected.value.id, reason)
+  if (reason) await store.reject(selected.value.id, reason)
 }
-function doReceive() {
-  if (selected.value) store.receive(selected.value.id)
+async function doReceive() {
+  if (selected.value) await store.receive(selected.value.id)
 }
 
 const confirm = ref<{ show: boolean; title: string; action: () => void } | null>(null)
