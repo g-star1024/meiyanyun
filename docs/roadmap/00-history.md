@@ -3,6 +3,8 @@
 > 属于美研云整体开发台账分册；索引、状态判定口径与读写规则见 [../DEVELOPMENT-ROADMAP.md](../DEVELOPMENT-ROADMAP.md)（铁律 9 / 10）。
 > 本区为每批交付后追加的一行式批次简报（倒序，最新在最上）。每闭合一批在顶部新增一条，不改写旧条目。
 
+> **最近更新**：2026-09-20（P5-B76 R03 新客转化漏斗接真批：txn ArrivalRepository funnelArrivals＋PlanRepository funnelConsults/funnelDeals 聚合查询＋InternalFunnelController 新建 funnel-stats 端点＋finance FinanceAggregationService fetchFunnelStats 跨域取数＋ReportDataCollector collectR03＋ReportService SUPPORTED 扩展含 R03＋WEEK 周期支持；feat commit `481bd0d`（8 files +218/-3）；mvn compile OK；04-backlog L137 R03 接真注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B76 卡2 批末落账 DONE）
+
 > **最近更新**：2026-09-20（P5-B75 R09 员工业绩排行接真批：finance-service FinanceAggregationService +orgBaseUrl +CommissionBaseRow record +fetchCommissionBase 跨域取数＋resolveStaffNames 员工名解析＋ReportDataCollector +commissionRepo 注入 +collectR09 按 writeoffAmount 降序叠加 CommissionRecord 提成＋ReportService SUPPORTED 扩展含 R09；feat commit `4bf2aef`（3 files +98/-2）；mvn compile OK；04-backlog L137 R09 接真注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B75 卡2 批末落账 DONE）
 
 > **最近更新**：2026-09-20（P5-B74 R05 项目疗程消耗报表接真批：finance-service ReportDataCollector collectR05 基于 fetchCards 聚合（cardType=COURSE 过滤、按门店×项目/卡项 GROUP BY、totalTimes/remainTimes/consumedTimes/核销率/即将到期聚合）＋ReportService SUPPORTED 扩展含 R05；feat commit `d9c08d1`（2 files +50/-1）；mvn compile OK；04-backlog L137 R05 接真注记；数字 ✅109/🔧1/⬜55=166 不动、0 新页面；B74 卡2 批末落账 DONE）
