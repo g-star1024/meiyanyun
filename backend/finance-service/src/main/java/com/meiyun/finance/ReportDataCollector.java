@@ -50,6 +50,7 @@ public class ReportDataCollector {
             case "R03" -> collectR03(period);
             case "R05" -> collectR05(period);
             case "R07" -> collectR07(period);
+            case "R08" -> collectR08(period);
             case "R09" -> collectR09(period);
             default -> throw new IllegalArgumentException("unsupported template: " + templateId);
         };
@@ -222,6 +223,44 @@ public class ReportDataCollector {
             rows.add(List.of(storeName, staffName,
                     fen(br.writeoffAmount()), String.valueOf(br.writeoffCount()),
                     commission, "—"));
+        }
+        return new ReportData(headers, rows);
+    }
+
+    private ReportData collectR08(String month) {
+        LocalDate m = LocalDate.parse(month + "-01");
+        String from = m.toString();
+        String to = m.plusMonths(1).toString();
+
+        List<Map<String, Object>> statsRows = aggregation.fetchComplianceStats(from, to);
+
+        Map<String, String> categoryCn = Map.of(
+                "QUALIFICATION", "资质证照", "CONSENT", "知情同意",
+                "DRUG_TRACE", "药品溯源", "PRIVACY", "隐私合规",
+                "AD", "医疗广告", "INFECTION", "院感管理");
+
+        List<String> headers = List.of("门店", "合规项", "检查总数", "通过数", "通过率(%)", "问题数", "整改率(%)");
+        List<List<String>> rows = new ArrayList<>();
+        for (Map<String, Object> r : statsRows) {
+            String storeName = r.get("storeName") == null ? "未知" : r.get("storeName").toString();
+            String category = r.get("category") == null ? "" : r.get("category").toString();
+            long total = r.get("totalCount") instanceof Number n ? n.longValue() : 0L;
+            long pass = r.get("passCount") instanceof Number n ? n.longValue() : 0L;
+            long warn = r.get("warnCount") instanceof Number n ? n.longValue() : 0L;
+            long fail = r.get("failCount") instanceof Number n ? n.longValue() : 0L;
+            long remediated = r.get("remediatedCount") instanceof Number n ? n.longValue() : 0L;
+
+            String passRate = total == 0 ? "—"
+                    : String.format(Locale.ROOT, "%.1f", pass * 100.0 / total);
+            long problems = warn + fail;
+            long denom = remediated + problems;
+            String remediationRate = denom == 0 ? "—"
+                    : String.format(Locale.ROOT, "%.1f", remediated * 100.0 / denom);
+
+            rows.add(List.of(storeName,
+                    categoryCn.getOrDefault(category, category),
+                    String.valueOf(total), String.valueOf(pass), passRate,
+                    String.valueOf(problems), remediationRate));
         }
         return new ReportData(headers, rows);
     }

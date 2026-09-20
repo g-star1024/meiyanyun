@@ -77,6 +77,9 @@ public class FinanceAggregationService {
     @Value("${org.service.url:http://127.0.0.1:8081}")
     private String orgBaseUrl;
 
+    @Value("${audit.service.url:http://127.0.0.1:8084}")
+    private String auditBaseUrl;
+
     @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
     private String internalToken;
 
@@ -715,6 +718,32 @@ public class FinanceAggregationService {
             log.warn("拉取 txn 提成业绩聚合失败，降级空业绩 month={} : {}", month, e.getMessage());
         }
         return out;
+    }
+
+    List<Map<String, Object>> fetchComplianceStats(String from, String to) {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(auditBaseUrl + "/api/audit/internal/compliance-stats");
+            b.queryParam("from", from);
+            b.queryParam("to", to);
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            if (resp.getBody() != null && resp.getBody().get("rows") instanceof List<?> list) {
+                List<Map<String, Object>> out = new ArrayList<>();
+                for (Object item : list) {
+                    if (item instanceof Map<?, ?> m) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        m.forEach((k, v) -> row.put(String.valueOf(k), v));
+                        out.add(row);
+                    }
+                }
+                return out;
+            }
+            return List.of();
+        } catch (Exception e) {
+            log.warn("拉取审计域合规统计失败（降级空列表）from={} to={} : {}", from, to, e.getMessage());
+            return List.of();
+        }
     }
 
     public Map<String, String> resolveStaffNames(List<String> staffIds) {
