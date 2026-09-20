@@ -34,10 +34,13 @@ public class ReportDataCollector {
 
     private final FinanceAggregationService aggregation;
     private final RevenueMonthlyRepository revRepo;
+    private final CommissionRecordRepository commissionRepo;
 
-    public ReportDataCollector(FinanceAggregationService aggregation, RevenueMonthlyRepository revRepo) {
+    public ReportDataCollector(FinanceAggregationService aggregation, RevenueMonthlyRepository revRepo,
+                               CommissionRecordRepository commissionRepo) {
         this.aggregation = aggregation;
         this.revRepo = revRepo;
+        this.commissionRepo = commissionRepo;
     }
 
     public ReportData collect(String templateId, String period) {
@@ -46,6 +49,7 @@ public class ReportDataCollector {
             case "R02" -> collectR02(period);
             case "R05" -> collectR05(period);
             case "R07" -> collectR07(period);
+            case "R09" -> collectR09(period);
             default -> throw new IllegalArgumentException("unsupported template: " + templateId);
         };
     }
@@ -188,6 +192,37 @@ public class ReportDataCollector {
             data.add(List.of(storeName, reason, String.valueOf(count), fen(totalAmt), avgStr));
         }
         return new ReportData(headers, data);
+    }
+
+    private ReportData collectR09(String month) {
+        Map<String, FinanceAggregationService.CommissionBaseRow> base = aggregation.fetchCommissionBase(month);
+        LocalDate period = LocalDate.parse(month + "-01");
+        Map<String, CommissionRecord> commMap = new LinkedHashMap<>();
+        for (CommissionRecord r : commissionRepo.findByPeriodOrderByCommissionDesc(period)) {
+            commMap.putIfAbsent(r.getStaffId(), r);
+        }
+        Map<String, String> staffNames = aggregation.resolveStaffNames(base.keySet().stream().toList());
+        List<String> storeCodes = base.values().stream()
+                .map(FinanceAggregationService.CommissionBaseRow::storeCode)
+                .filter(s -> s != null && !s.isBlank()).distinct().toList();
+        Map<String, String> storeNames = aggregation.resolveStoreNames(storeCodes);
+        List<String> headers = List.of("门店", "员工", "业绩(元)", "服务人次", "提成(元)", "满意度(%)");
+        List<List<String>> rows = new ArrayList<>();
+        List<Map.Entry<String, FinanceAggregationService.CommissionBaseRow>> sorted = new ArrayList<>(base.entrySet());
+        sorted.sort((a, b) -> Long.compare(b.getValue().writeoffAmount(), a.getValue().writeoffAmount()));
+        for (Map.Entry<String, FinanceAggregationService.CommissionBaseRow> en : sorted) {
+            FinanceAggregationService.CommissionBaseRow br = en.getValue();
+            String sc = br.storeCode() == null ? "" : br.storeCode();
+            if (!sc.isBlank() && !DataScope.canReadStore(sc)) continue;
+            String storeName = storeNames.getOrDefault(sc, sc.isBlank() ? "未知" : sc);
+            String staffName = staffNames.getOrDefault(en.getKey(), en.getKey());
+            CommissionRecord cr = commMap.get(en.getKey());
+            String commission = cr == null ? "—" : fen(cr.getCommission() == null ? 0L : cr.getCommission());
+            rows.add(List.of(storeName, staffName,
+                    fen(br.writeoffAmount()), String.valueOf(br.writeoffCount()),
+                    commission, "—"));
+        }
+        return new ReportData(headers, rows);
     }
 
     private String fen(long v) {

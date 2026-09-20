@@ -74,6 +74,9 @@ public class FinanceAggregationService {
     @Value("${store.service.url:http://127.0.0.1:8085}")
     private String storeBaseUrl;
 
+    @Value("${org.service.url:http://127.0.0.1:8081}")
+    private String orgBaseUrl;
+
     @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
     private String internalToken;
 
@@ -649,6 +652,64 @@ public class FinanceAggregationService {
         } catch (Exception e) {
             String s = iso.toString();
             return s.length() >= 10 ? s.substring(0, 10) : s;
+        }
+    }
+
+    public record CommissionBaseRow(String storeCode, long writeoffAmount, int writeoffCount,
+                                    long orderAmount, int orderCount, long refundAmount, int refundCount) {}
+
+    public Map<String, CommissionBaseRow> fetchCommissionBase(String month) {
+        Map<String, CommissionBaseRow> out = new LinkedHashMap<>();
+        try {
+            String url = UriComponentsBuilder.fromHttpUrl(txnBaseUrl + "/api/txn/internal/commission-base")
+                    .queryParam("month", month)
+                    .toUriString();
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(url, HttpMethod.GET, internalEntity(), MAP_TYPE);
+            Map<String, Object> body = resp.getBody();
+            Object rowsObj = body == null ? null : body.get("rows");
+            if (rowsObj instanceof List<?> rows) {
+                for (Object item : rows) {
+                    if (!(item instanceof Map<?, ?> m)) continue;
+                    String staffId = str(m.get("staffId"));
+                    if (staffId == null || staffId.isBlank()) continue;
+                    String sc = str(m.get("storeCode"));
+                    CommissionBaseRow row = new CommissionBaseRow(
+                            sc, longOf(m.get("writeoffAmount")), intOf(m.get("writeoffCount")),
+                            longOf(m.get("orderAmount")), intOf(m.get("orderCount")),
+                            longOf(m.get("refundAmount")), intOf(m.get("refundCount")));
+                    out.merge(staffId, row, (a, b) -> new CommissionBaseRow(
+                            a.storeCode(),
+                            a.writeoffAmount() + b.writeoffAmount(), a.writeoffCount() + b.writeoffCount(),
+                            a.orderAmount() + b.orderAmount(), a.orderCount() + b.orderCount(),
+                            a.refundAmount() + b.refundAmount(), a.refundCount() + b.refundCount()));
+                }
+            }
+        } catch (Exception e) {
+            log.warn("拉取 txn 提成业绩聚合失败，降级空业绩 month={} : {}", month, e.getMessage());
+        }
+        return out;
+    }
+
+    public Map<String, String> resolveStaffNames(List<String> staffIds) {
+        List<String> ids = staffIds.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();
+        if (ids.isEmpty()) return Collections.emptyMap();
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(orgBaseUrl + "/api/org/staff/name-map");
+            ids.forEach(i -> b.queryParam("ids", i));
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            Map<String, String> out = new LinkedHashMap<>();
+            if (resp.getBody() != null) {
+                resp.getBody().forEach((k, v) -> out.put(k, v == null ? k : v.toString()));
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("员工名解析失败（回落员工号），数量={} : {}", ids.size(), e.getMessage());
+            Map<String, String> fallback = new LinkedHashMap<>();
+            ids.forEach(i -> fallback.put(i, i));
+            return fallback;
         }
     }
 
