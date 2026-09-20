@@ -48,6 +48,7 @@ public class ReportDataCollector {
             case "R01" -> collectR01(period);
             case "R02" -> collectR02(period);
             case "R03" -> collectR03(period);
+            case "R04" -> collectR04(period);
             case "R05" -> collectR05(period);
             case "R07" -> collectR07(period);
             case "R08" -> collectR08(period);
@@ -125,6 +126,44 @@ public class ReportDataCollector {
                     mom));
         }
         return new ReportData(headers, rows);
+    }
+
+    private ReportData collectR04(String month) {
+        LocalDate m = LocalDate.parse(month + "-01");
+        String from = m.toString();
+        String to = m.plusMonths(1).toString();
+
+        List<Map<String, Object>> rows = aggregation.fetchRfmStats(from, to);
+
+        List<String> storeCodes = rows.stream()
+                .map(r -> r.get("storeCode") == null ? "" : r.get("storeCode").toString())
+                .filter(s -> !s.isBlank())
+                .distinct().toList();
+        Map<String, String> names = aggregation.resolveStoreNames(storeCodes);
+
+        List<String> headers = List.of("门店", "客户分层", "客户数", "复购率(%)", "客单价(元)", "LTV(元)");
+        List<List<String>> data = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            String sc = r.get("storeCode") == null ? "" : r.get("storeCode").toString();
+            if (!sc.isBlank() && !DataScope.canReadStore(sc)) continue;
+            String storeName = names.getOrDefault(sc, sc.isBlank() ? "未知" : sc);
+            String segment = r.get("segment") == null ? "未分类" : r.get("segment").toString();
+            long customerCount = r.get("customerCount") instanceof Number n ? n.longValue() : 0L;
+            long repurchaseCount = r.get("repurchaseCount") instanceof Number n ? n.longValue() : 0L;
+            long totalAmountFen = r.get("totalAmountFen") instanceof Number n ? n.longValue() : 0L;
+            long orderCount = r.get("orderCount") instanceof Number n ? n.longValue() : 0L;
+
+            String repurchaseRate = customerCount == 0 ? "—"
+                    : String.format(Locale.ROOT, "%.1f", repurchaseCount * 100.0 / customerCount);
+            String avgTicket = orderCount == 0 ? "—"
+                    : String.format(Locale.ROOT, "%.2f", totalAmountFen / 100.0 / orderCount);
+            String ltv = customerCount == 0 ? "—"
+                    : String.format(Locale.ROOT, "%.2f", totalAmountFen / 100.0 / customerCount);
+
+            data.add(List.of(storeName, segment,
+                    String.valueOf(customerCount), repurchaseRate, avgTicket, ltv));
+        }
+        return new ReportData(headers, data);
     }
 
     private ReportData collectR05(String month) {

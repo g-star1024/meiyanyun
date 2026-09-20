@@ -61,12 +61,13 @@ public class InternalFinanceController {
     private final DualSignTicketRepository ticketRepo;
     private final AuditRecorder audit;
     private final ApprovalService approvalService;
+    private final RfmCalculator rfmCalculator;
 
     public InternalFinanceController(TxnOrderRepository orderRepo, TxnRefundRepository refundRepo,
                                      WriteoffRepository writeoffRepo, TxnCardCancelRepository cardCancelRepo,
                                      PaymentService paymentService, CustomerCardClient customerCardClient,
                                      DualSignTicketRepository ticketRepo, AuditRecorder audit,
-                                     ApprovalService approvalService) {
+                                     ApprovalService approvalService, RfmCalculator rfmCalculator) {
         this.orderRepo = orderRepo;
         this.refundRepo = refundRepo;
         this.writeoffRepo = writeoffRepo;
@@ -76,6 +77,7 @@ public class InternalFinanceController {
         this.ticketRepo = ticketRepo;
         this.audit = audit;
         this.approvalService = approvalService;
+        this.rfmCalculator = rfmCalculator;
     }
 
     /**
@@ -384,6 +386,59 @@ public class InternalFinanceController {
             result.add(row);
         }
         return result;
+    }
+
+    @GetMapping("/rfm-report")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> rfmReport(
+            @RequestParam(value = "from") String from,
+            @RequestParam(value = "to") String to) {
+        OffsetDateTime fromTime = LocalDate.parse(from).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime toTime = LocalDate.parse(to).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+
+        List<TxnOrder> monthOrders = orderRepo.findAll(orderSpec(null, fromTime, toTime));
+        Map<String, List<TxnOrder>> byCustomer = new LinkedHashMap<>();
+        for (TxnOrder o : monthOrders) {
+            String cid = o.getCustomerId();
+            if (cid == null || cid.isBlank()) continue;
+            byCustomer.computeIfAbsent(cid, k -> new ArrayList<>()).add(o);
+        }
+
+        Map<String, long[]> byKey = new LinkedHashMap<>();
+        for (Map.Entry<String, List<TxnOrder>> e : byCustomer.entrySet()) {
+            List<TxnOrder> orders = e.getValue();
+            RfmCalculator.RfmView rfm = rfmCalculator.calc(orders, null);
+            String sc = orders.get(0).getStoreCode() == null ? "" : orders.get(0).getStoreCode();
+            String seg = rfm.segment() == null ? "未分类" : rfm.segment();
+            String key = sc + "|" + seg;
+            long[] acc = byKey.computeIfAbsent(key, k -> new long[5]);
+            acc[0]++;
+            if (orders.size() >= 2) acc[1]++;
+            for (TxnOrder o : orders) {
+                acc[2] += o.getAmount() == null ? 0L : o.getAmount();
+            }
+            acc[3] += orders.size();
+        }
+
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map.Entry<String, long[]> e : byKey.entrySet()) {
+            String[] parts = e.getKey().split("\\|", 2);
+            long[] acc = e.getValue();
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", parts[0]);
+            row.put("segment", parts[1]);
+            row.put("customerCount", acc[0]);
+            row.put("repurchaseCount", acc[1]);
+            row.put("totalAmountFen", acc[2]);
+            row.put("orderCount", acc[3]);
+            rows.add(row);
+        }
+
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("from", from);
+        resp.put("to", to);
+        resp.put("rows", rows);
+        return resp;
     }
 
     /** 提成聚合行：按顾问工号取行（惰性初始化，分量单位分/笔）。 */
