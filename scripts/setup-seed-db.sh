@@ -9,7 +9,8 @@
 #   2) TRUNCATE 全部业务表（RESTART IDENTITY CASCADE），保留 sys_* / flyway / schema_version。
 #   3) 灌入 backend/db/seed/01_master.sql（主数据）+ 02_customer_full.sql（100 客户富画像）。
 #
-# 用法：bash scripts/setup-seed-db.sh
+# 用法：bash scripts/setup-seed-db.sh [--keep-audit]
+#   --keep-audit  保留 audit_log（不从 TRUNCATE 清单清空），用于审计冒烟取证场景
 # 配套：docker-compose.seed.yml 可起指向 meiyun_seed 的服务做联调。
 # ============================================================
 set -euo pipefail
@@ -18,6 +19,14 @@ PG_CONTAINER="${PG_CONTAINER:-meiyun-pg}"
 PG_USER="${PG_USER:-meiyun}"
 SRC_DB="${SRC_DB:-meiyun_core}"
 SEED_DB="${SEED_DB:-meiyun_seed}"
+KEEP_AUDIT=false
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --keep-audit) KEEP_AUDIT=true; shift ;;
+    *) echo "未知选项: $1"; exit 1 ;;
+  esac
+done
 
 # 脚本所在目录 → 项目根
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -670,9 +679,21 @@ BEGIN
   END IF;
 END $$;
 SQL
-docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
+if [ "$KEEP_AUDIT" = true ]; then
+  echo "    --keep-audit: audit_log 保留，不从 TRUNCATE 清单清空"
+else
+  echo "    audit_log 将随 TRUNCATE 清空（传 --keep-audit 可保留）"
+fi
+
+TRUNCATE_TABLES="account_mirror, appointment, appointment_month, approval_todo, campaign,"
+
+if [ "$KEEP_AUDIT" != true ]; then
+  TRUNCATE_TABLES="account_mirror, appointment, appointment_month, approval_todo, audit_log, campaign,"
+fi
+
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<SQL
 TRUNCATE TABLE
-  account_mirror, appointment, appointment_month, approval_todo, audit_log, campaign,
+  ${TRUNCATE_TABLES}
   card_finance_event, card_ledger, commission_record, commission_rule, consult_plan, consult_plan_item, consult_plan_revision,
   consultation, consumable, consumable_movement, consumable_stock, contraindication,
   cost_allocation, coupon_grant, coupon_template, coupon_writeoff_chain, coupon_writeoff_record,
