@@ -16,13 +16,17 @@ import CProgressBar from '@/components/CProgressBar.vue'
 import { usePerformanceStore } from '@/stores/performance'
 
 const store = usePerformanceStore()
-onMounted(() => store.seed())
+onMounted(async () => { await store.seed() })
 
 const selectedId = ref<string | null>(null)
 const selected = computed(() => {
   if (selectedId.value) return store.get(selectedId.value) ?? null
   return store.filtered[0] ?? null
 })
+
+watch(() => store.filtered, (list) => {
+  if (selectedId.value && !list.some((s) => s.id === selectedId.value)) selectedId.value = null
+}, { deep: false })
 
 const kpis = computed(() => [
   { label: '门店总业绩', icon: 'store', value: `¥${(store.totalActual / 10000).toFixed(1)}万`, tone: 'brand' as const },
@@ -54,10 +58,10 @@ function openTarget() {
   targetInput.value = selected.value.target
   showTarget.value = true
 }
-function saveTarget() {
+async function saveTarget() {
   if (!selected.value) return
-  store.updateTarget(selected.value.id, Number(targetInput.value) || 0)
-  showTarget.value = false
+  const ok = await store.updateTarget(selected.value.id, Number(targetInput.value) || 0)
+  if (ok) showTarget.value = false
 }
 
 // 提成试算
@@ -226,7 +230,7 @@ watch(selected, (s) => { if (s) simulateAmount.value = s.actual })
                 <div class="trend__bar-wrap">
                   <div class="trend__bar" :style="{ height: (v / Math.max(...selected.trend, 1) * 100) + '%' }" />
                 </div>
-                <div class="trend__month">{{ ['3月','4月','5月','6月','7月','8月'][i] }}</div>
+                <div class="trend__month">{{ store.trendLabels[i] }}</div>
               </div>
             </div>
           </div>

@@ -1,15 +1,18 @@
 // ============================================================
 // 员工绩效看板 store（M2-07）
 // 咨询师 / 医生本月业绩、目标完成率、提成。
-// 对齐 list-detail 范式：seed ≥6、computed、action、nextId、activity.log。
+// 切真：period（本月/上月）作 load 参数走后端；提成试算保留纯前端。
 // ============================================================
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
-import { useAuthStore } from './auth'
+import { computed, ref, watch } from 'vue'
+import * as perfApi from '@/api/performance'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { useStoreContext } from '@/stores/storeContext'
 
 export type StaffRole = 'CONSULTANT' | 'DOCTOR' | 'BEAUTICIAN'
 export type PerformanceStatus = 'ON_DUTY' | 'LEAVE' | 'PROBATION'
+export type PerformancePeriod = 'THIS_MONTH' | 'LAST_MONTH'
 
 export interface PerformanceStaff {
   id: string
@@ -17,13 +20,13 @@ export interface PerformanceStaff {
   role: StaffRole
   title: string
   avatarLetter: string
-  target: number          // 本月业绩目标（元）
-  actual: number          // 本月实际业绩（元）
-  orders: number          // 成交单数
-  commissionRate: number  // 提成比例 0~1
+  target: number
+  actual: number
+  orders: number
+  commissionRate: number
   status: PerformanceStatus
-  joinedAt: string        // 入职日期
-  trend: number[]         // 近 6 个月业绩（用于迷你图）
+  joinedAt: string
+  trend: number[]
 }
 
 const ROLE_LABEL: Record<StaffRole, string> = {
@@ -44,8 +47,6 @@ const STATUS_PILL: Record<PerformanceStatus, 'success' | 'warning' | 'info'> = {
   PROBATION: 'info',
 }
 
-// 提成阶梯：业绩越高比例越高（本项目采用固定字段 commissionRate 作为当月实际比例，
-// 阶梯仅用于"提成试算"按钮展示若按新比例重算的差额。）
 const COMMISSION_TIERS = [
   { min: 0, rate: 0.06, label: '基础 6%' },
   { min: 80000, rate: 0.08, label: '达标 8%' },
@@ -53,13 +54,43 @@ const COMMISSION_TIERS = [
   { min: 250000, rate: 0.12, label: '冠军 12%' },
 ]
 
+function adapt(d: perfApi.PerfStaffDto): PerformanceStaff {
+  return {
+    id: String(d.id),
+    name: d.name,
+    role: d.role as StaffRole,
+    title: d.title,
+    avatarLetter: d.avatarLetter,
+    target: d.target,
+    actual: d.actual,
+    orders: d.orders,
+    commissionRate: d.commissionRate,
+    status: d.status as PerformanceStatus,
+    joinedAt: d.joinedAt,
+    trend: d.trend.slice(0, 6),
+  }
+}
+
 export const usePerformanceStore = defineStore('performance', () => {
-  const auth = useAuthStore()
-  const activity = useActivityStore()
+  const ctx = useStoreContext()
+  const toast = useToast()
 
   const staff = ref<PerformanceStaff[]>([])
   const filterRole = ref<StaffRole | 'ALL'>('ALL')
-  const period = ref<'THIS_MONTH' | 'LAST_MONTH'>('THIS_MONTH')
+  const period = ref<PerformancePeriod>('THIS_MONTH')
+  const activePeriod = ref<string>('')
+
+  const trendLabels = computed<string[]>(() => {
+    if (!activePeriod.value) return []
+    const [y, m] = activePeriod.value.split('-').map(Number)
+    const labels: string[] = []
+    for (let i = 5; i >= 1; i--) {
+      const d = new Date(y, m - 1 - i, 1)
+      labels.push(`${d.getMonth() + 1}月`)
+    }
+    labels.push(`${m}月`)
+    return labels
+  })
 
   const onDuty = computed(() => staff.value.filter((s) => s.status === 'ON_DUTY'))
   const filtered = computed(() => {
@@ -94,12 +125,18 @@ export const usePerformanceStore = defineStore('performance', () => {
     return t
   }
 
-  function updateTarget(id: string, target: number): boolean {
+  async function updateTarget(id: string, target: number): Promise<boolean> {
     const s = staff.value.find((x) => x.id === id)
-    if (!s || !auth.can('performance:edit')) return false
-    s.target = Math.max(0, Math.round(target))
-    activity.log(auth.user.name, `调整 ${s.name} 本月业绩目标为 ¥${s.target.toLocaleString()}`, s.id)
-    return true
+    if (!s) return false
+    const value = Math.max(0, Math.round(target))
+    try {
+      const { data } = await perfApi.updatePerfTarget(id, value)
+      replaceStaff(adapt(data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '目标调整失败，请稍后重试'))
+      return false
+    }
   }
 
   function simulateCommission(id: string, amount: number): { rate: number; commission: number; delta: number; label: string } | null {
@@ -111,24 +148,46 @@ export const usePerformanceStore = defineStore('performance', () => {
     return { rate: t.rate, commission: newCommission, delta: newCommission - baseline, label: t.label }
   }
 
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const data: Array<Omit<PerformanceStaff, 'id'>> = [
-      { name: '林微', role: 'CONSULTANT', title: '资深咨询师', avatarLetter: '林', target: 200000, actual: 246800, orders: 38, commissionRate: 0.10, status: 'ON_DUTY', joinedAt: '2022-03-15', trend: [168000, 182000, 175000, 201000, 223000, 246800] },
-      { name: '顾屿', role: 'DOCTOR', title: '主治医师', avatarLetter: '顾', target: 180000, actual: 198400, orders: 52, commissionRate: 0.08, status: 'ON_DUTY', joinedAt: '2021-07-01', trend: [142000, 156000, 168000, 175000, 189000, 198400] },
-      { name: '周敏', role: 'BEAUTICIAN', title: '高级美容师', avatarLetter: '周', target: 80000, actual: 92300, orders: 124, commissionRate: 0.08, status: 'ON_DUTY', joinedAt: '2023-01-20', trend: [62000, 70000, 75000, 81000, 88000, 92300] },
-      { name: '苏婉', role: 'CONSULTANT', title: '咨询师', avatarLetter: '苏', target: 150000, actual: 132600, orders: 29, commissionRate: 0.06, status: 'ON_DUTY', joinedAt: '2023-09-10', trend: [98000, 108000, 118000, 124000, 128000, 132600] },
-      { name: '陈珂', role: 'DOCTOR', title: '注射医师', avatarLetter: '陈', target: 160000, actual: 154800, orders: 47, commissionRate: 0.08, status: 'ON_DUTY', joinedAt: '2022-11-05', trend: [120000, 128000, 138000, 146000, 150000, 154800] },
-      { name: '吴桐', role: 'BEAUTICIAN', title: '美容师', avatarLetter: '吴', target: 70000, actual: 58200, orders: 96, commissionRate: 0.06, status: 'LEAVE', joinedAt: '2024-02-18', trend: [42000, 48000, 52000, 55000, 57000, 58200] },
-      { name: '何苗', role: 'CONSULTANT', title: '初级咨询师', avatarLetter: '何', target: 100000, actual: 67500, orders: 18, commissionRate: 0.06, status: 'PROBATION', joinedAt: '2025-05-06', trend: [0, 0, 28000, 42000, 56000, 67500] },
-    ]
-    data.forEach((d) => staff.value.push({ id: nextId('pf'), ...d }))
+  function replaceStaff(next: PerformanceStaff) {
+    const idx = staff.value.findIndex((s) => s.id === next.id)
+    if (idx >= 0) staff.value.splice(idx, 1, next)
+    else staff.value.push(next)
   }
+
+  async function load() {
+    try {
+      const sc = ctx.currentStoreCode
+      const { data } = await perfApi.listPerfStaff({
+        period: period.value,
+        storeCode: sc || undefined,
+      })
+      staff.value = data.map(adapt)
+      activePeriod.value = data.length ? data[0].period : resolvePeriodStr(period.value)
+    } catch (e) {
+      staff.value = []
+      activePeriod.value = resolvePeriodStr(period.value)
+      toast.error(errMsg(e, '员工绩效加载失败，请稍后重试'))
+    }
+  }
+
+  function resolvePeriodStr(p: PerformancePeriod): string {
+    const now = new Date()
+    const d = new Date(now.getFullYear(), now.getMonth() - (p === 'LAST_MONTH' ? 1 : 0), 1)
+    const y = d.getFullYear()
+    const m = String(d.getMonth() + 1).padStart(2, '0')
+    return `${y}-${m}`
+  }
+
+  async function seed() {
+    await ctx.loadStores()
+    await load()
+  }
+
+  watch(period, () => { void load() })
 
   return {
     staff, filterRole, period,
+    trendLabels, activePeriod,
     onDuty, filtered, totalActual, totalTarget, achievement, topStaff,
     get, completion, commission, tierFor, simulateCommission, updateTarget, seed,
     ROLE_LABEL, STATUS_LABEL, STATUS_PILL, COMMISSION_TIERS,

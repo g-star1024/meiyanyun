@@ -1,0 +1,91 @@
+package com.meiyun.store.performance;
+
+import com.meiyun.security.DataScope;
+import com.meiyun.security.LoginUser;
+import com.meiyun.security.RequirePerm;
+import com.meiyun.security.SecurityContext;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api/stores/perf-staff")
+public class PerformanceController {
+
+    private final PerformanceService service;
+
+    public PerformanceController(PerformanceService service) {
+        this.service = service;
+    }
+
+    @GetMapping
+    @RequirePerm("performance:view")
+    public List<Map<String, Object>> list(@RequestParam(required = false) String period,
+                                          @RequestParam(required = false) String role,
+                                          @RequestParam(required = false) String storeCode) {
+        return service.list(period, role, resolveReadStoreCode(storeCode));
+    }
+
+    @GetMapping("/{id}")
+    @RequirePerm("performance:view")
+    public Map<String, Object> detail(@PathVariable Long id) {
+        Map<String, Object> row = service.detail(id);
+        checkReadable(row);
+        return row;
+    }
+
+    @PostMapping("/{id}/target")
+    @RequirePerm("performance:edit")
+    public Map<String, Object> updateTarget(@PathVariable Long id,
+                                             @RequestBody(required = false) PerformanceService.TargetCmd cmd) {
+        Map<String, Object> row = service.detail(id);
+        checkWritable(row);
+        return service.updateTarget(id, cmd, actor());
+    }
+
+    private String actor() {
+        LoginUser u = SecurityContext.get();
+        return u == null ? "system" : u.staffName();
+    }
+
+    private String resolveReadStoreCode(String requested) {
+        LoginUser u = SecurityContext.get();
+        if (u == null || u.isSuper() || "GROUP".equals(u.scope()) || "BRAND".equals(u.scope()))
+            return requested;
+        if ("REGION".equals(u.scope())) {
+            if (requested != null && !requested.isBlank())
+                return DataScope.canReadStore(requested.trim()) ? requested.trim() : "__NONE__";
+            List<String> stores = u.stores();
+            return stores != null && stores.size() == 1 ? stores.get(0) : null;
+        }
+        return u.storeCode() == null || u.storeCode().isBlank() ? "__NONE__" : u.storeCode();
+    }
+
+    private boolean canWriteStore(String storeCode) {
+        LoginUser u = SecurityContext.get();
+        if (u == null || u.isSuper() || "GROUP".equals(u.scope()) || "BRAND".equals(u.scope()))
+            return true;
+        if ("REGION".equals(u.scope()))
+            return DataScope.canReadStore(storeCode);
+        return storeCode.equals(u.storeCode());
+    }
+
+    private void checkReadable(Map<String, Object> row) {
+        Object sc = row.get("storeCode");
+        if (!(sc instanceof String s) || !DataScope.canReadStore(s))
+            throw PerformanceService.notFound();
+    }
+
+    private void checkWritable(Map<String, Object> row) {
+        Object sc = row.get("storeCode");
+        if (!(sc instanceof String s) || !canWriteStore(s))
+            throw PerformanceService.badReq("无权操作该门店员工绩效");
+    }
+}
