@@ -1,6 +1,7 @@
 // 组织架构聚合（M1 集团管控）。
 // 树形结构：集团 → 大区 → 门店 → 部门。权威源 org-service /org/tree（B33 去 mock）。
-// 写边界（后端强制）：仅可在门店下新建部门；编码/类型不可改；仅部门可跨门店移动；
+// 写边界（后端强制，B87 L37 放开）：可新建区域（父=集团）/门店（父=区域，storeCode 挂已有 store）/部门（父=门店）；
+// 集团唯一禁建（409）；编码/类型不可改；部门可跨门店移动、门店可跨区移动（响应带 affectedStaffCount 提示）；
 // 停用必填原因。前端只做交互收口，任何越权/校验以网关返回的中文 message 为准。
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
@@ -132,10 +133,17 @@ export const useM1OrgStore = defineStore('m1Org', () => {
   function canEdit() { return auth.can('org:edit') }
 
   // ---- 命令（真实 API；失败向上抛出，由视图展示后端中文 message） ----
+  /** 前端枚举 → 后端中文落库值（铁律 2 中文契约；集团与 UI 绝缘故不收录） */
+  const ORG_TYPE_DB: Record<'REGION' | 'STORE' | 'DEPT', string> = {
+    REGION: '区域', STORE: '门店', DEPT: '部门',
+  }
+
   async function create(input: {
     code: string
     name: string
+    type: 'REGION' | 'STORE' | 'DEPT'
     parentId: string
+    storeCode?: string
     leaderName: string
     headcount: number
     sort: number
@@ -150,14 +158,17 @@ export const useM1OrgStore = defineStore('m1Org', () => {
       headcount: input.headcount,
       sortNo: input.sort,
       remark: input.remark || null,
+      orgType: ORG_TYPE_DB[input.type],
+      storeCode: input.type === 'STORE' ? (input.storeCode || null) : undefined,
     }
     await createOrgUnit(payload)
     await load(true)
   }
 
   /**
-   * 编辑节点。parentId 仅部门且发生变化时下发（跨门店移动）；
+   * 编辑节点。parentId 仅部门（跨门店）/门店（跨区，L37）且发生变化时下发；
    * 可空文本始终随表单提交（空串由后端清空）。
+   * 返回 affectedStaffCount：门店跨区移动时该店 store_code 下员工数（region 未随动），其余恒 0。
    */
   async function update(id: string, patch: {
     name: string
@@ -166,7 +177,7 @@ export const useM1OrgStore = defineStore('m1Org', () => {
     headcount: number
     sort: number
     remark: string
-  }): Promise<void> {
+  }): Promise<number> {
     if (!auth.can('org:edit')) throw new Error('无组织架构编辑权限')
     const payload: OrgUnitUpdatePayload = {
       orgName: patch.name,
@@ -176,11 +187,13 @@ export const useM1OrgStore = defineStore('m1Org', () => {
       remark: patch.remark,
     }
     const cur = get(id)
-    if (cur && cur.type === 'DEPT' && patch.parentId != null && patch.parentId !== cur.parentId) {
+    if (cur && (cur.type === 'DEPT' || cur.type === 'STORE')
+        && patch.parentId != null && patch.parentId !== cur.parentId) {
       payload.parentCode = patch.parentId
     }
-    await updateOrgUnit(id, payload)
+    const resp = await updateOrgUnit(id, payload)
     await load(true)
+    return resp.data?.affectedStaffCount ?? 0
   }
 
   async function setStatus(id: string, status: OrgStatus, reason?: string): Promise<void> {

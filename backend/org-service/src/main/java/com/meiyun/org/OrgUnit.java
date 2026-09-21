@@ -53,4 +53,11 @@ public class OrgUnit {
 
     @Column(name = "created_at")
     private OffsetDateTime createdAt;
+
+    /**
+     * 门店跨区移动提示（B87 L37）：update 改挂其他区域时，统计该店 store_code 下员工数随响应带出
+     * （staff.region 不随动，需人工核对）；非移动场景恒为 null，不参与持久化。
+     */
+    @Transient
+    private Integer affectedStaffCount;
 }

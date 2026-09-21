@@ -32,12 +32,14 @@ export interface OrgUnit {
   remark?: string | null
   sortNo?: number
   createdAt?: string | null
+  /** B87 L37：门店跨区移动时由后端随 update 响应带出（该店 store_code 下员工数，region 未随动提示） */
+  affectedStaffCount?: number | null
   children?: OrgTreeNode[]
 }
 
 export interface OrgTreeNode extends OrgUnit {}
 
-/** 新建组织单元（B33：后端仅允许在门店下新建部门） */
+/** 新建组织单元（B87 L37：orgType 缺省「部门」；区域→父=集团，门店→父=区域且 storeCode 必填挂已有 store） */
 export interface OrgUnitCreatePayload {
   orgCode: string
   orgName: string
@@ -46,12 +48,17 @@ export interface OrgUnitCreatePayload {
   headcount?: number | null
   sortNo?: number | null
   remark?: string | null
+  /** 中文落库：区域 | 门店 | 部门；缺省部门（集团后端 409 唯一禁建，UI 不提供选项） */
+  orgType?: string
+  /** 仅门店类型必填：挂已有 store 主数据编码（D4，不新建 store） */
+  storeCode?: string | null
 }
 
 /**
  * 编辑组织单元。可空文本字段语义与后端对齐：
  * 字段缺省（undefined）= 保持原值；空串 = 显式清空；非空 = 更新。
- * parentCode 仅部门可传（跨门店移动），其他类型传入即 400。
+ * parentCode 部门（跨门店移动）/门店（跨区移动，B87 L37）可传，其他类型传入即 400。
+ * 门店跨区移动响应带 affectedStaffCount（该店员工 region 未随动，需人工核对）。
  */
 export interface OrgUnitUpdatePayload {
   orgName?: string
@@ -198,11 +205,11 @@ export const listStoreRegionDist = () => client.get<StoreRegionDist[]>('/stores/
 
 // -------------------- 组织树写（B33） --------------------
 
-/** 新建部门（唯一可新建的组织层级，父必须是门店） */
+/** 新建组织单元（L37：区域/门店/部门，父类型链后端硬校验；集团 409 禁建） */
 export const createOrgUnit = (payload: OrgUnitCreatePayload) =>
   client.post<OrgUnit>('/org/admin/org-units', payload)
 
-/** 编辑节点 / 部门跨门店移动；返回原始实体，调用方需重载树 */
+/** 编辑节点 / 部门跨门店移动 / 门店跨区移动；返回原始实体（跨区移动带 affectedStaffCount），调用方需重载树 */
 export const updateOrgUnit = (orgCode: string, payload: OrgUnitUpdatePayload) =>
   client.put<OrgUnit>(`/org/admin/org-units/${orgCode}`, payload)
 

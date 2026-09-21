@@ -12,15 +12,33 @@ import CTextarea from '@/components/CTextarea.vue'
 import CDrawer from '@/components/CDrawer.vue'
 import { useM1OrgStore, type OrgNode, type OrgType, type OrgStatus } from '@/stores/m1Org'
 import { useAuthStore } from '@/stores/auth'
+import { listStores } from '@/api/org'
 
 const org = useM1OrgStore()
 const auth = useAuthStore()
 const pageErr = ref('')
+let pageErrTimer: ReturnType<typeof setTimeout> | null = null
+/** 页面顶部条短暂提示（复用 form-err 样式，零样式改动）；8s 自动清除 */
+function flashPage(msg: string) {
+  pageErr.value = msg
+  if (pageErrTimer) clearTimeout(pageErrTimer)
+  pageErrTimer = setTimeout(() => { pageErr.value = '' }, 8000)
+}
 onMounted(async () => {
   try {
     await org.load()
   } catch {
     pageErr.value = org.loadError || '组织树加载失败'
+  }
+  if (auth.can('org:edit')) {
+    try {
+      storeMasterOptions.value = (await listStores()).data.map((s) => ({
+        label: `${s.storeName}（${s.storeCode}）`,
+        value: s.storeCode,
+      }))
+    } catch {
+      storeMasterOptions.value = []
+    }
   }
 })
 
@@ -71,15 +89,26 @@ const TYPE_ICON: Record<OrgType, 'org' | 'box' | 'store' | 'user'> = {
   STORE: 'store',
   DEPT: 'user',
 }
+// B87 L37：新建放开 区域/门店/部门（集团后端 409 唯一禁建 D6，UI 不提供选项）
 const typeOptions = [
+  { label: '区域 (REGION)', value: 'REGION' },
+  { label: '门店 (STORE)', value: 'STORE' },
   { label: '部门 (DEPT)', value: 'DEPT' },
 ]
 
-/** 新建部门的上级只能选门店（后端强制；树已按数据域过滤，仅列可见门店） */
-const storeOptions = computed(() =>
-  org.nodes
-    .filter((n) => n.type === 'STORE')
-    .map((n) => ({ label: `${n.name}（${n.code}）`, value: n.id })),
+/** 门店主数据下拉（D4：门店节点挂已有 store 编码，不新建 store 主数据）；org:edit 时随挂载加载 */
+const storeMasterOptions = ref<{ label: string; value: string }[]>([])
+
+/** 上级候选随类型分派（后端父类型链硬校验）：区域→集团、门店→区域、部门→门店；树已按数据域过滤 */
+const parentOptions = computed(() => {
+  const want: OrgType =
+    form.type === 'REGION' ? 'GROUP' : form.type === 'STORE' ? 'REGION' : 'STORE'
+  return org.nodes
+    .filter((n) => n.type === want)
+    .map((n) => ({ label: `${n.name}（${n.code}）`, value: n.id }))
+})
+const parentLabel = computed(() =>
+  form.type === 'REGION' ? '上级集团' : form.type === 'STORE' ? '上级区域' : '上级门店',
 )
 
 // ---------- 抽屉表单 ----------
@@ -92,6 +121,7 @@ const form = reactive({
   code: '',
   type: 'DEPT' as OrgType,
   parentId: '' as string | '',
+  storeCode: '',
   leaderName: '',
   headcount: 0,
   sort: 0,
@@ -103,6 +133,7 @@ function resetForm() {
   form.code = ''
   form.type = 'DEPT'
   form.parentId = ''
+  form.storeCode = ''
   form.leaderName = ''
   form.headcount = 0
   form.sort = 0
@@ -113,9 +144,15 @@ function resetForm() {
 function openCreate() {
   editingId.value = null
   resetForm()
-  // 默认上级为当前选中的门店（选中非门店时留空，强制手选）
+  // 默认类型=部门，上级默认取当前选中门店（选中非门店时留空，强制手选）
   if (selected.value?.type === 'STORE') form.parentId = selected.value.id
   drawerOpen.value = true
+}
+
+/** 新建时切换类型：上级候选集随类型变化，清空已选上级与 store 编码（编辑态类型禁用不会触发） */
+function onTypeChange() {
+  form.parentId = ''
+  form.storeCode = ''
 }
 
 function openEdit(n: OrgNode) {
@@ -124,6 +161,7 @@ function openEdit(n: OrgNode) {
   form.code = n.code
   form.type = n.type
   form.parentId = n.parentId ?? ''
+  form.storeCode = ''
   form.leaderName = n.leaderName
   form.headcount = n.headcount
   form.sort = n.sort
@@ -147,21 +185,23 @@ function errMsg(e: any, fallback: string) {
 
 async function submitForm() {
   if (saving.value) return
-  if (!form.name.trim()) { formErr.value = '请填写部门名称'; return }
+  if (!form.name.trim()) { formErr.value = '请填写名称'; return }
   if (editingId.value) {
     saving.value = true
     formErr.value = ''
     try {
       const target = org.get(editingId.value)
-      await org.update(editingId.value, {
+      const affected = await org.update(editingId.value, {
         name: form.name.trim(),
-        parentId: target?.type === 'DEPT' ? (form.parentId || '') : undefined,
+        parentId: target?.type === 'DEPT' || target?.type === 'STORE' ? (form.parentId || '') : undefined,
         leaderName: form.leaderName.trim(),
         headcount: form.headcount,
         sort: form.sort,
         remark: form.remark.trim(),
       })
       drawerOpen.value = false
+      // B87 L37：门店跨区移动提示（staff.region 不随动，后端统计该店员工数随响应带出）
+      if (affected > 0) flashPage(`该店 ${affected} 名员工 region 未随动，请至员工管理核对`)
     } catch (e: any) {
       formErr.value = errMsg(e, '保存失败')
     } finally {
@@ -175,14 +215,17 @@ async function submitForm() {
     formErr.value = '编码为 1-16 位大写字母/数字/中划线/下划线，且以字母或数字开头'
     return
   }
-  if (!form.parentId) { formErr.value = '请选择上级门店'; return }
+  if (!form.parentId) { formErr.value = `请选择${parentLabel.value}`; return }
+  if (form.type === 'STORE' && !form.storeCode) { formErr.value = '请选择门店主数据（store 编码）'; return }
   saving.value = true
   formErr.value = ''
   try {
     await org.create({
       code: form.code.trim().toUpperCase(),
       name: form.name.trim(),
+      type: form.type as 'REGION' | 'STORE' | 'DEPT',
       parentId: form.parentId,
+      storeCode: form.type === 'STORE' ? form.storeCode : undefined,
       leaderName: form.leaderName.trim(),
       headcount: form.headcount,
       sort: form.sort,
@@ -361,7 +404,7 @@ const OrgTreeNode = defineComponent({
             :disabled="org.loading"
             @click="openCreate"
           >
-            <CIcon name="plus" :size="14" /> 新建部门
+            <CIcon name="plus" :size="14" /> 新建组织单元
           </CButton>
         </div>
         <div class="tree-body">
@@ -566,10 +609,10 @@ const OrgTreeNode = defineComponent({
       </CCard>
     </div>
 
-    <!-- 抽屉：新建部门 / 编辑组织单元 -->
+    <!-- 抽屉：新建组织单元（区域/门店/部门） / 编辑组织单元 -->
     <CDrawer
       v-model:show="drawerOpen"
-      :title="editingId ? '编辑组织单元' : '新建部门'"
+      :title="editingId ? '编辑组织单元' : '新建组织单元'"
       size="md"
     >
       <div class="form">
@@ -588,11 +631,21 @@ const OrgTreeNode = defineComponent({
           </label>
           <label class="field">
             <span class="field__label">类型</span>
-            <CSelect v-model="form.type" :options="typeOptions" width="100%" disabled />
+            <CSelect
+              v-model="form.type"
+              :options="typeOptions"
+              width="100%"
+              :disabled="!!editingId"
+              @update:model-value="onTypeChange"
+            />
           </label>
-          <label v-if="!editingId || form.type === 'DEPT'" class="field field--full">
-            <span class="field__label">上级门店 <i>*</i></span>
-            <CSelect v-model="form.parentId" :options="storeOptions" width="100%" :disabled="!!editingId && form.type !== 'DEPT'" />
+          <label v-if="!editingId || form.type === 'DEPT' || form.type === 'STORE'" class="field field--full">
+            <span class="field__label">{{ parentLabel }} <i>*</i></span>
+            <CSelect v-model="form.parentId" :options="parentOptions" width="100%" />
+          </label>
+          <label v-if="!editingId && form.type === 'STORE'" class="field field--full">
+            <span class="field__label">门店主数据 <i>*</i></span>
+            <CSelect v-model="form.storeCode" :options="storeMasterOptions" width="100%" placeholder="选择已有 store 编码" />
           </label>
           <label class="field">
             <span class="field__label">负责人</span>

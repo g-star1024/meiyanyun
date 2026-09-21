@@ -12,11 +12,14 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.OffsetDateTime;
 
 /**
- * 组织树写端点（B33）：部门新建、节点编辑/部门跨门店移动、节点启停。
+ * 组织树写端点（B33 建立；B87 卡2 L37 层级写放开）。
  *
- * <p>刻意收窄的写边界（删除节点、新建区域/门店/集团、改类型均不支持，入 Backlog）：
- * 集团/区域/门店三级主数据由种子与门店主数据治理；本端点只允许在门店下挂第四级「部门」，
- * 避免与 store-service 门店主数据双写不一致。
+ * <p>L37 放开后的写边界（父类型链硬校验，DESIGN-P5-B87 §6）：
+ * 区域→父必须=集团；门店→父必须=区域且必须挂已有 store.store_code（D4，不新建 store 主数据），
+ * region 继承父区域；部门→父必须=门店（B33 现状）；集团→409「集团节点唯一」（D6 禁建）。
+ * 门店支持跨区移动（update parentCode 改挂其他区域），连带更新本节点 region；
+ * 不级联改 staff.region/store_code，响应带 affectedStaffCount 提示人工核对。
+ * 删除节点不支持（入 L38 卡3）。编码/类型不可改。
  *
  * <p>权限：统一持 org:edit（超管/区域经理/店长，财务无此权）。数据域：
  * 集团节点仅超管/集团域；区域节点仅集团域；门店/部门按门店数据域（STORE 本店、REGION 本区、
@@ -30,13 +33,22 @@ public class OrgAdminController {
 
     private final OrgUnitRepository orgRepo;
     private final AuditRecorder audit;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final StaffRepository staffRepo;
 
-    public OrgAdminController(OrgUnitRepository orgRepo, AuditRecorder audit) {
+    public OrgAdminController(OrgUnitRepository orgRepo, AuditRecorder audit,
+                              org.springframework.jdbc.core.JdbcTemplate jdbc, StaffRepository staffRepo) {
         this.orgRepo = orgRepo;
         this.audit = audit;
+        this.jdbc = jdbc;
+        this.staffRepo = staffRepo;
     }
 
-    /** 新建部门：仅允许第四级「部门」，父节点必须是门店；门店归属/区域继承父门店。 */
+    /**
+     * 新建节点（L37）：orgType 缺省「部门」兼容旧调用；区域→父必须集团；门店→父必须区域且
+     * storeCode 必须挂已有 store 主数据（D4）且未被其他门店节点占用，region 继承父区域；
+     * 部门→父必须门店（B33 现状）；集团→409（D6 全库唯一禁建）。
+     */
     @PostMapping("/admin/org-units")
     @RequirePerm("org:edit")
     @Transactional
@@ -59,13 +71,63 @@ public class OrgAdminController {
         if (name.length() > 64) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "组织名称最长 64 字");
         }
+        String orgType = (req.orgType() == null || req.orgType().isBlank()) ? "部门" : req.orgType().trim();
+        if ("集团".equals(orgType)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "集团节点唯一，禁止新建");
+        }
+        if (!"区域".equals(orgType) && !"门店".equals(orgType) && !"部门".equals(orgType)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "组织类型仅支持：区域/门店/部门");
+        }
         if (req.parentCode() == null || req.parentCode().isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "上级门店不能为空");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "上级节点不能为空");
         }
         OrgUnit parent = orgRepo.findById(req.parentCode().trim())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看"));
-        if (!"门店".equals(parent.getOrgType())) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "仅支持在门店下新建部门");
+
+        OrgUnit u = new OrgUnit();
+        u.setOrgCode(code);
+        u.setOrgName(name);
+        u.setOrgType(orgType);
+        u.setParentCode(parent.getOrgCode());
+        switch (orgType) {
+            case "区域" -> {
+                if (!"集团".equals(parent.getOrgType())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "区域上级必须是集团");
+                }
+                if (req.storeCode() != null && !req.storeCode().isBlank()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "仅门店节点可挂 store");
+                }
+                u.setStoreCode(null);
+                u.setRegion(null);
+            }
+            case "门店" -> {
+                if (!"区域".equals(parent.getOrgType())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "门店上级必须是区域");
+                }
+                if (req.storeCode() == null || req.storeCode().isBlank()) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "门店节点必须挂已有 store 编码");
+                }
+                String sc = req.storeCode().trim();
+                Integer storeCnt = jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM store WHERE store_code = ?", Integer.class, sc);
+                if (storeCnt == null || storeCnt == 0) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "store 主数据不存在: " + sc + "（门店主数据由开店流程独立治理）");
+                }
+                if (orgRepo.findFirstByStoreCode(sc).isPresent()) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT,
+                            "store 已被其他门店节点占用: " + sc);
+                }
+                u.setStoreCode(sc);
+                u.setRegion(parent.getRegion());
+            }
+            default -> {
+                if (!"门店".equals(parent.getOrgType())) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "部门上级必须是门店");
+                }
+                u.setStoreCode(parent.getStoreCode());
+                u.setRegion(parent.getRegion());
+            }
         }
         assertManageable(parent);
         Integer headcount = normalizeHeadcount(req.headcount());
@@ -79,13 +141,6 @@ public class OrgAdminController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "备注最长 255 字");
         }
 
-        OrgUnit u = new OrgUnit();
-        u.setOrgCode(code);
-        u.setOrgName(name);
-        u.setOrgType("部门");
-        u.setParentCode(parent.getOrgCode());
-        u.setStoreCode(parent.getStoreCode());
-        u.setRegion(parent.getRegion());
         u.setSortNo(sortNo);
         u.setLeaderName(leader);
         u.setHeadcount(headcount);
@@ -96,16 +151,18 @@ public class OrgAdminController {
         orgRepo.save(u);
         audit.record("ORG", code, DataScope.currentActor(), "CREATE",
                 "{\"orgCode\":\"" + code + "\",\"orgName\":\"" + esc(name)
-                        + "\",\"orgType\":\"部门\",\"parentCode\":\"" + parent.getOrgCode()
-                        + "\",\"storeCode\":" + jsonStr(parent.getStoreCode())
-                        + ",\"region\":" + jsonStr(parent.getRegion()) + "}");
+                        + "\",\"orgType\":\"" + orgType + "\",\"parentCode\":\"" + parent.getOrgCode()
+                        + "\",\"storeCode\":" + jsonStr(u.getStoreCode())
+                        + ",\"region\":" + jsonStr(u.getRegion()) + "}");
         return u;
     }
 
     /**
      * 编辑节点：名称/负责人/编制/排序/备注；编码、类型不可改。
-     * 仅部门支持调整上级（parentCode 改挂其他门店），门店归属与区域随新父继承；
-     * 集团/区域/门店三级不支持移动（传 parentCode 且与现值不同即 400）。
+     * 部门支持调整上级（parentCode 改挂其他门店），门店归属与区域随新父继承；
+     * 门店支持跨区移动（L37：parentCode 改挂其他区域），连带更新本节点 region，
+     * 不级联改 staff.region/store_code，响应带 affectedStaffCount 提示「该店 N 名员工
+     * region 未随动，请至员工管理核对」；集团/区域两级不支持移动（传 parentCode 且与现值不同即 400）。
      */
     @PutMapping("/admin/org-units/{code}")
     @RequirePerm("org:edit")
@@ -151,22 +208,41 @@ public class OrgAdminController {
 
         String fromStore = u.getStoreCode();
         String movedToStore = null;
+        String fromRegion = null;
+        String movedToRegion = null;
         if (req.parentCode() != null && !req.parentCode().isBlank()) {
             String targetParent = req.parentCode().trim();
-            if (!"部门".equals(u.getOrgType())) {
-                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "仅部门支持调整上级门店");
+            if (!"部门".equals(u.getOrgType()) && !"门店".equals(u.getOrgType())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "仅部门/门店支持调整上级");
             }
             if (!targetParent.equals(u.getParentCode())) {
                 OrgUnit np = orgRepo.findById(targetParent)
                         .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看"));
-                if (!"门店".equals(np.getOrgType())) {
-                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "部门上级必须是门店");
+                if ("部门".equals(u.getOrgType())) {
+                    if (!"门店".equals(np.getOrgType())) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "部门上级必须是门店");
+                    }
+                    assertManageable(np);
+                    u.setParentCode(np.getOrgCode());
+                    u.setStoreCode(np.getStoreCode());
+                    u.setRegion(np.getRegion());
+                    movedToStore = np.getStoreCode();
+                } else {
+                    // L37 门店跨区移动：新父必须区域；连带更新本节点 region；store_code 不变（D4）；
+                    // 不级联改 staff.region/store_code，统计该店员工数随响应提示人工核对。
+                    if (!"区域".equals(np.getOrgType())) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "门店上级必须是区域");
+                    }
+                    assertManageable(np);
+                    fromRegion = u.getRegion();
+                    u.setParentCode(np.getOrgCode());
+                    u.setRegion(np.getRegion());
+                    movedToRegion = np.getRegion();
+                    if (u.getStoreCode() != null) {
+                        u.setAffectedStaffCount(
+                                staffRepo.findByStoreCodeOrderByStaffIdAsc(u.getStoreCode()).size());
+                    }
                 }
-                assertManageable(np);
-                u.setParentCode(np.getOrgCode());
-                u.setStoreCode(np.getStoreCode());
-                u.setRegion(np.getRegion());
-                movedToStore = np.getStoreCode();
             }
         }
         orgRepo.save(u);
@@ -175,6 +251,10 @@ public class OrgAdminController {
                         + "\",\"orgType\":\"" + u.getOrgType() + "\""
                         + (movedToStore != null
                                 ? ",\"fromStore\":" + jsonStr(fromStore) + ",\"toStore\":" + jsonStr(movedToStore)
+                                : "")
+                        + (movedToRegion != null
+                                ? ",\"fromRegion\":" + jsonStr(fromRegion) + ",\"toRegion\":" + jsonStr(movedToRegion)
+                                        + ",\"affectedStaffCount\":" + u.getAffectedStaffCount()
                                 : "")
                         + "}");
         return u;
@@ -295,9 +375,10 @@ public class OrgAdminController {
 
     // ==================== 请求体记录 ====================
 
+    /** L37：orgType 中文枚举（区域|门店|部门），缺省「部门」兼容旧调用；storeCode 仅门店必填。 */
     public record OrgUnitCreateRequest(String orgCode, String orgName, String parentCode,
                                        String leaderName, Integer headcount, Integer sortNo,
-                                       String remark) {
+                                       String remark, String orgType, String storeCode) {
     }
 
     public record OrgUnitUpdateRequest(String orgName, String parentCode, String leaderName,
