@@ -491,11 +491,12 @@ public class MergeExecuteService {
 
     // ---- 内部工具 ----
 
-    /** pair 解析：pairId（MC-A-B）优先，否则 customerIdA/B；返回字典序 [小, 大]。 */
+    /** pair 解析：customerIdA/B 直传优先（customerId 可能含 '-'，pairId「MC-A-B」按单分隔符拆分有歧义）；仅 A/B 任一缺失时回退 pairId 拆分兜底；返回字典序 [小, 大]。 */
     private String[] resolvePair(String pairId, String customerIdA, String customerIdB) {
         String a = customerIdA;
         String b = customerIdB;
-        if (pairId != null && !pairId.isBlank()) {
+        boolean abMissing = a == null || a.isBlank() || b == null || b.isBlank();
+        if (abMissing && pairId != null && !pairId.isBlank()) {
             String p = pairId.trim();
             if (!p.startsWith("MC-")) {
                 throw new CustomerService.BadReq("候选对编号格式不正确");
