@@ -98,10 +98,10 @@ public class CardController {
      */
     @GetMapping("/course-track")
     @RequirePerm("course:view")
-    public List<CourseTrackDTO> courseTrack(@RequestParam String storeCode,
+    public List<CourseTrackDTO> courseTrack(@RequestParam(required = false) String storeCode,
                                             @RequestParam(defaultValue = "ALL") String status) {
         if (storeCode == null || storeCode.isBlank()) {
-            throw new CustomerService.NotFound("门店编码不能为空");
+            throw new CustomerService.BadReq("门店编码不能为空");
         }
         // 数据域强制注入：SELF/STORE 本店、REGION 本区、GROUP 全量；越权统一空列表（不泄露门店是否存在）。
         if (!DataScope.canReadStore(storeCode)) {
