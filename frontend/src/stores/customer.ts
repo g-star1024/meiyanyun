@@ -14,6 +14,12 @@ import type {
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { useSettingsStore } from './settings'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from './m5Coupon'
+import {
+  listMergeCandidates, listMerges, proposeCustomerMerge, dismissMergePair, getCustomer,
+} from '@/api/customer'
+import type { MergeCandidatePairDTO, MergeCandidateSideDTO, MergeRowDTO } from '@/api/customer'
 
 const STORE_ID = 'store-jingan'
 
@@ -21,6 +27,7 @@ export const useCustomerStore = defineStore('customer', () => {
   const auth = useAuthStore()
   const settings = useSettingsStore()
   const activity = useActivityStore()
+  const toast = useToast()
 
   const customers = ref<Customer[]>([
     {
@@ -208,6 +215,105 @@ export const useCustomerStore = defineStore('customer', () => {
 
   const links = ref<CustomerLink[]>([])
   const merges = ref<CustomerMerge[]>([])
+  /** B84 已合并真实总数（GET /merges?status=MERGED totalElements，KPI 用；merges 仅留最近 3 条展示） */
+  const mergesTotal = ref(0)
+
+  /** 后端中文会员等级 → 前端字母码（视图 levelText 键集：KA/A/B/C/NEW；库内契约 普通/银卡/金卡/钻石/黑卡） */
+  const MERGE_LEVEL_CODE: Record<string, Customer['level']> = {
+    黑卡: 'KA', 钻石: 'A', 金卡: 'B', 银卡: 'C',
+  }
+
+  /** 候选单侧 → 影子客户（注入 customers：合并页模板直接 store.customers.find 读画像，consultPlan 影子注入同款） */
+  function shadowOfSide(s: MergeCandidateSideDTO): Customer {
+    return {
+      id: s.customerId,
+      name: s.name || s.customerId,
+      avatarLetter: (s.name || '客').charAt(0),
+      phoneMask: s.maskPhone || '',
+      channel: 'WALK_IN',
+      level: MERGE_LEVEL_CODE[s.level] ?? 'NEW',
+      tags: [],
+      storeId: s.storeCode || STORE_ID,
+      ownerStaffId: s.ownerStaffId || undefined,
+      registerDate: s.createdAt ? s.createdAt.slice(0, 10) : undefined,
+    }
+  }
+
+  /** 候选对双侧注入 customers（已存在跳过），并异步拉详情补全累计消费/到店（一个信息不许丢，失败保模板 — 兜底） */
+  function injectMergeShadows(pairs: MergeCandidatePairDTO[]) {
+    const sides = pairs.flatMap((p) => [p.sideA, p.sideB])
+    for (const s of sides) {
+      if (!s?.customerId) continue
+      if (!customers.value.some((c) => c.id === s.customerId)) {
+        customers.value.push(shadowOfSide(s))
+      }
+    }
+    const targets = [...new Set(sides.map((s) => s?.customerId).filter(Boolean) as string[])]
+    void Promise.allSettled(targets.map((id) => getCustomer(id))).then((results) => {
+      results.forEach((r, i) => {
+        if (r.status !== 'fulfilled') return
+        const d = r.value.data
+        const c = customers.value.find((x) => x.id === targets[i])
+        if (!c) return
+        if (d.totalSpend != null) c.totalSpend = d.totalSpend
+        if (d.visitCount != null) c.visitCount = d.visitCount
+      })
+    })
+  }
+
+  /** 候选对 → CustomerLink（pairId 作 id；matchReasons 过滤四码枚举） */
+  function adaptPair(p: MergeCandidatePairDTO): CustomerLink {
+    return {
+      id: p.pairId,
+      customerIdA: p.sideA.customerId,
+      customerIdB: p.sideB.customerId,
+      matchReason: (p.matchReasons || []).filter((r): r is CustomerLink['matchReason'][number] =>
+        ['PHONE', 'DEVICE', 'IDCARD', 'NAME_BIRTHDAY'].includes(r)),
+      score: p.score ?? 0,
+    }
+  }
+
+  /** 留痕行 → CustomerMerge（matchReasons CSV 拆分；单笔一个 merged） */
+  function adaptMergeRow(r: MergeRowDTO): CustomerMerge {
+    return {
+      id: r.mergeId,
+      masterId: r.masterId,
+      mergedIds: [r.mergedId],
+      reason: r.reason || '',
+      evidence: (r.matchReasons || '').split(',').map((s) => s.trim()).filter(Boolean),
+      status: 'MERGED',
+      requestedBy: r.requestedBy,
+      approvedBy: r.approvedBy ?? undefined,
+      executedAt: r.executedAt ?? undefined,
+    }
+  }
+
+  /** B84 撞单合并图真实拉取：候选对 + 已合并留痕（KPI 三真实 count 数据源） */
+  async function loadMergeGraph(): Promise<boolean> {
+    try {
+      const [candRes, mergeRes] = await Promise.all([
+        listMergeCandidates(),
+        listMerges({ status: 'MERGED', size: 3 }),
+      ])
+      const pairs = candRes.data ?? []
+      injectMergeShadows(pairs)
+      links.value = pairs.map(adaptPair)
+      mergesTotal.value = mergeRes.data?.totalElements ?? 0
+      merges.value = (mergeRes.data?.content ?? []).map(adaptMergeRow)
+      // 留痕双侧富化（nameOf 远程优先命中，模板 nameOf(m.masterId) 直出中文名）
+      hydrate((mergeRes.data?.content ?? []).flatMap((r) => [
+        { customerId: r.masterId, customerName: r.masterName },
+        { customerId: r.mergedId, customerName: r.mergedName },
+      ]))
+      return true
+    } catch (e) {
+      links.value = []
+      merges.value = []
+      mergesTotal.value = 0
+      toast.error(errMsg(e, '撞单合并候选加载失败'))
+      return false
+    }
+  }
 
   // 远程客户轻量缓存（真实接待/分诊/病历链路回填；与本地 mock 种子分离，远程优先、未命中回落 mock）
   const remoteCustomers = ref<Customer[]>([])
@@ -325,66 +431,53 @@ export const useCustomerStore = defineStore('customer', () => {
     activity.log(auth.user.name, `确认转介绍：${target.name} 归属 ${referrer.ownerStaffId ? '介绍人咨询师' : '—'}（${days} 天有效）`, target.id)
   }
 
-  /** 受控合并：需 customer:merge 权限；保留 master，作废 mergedIds，留痕 */
-  function proposeMerge(masterId: string, mergedIds: string[], reason: string, evidence: string[]) {
+  /** 受控合并：需 customer:merge 权限；保留 master，作废 mergedIds，留痕（B84 真实 API：D2 直通终态 MERGED，idemKey 幂等） */
+  async function proposeMerge(masterId: string, mergedIds: string[], reason: string, evidence: string[]): Promise<CustomerMerge | false> {
     if (!auth.can('customer:merge')) {
-      console.warn('[customer] 无 customer:merge 权限')
+      toast.error('无客户合并权限（customer:merge）')
       return false
     }
-    const m: CustomerMerge = {
-      id: nextId('merge'), masterId, mergedIds, reason, evidence,
-      status: 'APPROVED', requestedBy: auth.user.name, approvedBy: auth.user.name,
-      executedAt: new Date().toISOString(),
-    }
-    // 演示期：有合并权限即直接执行（真实环境走审批流 PROPOSED→REVIEWING→APPROVED→MERGED）
-    mergedIds.forEach((id) => {
-      const c = customers.value.find((x) => x.id === id)
-      if (c) {
-        c.masterId = masterId
-        if (!c.mergedFrom) c.mergedFrom = []
+    const mergedId = mergedIds[0]
+    const link = links.value.find((l) =>
+      (l.customerIdA === masterId && l.customerIdB === mergedId) ||
+      (l.customerIdA === mergedId && l.customerIdB === masterId))
+    try {
+      const res = await proposeCustomerMerge({
+        pairId: link?.id,
+        customerIdA: link?.customerIdA ?? masterId,
+        customerIdB: link?.customerIdB ?? mergedId,
+        masterId,
+        reason,
+        idemKey: crypto.randomUUID(),
+      })
+      const m: CustomerMerge = {
+        id: res.data.mergeId, masterId, mergedIds, reason, evidence,
+        status: 'MERGED', requestedBy: auth.user.name, approvedBy: auth.user.name,
+        executedAt: new Date().toISOString(),
       }
-    })
-    const master = customers.value.find((c) => c.id === masterId)
-    if (master) master.mergedFrom = [...(master.mergedFrom || []), ...mergedIds]
-    merges.value.unshift(m)
-    activity.log(auth.user.name, `合并客户 ${mergedIds.join(',')} → ${masterId}（留痕可追溯）`, masterId)
-    return m
+      const loser = customers.value.find((x) => x.id === mergedId)
+      if (loser) loser.masterId = masterId
+      const master = customers.value.find((c) => c.id === masterId)
+      if (master) master.mergedFrom = [...(master.mergedFrom || []), mergedId]
+      merges.value.unshift(m)
+      mergesTotal.value += 1
+      if (link) links.value = links.value.filter((l) => l.id !== link.id)
+      toast.success('合并完成，已留痕可追溯')
+      activity.log(auth.user.name, `合并客户 ${mergedIds.join(',')} → ${masterId}（留痕可追溯）`, masterId)
+      void loadMergeGraph()
+      return m
+    } catch (e) {
+      toast.error(errMsg(e, '客户合并失败'))
+      return false
+    }
   }
 
-  /** 开发期种子：补几条疑似重复关联（不自动合并，待人工确认） */
+  /** 撞单合并图入口（B84 切真：拉取真实候选对+留痕；幂等，失败放开重试） */
   let graphSeeded = false
   function seedGraph() {
     if (graphSeeded) return
     graphSeeded = true
-    // 造两个重复客户（同手机号不同 ID）
-    if (!customers.value.some((c) => c.id === 'C-210')) {
-      customers.value.push({
-        id: 'C-210', name: '王美丽', avatarLetter: '美', phoneMask: '138****2046', phone: '13812342046',
-        channel: 'ONLINE_APPT', level: 'C', tags: ['线上'], storeId: STORE_ID, ownerStaffId: 'staff-lin',
-        totalSpend: 0, visitCount: 1, dormantDays: 320, cardBalance: 0, points: 0,
-        registerDate: '2025-07-20', lastVisitAt: '2025-07-20',
-      })
-    }
-    if (!customers.value.some((c) => c.id === 'C-211')) {
-      customers.value.push({
-        id: 'C-211', name: '李女士(手机)', avatarLetter: '李', phoneMask: '139****8821', phone: '13987658821',
-        channel: 'WALK_IN', level: 'B', tags: ['到店'], storeId: STORE_ID,
-        totalSpend: 3200, visitCount: 4, dormantDays: 55, cardBalance: 800, points: 320,
-        registerDate: '2025-08-02', lastVisitAt: '2025-08-02',
-      })
-    }
-    if (!links.value.some((l) => l.customerIdA === 'C-201')) {
-      links.value.push({
-        id: nextId('link'), customerIdA: 'C-201', customerIdB: 'C-210',
-        matchReason: ['PHONE', 'NAME_BIRTHDAY'], score: 0.95,
-      })
-    }
-    if (!links.value.some((l) => l.customerIdA === 'C-202')) {
-      links.value.push({
-        id: nextId('link'), customerIdA: 'C-202', customerIdB: 'C-211',
-        matchReason: ['PHONE'], score: 0.88,
-      })
-    }
+    void loadMergeGraph().then((ok) => { if (!ok) graphSeeded = false })
   }
 
   /** 画像 / 360 种子数据（消费记录/服务轨迹/卡项） */
@@ -476,20 +569,30 @@ export const useCustomerStore = defineStore('customer', () => {
     return r
   }
 
-  /** 标记疑似重复为非重复（从 links 中移除，演示） */
-  function dismissLink(id: string) {
-    const idx = links.value.findIndex((l) => l.id === id)
-    if (idx >= 0) {
-      links.value.splice(idx, 1)
-      activity.log(auth.user.name, `标记疑似重复为非重复（${id}）`)
+  /** 标记疑似重复为非重复（B84 真实 API：POST /merge-dismiss 留 NOT_DUPLICATE 痕；reason 后端必填，适配层固定中文） */
+  async function dismissLink(id: string) {
+    const link = links.value.find((l) => l.id === id)
+    if (!link) return
+    try {
+      await dismissMergePair({
+        customerIdA: link.customerIdA,
+        customerIdB: link.customerIdB,
+        reason: '人工确认为两位不同客户，非重复档案',
+        idemKey: crypto.randomUUID(),
+      })
+      links.value = links.value.filter((l) => l.id !== id)
+      toast.success('已标记为非重复')
+      activity.log(auth.user.name, `标记疑似重复为非重复（${link.customerIdA} × ${link.customerIdB}）`)
+    } catch (e) {
+      toast.error(errMsg(e, '标记非重复失败'))
     }
   }
 
   return {
-    customers, links, merges, mine,
+    customers, links, merges, mergesTotal, mine,
     transactions, serviceTrack, cards, photos, skinReports,
     get, nameOf, phoneOf, search, hydrate, create,
-    confirmReferral, proposeMerge, seedGraph, seedProfile,
+    confirmReferral, proposeMerge, seedGraph, seedProfile, loadMergeGraph,
     txOf, trackOf, cardsOf, photosOf, skinReportsOf, addPhoto, addSkinReport, dismissLink,
   }
 })

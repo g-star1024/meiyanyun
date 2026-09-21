@@ -6,6 +6,7 @@
  * 对齐 docs/domain-model.md §2.2、business-flows.md §2.10。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useCustomerStore } from '@/stores/customer'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -16,6 +17,7 @@ import CTextarea from '@/components/CTextarea.vue'
 import type { Customer, CustomerLink } from '@/types/domain'
 
 const customer = useCustomerStore()
+const router = useRouter()
 onMounted(() => customer.seedGraph())
 
 // 疑似重复关联（排除已被合并作废的客户）
@@ -40,36 +42,36 @@ function cust(id: string): Customer | undefined {
 
 const kpis = computed(() => [
   { label: '疑似重复', icon: 'customer', value: String(activeLinks.value.length), tone: (activeLinks.value.length ? 'warning' : 'text') as 'warning' | 'text' },
-  { label: '已合并', icon: 'customer', value: String(customer.merges.length), tone: 'success' as const },
+  { label: '已合并', icon: 'customer', value: String(customer.mergesTotal), tone: 'success' as const },
   { label: '有效客户', icon: 'customer', value: String(customer.customers.filter((c) => !c.masterId).length), tone: 'brand' as const },
 ])
 
-// ---- 合并操作 ----
+// ---- 合并操作（B84：入口统一跳 /customers/merge 携带 pairId 预选，不另起写路径） ----
 const mergeTarget = ref<CustomerLink | null>(null)
 const masterChoice = ref<'A' | 'B'>('A')
 const mergeReason = ref('')
 
 function openMerge(link: CustomerLink) {
-  mergeTarget.value = link
-  masterChoice.value = 'A'
-  mergeReason.value = ''
+  void router.push({ path: '/customers/merge', query: { pairId: link.id } })
 }
 function closeMerge() {
   mergeTarget.value = null
 }
-function doMerge() {
+async function doMerge() {
   if (!mergeTarget.value || !mergeReason.value.trim()) return
   const l = mergeTarget.value
   const masterId = masterChoice.value === 'A' ? l.customerIdA : l.customerIdB
   const mergedIds = [masterChoice.value === 'A' ? l.customerIdB : l.customerIdA]
-  customer.proposeMerge(masterId, mergedIds, mergeReason.value.trim(), l.matchReason)
+  await customer.proposeMerge(masterId, mergedIds, mergeReason.value.trim(), l.matchReason)
   closeMerge()
 }
 
-// ---- 忽略（从关联列表移除，不做数据变更；演示期仅前端隐藏） ----
+// ---- 忽略（B84 切真：POST /merge-dismiss 留 NOT_DUPLICATE 痕；本地先行隐藏，失败回滚） ----
 const dismissed = ref<Set<string>>(new Set())
-function dismiss(id: string) {
+async function dismiss(id: string) {
   dismissed.value.add(id)
+  await customer.dismissLink(id)
+  if (customer.links.some((l) => l.id === id)) dismissed.value.delete(id)
 }
 const visibleLinks = computed(() => activeLinks.value.filter((l) => !dismissed.value.has(l.id)))
 

@@ -541,3 +541,89 @@ export const reviewMallExchange = (id: string, data: MallReviewCmd) =>
 /** 履约发放（仅「已通过」可履约，其余 409；「已发放」幂等直返） */
 export const fulfillMallExchange = (id: string) =>
   client.post<MallExchangeDTO>(`/customer/mall/exchange/${id}/fulfill`)
+
+/** 撞单合并候选对单侧（B84：maskPhone 为后端字段名，适配层转 phoneMask） */
+export interface MergeCandidateSideDTO {
+  customerId: string
+  name: string
+  maskPhone: string
+  level: string
+  storeCode: string
+  storeName: string
+  ownerStaffId: string
+  ownerStaffName: string
+  createdAt: string
+}
+
+/** 撞单合并候选对（groupType：POOL 沉默池 / SAME_STORE 同店 / CROSS_STORE 跨店） */
+export interface MergeCandidatePairDTO {
+  pairId: string
+  groupType: string
+  matchReasons: string[]
+  score: number
+  sideA: MergeCandidateSideDTO
+  sideB: MergeCandidateSideDTO
+}
+
+/** 合并留痕行（GET /merges 分页行；matchReasons 为 CSV 字符串，适配层拆分） */
+export interface MergeRowDTO {
+  mergeId: string
+  masterId: string
+  masterName: string
+  mergedId: string
+  mergedName: string
+  groupType: string
+  matchReasons: string
+  score: number
+  reason: string
+  status: string
+  requestedBy: string
+  approvedBy: string | null
+  approvedAt: string | null
+  executedAt: string | null
+  createdAt: string
+  movedTotal: number | null
+}
+
+/** Spring Page 结构（GET /merges） */
+export interface MergePage {
+  content: MergeRowDTO[]
+  totalElements: number
+  totalPages: number
+  number: number
+  size: number
+}
+
+/** 撞单合并候选对列表（裸数组，已按组序+分数排序；须 customer:merge 权限） */
+export const listMergeCandidates = () =>
+  client.get<MergeCandidatePairDTO[]>('/customer/merge-candidates')
+
+/** 合并留痕分页（status 可选：传 MERGED 拉已合并，用于 KPI 真实计数） */
+export const listMerges = (params?: { status?: string; page?: number; size?: number }) =>
+  client.get<MergePage>('/customer/merges', { params: { size: 20, ...params } })
+
+/** 确认合并入参（reason 必填非空；idemKey=clientToken 幂等；D2 直通终态 MERGED） */
+export interface ProposeMergeCmd {
+  pairId?: string
+  customerIdA?: string
+  customerIdB?: string
+  masterId?: string
+  reason: string
+  idemKey: string
+}
+
+/** 确认合并（须 customer:merge；成功返回 CustomerMerge 实体，终态 MERGED） */
+export const proposeCustomerMerge = (data: ProposeMergeCmd) =>
+  client.post<{ mergeId: string; masterId: string; mergedId: string; status: string }>('/customer/merges', data)
+
+/** 标记非重复入参（reason 必填非空；idemKey 幂等） */
+export interface DismissMergeCmd {
+  customerIdA: string
+  customerIdB: string
+  reason: string
+  idemKey?: string
+}
+
+/** 标记非重复（须 customer:merge；成功返回 NOT_DUPLICATE 单据，不进留痕区） */
+export const dismissMergePair = (data: DismissMergeCmd) =>
+  client.post<{ mergeId: string; status: string }>('/customer/merge-dismiss', data)

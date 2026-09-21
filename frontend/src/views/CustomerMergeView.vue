@@ -5,6 +5,7 @@
  * 受控：合并走 customer:merge 权限，留痕 merges。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
@@ -14,7 +15,12 @@ import { useCustomerStore } from '@/stores/customer'
 import type { CustomerLink } from '@/types/domain'
 
 const store = useCustomerStore()
-onMounted(() => store.seedGraph())
+const route = useRoute()
+onMounted(() => {
+  store.seedGraph()
+  const pairId = route.query.pairId
+  if (typeof pairId === 'string' && pairId) selectedLinkId.value = pairId
+})
 
 const selectedLinkId = ref<string | null>(null)
 
@@ -38,12 +44,12 @@ const customerB = computed(() => {
 
 const keepSide = ref<'A' | 'B'>('A')
 
-// KPI
+// KPI（B84 拍板 D6：疑似对/待确认=真实候选数，已合并=MERGED 真实总数；自动匹配率保留原样）
 const pendingCount = computed(() => store.links.length)
-const mergedCount = computed(() => store.merges.length)
+const mergedCount = computed(() => store.mergesTotal)
 const kpis = computed(() => [
-  { label: '疑似重复对', icon: 'customer', value: String(pendingCount.value + mergedCount.value + 42), tone: 'text' as const },
-  { label: '已合并处理', icon: 'customer', value: String(mergedCount.value + 42), tone: 'success' as const },
+  { label: '疑似重复对', icon: 'customer', value: String(pendingCount.value), tone: 'text' as const },
+  { label: '已合并处理', icon: 'customer', value: String(mergedCount.value), tone: 'success' as const },
   { label: '待确认', icon: 'check-square', value: String(pendingCount.value), tone: 'warning' as const },
   { label: '自动匹配率', icon: 'trend-up', value: '94.2%', tone: 'teal' as const },
 ])
@@ -106,16 +112,15 @@ function askMerge() {
     show: true,
     title: '确认合并客户',
     text: `将保留「${master.name}（${master.id}）」为主档案，「${merged.name}（${merged.id}）」将作废并留痕。此操作不可撤销。`,
-    action: () => {
+    action: async () => {
       const reasons = selectedLink.value!.matchReason.map((r) => reasonLabel[r]).join('、')
-      const result = store.proposeMerge(
+      const result = await store.proposeMerge(
         master.id,
         [merged.id],
         `系统匹配：${reasons}（置信度 ${Math.round(selectedLink.value!.score * 100)}%），人工确认合并`,
         selectedLink.value!.matchReason,
       )
       if (result) {
-        store.dismissLink(selectedLink.value!.id)
         keepSide.value = 'A'
         selectedLinkId.value = null
       }
@@ -126,11 +131,14 @@ function runConfirm() {
   confirm.value?.action()
   confirm.value = null
 }
-function dismiss() {
-  if (!selectedLink.value) return
-  store.dismissLink(selectedLink.value.id)
-  keepSide.value = 'A'
-  selectedLinkId.value = null
+async function dismiss() {
+  const l = selectedLink.value
+  if (!l) return
+  await store.dismissLink(l.id)
+  if (!store.links.some((x) => x.id === l.id)) {
+    keepSide.value = 'A'
+    selectedLinkId.value = null
+  }
 }
 </script>
 
