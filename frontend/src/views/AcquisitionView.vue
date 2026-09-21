@@ -101,9 +101,9 @@ function openForm() {
   }
   showForm.value = true
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
-  const c = store.create({
+  const c = await store.create({
     name: form.value.name,
     type: form.value.type,
     budget: Number(form.value.budget) || 0,

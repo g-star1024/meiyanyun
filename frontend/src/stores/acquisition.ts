@@ -1,12 +1,15 @@
 // ============================================================
 // 拓客活动 store（M2-16）
 // 体验价 / 拼团 / 老带新活动，引流转化漏斗。
+// 切真：列表/新建/启用/结束走后端，单号与状态派生由后端计算。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
-import { useAuthStore } from './auth'
-import { shDateStr } from '@/utils/datetime'
+import * as acquisitionApi from '@/api/acquisition'
+import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
+import { errMsg } from '@/stores/m5Coupon'
+import { useStoreContext } from '@/stores/storeContext'
 
 export type AcqType = 'TRIAL' | 'GROUP' | 'REFERRAL'
 export type AcqStatus = 'ONGOING' | 'ENDED' | 'DRAFT'
@@ -44,13 +47,57 @@ const TYPE_ICON: Record<AcqType, string> = {
   REFERRAL: 'user-check',
 }
 
+function shortAqNo(no: string): string {
+  const parts = no.split('-')
+  const tail = parts[parts.length - 1]
+  const seq = parseInt(tail, 10)
+  if (!Number.isFinite(seq) || seq > 999) return no
+  return `${parts[0]}-${parts[1]}-${String(seq).padStart(3, '0')}`
+}
+
+function adapt(d: acquisitionApi.AcquisitionDto): AcquisitionCampaign {
+  return {
+    id: String(d.id),
+    no: shortAqNo(d.no),
+    name: d.name,
+    type: d.type as AcqType,
+    exposure: d.exposure,
+    arrival: d.arrival,
+    deal: d.deal,
+    budget: d.budget,
+    spent: d.spent,
+    status: d.status as AcqStatus,
+    startDate: d.startDate,
+    endDate: d.endDate,
+    owner: d.owner,
+    channel: d.channel,
+  }
+}
+
 export const useAcquisitionStore = defineStore('acquisition', () => {
   const auth = useAuthStore()
-  const activity = useActivityStore()
+  const ctx = useStoreContext()
+  const toast = useToast()
 
   const campaigns = ref<AcquisitionCampaign[]>([])
   const filterType = ref<AcqType | 'ALL'>('ALL')
   const filterStatus = ref<AcqStatus | 'ALL'>('ALL')
+
+  async function load() {
+    try {
+      const sc = ctx.currentStoreCode
+      const { data } = await acquisitionApi.listAcquisitions({ storeCode: sc || undefined })
+      campaigns.value = data.map(adapt)
+    } catch (e) {
+      campaigns.value = []
+      toast.error(errMsg(e, '拓客活动加载失败，请稍后重试'))
+    }
+  }
+
+  async function seed() {
+    await ctx.loadStores()
+    await load()
+  }
 
   const ongoing = computed(() => campaigns.value.filter((c) => c.status === 'ONGOING'))
   const ended = computed(() => campaigns.value.filter((c) => c.status === 'ENDED'))
@@ -71,7 +118,7 @@ export const useAcquisitionStore = defineStore('acquisition', () => {
     if (filterType.value !== 'ALL') list = list.filter((c) => c.type === filterType.value)
     if (filterStatus.value !== 'ALL') list = list.filter((c) => c.status === filterStatus.value)
     const rank: Record<AcqStatus, number> = { ONGOING: 0, DRAFT: 1, ENDED: 2 }
-    return list.sort((a, b) => rank[a.status] - rank[b.status] || new Date(b.startDate).getTime() - new Date(a.startDate).getTime())
+    return [...list].sort((a, b) => rank[a.status] - rank[b.status] || new Date(b.startDate).getTime() - new Date(a.startDate).getTime())
   })
 
   function get(id: string) {
@@ -83,7 +130,7 @@ export const useAcquisitionStore = defineStore('acquisition', () => {
     return Math.round((c.deal / c.arrival) * 1000) / 10
   }
 
-  function create(input: {
+  async function create(input: {
     name: string
     type: AcqType
     budget: number
@@ -91,102 +138,65 @@ export const useAcquisitionStore = defineStore('acquisition', () => {
     startDate?: string
     endDate?: string
     owner?: string
-  }): AcquisitionCampaign | null {
+  }): Promise<AcquisitionCampaign | null> {
     if (!auth.can('acquisition:edit')) {
-      console.warn('[acquisition] 无 acquisition:edit 权限')
+      toast.error('无创建拓客活动权限，请联系管理员')
       return null
     }
-    const now = new Date()
-    const start = input.startDate ? new Date(input.startDate) : now
-    const end = input.endDate
-      ? new Date(input.endDate)
-      : new Date(start.getTime() + 30 * 86400_000)
-    const c: AcquisitionCampaign = {
-      id: nextId('aq'),
-      no: `AQ-${shDateStr(now).replace(/-/g, '')}-${String(campaigns.value.length + 1).padStart(3, '0')}`,
-      name: input.name.trim(),
-      type: input.type,
-      exposure: 0,
-      arrival: 0,
-      deal: 0,
-      budget: input.budget,
-      spent: 0,
-      status: 'DRAFT',
-      startDate: start.toISOString(),
-      endDate: end.toISOString(),
-      owner: input.owner?.trim() || auth.user.name,
-      channel: input.channel.trim() || '私域社群',
+    try {
+      const sc = ctx.currentStoreCode
+      if (!sc) {
+        toast.error('未获取到当前门店，请稍后重试')
+        return null
+      }
+      const { data } = await acquisitionApi.createAcquisition(
+        { storeCode: sc },
+        {
+          name: input.name.trim(),
+          type: input.type,
+          budget: input.budget,
+          channel: input.channel.trim(),
+          startDate: input.startDate,
+          endDate: input.endDate,
+          owner: input.owner?.trim() || undefined,
+        },
+      )
+      await load()
+      return adapt(data)
+    } catch (e) {
+      toast.error(errMsg(e, '创建拓客活动失败，请稍后重试'))
+      return null
     }
-    campaigns.value.unshift(c)
-    activity.log(auth.user.name, `新建拓客活动 ${c.name}（${TYPE_LABEL[c.type]}）`, c.id)
-    return c
   }
 
-  function launch(id: string): boolean {
-    const c = campaigns.value.find((x) => x.id === id)
-    if (!c || c.status !== 'DRAFT' || !auth.can('acquisition:edit')) return false
-    c.status = 'ONGOING'
-    activity.log(auth.user.name, `启用拓客活动 ${c.name}`, c.id)
-    return true
+  async function launch(id: string): Promise<boolean> {
+    if (!auth.can('acquisition:edit')) {
+      toast.error('无操作权限，请联系管理员')
+      return false
+    }
+    try {
+      await acquisitionApi.launchAcquisition(id)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '启用拓客活动失败，请稍后重试'))
+      return false
+    }
   }
 
-  function end(id: string): boolean {
-    const c = campaigns.value.find((x) => x.id === id)
-    if (!c || c.status !== 'ONGOING' || !auth.can('acquisition:edit')) return false
-    c.status = 'ENDED'
-    c.endDate = new Date().toISOString()
-    activity.log(auth.user.name, `结束拓客活动 ${c.name}`, c.id)
-    return true
-  }
-
-  // ===== 种子数据 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const now = new Date()
-    const daysAgo = (d: number) => {
-      const x = new Date(now)
-      x.setDate(x.getDate() - d)
-      return x.toISOString()
+  async function end(id: string): Promise<boolean> {
+    if (!auth.can('acquisition:edit')) {
+      toast.error('无操作权限，请联系管理员')
+      return false
     }
-    const daysLater = (d: number) => {
-      const x = new Date(now)
-      x.setDate(x.getDate() + d)
-      return x.toISOString()
+    try {
+      await acquisitionApi.endAcquisition(id)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '结束拓客活动失败，请稍后重试'))
+      return false
     }
-    const base: Array<{
-      name: string; type: AcqType; exposure: number; arrival: number; deal: number
-      budget: number; spent: number; status: AcqStatus; startAgo: number; endIn?: number
-      channel: string
-    }> = [
-      { name: '99元水光体验日', type: 'TRIAL', exposure: 12800, arrival: 186, deal: 72, budget: 30000, spent: 18600, status: 'ONGOING', startAgo: 6, endIn: 24, channel: '小红书+私域' },
-      { name: '闺蜜拼团·热玛吉双人8折', type: 'GROUP', exposure: 8600, arrival: 124, deal: 58, budget: 50000, spent: 32000, status: 'ONGOING', startAgo: 12, endIn: 18, channel: '微信社群' },
-      { name: '老带新·赠光子嫩肤1次', type: 'REFERRAL', exposure: 5200, arrival: 98, deal: 61, budget: 20000, spent: 15200, status: 'ONGOING', startAgo: 20, endIn: 10, channel: '老客企微' },
-      { name: '19.9元皮肤检测体验', type: 'TRIAL', exposure: 22000, arrival: 342, deal: 88, budget: 25000, spent: 25000, status: 'ENDED', startAgo: 45, channel: '抖音本地推' },
-      { name: '三人拼团·童颜针体验', type: 'GROUP', exposure: 6800, arrival: 76, deal: 30, budget: 40000, spent: 38500, status: 'ENDED', startAgo: 60, channel: '美团点评' },
-      { name: '双11老客回馈拼团', type: 'REFERRAL', exposure: 9400, arrival: 156, deal: 92, budget: 35000, spent: 34800, status: 'ENDED', startAgo: 80, channel: '全渠道' },
-      { name: '新年焕颜体验价（策划中）', type: 'TRIAL', exposure: 0, arrival: 0, deal: 0, budget: 45000, spent: 0, status: 'DRAFT', startAgo: 0, channel: '待定' },
-    ]
-    base.forEach((s, i) => {
-      const id = nextId('aq')
-      campaigns.value.push({
-        id,
-        no: `AQ-${daysAgo(s.startAgo).slice(0, 10).replace(/-/g, '')}-${String(i + 1).padStart(3, '0')}`,
-        name: s.name,
-        type: s.type,
-        exposure: s.exposure,
-        arrival: s.arrival,
-        deal: s.deal,
-        budget: s.budget,
-        spent: s.spent,
-        status: s.status,
-        startDate: daysAgo(s.startAgo),
-        endDate: s.status === 'ENDED' ? daysAgo(s.startAgo - 30) : daysLater(s.endIn || 30),
-        owner: ['白桥（运营）', '吴桐（运营）', '陈雅琳（店长）'][i % 3],
-        channel: s.channel,
-      })
-    })
   }
 
   return {
