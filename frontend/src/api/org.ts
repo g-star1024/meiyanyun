@@ -217,6 +217,10 @@ export const updateOrgUnit = (orgCode: string, payload: OrgUnitUpdatePayload) =>
 export const toggleOrgUnitStatus = (orgCode: string, payload: ToggleStatusPayload) =>
   client.post<OrgUnit>(`/org/admin/org-units/${orgCode}/toggle-status`, payload)
 
+/** 物理删除节点（L38）：集团禁删/有下级/门店有在职员工均 409；成功 204，编码留痕禁复用 */
+export const deleteOrgUnit = (orgCode: string) =>
+  client.delete<void>(`/org/admin/org-units/${orgCode}`)
+
 // -------------------- RBAC 管理：员工 --------------------
 
 export const createStaff = (payload: StaffCreatePayload) =>

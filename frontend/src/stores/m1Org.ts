@@ -6,7 +6,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import {
-  getOrgTree, createOrgUnit, updateOrgUnit, toggleOrgUnitStatus,
+  getOrgTree, createOrgUnit, updateOrgUnit, toggleOrgUnitStatus, deleteOrgUnit,
   type OrgTreeNode, type OrgUnitCreatePayload, type OrgUnitUpdatePayload,
 } from '@/api/org'
 import { useAuthStore } from './auth'
@@ -208,10 +208,18 @@ export const useM1OrgStore = defineStore('m1Org', () => {
     await load(true)
   }
 
+  /** 物理删除节点（L38）：集团禁删/有下级/门店有在职员工由后端 409 拦截；成功后重载树 */
+  async function remove(id: string): Promise<void> {
+    if (!auth.can('org:edit')) throw new Error('无组织架构编辑权限')
+    if (get(id)?.type === 'GROUP') throw new Error('集团节点不可删除')
+    await deleteOrgUnit(id)
+    await load(true)
+  }
+
   return {
     nodes, roots, children, get, descendantIds, totalHeadcount, childTypeCount, canEdit,
     loading, loaded, loadError, load,
-    create, update, setStatus,
+    create, update, setStatus, remove,
     ORG_TYPE_LABEL, ORG_STATUS_LABEL,
   }
 })

@@ -19,13 +19,14 @@ import java.time.OffsetDateTime;
  * region 继承父区域；部门→父必须=门店（B33 现状）；集团→409「集团节点唯一」（D6 禁建）。
  * 门店支持跨区移动（update parentCode 改挂其他区域），连带更新本节点 region；
  * 不级联改 staff.region/store_code，响应带 affectedStaffCount 提示人工核对。
- * 删除节点不支持（入 L38 卡3）。编码/类型不可改。
+ * 删除走 L38 物理删除（org_code_tombstone 整行快照留痕，编码禁复用 D5；集团禁删 D6）；
+ * 新建撞 tombstone 编码 409「该编码已于 xx 删除回收，不可复用」。编码/类型不可改。
  *
  * <p>权限：统一持 org:edit（超管/区域经理/店长，财务无此权）。数据域：
  * 集团节点仅超管/集团域；区域节点仅集团域；门店/部门按门店数据域（STORE 本店、REGION 本区、
  * GROUP 全量），越权统一 404「数据不存在或无权查看」不泄露存在性。
  *
- * <p>审计：bizType=ORG，动作 CREATE/UPDATE/ENABLE/DISABLE，payload 全动作合法 JSON。
+ * <p>审计：bizType=ORG，动作 CREATE/UPDATE/ENABLE/DISABLE/DELETE，payload 全动作合法 JSON。
  */
 @RestController
 @RequestMapping("/api/org")
@@ -63,6 +64,14 @@ public class OrgAdminController {
         }
         if (orgRepo.existsById(code)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "组织编码已存在: " + code);
+        }
+        // L38/D5：编码删除回收留痕——撞 tombstone 一律 409 禁复用（回收池管理留 Backlog）。
+        String tombAt = jdbc.query(
+                "SELECT to_char(deleted_at, 'YYYY-MM-DD HH24:MI') FROM org_code_tombstone WHERE org_code = ?",
+                rs -> rs.next() ? rs.getString(1) : null, code);
+        if (tombAt != null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "该编码已于 " + tombAt + " 删除回收，不可复用");
         }
         if (req.orgName() == null || req.orgName().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "组织名称不能为空");
@@ -301,6 +310,49 @@ public class OrgAdminController {
                 "{\"orgCode\":\"" + code + "\",\"orgName\":\"" + esc(u.getOrgName())
                         + "\",\"reason\":\"" + esc(reason) + "\"}");
         return u;
+    }
+
+    /**
+     * 物理删除节点（L38）：集团禁删（D6）；存在下级节点或门店仍有在职员工时 409 拦截（不级联改 staff，
+     * 不删 store 主数据）；已停用节点可直接删（inactive_reason 随快照留痕）。成功 204。
+     * 删除三动作单事务——整行 jsonb 快照写 org_code_tombstone（D5 编码留痕禁复用）→ DELETE 行 →
+     * 审计 DELETE（payload 同快照）。权限同写操作走 {@link #assertManageable}。
+     */
+    @DeleteMapping("/admin/org-units/{code}")
+    @RequirePerm("org:edit")
+    @Transactional
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable String code) {
+        OrgUnit u = orgRepo.findById(code)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看"));
+        assertManageable(u);
+        if ("集团".equals(u.getOrgType())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "集团节点不可删除");
+        }
+        Integer children = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM org_unit WHERE parent_code = ?", Integer.class, code);
+        if (children != null && children > 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "存在 " + children + " 个下级节点，请先处理");
+        }
+        if ("门店".equals(u.getOrgType()) && u.getStoreCode() != null) {
+            Integer activeStaff = jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM staff WHERE store_code = ? AND status = '在职'",
+                    Integer.class, u.getStoreCode());
+            if (activeStaff != null && activeStaff > 0) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "该门店仍有 " + activeStaff + " 名在职员工，请先调整归属");
+            }
+        }
+        String actor = DataScope.currentActor();
+        String snapshot = jdbc.query(
+                "SELECT row_to_json(o)::text FROM org_unit o WHERE o.org_code = ?",
+                rs -> rs.next() ? rs.getString(1) : null, code);
+        jdbc.update("INSERT INTO org_code_tombstone(org_code, org_name, org_type, deleted_by, snapshot)"
+                        + " VALUES (?, ?, ?, ?, ?::jsonb)",
+                code, u.getOrgName(), u.getOrgType(), actor, snapshot);
+        orgRepo.delete(u);
+        audit.record("ORG", code, actor, "DELETE", snapshot);
     }
 
     // ==================== 内部方法 ====================

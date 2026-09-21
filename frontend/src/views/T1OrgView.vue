@@ -275,6 +275,34 @@ async function confirmStatus() {
   }
 }
 
+// ---------- 物理删除确认（L38） ----------
+const delConfirmOpen = ref(false)
+const delTarget = ref<OrgNode | null>(null)
+const delErr = ref('')
+const delSaving = ref(false)
+
+function onDelete(n: OrgNode) {
+  delTarget.value = n
+  delErr.value = ''
+  delConfirmOpen.value = true
+}
+
+async function confirmDelete() {
+  if (!delTarget.value || delSaving.value) return
+  delSaving.value = true
+  delErr.value = ''
+  try {
+    const parentId = delTarget.value.parentId
+    await org.remove(delTarget.value.id)
+    delConfirmOpen.value = false
+    selectedId.value = parentId || org.roots[0]?.id || ''
+  } catch (e: any) {
+    delErr.value = errMsg(e, '删除失败')
+  } finally {
+    delSaving.value = false
+  }
+}
+
 // ---------- 工具 ----------
 function fmtDate(iso: string) {
   if (!iso) return '—'
@@ -465,6 +493,14 @@ const OrgTreeNode = defineComponent({
               >
                 <CIcon name="check-square" :size="14" />
                 {{ selected.status === 'ACTIVE' ? '停用' : '启用' }}
+              </CButton>
+              <CButton
+                v-if="auth.can('org:edit') && selected.type !== 'GROUP'"
+                variant="danger"
+                size="sm"
+                @click="onDelete(selected)"
+              >
+                <CIcon name="delete" :size="14" /> 删除
               </CButton>
             </div>
           </div>
@@ -719,6 +755,32 @@ const OrgTreeNode = defineComponent({
             @click="confirmStatus"
           >
             {{ confirmSaving ? '提交中…' : `确认${confirmTo === 'INACTIVE' ? '停用' : '启用'}` }}
+          </CButton>
+        </div>
+      </div>
+    </div>
+
+    <!-- 物理删除确认（L38） -->
+    <div v-if="delConfirmOpen" class="modal-mask" @click.self="delConfirmOpen = false">
+      <div class="modal modal--sm">
+        <div class="modal__head">
+          <h3>删除组织单元</h3>
+          <button class="modal__close" @click="delConfirmOpen = false"><CIcon name="close" :size="18" /></button>
+        </div>
+        <div class="modal__body">
+          <p class="confirm-txt">
+            确认物理删除「<b>{{ delTarget?.name }}</b>」（{{ delTarget?.code }}）？
+            删除后不可恢复，编码 {{ delTarget?.code }} 将留痕且不可再次使用；
+            存在下级节点或门店仍有在职员工时将被拦截。
+          </p>
+          <div v-if="delErr" class="form-err">
+            <CIcon name="alert" :size="14" /> {{ delErr }}
+          </div>
+        </div>
+        <div class="modal__foot">
+          <CButton variant="secondary" :disabled="delSaving" @click="delConfirmOpen = false">取消</CButton>
+          <CButton variant="danger" :disabled="delSaving" @click="confirmDelete">
+            {{ delSaving ? '删除中…' : '确认删除' }}
           </CButton>
         </div>
       </div>
