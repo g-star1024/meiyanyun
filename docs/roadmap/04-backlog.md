@@ -101,7 +101,7 @@ L3 审批 SLA 超时扫描+催办（ApprovalSlaJob 60s/三阶段时限 24h-8h-4h
 | ~~StoreNameResolver 不可达与不存在不可区分~~ | B34 新增 | **B36 卡3 已闭合（2026-09-12，`a43d299`）**：新增 StoreServiceUnavailableException，拆为 `resolveNames`（宽松：故障降级空 Map，仅供券名回显/「不可用即放行」）与 `resolveNamesRequired`（严格：连接/超时/4xx/5xx 抛专用异常→写链路 **503**；name-map 200 子集缺码=真不存在仍 **400**），fetchNames 唯一取数出口；MarketingCfgService 兜底门店保存改严格版，store-service 宕机不再误报 400。真实容器三分支取证（假码 400/真码 200/停服 503）+93 营销单测全绿 | ✅ B36 |
 | ~~`/internal/first` 首家门店排序口径未文档化~~ | B34 新增 | **B36 卡2 已闭合（2026-09-12，`3694003`）**：StoreRepository 增 `findFirstByOrderByStoreCodeAsc`，契约明确为 **store_code 字典序升序首家**（不再依赖无 ORDER BY 的 JPA 默认），空库 404/空；StoreControllerTest 断言多门店固定首家、空库、X-Internal-Token 鉴权，javadoc 写明排序口径 | ✅ B36 |
 | BOM 缺料明细 → 申购单联动 | B34 新增 | B34 已把缺料明细（skuCode/needQty/stockQty）结构化贯通到页面，具备一键生成申购单的数据基础；申购域属 M2 门店运营平台，待该阶段一并实现 | 远期 M2 |
-| M2 门店运营平台（13 页） | 远期阶段 | **已切真 3 页**：排班（/m2-schedule，B54）、物料申领（/m2-requisition）、损耗报损（/m2-wastage）（B80，`7c5cd8b`/`0ec3a55`）；余 10 页：工单/日结/绩效/周报/巡检/拓客/唤醒/异常等 | 远期 M2（3/13） |
+| ~~M2 门店运营平台（13 页）~~ | 远期阶段 | **B81 已闭合（2026-09-21）M2 13/13 全部真实闭环**：排班（B54）、物料申领、损耗报损（B80，`7c5cd8b`/`0ec3a55`）、服务工单、营业日报、员工绩效、经营周报、巡店检查、拓客活动、沉睡唤醒（B81，`e4f059d`/`6d421f6`/`f0a5a28`/`547a6dd`/`540ea7f`/`872ea89`/`7111d37`）；房间床位、设备仪器、异常中心 3 页经三轨核实属事实已真。三轨真验全绿、造数物理还原，详见 DELIVERY-P5-B81-M2-SEVEN-PAGES-2026-09-21 | ✅ B81 |
 | M3 客户运营平台（10 页） | 远期阶段 | 分群/旅程/自动化 | 远期 M3 |
 | M1 集团管控（14 页） | 远期阶段 | 集团-门店多租户 | 远期 M1 |
 | ~~A1 AI 中心模型配置地基（模型接入/网关监控/管理配置/审批治理 4 页）~~ | B42 新增 | **B42 已闭合（2026-09-12，`7ea662d`，详见 DELIVERY-P5-B42）**：ai-service 第 8 服务+V15 七表+/api/ai 网关前缀+火山方舟 OpenAI 兼容薄适配（LlmClient RestClient）+供应商/模型 CRUD 与 AES-GCM Key 落库+真实连通性测试+六功能绑定/角色灰度矩阵+调用日志/KPI/账单+全局配置+审批分页决策四页真实闭环。真实 ARK Key 由用户在 /ai/providers 录入后 SUCCESS 复核（不索要明文） | ✅ B42 |
