@@ -12,5 +12,7 @@ public interface StaffRoleRepository extends JpaRepository<StaffRole, StaffRole.
 
     List<StaffRole> findByRoleCode(String roleCode);
 
+    List<StaffRole> findByStaffIdAndRoleCode(String staffId, String roleCode);
+
     void deleteByRoleCode(String roleCode);
 }

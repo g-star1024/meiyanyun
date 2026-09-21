@@ -82,8 +82,17 @@ public class OrgStaffClient {
                     if (o != null && !o.toString().isBlank()) roles.add(o.toString());
                 }
             }
+            List<ScopedRole> scopedRoles = new ArrayList<>();
+            Object rawScoped = body.get("scopedRoles");
+            if (rawScoped instanceof List<?> list) {
+                for (Object o : list) {
+                    if (o instanceof Map<?, ?> m) {
+                        scopedRoles.add(new ScopedRole(str(m.get("roleCode")), str(m.get("orgCode"))));
+                    }
+                }
+            }
             return new StaffProfile(str(body.get("staffId")), str(body.get("staffName")),
-                    str(body.get("primaryRole")), roles, status, str(body.get("storeCode")));
+                    str(body.get("primaryRole")), roles, status, str(body.get("storeCode")), scopedRoles);
         } catch (HttpStatusCodeException e) {
             int sc = e.getStatusCode().value();
             if (sc == 404) {
@@ -146,6 +155,47 @@ public class OrgStaffClient {
         }
     }
 
+    /**
+     * 区域复审转交/加签目标人反查（B87 兼岗范围）：目标人是否在本单门店所属大区的
+     * REGION_MGR 命中集内（org by-role 同一事实源：主角色按 staff.region、兼岗按 org_code 范围）。
+     * 与催办 {@link #listStaffByRole} 软降级相反——守卫主链路，org 不可用/出错一律 502 硬失败，
+     * 4xx 透传中文（与 {@link #fetchStaff} 同口径，绝不因解析失败放行）。
+     */
+    public boolean isRegionManagerForStore(String staffId, String storeCode) {
+        String id = staffId == null ? "" : staffId.trim();
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            String url = orgBaseUrl + "/api/org/internal/staff/by-role?roleCode=REGION_MGR";
+            if (storeCode != null && !storeCode.isBlank()) {
+                url += "&storeCode=" + URLEncoder.encode(storeCode.trim(), StandardCharsets.UTF_8);
+            }
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> body = restTemplate.exchange(
+                    url, HttpMethod.GET, new HttpEntity<>(headers), List.class).getBody();
+            if (body == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                        "组织服务返回异常，本次目标审批人校验未通过");
+            }
+            return body.stream().anyMatch(m -> id.equals(str(m.get("staffId"))));
+        } catch (HttpStatusCodeException e) {
+            int sc = e.getStatusCode().value();
+            if (sc >= 400 && sc < 500) {
+                log.info("区域经理反查被 org 拒绝 status={} body={}", sc, e.getResponseBodyAsString());
+                throw new ResponseStatusException(HttpStatus.valueOf(sc), extractMessage(e.getResponseBodyAsString()));
+            }
+            log.error("区域经理反查 org 服务端错误 status={} body={}", sc, e.getResponseBodyAsString());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "组织服务暂不可用，本次目标审批人校验未通过，请稍后重试");
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("区域经理反查 org 调用异常: {}", e.getMessage());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "无法连接组织服务，本次目标审批人校验未通过，请稍后重试");
+        }
+    }
+
     /** 催办目标人简要档案（工号/姓名/门店/区域）。 */
     public record StaffBrief(String staffId, String staffName, String storeCode, String region) {
     }
@@ -176,9 +226,15 @@ public class OrgStaffClient {
         }
     }
 
-    /** 复核人档案（org internal staff profile 的 txn 侧读模型）。 */
+    /** 复核人档案（org internal staff profile 的 txn 侧读模型）。scopedRoles 为 B87 兼岗范围明细，
+     *  org 旧版无此字段时解析为空列表，调用方按「无范围信息」回落纯角色校验（灰度兼容）。 */
     public record StaffProfile(String staffId, String staffName, String primaryRole,
-                               List<String> roles, String status, String storeCode) {
+                               List<String> roles, String status, String storeCode,
+                               List<ScopedRole> scopedRoles) {
+    }
+
+    /** 兼岗范围行：roleCode 角色挂 org_unit 节点码（''=全局，通吃所有大区/门店）。 */
+    public record ScopedRole(String roleCode, String orgCode) {
     }
 
     private static String str(Object o) {

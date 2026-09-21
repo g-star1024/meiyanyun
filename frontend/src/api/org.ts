@@ -162,10 +162,18 @@ export interface RoleUpdatePayload {
   description?: string
 }
 
+/** 兼岗范围行（B87）：roleCode + orgCode（''=全局，否则 org_unit 大区/门店节点码） */
+export interface StaffRoleScopeRow {
+  roleCode: string
+  orgCode: string
+}
+
 export interface StaffRolesView {
   staffId: string
   primaryRole: string
   roles: string[]
+  /** 兼岗范围明细；org 旧版无此字段，调用方按 roles 映射 '' 回落 */
+  rolesDetail?: StaffRoleScopeRow[]
 }
 
 // -------------------- 组织只读 --------------------
@@ -221,15 +229,18 @@ export const transferStaff = (staffId: string, payload: StaffTransferPayload) =>
 export const setPrimaryRole = (staffId: string, roleCode: string) =>
   client.post<Staff>(`/org/admin/staff/${staffId}/primary-role`, { roleCode })
 
-export const addStaffRole = (staffId: string, roleCode: string) =>
-  client.post<{ staffId: string; roleCode: string; added: boolean }>(
+/** 授予兼岗角色；orgCode 缺省 ''=全局，否则挂大区/门店节点码（B87） */
+export const addStaffRole = (staffId: string, roleCode: string, orgCode = '') =>
+  client.post<{ staffId: string; roleCode: string; orgCode: string; added: boolean }>(
     `/org/admin/staff/${staffId}/roles`,
-    { roleCode },
+    { roleCode, orgCode },
   )
 
-export const removeStaffRole = (staffId: string, roleCode: string) =>
-  client.delete<{ staffId: string; roleCode: string; removed: boolean }>(
+/** 摘除兼岗角色；orgCode 缺省 ''=摘全局行（同角色多范围行需传真实节点码区分） */
+export const removeStaffRole = (staffId: string, roleCode: string, orgCode = '') =>
+  client.delete<{ staffId: string; roleCode: string; orgCode: string; removed: boolean }>(
     `/org/admin/staff/${staffId}/roles/${roleCode}`,
+    { params: orgCode ? { orgCode } : undefined },
   )
 
 export const getStaffRoles = (staffId: string) =>

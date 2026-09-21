@@ -225,7 +225,8 @@ public class OrgController {
 
     /**
      * 员工档案单查（服务间调用专用，B18 划扣双签复核人硬校验）：GET /api/org/internal/staff/{id}。
-     * 返回工号/姓名/主角色/全量角色（staff_role 并集）/在职状态/门店；无 DataScope——调用方（txn）
+     * 返回工号/姓名/主角色/全量角色（staff_role 并集）/兼岗范围明细 scopedRoles [{roleCode, orgCode}]
+     * /在职状态/门店；无 DataScope——调用方（txn）
      * 按真实工号做存在性、在职、角色闸门校验，校验不过不得执行划扣（与 name-map 只读降级不同，
      * 本端点不可用时 txn 侧按 502 硬失败）。员工不存在 404，由调用方转 400 中文提示。
      */
@@ -234,17 +235,22 @@ public class OrgController {
     public Map<String, Object> internalStaffProfile(@PathVariable String id) {
         Staff s = staffRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "员工不存在: " + id));
-        List<String> roles = staffRoleRepo.findByStaffId(id).stream()
+        List<StaffRole> staffRoles = staffRoleRepo.findByStaffId(id);
+        List<String> roles = staffRoles.stream()
                 .map(StaffRole::getRoleCode)
                 .filter(Objects::nonNull)
                 .distinct()
                 .sorted()
+                .collect(Collectors.toList());
+        List<Map<String, String>> scopedRoles = staffRoles.stream()
+                .map(sr -> Map.of("roleCode", sr.getRoleCode(), "orgCode", sr.getOrgCode()))
                 .collect(Collectors.toList());
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("staffId", s.getStaffId());
         m.put("staffName", s.getStaffName());
         m.put("primaryRole", s.getRoleCode());
         m.put("roles", roles);
+        m.put("scopedRoles", scopedRoles);
         m.put("status", s.getStatus());
         m.put("storeCode", s.getStoreCode());
         m.put("region", s.getRegion());
@@ -257,8 +263,9 @@ public class OrgController {
      *
      * <p>命中口径与公开 /staff 一致——主角色 staff.role_code 或兼岗 staff_role.role_code 任一命中即返回，
      * 且仅返回在职（status=在职）。无 DataScope（系统内部任务使用，调用方持 internal:name-map）。
-     * storeCode / region 为可选收敛过滤：REGION_MGR 无门店归属，调方传 storeCode 时此处先把门店
-     * 解析为区域再按区域过滤；STORE_MGR / FINANCE 直接忽略 region（前者按门店、后者全量）。
+     * storeCode / region 为可选收敛过滤：REGION_MGR 无门店归属，调方传 storeCode 时主角色路径仍把门店
+     * 解析为区域按 staff.region 过滤，兼岗路径改按 staff_role.org_code 范围命中（''=全局通吃，
+     * 否则须等于本单大区节点码或门店节点码）；STORE_MGR / FINANCE 直接忽略 region（前者按门店、后者全量）。
      */
     @GetMapping("/internal/staff/by-role")
     @RequirePerm("internal:name-map")
@@ -272,15 +279,34 @@ public class OrgController {
         LinkedHashSet<String> ids = new LinkedHashSet<>();
         staffRepo.findByRoleCodeOrderByStaffIdAsc(role).stream()
                 .map(Staff::getStaffId).forEach(ids::add);
-        staffRoleRepo.findByRoleCode(role).stream()
-                .map(StaffRole::getStaffId).forEach(ids::add);
+        Map<String, List<String>> extraScopes = new LinkedHashMap<>();
+        for (StaffRole sr : staffRoleRepo.findByRoleCode(role)) {
+            ids.add(sr.getStaffId());
+            extraScopes.computeIfAbsent(sr.getStaffId(), k -> new ArrayList<>()).add(sr.getOrgCode());
+        }
+        boolean regionScoped = "REGION_MGR".equals(role) && storeCode != null && !storeCode.isBlank();
+        OrgUnit storeNode = regionScoped
+                ? orgRepo.findFirstByStoreCode(storeCode.trim()).orElse(null) : null;
+        final String storeRegion = storeNode == null ? null : storeNode.getRegion();
+        final String storeNodeCode = storeNode == null ? null : storeNode.getOrgCode();
+        final String regionNodeCode = storeNode == null ? null : storeNode.getParentCode();
         List<Map<String, Object>> out = new ArrayList<>();
         for (Staff s : staffRepo.findAllById(ids)) {
             if (!"在职".equals(s.getStatus())) continue;
             if (storeCode != null && !storeCode.isBlank()) {
-                if ("REGION_MGR".equals(role)) {
-                    String storeRegion = regionOfStore(storeCode.trim());
-                    if (storeRegion == null || !storeRegion.equals(s.getRegion())) continue;
+                if (regionScoped) {
+                    // 主角色路径仍按 staff.region 等值；兼岗路径按 staff_role.org_code 范围命中
+                    // （''=全局 / 大区节点码 / 门店节点码），不看 staff.region——主角色双写的 '' 行
+                    // 归主角色路径，避免兼任者借双写行绕过范围。
+                    boolean hit;
+                    if (role.equals(s.getRoleCode())) {
+                        hit = storeRegion != null && storeRegion.equals(s.getRegion());
+                    } else {
+                        hit = extraScopes.getOrDefault(s.getStaffId(), List.of()).stream()
+                                .anyMatch(sc -> sc == null || sc.isEmpty()
+                                        || sc.equals(regionNodeCode) || sc.equals(storeNodeCode));
+                    }
+                    if (!hit) continue;
                 } else if (!storeCode.trim().equals(s.getStoreCode())) {
                     continue;
                 }

@@ -15,10 +15,11 @@ import CInput from '@/components/CInput.vue'
 import CDrawer from '@/components/CDrawer.vue'
 import CCheckbox from '@/components/CCheckbox.vue'
 import {
-  listStaff, listRoles, listStores, getStaffRoles,
+  listStaff, listRoles, listStores, getStaffRoles, getOrgTree,
   createStaff, disableStaff, resetStaffPassword, transferStaff,
   setPrimaryRole, addStaffRole, removeStaffRole,
   type Staff, type RoleDef, type Store as OrgStore,
+  type StaffRoleScopeRow, type OrgTreeNode,
 } from '@/api/org'
 import {
   listCompConfigs, saveCompConfig, listCommissionRules,
@@ -74,10 +75,35 @@ const createForm = reactive({
 const transferForm = reactive({ storeCode: '', region: '' })
 
 // 角色抽屉状态
-const staffRoles = ref<string[]>([])
+const staffRoles = ref<StaffRoleScopeRow[]>([])
 const staffPrimary = ref('')
 const rolesLoading = ref(false)
 const pickRoleCode = ref('')
+const pickOrgCode = ref('')
+// 兼岗范围节点（大区/门店，来自组织树；懒加载一次，失败静默仅留全局选项）
+const scopeNodes = ref<{ orgCode: string; orgName: string; orgTypeCode: string }[]>([])
+let scopeNodesLoaded = false
+
+async function ensureScopeNodes() {
+  if (scopeNodesLoaded) return
+  try {
+    const res = await getOrgTree()
+    const out: { orgCode: string; orgName: string; orgTypeCode: string }[] = []
+    const walk = (nodes?: OrgTreeNode[]) => {
+      for (const n of nodes ?? []) {
+        if (n.orgTypeCode === 'REGION' || n.orgTypeCode === 'STORE') {
+          out.push({ orgCode: n.orgCode, orgName: n.orgName, orgTypeCode: n.orgTypeCode })
+        }
+        walk(n.children)
+      }
+    }
+    walk(res.data ? [res.data] : [])
+    scopeNodes.value = out
+    scopeNodesLoaded = true
+  } catch {
+    // 范围选择器静默降级为仅「全局」，不阻塞角色授予主流程
+  }
+}
 
 // ---------------- 派生 ----------------
 const roleName = (code: string | null | undefined) =>
@@ -239,14 +265,17 @@ async function submitTransfer() {
 async function openRoles(s: Staff) {
   activeStaff.value = s
   pickRoleCode.value = ''
+  pickOrgCode.value = ''
   staffRoles.value = []
   staffPrimary.value = ''
   drawerKind.value = 'roles'
   rolesLoading.value = true
+  ensureScopeNodes()
   try {
     const res = await getStaffRoles(s.staffId)
     staffPrimary.value = res.data.primaryRole
-    staffRoles.value = res.data.roles
+    staffRoles.value = res.data.rolesDetail
+      ?? res.data.roles.map((roleCode) => ({ roleCode, orgCode: '' }))
   } catch (e) {
     toast.error(errMsg(e, '角色信息载入失败，请稍后重试'))
   } finally {
@@ -254,40 +283,59 @@ async function openRoles(s: Staff) {
   }
 }
 
+// 已持「全局」行的角色通吃所有范围，不再出现在可授列表；仅范围行的角色可继续补授其他范围或升级全局
 const assignableRoles = computed(() =>
-  activeRoles.value.filter((r) => !staffRoles.value.includes(r.roleCode)),
+  activeRoles.value.filter((r) => !staffRoles.value.some((row) => row.roleCode === r.roleCode && !row.orgCode)),
 )
 const assignRoleOptions = computed(() => [
   { value: '', label: '选择要授予的兼岗角色' },
   ...assignableRoles.value.map((r) => ({ value: r.roleCode, label: `${r.roleName}（${r.roleCode}）` })),
 ])
+const scopeOptions = computed(() => [
+  { value: '', label: '全局（所有大区/门店）' },
+  ...scopeNodes.value.map((n) => ({
+    value: n.orgCode,
+    label: `${n.orgTypeCode === 'REGION' ? '大区' : '门店'}：${n.orgName}（${n.orgCode}）`,
+  })),
+])
+const scopeLabel = (orgCode: string) => {
+  if (!orgCode) return '全局'
+  return scopeNodes.value.find((n) => n.orgCode === orgCode)?.orgName ?? orgCode
+}
 
 async function onAddRole() {
   const s = activeStaff.value
   if (!s || !pickRoleCode.value) return
+  const roleCode = pickRoleCode.value
+  const orgCode = pickOrgCode.value
+  if (staffRoles.value.some((row) => row.roleCode === roleCode && row.orgCode === orgCode)) {
+    toast.warning(`该角色在「${scopeLabel(orgCode)}」范围已授予，请勿重复操作`)
+    return
+  }
   try {
-    await addStaffRole(s.staffId, pickRoleCode.value)
-    toast.success(`已授予兼岗：${roleName(pickRoleCode.value)}`)
-    staffRoles.value = [...staffRoles.value, pickRoleCode.value]
+    await addStaffRole(s.staffId, roleCode, orgCode)
+    toast.success(`已授予兼岗：${roleName(roleCode)}（${scopeLabel(orgCode)}）`)
+    staffRoles.value = [...staffRoles.value, { roleCode, orgCode }]
     pickRoleCode.value = ''
+    pickOrgCode.value = ''
     await seed()
   } catch (e) {
     toast.error(errMsg(e, '角色授予失败，请稍后重试'))
   }
 }
 
-async function onRemoveRole(roleCode: string) {
+async function onRemoveRole(row: StaffRoleScopeRow) {
   const s = activeStaff.value
   if (!s) return
-  if (roleCode === staffPrimary.value) {
+  if (row.roleCode === staffPrimary.value) {
     toast.warning('主角色不可直接摘除，请先通过「调整主角色」切换')
     return
   }
-  if (!window.confirm(`确认摘除 ${s.staffName} 的兼岗「${roleName(roleCode)}」？`)) return
+  if (!window.confirm(`确认摘除 ${s.staffName} 的兼岗「${roleName(row.roleCode)}」（${scopeLabel(row.orgCode)}）？`)) return
   try {
-    await removeStaffRole(s.staffId, roleCode)
-    toast.success(`兼岗 ${roleName(roleCode)} 已摘除`)
-    staffRoles.value = staffRoles.value.filter((c) => c !== roleCode)
+    await removeStaffRole(s.staffId, row.roleCode, row.orgCode)
+    toast.success(`兼岗 ${roleName(row.roleCode)}（${scopeLabel(row.orgCode)}）已摘除`)
+    staffRoles.value = staffRoles.value.filter((r) => !(r.roleCode === row.roleCode && r.orgCode === row.orgCode))
     await seed()
   } catch (e) {
     toast.error(errMsg(e, '角色摘除失败，请稍后重试'))
@@ -302,7 +350,9 @@ async function onSetPrimary(roleCode: string) {
     await setPrimaryRole(s.staffId, roleCode)
     toast.success(`主角色已切换为 ${roleName(roleCode)}`)
     staffPrimary.value = roleCode
-    if (!staffRoles.value.includes(roleCode)) staffRoles.value = [...staffRoles.value, roleCode]
+    if (!staffRoles.value.some((row) => row.roleCode === roleCode)) {
+      staffRoles.value = [...staffRoles.value, { roleCode, orgCode: '' }]
+    }
     await seed()
   } catch (e) {
     toast.error(errMsg(e, '主角色调整失败，请稍后重试'))
@@ -536,21 +586,21 @@ onMounted(() => { seed() })
         <div class="field">
           <span class="field__label">已授予角色（{{ staffRoles.length }}）</span>
           <div class="role-list">
-            <div v-for="code in staffRoles" :key="code" class="role-item">
+            <div v-for="row in staffRoles" :key="`${row.roleCode}|${row.orgCode}`" class="role-item">
               <div class="role-item__info">
-                <span class="role-item__name">{{ roleName(code) }}</span>
-                <span class="role-item__code">{{ code }}</span>
+                <span class="role-item__name">{{ roleName(row.roleCode) }}</span>
+                <span class="role-item__code">{{ row.roleCode }} · 范围：{{ scopeLabel(row.orgCode) }}</span>
               </div>
-              <CStatusPill v-if="code === staffPrimary" status="primary" dot>主角色</CStatusPill>
+              <CStatusPill v-if="row.roleCode === staffPrimary && !row.orgCode" status="primary" dot>主角色</CStatusPill>
               <CButton
-                v-else-if="canAssign"
+                v-else-if="canAssign && row.roleCode !== staffPrimary"
                 variant="text" size="sm"
-                @click="onSetPrimary(code)"
+                @click="onSetPrimary(row.roleCode)"
               >设为主角色</CButton>
               <CButton
-                v-if="canAssign && code !== staffPrimary"
+                v-if="canAssign && row.roleCode !== staffPrimary"
                 variant="text" size="sm"
-                @click="onRemoveRole(code)"
+                @click="onRemoveRole(row)"
               >摘除</CButton>
             </div>
             <div v-if="staffRoles.length === 0" class="cell-muted">暂无角色</div>
@@ -561,10 +611,11 @@ onMounted(() => { seed() })
           <span class="field__label">授予兼岗角色</span>
           <div class="role-add">
             <CSelect v-model="pickRoleCode" width="100%" :options="assignRoleOptions" />
+            <CSelect v-model="pickOrgCode" width="100%" :options="scopeOptions" />
             <CButton variant="secondary" :disabled="!pickRoleCode" @click="onAddRole">授予</CButton>
           </div>
           <div class="form-tip">
-            <CIcon name="info" :size="13" />仅可授予「启用」状态角色；主角色切换后原主角色自动保留为兼岗；主角色不可直接摘除。
+            <CIcon name="info" :size="13" />仅可授予「启用」状态角色；兼岗范围缺省「全局」通吃所有大区/门店，范围限定后仅对所选大区/门店生效（区域复审按本单大区校验）；主角色切换后原主角色自动保留为全局兼岗；主角色不可直接摘除。
           </div>
         </div>
         <div v-else class="form-tip">

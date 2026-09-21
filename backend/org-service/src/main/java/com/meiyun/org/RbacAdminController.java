@@ -203,35 +203,40 @@ public class RbacAdminController {
         RoleDef role = roleRepo.findById(roleCode)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST, "角色不存在: " + roleCode));
         assertRoleUsable(role);
-        StaffRole.Key key = new StaffRole.Key(id, roleCode);
+        String orgCode = req.orgCode() == null ? "" : req.orgCode().trim();
+        StaffRole.Key key = new StaffRole.Key(id, roleCode, orgCode);
         boolean added = staffRoleRepo.findById(key).isEmpty();
         if (added) {
-            staffRoleRepo.save(new StaffRole(id, roleCode));
+            staffRoleRepo.save(new StaffRole(id, roleCode, orgCode));
             audit.record("STAFF", id, DataScope.currentActor(), "ROLE_GRANT",
-                    "{\"staffId\":\"" + id + "\",\"roleCode\":\"" + roleCode + "\"}");
+                    "{\"staffId\":\"" + id + "\",\"roleCode\":\"" + roleCode
+                            + "\",\"orgCode\":\"" + esc(orgCode) + "\"}");
         }
-        return Map.of("staffId", id, "roleCode", roleCode, "added", added);
+        return Map.of("staffId", id, "roleCode", roleCode, "orgCode", orgCode, "added", added);
     }
 
     /** 摘除兼岗角色：主角色不可摘（请先调整主角色）；内置角色仅当非主角色时可摘。 */
     @DeleteMapping("/admin/staff/{id}/roles/{roleCode}")
     @RequirePerm("role:assign")
     @Transactional
-    public Map<String, Object> removeStaffRole(@PathVariable String id, @PathVariable String roleCode) {
+    public Map<String, Object> removeStaffRole(@PathVariable String id, @PathVariable String roleCode,
+                                               @RequestParam(value = "orgCode", required = false, defaultValue = "") String orgCode) {
         Staff s = getManageableStaff(id);
         if (roleCode.equals(s.getRoleCode())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "主角色不可摘除，请先调整主角色");
         }
-        boolean removed = staffRoleRepo.findById(new StaffRole.Key(id, roleCode))
+        String scope = orgCode == null ? "" : orgCode.trim();
+        boolean removed = staffRoleRepo.findById(new StaffRole.Key(id, roleCode, scope))
                 .map(sr -> {
                     staffRoleRepo.delete(sr);
                     return true;
                 }).orElse(false);
         if (removed) {
             audit.record("STAFF", id, DataScope.currentActor(), "ROLE_REVOKE",
-                    "{\"staffId\":\"" + id + "\",\"roleCode\":\"" + roleCode + "\"}");
+                    "{\"staffId\":\"" + id + "\",\"roleCode\":\"" + roleCode
+                            + "\",\"orgCode\":\"" + esc(scope) + "\"}");
         }
-        return Map.of("staffId", id, "roleCode", roleCode, "removed", removed);
+        return Map.of("staffId", id, "roleCode", roleCode, "orgCode", scope, "removed", removed);
     }
 
     // ==================== 角色管理 ====================
@@ -452,9 +457,14 @@ public class RbacAdminController {
         if (!visible) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看");
         }
-        List<String> roles = staffRoleRepo.findByStaffId(id).stream()
+        List<StaffRole> rows = staffRoleRepo.findByStaffId(id);
+        List<String> roles = rows.stream()
                 .map(StaffRole::getRoleCode).distinct().sorted().toList();
-        return Map.of("staffId", id, "primaryRole", s.getRoleCode(), "roles", roles);
+        List<Map<String, String>> rolesDetail = rows.stream()
+                .map(sr -> Map.of("roleCode", sr.getRoleCode(), "orgCode", sr.getOrgCode()))
+                .toList();
+        return Map.of("staffId", id, "primaryRole", s.getRoleCode(), "roles", roles,
+                "rolesDetail", rolesDetail);
     }
 
     // ==================== 内部方法 ====================
@@ -503,7 +513,7 @@ public class RbacAdminController {
     public record StaffTransferRequest(String storeCode, String region) {
     }
 
-    public record RoleAssignRequest(String roleCode) {
+    public record RoleAssignRequest(String roleCode, String orgCode) {
     }
 
     public record RoleCreateRequest(String roleCode, String roleName, String dataScope,

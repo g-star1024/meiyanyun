@@ -743,6 +743,7 @@ public class ApprovalService {
      * B21 转交/加签目标人硬校验：调 org internal 档案（工号不存在 / 离职 → 400 中文，
      * org 不可用 → 502 硬失败，与双签红线同口径，绝不放行）；再按当前阶段校验目标人具备
      * 对应审批角色（REVIEW 须店长、REGION 须区域经理、FINANCE 须财务；主角色或兼岗命中均可）。
+     * B87 起 REGION 阶段追加兼岗范围校验：目标人仅持范围限定兼岗行且不覆盖本单大区 → 422。
      */
     private OrgStaffClient.StaffProfile guardTargetApprover(ApprovalTodo t, String targetId) {
         OrgStaffClient.StaffProfile p;
@@ -768,6 +769,21 @@ public class ApprovalService {
             if (!roles.contains("REGION_MGR")) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                         "目标审批人 " + p.staffName() + "（" + targetId + "）不具备区域经理角色，当前区域复审阶段不可指派/加签");
+            }
+            // B87 兼岗范围：scopedRoles 非空（org 新版）时，存在 REGION_MGR '' 全局行 → 恒过
+            // （主角色双写 '' 行同此，D2 主角色大区匹配不收紧）；仅当目标人只有范围限定的兼岗行时，
+            // 反查 org by-role 命中集，不在本单大区 → 422。scopedRoles 空（org 旧版）→ 回落纯 roles。
+            if (p.scopedRoles() != null && !p.scopedRoles().isEmpty()) {
+                boolean globalRow = p.scopedRoles().stream().anyMatch(sr ->
+                        "REGION_MGR".equals(sr.roleCode()) && (sr.orgCode() == null || sr.orgCode().isEmpty()));
+                boolean scopedRow = p.scopedRoles().stream().anyMatch(sr ->
+                        "REGION_MGR".equals(sr.roleCode()) && sr.orgCode() != null && !sr.orgCode().isEmpty());
+                if (!globalRow && scopedRow
+                        && !orgStaffClient.isRegionManagerForStore(targetId, t.getStoreCode())) {
+                    throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
+                            "该兼岗区域经理不负责本单所属大区：目标审批人 " + p.staffName()
+                                    + "（" + targetId + "），当前区域复审阶段不可指派/加签");
+                }
             }
         } else {
             if (!roles.contains("STORE_MGR")) {
