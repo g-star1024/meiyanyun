@@ -5,12 +5,14 @@
  * 反馈走 T3-03，按角色推不同手册
  * 注：项目已有 HelpView.vue（M2-22 门店培训用 /m2-help）
  * ============================================================ */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import CIcon from '@/components/CIcon.vue'
 
+const router = useRouter()
 const keyword = ref('')
 const cat = ref('start')
 const openFaq = ref<number | null>(0)
@@ -22,14 +24,14 @@ const CATS = [
   { label: '视频教程', value: 'video' },
 ]
 
-const quickStart = [
+const quickStartSource = [
   { icon: 'dashboard', title: '认识经营驾驶舱', desc: '3 分钟看懂今日核心指标' },
   { icon: 'calendar', title: '第一次创建预约', desc: '号源、分诊、到店提醒一条龙' },
   { icon: 'pos', title: '完成一笔收银', desc: '开单、支付、核销与小票' },
   { icon: 'customer', title: '建立客户档案', desc: '标签、等级与跟进记录' },
 ]
 
-const faqs = [
+const faqSource = [
   { q: '忘记密码怎么办？', a: '在登录页点击"忘记密码"，通过绑定手机号接收验证码重置。若手机号已变更，请联系门店管理员在 T1 权限管理中重置。' },
   { q: '退款为什么需要主管审批？', a: '根据集团双签阈值规则（G-08 / 系统设置），单笔退款超过 L1 阈值需主管单签，超过 L2 需双签。这是为了防范资金风险。' },
   { q: '客户手机号显示为 138****1234？', a: '默认开启手机号脱敏（A1-17 数据合规）。拥有 customer:view-phone 权限的角色可查看完整号码，且所有查看行为会写入审计日志。' },
@@ -38,18 +40,29 @@ const faqs = [
   { q: '数据看板和实际经营对不上？', a: '先检查日期范围与门店筛选；如仍有差异，进入财务-日结对账，T+1 数据一般在次日 02:00 前完成归集。' },
 ]
 
-const videos = [
+const videoSource = [
   { title: '10 分钟搭建你的工作台', duration: '10:24', tag: '入门' },
   { title: '咨询师开单到收银全流程', duration: '15:08', tag: '日常' },
   { title: '客户标签与精准营销', duration: '12:45', tag: '运营' },
   { title: '月度经营报表怎么看', duration: '08:32', tag: '管理' },
 ]
 
+// 顶部搜索框真实过滤三块内容（B83 卡3：原为纯装饰输入框）
+function matchKw(fields: string[]): boolean {
+  const k = keyword.value.trim()
+  if (!k) return true
+  return fields.some((f) => f.includes(k))
+}
+const quickStart = computed(() => quickStartSource.filter((s) => matchKw([s.title, s.desc])))
+const faqs = computed(() => faqSource.filter((f) => matchKw([f.q, f.a])))
+const videos = computed(() => videoSource.filter((v) => matchKw([v.title, v.tag])))
+
 function toggleFaq(i: number) {
   openFaq.value = openFaq.value === i ? null : i
 }
+// 提交反馈：跳转 T3-03 工单平台真实建单（B83 卡3：原为 alert 假交互）
 function feedback() {
-  alert('已为您打开 T3-03 反馈工单（按当前角色推荐分类）')
+  router.push('/workorders')
 }
 </script>
 

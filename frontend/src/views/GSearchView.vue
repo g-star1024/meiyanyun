@@ -3,8 +3,11 @@
  * G-04 全局搜索（/search）
  * 顶栏大搜索框 + 分类 Tab + 结果列表 + 最近访问 / 热门搜索
  * 结果按 RBAC 过滤；敏感检索留痕 T1-04
+ * 数据源（B83 卡3 切真）：客户 /customer/search（ES 降级 DB）、
+ * 预约 /txn/appointment、订单 /txn/order（数据域内取近单本地过滤）、
+ * 知识库 /ai/knowledge/search、热门词 /ai/knowledge/hot、页面项由导航动态生成。
  * ============================================================ */
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
@@ -13,11 +16,15 @@ import CSegmented from '@/components/CSegmented.vue'
 import CIcon from '@/components/CIcon.vue'
 import { NAV_GROUPS, PAGE_TITLES } from '@/config/nav'
 import { useRecentVisitsStore } from '@/stores/recentVisits'
+import { listCustomers, searchCustomers, type CustomerDTO } from '@/api/customer'
+import { listAppointments, type AppointmentView } from '@/api/appointment'
+import { listOrders, type OrderViewDTO } from '@/api/order'
+import { getKnowledgeHot, listKnowledgeDocs, searchKnowledge } from '@/api/ai'
 
 type Cat = 'all' | 'customer' | 'appointment' | 'order' | 'kb' | 'page'
 
 interface SearchItem {
-  id: number
+  id: string | number
   cat: Exclude<Cat, 'all'>
   title: string
   summary: string
@@ -42,21 +49,63 @@ const CATS: { label: string; value: Cat }[] = [
   { label: '页面', value: 'page' },
 ]
 
-const items: SearchItem[] = [
-  { id: 1, cat: 'customer', title: '李雨桐（138****6612）', summary: '金卡会员 · 最近到店 2026-08-20 · 累计消费 ¥12,860', path: '/customers/10021', tag: '客户', tagStatus: 'primary' },
-  { id: 2, cat: 'customer', title: '陈思琪（139****0188）', summary: '新客 · 来源 小红书 · 待首诊跟进', path: '/customers/10045', tag: '客户', tagStatus: 'primary' },
-  { id: 3, cat: 'appointment', title: '今日 14:30 王雪预约 热玛吉', summary: '操作医生 张医生 · 房间 3 号 · 状态待到店', path: '/appointment', tag: '预约', tagStatus: 'info' },
-  { id: 4, cat: 'appointment', title: '明日 10:00 团体预约 5 人', summary: '企微团购 · 套餐 水光基础 · 待分诊', path: '/appointment', tag: '预约', tagStatus: 'info' },
-  { id: 5, cat: 'order', title: '订单 #O2026082500198', summary: '金额 ¥3,980 · 支付成功 · 未核销 · 客户 赵琳', path: '/order', tag: '订单', tagStatus: 'success' },
-  { id: 6, cat: 'order', title: '退款单 #R2026082400012', summary: '金额 ¥1,200 · 待主管审批 · 超 L1 单签阈值', path: '/refund', tag: '订单', tagStatus: 'warning' },
-  { id: 7, cat: 'kb', title: '热玛吉操作 SOP（v3.2）', summary: '适用第五代设备 · 含禁忌症核对清单 · 已发布', path: '/ai/knowledge', tag: '知识库', tagStatus: 'draft' },
-  { id: 8, cat: 'kb', title: '客诉处理话术：效果不达预期', summary: '门店店长 / 咨询师必读 · 更新于 2026-08-10', path: '/ai/knowledge', tag: '知识库', tagStatus: 'draft' },
-]
+const customerItems = ref<SearchItem[]>([])
+const kbItems = ref<SearchItem[]>([])
+const apptSource = ref<AppointmentView[]>([])
+const orderSource = ref<OrderViewDTO[]>([])
+const hot = ref(['热玛吉', '今日预约', '退款审批', '新客', '库存预警', '经营周报', 'SOP', '双签阈值'])
+
+function maskPhone(p?: string): string {
+  return p ? p.replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2') : ''
+}
+
+function mapCustomer(c: CustomerDTO): SearchItem {
+  return {
+    id: `c-${c.customerId}`,
+    cat: 'customer',
+    title: `${c.name}（${maskPhone(c.phone)}）`,
+    summary: `${c.level}会员 · 累计消费 ¥${Number(c.totalSpend ?? 0).toLocaleString('zh-CN')} · ${c.status ?? '活跃'}`,
+    path: `/customers/${c.customerId}`,
+    tag: '客户',
+    tagStatus: 'primary',
+  }
+}
+
+function mapAppt(a: AppointmentView): SearchItem {
+  return {
+    id: `a-${a.apptNo}`,
+    cat: 'appointment',
+    title: `${a.apptDate} ${a.apptTime} ${a.customerName ?? '散客'}预约 ${a.project}`,
+    summary: `操作医生 ${a.doctorName ?? '未排'} · 门店 ${a.storeName ?? a.storeCode ?? ''} · 状态${a.status}`,
+    path: '/appointment',
+    tag: '预约',
+    tagStatus: 'info',
+  }
+}
+
+const ORDER_PILL: Record<string, SearchItem['tagStatus']> = {
+  已收款: 'success',
+  待收款: 'warning',
+  待签核: 'warning',
+  已取消: 'danger',
+}
+
+function mapOrder(o: OrderViewDTO): SearchItem {
+  return {
+    id: `o-${o.orderNo}`,
+    cat: 'order',
+    title: `订单 #${o.orderNo}`,
+    summary: `金额 ¥${(o.amount / 100).toLocaleString('zh-CN')} · ${o.status} · 客户 ${o.customerName ?? '散客'}`,
+    path: '/order',
+    tag: '订单',
+    tagStatus: ORDER_PILL[o.status] ?? 'default',
+  }
+}
 
 // 动态生成搜索项：从导航配置和页面标题中提取
 function buildDynamicItems(): SearchItem[] {
   const pageItems: SearchItem[] = []
-  const seenPaths = new Set(items.map(i => i.path))
+  const seenPaths = new Set(['/appointment', '/order', '/ai/knowledge'])
 
   Object.entries(PAGE_TITLES).forEach(([path, info]) => {
     if (seenPaths.has(path)) return
@@ -94,15 +143,88 @@ function buildDynamicItems(): SearchItem[] {
 }
 
 const dynamicItems = buildDynamicItems()
-const allSearchItems = [...items, ...dynamicItems]
 
-const hot = ['热玛吉', '今日预约', '退款审批', '新客', '库存预警', '经营周报', 'SOP', '双签阈值']
+const apptItems = computed<SearchItem[]>(() => {
+  const k = keyword.value.trim().toLowerCase()
+  return apptSource.value
+    .filter((a) => !k || [a.customerName, a.apptNo, a.project, a.storeName, a.doctorName]
+      .some((s) => s != null && String(s).toLowerCase().includes(k)))
+    .slice(0, 50)
+    .map(mapAppt)
+})
 
+const orderItems = computed<SearchItem[]>(() => {
+  const k = keyword.value.trim().toLowerCase()
+  return orderSource.value
+    .filter((o) => !k || [o.customerName, o.orderNo, o.status, o.storeName]
+      .some((s) => s != null && String(s).toLowerCase().includes(k)))
+    .map(mapOrder)
+})
+
+// 客户/知识库由服务端按关键词检索（客户 ES 降级 DB；知识库命中即留真实引用）；
+// 空关键词时取默认近单，保证空态仍有真实内容。
+let searchSeq = 0
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+async function refreshRemote() {
+  const k = keyword.value.trim()
+  const my = ++searchSeq
+  const customerPromise: Promise<CustomerDTO[]> = k
+    ? searchCustomers(k).then((r) => r.data)
+    : listCustomers({ size: 20 }).then((r) => r.data.content)
+  const kbPromise: Promise<{ title: string; summary: string }[]> = k
+    ? searchKnowledge(k, 10).then((hits) => hits.map((h) => ({ title: h.title, summary: h.snippet })))
+    : listKnowledgeDocs({ size: 10 }).then((p) => p.content.map((d) => ({ title: d.title, summary: (d.content ?? '').slice(0, 60) })))
+  const [c, kb] = await Promise.allSettled([customerPromise, kbPromise])
+  if (my !== searchSeq) return
+  customerItems.value = c.status === 'fulfilled' ? c.value.map(mapCustomer) : []
+  kbItems.value = kb.status === 'fulfilled'
+    ? kb.value.map((d, i) => ({
+        id: `k-${i}-${d.title}`,
+        cat: 'kb' as const,
+        title: d.title,
+        summary: d.summary,
+        path: '/ai/knowledge',
+        tag: '知识库',
+        tagStatus: 'draft' as const,
+      }))
+    : []
+}
+
+watch(keyword, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => void refreshRemote(), 250)
+})
+
+onMounted(() => {
+  void refreshRemote()
+  void (async () => {
+    const [a, o, h] = await Promise.allSettled([
+      listAppointments(),
+      listOrders({ size: 100 }),
+      getKnowledgeHot(),
+    ])
+    if (a.status === 'fulfilled') apptSource.value = a.value.data
+    if (o.status === 'fulfilled') orderSource.value = o.value.data.content ?? []
+    if (h.status === 'fulfilled' && h.value.length) hot.value = h.value
+  })()
+})
+
+const allSearchItems = computed<SearchItem[]>(() => [
+  ...customerItems.value,
+  ...apptItems.value,
+  ...orderItems.value,
+  ...kbItems.value,
+  ...dynamicItems,
+])
+
+// 关键词过滤：客户/知识库以服务端结果为准、预约/订单已在各自 computed 过滤，
+// 此处仅对「页面」类做本地标题/摘要匹配。
 const filtered = computed<SearchItem[]>(() => {
   const k = keyword.value.trim().toLowerCase()
-  return allSearchItems.filter((it) => {
+  return allSearchItems.value.filter((it) => {
     if (cat.value !== 'all' && it.cat !== cat.value) return false
-    if (!k) return true
+    if (!k || it.cat !== 'page') return true
     return it.title.toLowerCase().includes(k) || it.summary.toLowerCase().includes(k)
   })
 })
