@@ -23,7 +23,9 @@ import { REACTIVATE_STATUS, dictPill } from '@/config/dictionary'
 
 const auth = useAuthStore()
 const store = useReactivateStore()
-onMounted(() => store.seed())
+onMounted(async () => {
+  await store.seed()
+})
 
 const selectedId = ref<string | null>(null)
 const selected = computed<ReactivateCustomer | null>(() => {
@@ -93,10 +95,10 @@ function openAssign() {
   }
   showAssign.value = true
 }
-function submitAssign() {
+async function submitAssign() {
   if (!selected.value) return
-  store.assign(selected.value.id, assignForm.value.assignee, assignForm.value.channel)
-  showAssign.value = false
+  const ok = await store.assign(selected.value.id, assignForm.value.assignee, assignForm.value.channel)
+  if (ok) showAssign.value = false
 }
 
 // 回访
@@ -106,10 +108,10 @@ function openVisit() {
   visitForm.value = { result: '', recovered: false }
   showVisit.value = true
 }
-function submitVisit() {
+async function submitVisit() {
   if (!selected.value || !visitForm.value.result.trim()) return
-  store.logVisit(selected.value.id, visitForm.value.result.trim(), visitForm.value.recovered)
-  showVisit.value = false
+  const ok = await store.logVisit(selected.value.id, visitForm.value.result.trim(), visitForm.value.recovered)
+  if (ok) showVisit.value = false
 }
 </script>
 

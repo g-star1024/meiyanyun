@@ -1,11 +1,15 @@
 // ============================================================
 // Reactivate 沉睡客户唤醒 store（M2-17）
 // 覆盖沉睡名单分层（30/60/90+ 天）、指派唤醒任务、回访记录。
+// 切真：列表/指派/回访走后端，分层与状态派生由后端计算。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
-import { useAuthStore } from './auth'
+import * as reactivateApi from '@/api/reactivate'
+import { useToast } from '@/composables/useToast'
+import { useAuthStore } from '@/stores/auth'
+import { errMsg } from '@/stores/m5Coupon'
+import { useStoreContext } from '@/stores/storeContext'
 
 export type SleepTier = 'T30' | 'T60' | 'T90'
 export type ReactivateStatus = 'PENDING' | 'ASSIGNED' | 'VISITED' | 'RECOVERED'
@@ -55,19 +59,56 @@ const CHANNEL_LABEL: Record<Channel, string> = {
   SMS: '短信',
 }
 
-function tierOf(days: number): SleepTier {
-  if (days >= 90) return 'T90'
-  if (days >= 60) return 'T60'
-  return 'T30'
+function adapt(d: reactivateApi.ReactivateCustomerDto): ReactivateCustomer {
+  return {
+    id: String(d.id),
+    name: d.name,
+    level: d.level,
+    phone: d.phone,
+    lastVisitDays: d.lastVisitDays,
+    cardBalance: d.cardBalance,
+    tier: d.tier as SleepTier,
+    status: d.status as ReactivateStatus,
+    assignee: d.assignee,
+    channel: d.channel as Channel | undefined,
+    nextFollowAt: d.nextFollowAt,
+    logs: d.logs.map((l) => ({
+      id: String(l.id),
+      by: l.by,
+      at: l.at,
+      action: l.action,
+      channel: l.channel as Channel | undefined,
+      result: l.result,
+    })),
+  }
 }
 
 export const useReactivateStore = defineStore('reactivate', () => {
   const auth = useAuthStore()
-  const activity = useActivityStore()
+  const ctx = useStoreContext()
+  const toast = useToast()
 
   const customers = ref<ReactivateCustomer[]>([])
   const filterTier = ref<SleepTier | 'ALL'>('ALL')
   const filterStatus = ref<ReactivateStatus | 'ALL'>('ALL')
+
+  async function load() {
+    try {
+      const sc = ctx.currentStoreCode
+      const { data } = await reactivateApi.listReactivates({ storeCode: sc || undefined })
+      customers.value = data
+        .map(adapt)
+        .sort((a, b) => b.lastVisitDays - a.lastVisitDays)
+    } catch (e) {
+      customers.value = []
+      toast.error(errMsg(e, '沉睡客户加载失败，请稍后重试'))
+    }
+  }
+
+  async function seed() {
+    await ctx.loadStores()
+    await load()
+  }
 
   const total = computed(() => customers.value.length)
   const t30 = computed(() => customers.value.filter((c) => c.tier === 'T30').length)
@@ -91,116 +132,47 @@ export const useReactivateStore = defineStore('reactivate', () => {
     let list = customers.value
     if (filterTier.value !== 'ALL') list = list.filter((c) => c.tier === filterTier.value)
     if (filterStatus.value !== 'ALL') list = list.filter((c) => c.status === filterStatus.value)
-    return list.sort((a, b) => b.lastVisitDays - a.lastVisitDays)
+    return [...list].sort((a, b) => b.lastVisitDays - a.lastVisitDays)
   })
 
   function get(id: string) {
     return customers.value.find((c) => c.id === id)
   }
 
-  function assign(id: string, assignee: string, channel: Channel): boolean {
-    const c = customers.value.find((x) => x.id === id)
-    if (!c || !auth.can('reactivate:edit')) return false
-    c.assignee = assignee
-    c.channel = channel
-    c.status = STATUS_RANK[c.status] < STATUS_RANK.ASSIGNED ? 'ASSIGNED' : c.status
-    c.nextFollowAt = new Date(Date.now() + 2 * 86400_000).toISOString()
-    c.logs.unshift({
-      id: nextId('rlog'),
-      by: auth.user.name,
-      at: new Date().toISOString(),
-      action: `指派给 ${assignee}（${CHANNEL_LABEL[channel]}）`,
-      channel,
-    })
-    activity.log(auth.user.name, `指派唤醒任务：${c.name} → ${assignee}`, c.id)
-    return true
+  async function assign(id: string, assignee: string, channel: Channel): Promise<boolean> {
+    if (!auth.can('reactivate:edit')) {
+      toast.error('无操作权限，请联系管理员')
+      return false
+    }
+    try {
+      await reactivateApi.assignReactivate(id, { assignee, channel })
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '指派唤醒任务失败，请稍后重试'))
+      return false
+    }
   }
 
-  function logVisit(id: string, result: string, recovered: boolean): boolean {
-    const c = customers.value.find((x) => x.id === id)
-    if (!c || !auth.can('reactivate:edit')) return false
-    c.logs.unshift({
-      id: nextId('rlog'),
-      by: c.assignee || auth.user.name,
-      at: new Date().toISOString(),
-      action: recovered ? '客户已挽回' : '回访记录',
-      result,
-    })
-    if (recovered) {
-      c.status = 'RECOVERED'
-      c.lastVisitDays = 0
-    } else if (c.status !== 'RECOVERED') {
-      c.status = 'VISITED'
+  async function logVisit(id: string, result: string, recovered: boolean): Promise<boolean> {
+    if (!auth.can('reactivate:edit')) {
+      toast.error('无操作权限，请联系管理员')
+      return false
     }
-    activity.log(
-      auth.user.name,
-      recovered ? `已挽回沉睡客户 ${c.name}` : `记录回访：${c.name} - ${result}`,
-      c.id,
-    )
-    return true
-  }
-
-  // ===== 种子 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const now = new Date()
-    const hoursAgo = (h: number) => new Date(now.getTime() - h * 3600_000).toISOString()
-    const daysAgo = (d: number) => new Date(now.getTime() - d * 86400_000).toISOString()
-    type Seed = {
-      name: string; level: string; phone: string; lastVisitDays: number;
-      cardBalance: number; status: ReactivateStatus; assignee?: string; channel?: Channel;
+    try {
+      await reactivateApi.visitReactivate(id, { result, recovered })
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '记录回访失败，请稍后重试'))
+      return false
     }
-    const base: Seed[] = [
-      { name: '赵雨晴', level: '钻石', phone: '138****2041', lastVisitDays: 112, cardBalance: 18600, status: 'RECOVERED', assignee: '林微', channel: 'PHONE' },
-      { name: '孙佳宁', level: '金卡', phone: '139****6612', lastVisitDays: 95, cardBalance: 8200, status: 'ASSIGNED', assignee: '林微', channel: 'WECHAT' },
-      { name: '王晓明', level: '银卡', phone: '136****3018', lastVisitDays: 78, cardBalance: 3600, status: 'PENDING' },
-      { name: '陈美玲', level: '金卡', phone: '135****7788', lastVisitDays: 62, cardBalance: 6400, status: 'VISITED', assignee: '白桥', channel: 'WECHAT' },
-      { name: '李思琪', level: '钻石', phone: '137****9150', lastVisitDays: 45, cardBalance: 24300, status: 'ASSIGNED', assignee: '林微', channel: 'PHONE' },
-      { name: '周心怡', level: '银卡', phone: '131****2204', lastVisitDays: 38, cardBalance: 1200, status: 'PENDING' },
-      { name: '吴雅琴', level: '普通', phone: '186****5509', lastVisitDays: 35, cardBalance: 0, status: 'VISITED', assignee: '白桥', channel: 'SMS' },
-      { name: '郑雪', level: '金卡', phone: '133****8817', lastVisitDays: 41, cardBalance: 5200, status: 'PENDING' },
-    ]
-    base.forEach((s, i) => {
-      const logs: ReactivateLog[] = []
-      if (s.assignee) {
-        logs.push({
-          id: nextId('rlog'), by: '苏晴', at: daysAgo(s.lastVisitDays - 2),
-          action: `指派给 ${s.assignee}（${s.channel ? CHANNEL_LABEL[s.channel] : ''}）`,
-          channel: s.channel,
-        })
-      }
-      if (s.status === 'VISITED' || s.status === 'RECOVERED') {
-        logs.unshift({
-          id: nextId('rlog'), by: s.assignee || '系统', at: hoursAgo(i * 6 + 4),
-          action: s.status === 'RECOVERED' ? '客户已挽回' : '回访记录',
-          result: s.status === 'RECOVERED'
-            ? '客户已到店做热玛吉，充值 10000'
-            : '客户反馈近期出差，预计月底回店',
-        })
-      }
-      customers.value.push({
-        id: nextId('rc'),
-        name: s.name,
-        level: s.level,
-        phone: s.phone,
-        lastVisitDays: s.status === 'RECOVERED' ? 0 : s.lastVisitDays,
-        cardBalance: s.cardBalance,
-        tier: s.status === 'RECOVERED' ? 'T30' : tierOf(s.lastVisitDays),
-        status: s.status,
-        assignee: s.assignee,
-        channel: s.channel,
-        nextFollowAt: s.status === 'ASSIGNED' ? new Date(now.getTime() + (i + 1) * 86400_000).toISOString() : undefined,
-        logs,
-      })
-    })
   }
 
   return {
     customers, filterTier, filterStatus,
     total, t30, t90, monthRecovered, pending, assigned, filtered,
     get, assign, logVisit, seed,
-    TIER_LABEL, STATUS_LABEL, CHANNEL_LABEL,
+    TIER_LABEL, STATUS_LABEL, STATUS_RANK, CHANNEL_LABEL,
   }
 })
