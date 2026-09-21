@@ -793,6 +793,89 @@ docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
    UNION ALL SELECT 'writeoff_record(WO-SEED)='||count(*) FROM writeoff_record WHERE writeoff_id LIKE 'WO-SEED-%';"
 
 echo ""
+echo "==> B84：撞单合并演示数据（SC-M1/M2 同手机号全链路合并对 + SC-M3/M4 常态展示对）"
+# 幂等标记：customer_id LIKE 'SC-M%'，先删 8 张子表（writeoff 先于 member_card 守 card_no FK）再删 customer。
+# SC-M1(金卡,将来 master)/SC-M2(普通,同手机号 loser) 撞单对：两侧各布 tag(交集 STG01 + 各自差集)/
+#   卡/订单/预约/面诊/核销/积分流水/病历，用于演示合并后 23 表迁移 + 24 行快照 + tag 两步法 + 积分锚点续链。
+# SC-M3/SC-M4 同手机号常态对：仅 customer+tag，保持 DETECTED 供页面常态展示。
+# 全放 SST01（许店长 SE001 数据域可见）、owner SE002（林咨询）；保持 anonymized_at/merged_into 为 NULL 以命中候选。
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
+-- 幂等清理旧补数（先 merge 留痕→子表→customer；snapshot 引用 merge、merge/子表引用 customer，writeoff 经 card_no 依赖 member_card 故先于它）
+DELETE FROM customer_merge_snapshot WHERE merge_id IN (
+  SELECT merge_id FROM customer_merge WHERE master_id LIKE 'SC-M%' OR merged_id LIKE 'SC-M%');
+DELETE FROM customer_merge WHERE master_id LIKE 'SC-M%' OR merged_id LIKE 'SC-M%';
+DELETE FROM customer_tag_rel WHERE customer_id LIKE 'SC-M%';
+DELETE FROM writeoff_record WHERE customer_id LIKE 'SC-M%';
+DELETE FROM points_ledger   WHERE customer_id LIKE 'SC-M%';
+DELETE FROM emr_record      WHERE customer_id LIKE 'SC-M%';
+DELETE FROM consultation    WHERE customer_id LIKE 'SC-M%';
+DELETE FROM appointment     WHERE customer_id LIKE 'SC-M%';
+DELETE FROM txn_order       WHERE customer_id LIKE 'SC-M%';
+DELETE FROM member_card     WHERE customer_id LIKE 'SC-M%';
+DELETE FROM customer        WHERE customer_id LIKE 'SC-M%';
+
+-- ========== SC-M1（金卡，合并后 master）==========
+INSERT INTO customer (customer_id, name, phone, gender, birth_date, level, store_code, points, status, channel, owner_staff_id, total_spend, visit_count, age, created_at)
+VALUES ('SC-M1', '王演示', '13977770001', '女', '1990-03-15', '金卡', 'SST01', 1200, '活跃', 'WALK_IN', 'SE002', 36800.00, 12, 36, now() - 320 * interval '1 day');
+INSERT INTO customer_tag_rel (customer_id, tag_id) VALUES
+  ('SC-M1','STG01'), ('SC-M1','STG06'), ('SC-M1','STG02');
+INSERT INTO member_card (card_no, customer_id, card_item, total_times, remain_times, balance, status, store_code, created_at)
+VALUES ('SC-M1-C01', 'SC-M1', '抗衰年卡24次', 24, 18, 880000, '在用', 'SST01', now() - 200 * interval '1 day');
+INSERT INTO txn_order (order_no, customer_id, project, amount, contra_check, status, store_code, created_at)
+VALUES ('SC-M1-O01', 'SC-M1', '热玛吉面部抗衰', 1980000, 'GREEN', '已收款', 'SST01', now() - 150 * interval '1 day');
+INSERT INTO appointment (appt_no, customer_id, project, appt_date, appt_time, source, status, store_code, created_at)
+VALUES ('SC-M1-A01', 'SC-M1', '抗衰复查面诊', current_date + 7, '14:00', 'B端登记', '已预约', 'SST01', now() - 2 * interval '1 day');
+INSERT INTO consultation (consult_id, customer_id, scar_constitution, pregnancy, coagulation_abn, store_code, created_at)
+VALUES ('SC-M1-CO1', 'SC-M1', '否', '否', '否', 'SST01', now() - 300 * interval '1 day');
+INSERT INTO writeoff_record (writeoff_id, card_no, customer_id, store_code, project, times_used, amount, operator, created_at, status)
+VALUES ('SC-M1-W01', 'SC-M1-C01', 'SC-M1', 'SST01', '抗衰年卡24次', 1, 0, 'SE002', now() - 100 * interval '1 day', 'DONE');
+INSERT INTO points_ledger (customer_id, change_amt, balance_after, reason, created_at) VALUES
+  ('SC-M1', 700, 700,  '开卡赠积分', now() - 200 * interval '1 day'),
+  ('SC-M1', 500, 1200, '消费赠积分', now() - 150 * interval '1 day');
+INSERT INTO emr_record (emr_no, customer_id, customer_name, type, status, store_code, created_by, visit_date, version, created_at, updated_at)
+VALUES ('SC-M1-E01', 'SC-M1', '王演示', 'FIRST_VISIT', 'SIGNED', 'SST01', 'SE003', current_date - 300, 1, now() - 300 * interval '1 day', now() - 300 * interval '1 day');
+
+-- ========== SC-M2（普通，同手机号撞单 loser）==========
+INSERT INTO customer (customer_id, name, phone, gender, birth_date, level, store_code, points, status, channel, owner_staff_id, total_spend, visit_count, age, created_at)
+VALUES ('SC-M2', '王演', '13977770001', '女', '1990-03-15', '普通', 'SST01', 150, '活跃', 'REFERRAL', 'SE002', 5800.00, 2, 36, now() - 40 * interval '1 day');
+INSERT INTO customer_tag_rel (customer_id, tag_id) VALUES
+  ('SC-M2','STG01'), ('SC-M2','STG03');
+INSERT INTO member_card (card_no, customer_id, card_item, total_times, remain_times, balance, status, store_code, created_at)
+VALUES ('SC-M2-C01', 'SC-M2', '新人体验卡3次', 3, 1, 0, '在用', 'SST01', now() - 35 * interval '1 day');
+INSERT INTO txn_order (order_no, customer_id, project, amount, contra_check, status, store_code, created_at)
+VALUES ('SC-M2-O01', 'SC-M2', '小气泡深层清洁', 39800, 'GREEN', '已核销', 'SST01', now() - 30 * interval '1 day');
+INSERT INTO appointment (appt_no, customer_id, project, appt_date, appt_time, source, status, store_code, created_at)
+VALUES ('SC-M2-A01', 'SC-M2', '小气泡清洁', current_date - 30, '10:30', 'C端小程序', '已到店', 'SST01', now() - 32 * interval '1 day');
+INSERT INTO consultation (consult_id, customer_id, scar_constitution, pregnancy, coagulation_abn, store_code, created_at)
+VALUES ('SC-M2-CO1', 'SC-M2', '否', '否', '否', 'SST01', now() - 38 * interval '1 day');
+INSERT INTO writeoff_record (writeoff_id, card_no, customer_id, store_code, project, times_used, amount, operator, created_at, status)
+VALUES ('SC-M2-W01', 'SC-M2-C01', 'SC-M2', 'SST01', '新人体验卡3次', 1, 0, 'SE002', now() - 30 * interval '1 day', 'DONE');
+INSERT INTO points_ledger (customer_id, change_amt, balance_after, reason, created_at) VALUES
+  ('SC-M2', 150, 150, '新客注册赠积分', now() - 40 * interval '1 day');
+INSERT INTO emr_record (emr_no, customer_id, customer_name, type, status, store_code, created_by, visit_date, version, created_at, updated_at)
+VALUES ('SC-M2-E01', 'SC-M2', '王演', 'FIRST_VISIT', 'SIGNED', 'SST01', 'SE003', current_date - 38, 1, now() - 38 * interval '1 day', now() - 38 * interval '1 day');
+
+-- ========== SC-M3/SC-M4（同手机号常态展示对，轻量仅 customer+tag）==========
+INSERT INTO customer (customer_id, name, phone, gender, birth_date, level, store_code, points, status, channel, owner_staff_id, total_spend, visit_count, age, created_at) VALUES
+  ('SC-M3', '李常态', '13977770002', '女', '1988-07-22', '银卡', 'SST01', 300, '活跃', 'WECHAT', 'SE002', 12600.00, 5, 38, now() - 180 * interval '1 day'),
+  ('SC-M4', '李常',   '13977770002', '女', '1988-07-22', '普通', 'SST01',  80, '活跃', 'DOUYIN', 'SE002',  2200.00, 1, 38, now() - 60  * interval '1 day');
+INSERT INTO customer_tag_rel (customer_id, tag_id) VALUES
+  ('SC-M3','STG05'), ('SC-M4','STG05');
+SQL
+
+echo "    撞单合并演示数据已灌入（SC-M1/M2 全链路合并对 + SC-M3/M4 常态对）"
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
+  "SELECT 'customer(SC-M)='||count(*) FROM customer WHERE customer_id LIKE 'SC-M%'
+   UNION ALL SELECT 'tag_rel(SC-M)='||count(*) FROM customer_tag_rel WHERE customer_id LIKE 'SC-M%'
+   UNION ALL SELECT 'member_card(SC-M)='||count(*) FROM member_card WHERE customer_id LIKE 'SC-M%'
+   UNION ALL SELECT 'txn_order(SC-M)='||count(*) FROM txn_order WHERE customer_id LIKE 'SC-M%'
+   UNION ALL SELECT 'appointment(SC-M)='||count(*) FROM appointment WHERE customer_id LIKE 'SC-M%'
+   UNION ALL SELECT 'consultation(SC-M)='||count(*) FROM consultation WHERE customer_id LIKE 'SC-M%'
+   UNION ALL SELECT 'writeoff(SC-M)='||count(*) FROM writeoff_record WHERE customer_id LIKE 'SC-M%'
+   UNION ALL SELECT 'points_ledger(SC-M)='||count(*) FROM points_ledger WHERE customer_id LIKE 'SC-M%'
+   UNION ALL SELECT 'emr_record(SC-M)='||count(*) FROM emr_record WHERE customer_id LIKE 'SC-M%';"
+
+echo ""
 echo "==> [可选] 若 seed 联调栈 org-service 在运行，重启它以触发 RBAC 启动播种"
 # reset 会 TRUNCATE staff/role_def 并重灌不含登录凭证的 01_master.sql；
 # 登录凭证（login_name/password_hash=meiyun123）、SE101-SE105/E001-E014 演示员工、
