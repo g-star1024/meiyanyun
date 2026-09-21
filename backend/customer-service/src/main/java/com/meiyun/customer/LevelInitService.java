@@ -40,7 +40,7 @@ public class LevelInitService {
 
     /** 幂等补种：返回本轮实际新增的 LEVEL_INIT 行数（0=已全部有基线/无客户）。 */
     public int ensureInitialized() {
-        List<Customer> all = customerRepo.findAll();
+        List<Customer> all = customerRepo.findAllByMergedIntoIsNull();
         if (all.isEmpty()) return 0;
 
         List<String> allIds = all.stream().map(Customer::getCustomerId).toList();

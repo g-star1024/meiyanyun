@@ -124,11 +124,11 @@ public class CustomerService {
     }
 
     public List<Customer> listCustomers(String storeCode, String level, String status) {
-        if (level != null && storeCode != null) return customerRepo.findByLevelAndStoreCode(level, storeCode);
-        if (storeCode != null) return customerRepo.findByStoreCode(storeCode);
-        if (level != null) return customerRepo.findByLevel(level);
-        if (status != null) return customerRepo.findByStatus(status);
-        return customerRepo.findAll();
+        if (level != null && storeCode != null) return customerRepo.findByLevelAndStoreCodeAndMergedIntoIsNull(level, storeCode);
+        if (storeCode != null) return customerRepo.findByStoreCodeAndMergedIntoIsNull(storeCode);
+        if (level != null) return customerRepo.findByLevelAndMergedIntoIsNull(level);
+        if (status != null) return customerRepo.findByStatusAndMergedIntoIsNull(status);
+        return customerRepo.findAllByMergedIntoIsNull();
     }
 
     /**
@@ -144,6 +144,8 @@ public class CustomerService {
         boolean showPhone = DataScope.hasPerm("customer:phone:decrypt");
         Specification<Customer> spec = (root, q, cb) -> {
             List<Predicate> ps = new ArrayList<>();
+            // 已合并档案（merged_into 非空）不再出现于列表：数据已并入 master，仅 id 直连详情留痕可访问
+            ps.add(cb.isNull(root.get("mergedInto")));
             if (storeCode != null) ps.add(cb.equal(root.get("storeCode"), storeCode));
             if (level != null) ps.add(cb.equal(root.get("level"), level));
             if (status != null) ps.add(cb.equal(root.get("status"), status));
@@ -374,8 +376,8 @@ public class CustomerService {
 
         // 撞单：同门店同手机号拒绝（公海客户全局查重），提示已有客户号
         Optional<Customer> dup = storeCode != null
-                ? customerRepo.findFirstByStoreCodeAndPhone(storeCode, phone)
-                : customerRepo.findFirstByStoreCodeIsNullAndPhone(phone);
+                ? customerRepo.findFirstByStoreCodeAndPhoneAndMergedIntoIsNull(storeCode, phone)
+                : customerRepo.findFirstByStoreCodeIsNullAndPhoneAndMergedIntoIsNull(phone);
         if (dup.isPresent()) {
             throw new BadReq("该手机号已建档（客户号 " + dup.get().getCustomerId() + "），请勿重复新建");
         }
@@ -799,7 +801,7 @@ public class CustomerService {
      */
     @Transactional
     public synchronized AutoUpgradeResult autoUpgrade() {
-        List<Customer> all = customerRepo.findAll();
+        List<Customer> all = customerRepo.findAllByMergedIntoIsNull();
         if (all.isEmpty()) return new AutoUpgradeResult(java.time.YearMonth.now(BJ).minusMonths(1).toString(),
                 0, List.of());
         String closedMonth = java.time.YearMonth.now(BJ).minusMonths(1).toString();
@@ -902,7 +904,7 @@ public class CustomerService {
                     : LEVEL_THRESHOLD.getOrDefault(lv.getLevel(), BigDecimal.ZERO));
         }
 
-        List<Customer> candidates = customerRepo.findAll().stream()
+        List<Customer> candidates = customerRepo.findAllByMergedIntoIsNull().stream()
                 .filter(c -> {
                     Integer o = order.get(c.getLevel());
                     return o != null && o > 1;

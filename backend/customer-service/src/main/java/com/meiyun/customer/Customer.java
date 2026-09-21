@@ -118,6 +118,16 @@ public class Customer {
     @Column(name = "consent_withdrawn_at")
     private OffsetDateTime consentWithdrawnAt;
 
+    // ---- 撞单合并溯源（P5-B84：被合并档案指向主档案；NULL=正常档案。不加物理 FK，走逻辑引用＋读侧过滤） ----
+
+    /** 被合并后指向主档案 customer_id；NULL=正常档案。 */
+    @Column(name = "merged_into", length = 16)
+    private String mergedInto;
+
+    /** 合并执行时间。 */
+    @Column(name = "merged_at")
+    private OffsetDateTime mergedAt;
+
     @PrePersist
     void prePersist() {
         if (createdAt == null) createdAt = OffsetDateTime.now();

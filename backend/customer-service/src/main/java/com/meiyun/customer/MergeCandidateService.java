@@ -35,10 +35,13 @@ public class MergeCandidateService {
     private static final Pattern CC_86_PREFIX = Pattern.compile("^\\+?86");
 
     private final CustomerRepository customerRepo;
+    private final CustomerMergeRepository mergeRepo;
     private final RefNameResolver nameResolver;
 
-    public MergeCandidateService(CustomerRepository customerRepo, RefNameResolver nameResolver) {
+    public MergeCandidateService(CustomerRepository customerRepo, CustomerMergeRepository mergeRepo,
+                                 RefNameResolver nameResolver) {
         this.customerRepo = customerRepo;
+        this.mergeRepo = mergeRepo;
         this.nameResolver = nameResolver;
     }
 
@@ -64,6 +67,11 @@ public class MergeCandidateService {
                     DuplicatePhoneRow b = group.get(j);
                     if (!DataScope.canReadOwned(a.getStoreCode(), a.getOwnerStaffId())
                             || !DataScope.canReadOwned(b.getStoreCode(), b.getOwnerStaffId())) {
+                        continue;
+                    }
+                    // 已标记「非重复档案」的 pair（双向 (A,B)/(B,A) 均排）不再出现于候选
+                    if (mergeRepo.existsPairWithStatus(a.getCustomerId(), b.getCustomerId(),
+                            CustomerMerge.STATUS_NOT_DUPLICATE)) {
                         continue;
                     }
                     pairs.add(toPair(groupType, a, b));

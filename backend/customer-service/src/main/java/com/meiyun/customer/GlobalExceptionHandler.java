@@ -2,6 +2,7 @@ package com.meiyun.customer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -33,6 +34,14 @@ public class GlobalExceptionHandler {
     public ResponseEntity<Map<String, Object>> customerConflict(CustomerService.Conflict ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(Map.of("code", "CONFLICT", "message", ex.getMessage()));
+    }
+
+    /** 唯一约束竞态（如并发下同 idemKey 提交撞 uq_customer_merge_idem）→ 干净 409 而非裸 500。 */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<Map<String, Object>> dataConflict(DataIntegrityViolationException ex) {
+        log.warn("数据完整性冲突：{}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(Map.of("code", "CONFLICT", "message", "数据冲突：请勿重复提交"));
     }
 
     /** 客户域：库存/积分不足等业务不可处理 → 422 中文（区别于参数格式错误 400）。 */

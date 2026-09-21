@@ -168,9 +168,9 @@ public class CustomerSearchService {
         }
     }
 
-    /** 全量重建索引：把 PG 所有客户灌入 ES。返回已索引文档数（ES 不可用时不抛异常，返回库内条数）。 */
+    /** 全量重建索引：把 PG 活跃客户（未合并）灌入 ES。返回已索引文档数（ES 不可用时不抛异常，返回库内条数）。 */
     public int reindexAll() {
-        List<Customer> all = customerRepo.findAll();
+        List<Customer> all = customerRepo.findAllByMergedIntoIsNull();
         if (all.isEmpty()) return 0;
         try {
             StringBuilder nd = new StringBuilder();
@@ -214,7 +214,7 @@ public class CustomerSearchService {
      * ES 不可达时抛 IllegalStateException（调用方转 503）——对账必须读真 ES，不静默降级。
      */
     public ReconcileResult reconcile() {
-        List<Customer> all = customerRepo.findAll();
+        List<Customer> all = customerRepo.findAllByMergedIntoIsNull();
         Set<String> esIds = fetchAllEsIds();
         Set<String> pgIds = new HashSet<>();
         List<String> missing = new ArrayList<>();
@@ -229,6 +229,14 @@ public class CustomerSearchService {
         List<String> orphan = new ArrayList<>();
         for (String id : esIds) {
             if (!pgIds.contains(id)) orphan.add(id);
+        }
+        // orphan 中 PG 侧存在但已合并（merged_into 非空）的 loser 文档：权威源明确已下线，自动删除使索引收敛
+        for (String id : new ArrayList<>(orphan)) {
+            Customer c = customerRepo.findById(id).orElse(null);
+            if (c != null && c.getMergedInto() != null && deleteFromEs(id)) {
+                orphan.remove(id);
+                fixed++;
+            }
         }
         missing.sort(null);
         orphan.sort(null);
@@ -268,10 +276,11 @@ public class CustomerSearchService {
         if (isCircuitOpen()) return dbFallback(q);
         try {
             ObjectNode body = json.createObjectNode();
-            ObjectNode query = body.putObject("query");
-            ObjectNode multi = query.putObject("multi_match");
+            ObjectNode bool = body.putObject("query").putObject("bool");
+            ObjectNode multi = bool.putObject("must").putObject("multi_match");
             multi.put("query", q);
             multi.set("fields", json.valueToTree(List.of("name^2", "phone", "customerId")));
+            bool.putObject("must_not").putObject("exists").put("field", "mergedInto");
             body.put("size", SEARCH_LIMIT);
             HttpRequest req = HttpRequest.newBuilder()
                     .uri(URI.create(esEndpoint + "/" + INDEX + "/_search"))
@@ -301,7 +310,7 @@ public class CustomerSearchService {
     /** 读时合并：最近建档的 PG 客户若命中关键字且不在 ES 结果中则补入（覆盖中继秒级延迟）。 */
     private void mergeRecentFromDb(Set<String> ids, String q) {
         String k = q.toLowerCase();
-        for (Customer c : customerRepo.findTop200ByOrderByCreatedAtDesc()) {
+        for (Customer c : customerRepo.findTop200ByMergedIntoIsNullOrderByCreatedAtDesc()) {
             if (ids.contains(c.getCustomerId())) continue;
             if (matches(c, q, k)) ids.add(c.getCustomerId());
         }
@@ -311,7 +320,7 @@ public class CustomerSearchService {
     private List<String> dbFallback(String q) {
         String k = q.trim().toLowerCase();
         List<String> ids = new ArrayList<>();
-        for (Customer c : customerRepo.findAll()) {
+        for (Customer c : customerRepo.findAllByMergedIntoIsNull()) {
             if (matches(c, q.trim(), k)) {
                 ids.add(c.getCustomerId());
                 if (ids.size() >= SEARCH_LIMIT) break;
@@ -326,6 +335,22 @@ public class CustomerSearchService {
                 || (c.getCustomerId() != null && c.getCustomerId().toLowerCase().contains(lowerQ));
     }
 
+    /** 删除 ES 文档（已合并 loser 对账自动收敛用）；删除成功或文档本不存在均返回 true，ES 异常返回 false 留待下轮。 */
+    private boolean deleteFromEs(String customerId) {
+        try {
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(esEndpoint + "/" + INDEX + "/_doc/" + customerId))
+                    .DELETE()
+                    .timeout(Duration.ofSeconds(5))
+                    .build();
+            HttpResponse<String> resp = sendRaw(req);
+            return resp.statusCode() == 200 || resp.statusCode() == 404;
+        } catch (Exception e) {
+            log.warn("ES 删除文档失败 customerId={}：{}", customerId, e.getMessage());
+            return false;
+        }
+    }
+
     private ObjectNode toDoc(Customer c) {
         ObjectNode doc = json.createObjectNode();
         doc.put("customerId", c.getCustomerId());
@@ -335,6 +360,10 @@ public class CustomerSearchService {
         doc.put("storeCode", c.getStoreCode());
         doc.put("status", c.getStatus());
         doc.put("points", c.getPoints() == null ? 0 : c.getPoints());
+        // 已合并 loser 档案打标：ES 查询 must_not exists 过滤（ES 不索引 null，活跃文档不写该字段即视为活跃）
+        if (c.getMergedInto() != null) {
+            doc.put("mergedInto", c.getMergedInto());
+        }
         return doc;
     }
 

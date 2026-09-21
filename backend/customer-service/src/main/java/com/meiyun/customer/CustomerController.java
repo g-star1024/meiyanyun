@@ -486,6 +486,7 @@ public class CustomerController {
     public List<Customer> search(@RequestParam String q) {
         List<String> ids = searchService.search(q);
         return customerRepo.findAllById(ids).stream()
+                .filter(c -> c.getMergedInto() == null)
                 .filter(c -> DataScope.canReadOwned(c.getStoreCode(), c.getOwnerStaffId()))
                 .toList();
     }

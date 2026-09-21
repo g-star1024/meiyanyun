@@ -103,10 +103,10 @@ public class InternalCardController {
         String p = phone.trim();
         Customer c = null;
         if (storeCode != null && !storeCode.isBlank()) {
-            c = customerRepo.findFirstByStoreCodeAndPhone(storeCode.trim(), p).orElse(null);
+            c = customerRepo.findFirstByStoreCodeAndPhoneAndMergedIntoIsNull(storeCode.trim(), p).orElse(null);
         }
         if (c == null) {
-            c = customerRepo.findFirstByStoreCodeIsNullAndPhone(p).orElse(null);
+            c = customerRepo.findFirstByStoreCodeIsNullAndPhoneAndMergedIntoIsNull(p).orElse(null);
         }
         if (c == null) {
             throw new CardLedgerService.NotFound("手机号未匹配到客户: " + CustomerService.maskPhone(p, false));
