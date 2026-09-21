@@ -20,7 +20,7 @@ import { HANDOVER_STATUS, dictPill } from '@/config/dictionary'
 import { shDateStr } from '@/utils/datetime'
 
 const handover = useHandoverStore()
-onMounted(() => handover.seed())
+onMounted(() => { void handover.fetch() })
 
 type Tab = 'SUBMITTED' | 'DRAFT' | 'CONFIRMED'
 const tab = ref<Tab>('SUBMITTED')
@@ -104,10 +104,10 @@ watch(
   },
   { immediate: true },
 )
-function saveDraft() {
+async function saveDraft() {
   if (!selected.value) return
   selectedId.value = selected.value.id
-  handover.updateDraft(selected.value.id, {
+  await handover.updateDraft(selected.value.id, {
     revenueAmount: Number(form.value.revenue) || 0,
     orderCount: Number(form.value.orders) || 0,
     arrivalCount: Number(form.value.arrivals) || 0,
@@ -117,43 +117,43 @@ function saveDraft() {
     toName: form.value.toName.trim(),
   })
 }
-function addTodoItem() {
+async function addTodoItem() {
   if (!selected.value || !newTodo.value.content.trim()) return
   selectedId.value = selected.value.id
-  handover.addTodo(selected.value.id, {
+  const ok = await handover.addTodo(selected.value.id, {
     kind: newTodo.value.kind,
     content: newTodo.value.content.trim(),
     urgent: newTodo.value.urgent,
   })
-  newTodo.value = { kind: 'CUSTOMER', content: '', urgent: false }
+  if (ok) newTodo.value = { kind: 'CUSTOMER', content: '', urgent: false }
 }
-function removeTodoItem(todoId: string) {
+async function removeTodoItem(todoId: string) {
   if (!selected.value) return
-  handover.removeTodo(selected.value.id, todoId)
+  await handover.removeTodo(selected.value.id, todoId)
 }
-function toggleTodoItem(todoId: string) {
+async function toggleTodoItem(todoId: string) {
   if (!selected.value) return
-  handover.toggleTodo(selected.value.id, todoId)
+  await handover.toggleTodo(selected.value.id, todoId)
 }
-function doSubmit() {
+async function doSubmit() {
   if (!selected.value || !form.value.toName.trim()) return
-  saveDraft()
+  await saveDraft()
   selectedId.value = selected.value.id
-  handover.submit(selected.value.id)
+  await handover.submit(selected.value.id)
 }
 
 // ---- 接班确认 ----
-function doConfirm() {
+async function doConfirm() {
   if (!selected.value) return
   selectedId.value = selected.value.id
-  handover.confirm(selected.value.id, confirmNote.value)
-  confirmNote.value = ''
+  const ok = await handover.confirm(selected.value.id, confirmNote.value)
+  if (ok) confirmNote.value = ''
 }
-function doSendBack() {
+async function doSendBack() {
   if (!selected.value || !sendBackReason.value.trim()) return
   selectedId.value = selected.value.id
-  handover.sendBack(selected.value.id, sendBackReason.value.trim())
-  showSendBack.value = false; sendBackReason.value = ''
+  const ok = await handover.sendBack(selected.value.id, sendBackReason.value.trim())
+  if (ok) { showSendBack.value = false; sendBackReason.value = '' }
 }
 
 // ---- 新建交接单 ----
@@ -163,11 +163,11 @@ const newHo = ref({
   date: shDateStr(),
   toName: '',
 })
-function createHo() {
+async function createHo() {
   if (!newHo.value.toName.trim()) return
-  const h = handover.create({
+  const h = await handover.create({
     shift: newHo.value.shift,
-    date: new Date(newHo.value.date).toISOString(),
+    date: newHo.value.date,
     toName: newHo.value.toName.trim(),
   })
   if (h) {

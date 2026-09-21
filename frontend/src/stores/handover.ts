@@ -1,16 +1,25 @@
 // ============================================================
-// Handover 聚合 store（交接班 / 双签交接）
+// Handover 聚合 store（交接班 / 双签交接）—— B83 卡2 L118 切真
+// 数据源：store-service /api/stores/handovers（HandoverController）。
 // 状态机：DRAFT（交班人填写中）→ SUBMITTED（已提交待接班确认）→ CONFIRMED（接班人已确认）。
 // - 一笔交接单承载本班营收汇总、待跟进客户、未完成事项、重要提醒、钱款/设备交接。
 // - 交班人提交即锁定内容，接班人确认后形成双签留痕（submittedAt / confirmedAt + 操作人）。
-// - 接班人可在确认时填写备注；CONFIRMED 后不可再改。
+// - 接班人可在确认时填写备注；CONFIRMED 后不可再改，仅可勾选跟进事项。
 // 权限：handover:create 建单/提交 / handover:edit 接班确认。
+// 适配层：后端 id(number)/金额(分)/UTC 时间 → 页面契约 id(string)/金额(元)/上海朴素 ISO。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { errMsg } from './m5Coupon'
+import { useToast } from '@/composables/useToast'
 import { shDateStr } from '@/utils/datetime'
+import {
+  listHandovers, createHandover, updateHandoverDraft,
+  addHandoverTodo, removeHandoverTodo, toggleHandoverTodo,
+  submitHandover, confirmHandover, sendBackHandover,
+  type HandoverDTO,
+} from '@/api/handover'
 
 export type HandoverShift = 'MORNING' | 'EVENING' | 'FULL'
 export type HandoverStatus = 'DRAFT' | 'SUBMITTED' | 'CONFIRMED'
@@ -74,21 +83,49 @@ const TODO_KIND_LABEL: Record<HandoverTodo['kind'], string> = {
   CUSTOMER: '客户跟进', TASK: '待办事务', ISSUE: '异常处理',
 }
 
-const TRANSITIONS: Record<HandoverStatus, HandoverStatus[]> = {
-  DRAFT: ['SUBMITTED'],
-  SUBMITTED: ['CONFIRMED', 'DRAFT'], // 接班人可退回让交班人补充
-  CONFIRMED: [],
+/** 后端时间（UTC ISO 或 jsonb epoch 秒）→ 上海时区朴素 ISO（供页面切片格式化） */
+function toShLocalIso(v: string | number | null | undefined): string | undefined {
+  if (v == null || v === '') return undefined
+  const d = typeof v === 'number' ? new Date(v * 1000) : new Date(v)
+  if (Number.isNaN(d.getTime())) return undefined
+  return d.toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai', hour12: false }).replace(' ', 'T')
 }
-function canTransit(from: HandoverStatus, to: HandoverStatus): boolean {
-  return TRANSITIONS[from]?.includes(to) ?? false
+
+function mapDto(d: HandoverDTO): Handover {
+  return {
+    id: String(d.id),
+    handoverNo: d.handoverNo,
+    shift: d.shift,
+    date: d.date,
+    status: d.status,
+    fromName: d.fromName,
+    toName: d.toName,
+    revenueAmount: (d.revenueAmount ?? 0) / 100,
+    orderCount: d.orderCount ?? 0,
+    arrivalCount: d.arrivalCount ?? 0,
+    todos: (d.todos ?? []).map((t) => ({
+      id: String(t.id), kind: t.kind, content: t.content, urgent: t.urgent, done: t.done,
+    })),
+    importantNote: d.importantNote || undefined,
+    cashNote: d.cashNote || undefined,
+    equipmentNote: d.equipmentNote || undefined,
+    confirmNote: d.confirmNote || undefined,
+    submittedAt: toShLocalIso(d.submittedAt),
+    confirmedAt: toShLocalIso(d.confirmedAt),
+    createdAt: toShLocalIso(d.createdAt) ?? '',
+    timeline: (d.timeline ?? []).map((t) => ({
+      at: toShLocalIso(t.at) ?? '', by: t.by, action: t.action, detail: t.detail,
+    })),
+  }
 }
 
 export const useHandoverStore = defineStore('handover', () => {
   const auth = useAuthStore()
-  const activity = useActivityStore()
+  const toast = useToast()
 
   const handovers = ref<Handover[]>([])
-  let seq = 0
+  const loading = ref(false)
+  let fetched = false
 
   const drafts = computed(() => handovers.value.filter((h) => h.status === 'DRAFT'))
   const submitted = computed(() => handovers.value.filter((h) => h.status === 'SUBMITTED'))
@@ -109,218 +146,159 @@ export const useHandoverStore = defineStore('handover', () => {
     return handovers.value.find((h) => h.id === id)
   }
 
-  function pushTimeline(h: Handover, action: string, detail?: string) {
-    h.timeline.push({ at: new Date().toISOString(), by: auth.user.name, action, detail })
+  function replace(h: Handover) {
+    const i = handovers.value.findIndex((x) => x.id === h.id)
+    if (i >= 0) handovers.value.splice(i, 1, h)
+    else handovers.value.unshift(h)
+  }
+
+  /** 拉取本店交接班列表（幂等，重复进入页面强制刷新） */
+  async function fetch(force = true) {
+    if (fetched && !force) return
+    loading.value = true
+    try {
+      const { data } = await listHandovers()
+      handovers.value = data.map(mapDto)
+      fetched = true
+    } catch (e) {
+      toast.error(errMsg(e, '交接班列表加载失败'))
+    } finally {
+      loading.value = false
+    }
   }
 
   /** 创建交接班草稿 */
-  function create(input: {
+  async function create(input: {
     shift: HandoverShift
     date: string
     toName: string
-    revenueAmount?: number
-    orderCount?: number
-    arrivalCount?: number
-  }): Handover | null {
+  }): Promise<Handover | null> {
     if (!auth.can('handover:create')) {
       console.warn('[handover] 无 handover:create 权限')
       return null
     }
-    seq += 1
-    const now = new Date().toISOString()
-    const h: Handover = {
-      id: nextId('ho'),
-      handoverNo: `HJ${input.date.replace(/-/g, '').slice(2)}${seq}`,
-      shift: input.shift,
-      date: input.date,
-      status: 'DRAFT',
-      fromName: auth.user.name,
-      toName: input.toName,
-      revenueAmount: input.revenueAmount ?? 0,
-      orderCount: input.orderCount ?? 0,
-      arrivalCount: input.arrivalCount ?? 0,
-      todos: [],
-      timeline: [{ at: now, by: auth.user.name, action: '创建交接单' }],
-      createdAt: now,
+    try {
+      const { data } = await createHandover({
+        shift: input.shift,
+        date: input.date.slice(0, 10),
+        toName: input.toName,
+      })
+      const h = mapDto(data)
+      replace(h)
+      return h
+    } catch (e) {
+      toast.error(errMsg(e, '创建交接班单失败'))
+      return null
     }
-    handovers.value.unshift(h)
-    activity.log(auth.user.name, `创建交接班单 ${h.handoverNo}（${SHIFT_LABEL[h.shift]}）`, h.id)
-    return h
   }
 
-  /** 更新草稿内容（仅 DRAFT 可编辑） */
-  function updateDraft(
+  /** 更新草稿内容（仅 DRAFT 可编辑；金额元→分） */
+  async function updateDraft(
     id: string,
     patch: Partial<Pick<Handover, 'revenueAmount' | 'orderCount' | 'arrivalCount' | 'importantNote' | 'cashNote' | 'equipmentNote' | 'toName'>>,
-  ): boolean {
-    const h = handovers.value.find((x) => x.id === id)
-    if (!h || h.status !== 'DRAFT') return false
+  ): Promise<boolean> {
     if (!auth.can('handover:create')) return false
-    Object.assign(h, patch)
-    return true
+    try {
+      const { data } = await updateHandoverDraft(Number(id), {
+        toName: patch.toName,
+        revenueAmount: patch.revenueAmount == null ? undefined : Math.round(patch.revenueAmount * 100),
+        orderCount: patch.orderCount,
+        arrivalCount: patch.arrivalCount,
+        importantNote: patch.importantNote,
+        cashNote: patch.cashNote,
+        equipmentNote: patch.equipmentNote,
+      })
+      replace(mapDto(data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '保存草稿失败'))
+      return false
+    }
   }
 
   /** 添加待跟进事项（仅 DRAFT） */
-  function addTodo(id: string, todo: Omit<HandoverTodo, 'id' | 'done'>): boolean {
-    const h = handovers.value.find((x) => x.id === id)
-    if (!h || h.status !== 'DRAFT') return false
+  async function addTodo(id: string, todo: Omit<HandoverTodo, 'id' | 'done'>): Promise<boolean> {
     if (!auth.can('handover:create')) return false
-    h.todos.push({ ...todo, id: nextId('todo'), done: false })
-    return true
-  }
-  function removeTodo(id: string, todoId: string): boolean {
-    const h = handovers.value.find((x) => x.id === id)
-    if (!h || h.status !== 'DRAFT') return false
-    if (!auth.can('handover:create')) return false
-    h.todos = h.todos.filter((t) => t.id !== todoId)
-    return true
-  }
-  /** 接班人勾选已跟进事项（SUBMITTED/CONFIRMED 可操作） */
-  function toggleTodo(id: string, todoId: string): boolean {
-    const h = handovers.value.find((x) => x.id === id)
-    if (!h || h.status === 'DRAFT') return false
-    const t = h.todos.find((x) => x.id === todoId)
-    if (!t) return false
-    t.done = !t.done
-    return true
+    try {
+      const { data } = await addHandoverTodo(Number(id), todo)
+      replace(mapDto(data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '添加待办失败'))
+      return false
+    }
   }
 
-  /** 交班人提交：DRAFT → SUBMITTED（必须有接班人） */
-  function submit(id: string): boolean {
-    const h = handovers.value.find((x) => x.id === id)
-    if (!h || !canTransit(h.status, 'SUBMITTED')) return false
+  async function removeTodo(id: string, todoId: string): Promise<boolean> {
     if (!auth.can('handover:create')) return false
-    if (!h.toName.trim()) return false
-    const now = new Date().toISOString()
-    h.status = 'SUBMITTED'
-    h.submittedAt = now
-    pushTimeline(h, '交班人提交', `${auth.user.name} → ${h.toName}`)
-    activity.log(auth.user.name, `交接班单 ${h.handoverNo} 已提交，待 ${h.toName} 确认`, h.id)
-    return true
+    try {
+      const { data } = await removeHandoverTodo(Number(id), Number(todoId))
+      replace(mapDto(data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '移除待办失败'))
+      return false
+    }
+  }
+
+  /** 接班人勾选已跟进事项（仅 CONFIRMED） */
+  async function toggleTodo(id: string, todoId: string): Promise<boolean> {
+    if (!auth.can('handover:edit')) return false
+    try {
+      const { data } = await toggleHandoverTodo(Number(id), Number(todoId))
+      replace(mapDto(data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '勾选失败'))
+      return false
+    }
+  }
+
+  /** 交班人提交：DRAFT → SUBMITTED */
+  async function submit(id: string): Promise<boolean> {
+    if (!auth.can('handover:create')) return false
+    try {
+      const { data } = await submitHandover(Number(id))
+      replace(mapDto(data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '提交失败'))
+      return false
+    }
   }
 
   /** 接班人确认：SUBMITTED → CONFIRMED（双签完成） */
-  function confirm(id: string, note?: string): boolean {
-    const h = handovers.value.find((x) => x.id === id)
-    if (!h || !canTransit(h.status, 'CONFIRMED')) return false
+  async function confirm(id: string, note?: string): Promise<boolean> {
     if (!auth.can('handover:edit')) {
       console.warn('[handover] 无 handover:edit 权限')
       return false
     }
-    const now = new Date().toISOString()
-    h.status = 'CONFIRMED'
-    h.confirmedAt = now
-    h.confirmNote = note?.trim() || undefined
-    pushTimeline(h, '接班人确认接收', note)
-    activity.log(auth.user.name, `交接班单 ${h.handoverNo} 已由 ${auth.user.name} 确认，双签完成`, h.id)
-    return true
+    try {
+      const { data } = await confirmHandover(Number(id), note?.trim() || undefined)
+      replace(mapDto(data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '确认接收失败'))
+      return false
+    }
   }
 
   /** 退回补充：SUBMITTED → DRAFT（接班人退回交班人修改） */
-  function sendBack(id: string, reason: string): boolean {
-    const h = handovers.value.find((x) => x.id === id)
-    if (!h || !canTransit(h.status, 'DRAFT')) return false
+  async function sendBack(id: string, reason: string): Promise<boolean> {
     if (!auth.can('handover:edit')) return false
-    h.status = 'DRAFT'
-    h.submittedAt = undefined
-    pushTimeline(h, '退回补充', reason)
-    activity.log(auth.user.name, `交接班单 ${h.handoverNo} 退回补充：${reason}`, h.id)
-    return true
-  }
-
-  /** 开发期种子 */
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const today = shDateStr()
-    const yesterday = shDateStr(new Date(Date.now() - 86400000))
-
-    const seedDefs: Array<{
-      shift: HandoverShift; date: string; status: HandoverStatus
-      fromName: string; toName: string
-      revenue: number; orders: number; arrivals: number
-      todos: Array<Omit<HandoverTodo, 'id'>>
-      importantNote?: string; cashNote?: string; equipmentNote?: string
-      confirmNote?: string
-    }> = [
-      {
-        shift: 'MORNING', date: today, status: 'SUBMITTED',
-        fromName: '夏沫（前台）', toName: '苏晴（店长）',
-        revenue: 12680, orders: 9, arrivals: 14,
-        importantNote: '王美丽光子嫩肤后轻微泛红，已安抚并约周三复诊；VIP 陈思到店需优先安排顾医生。',
-        cashNote: '收银现金 ¥2,300 已投保险柜，备用金 ¥500 留存。',
-        equipmentNote: '2 号治疗室冰敷仪故障，已贴停用标签并报工程。',
-        todos: [
-          { kind: 'CUSTOMER', content: '赵敏热玛吉疗程第 2 次，确认明日到店时间', urgent: true, done: false },
-          { kind: 'ISSUE', content: '2 号冰敷仪维修跟进', urgent: false, done: false },
-          { kind: 'TASK', content: '光子嫩肤耗材补货申请', urgent: false, done: false },
-        ],
-      },
-      {
-        shift: 'EVENING', date: yesterday, status: 'CONFIRMED',
-        fromName: '夏沫（前台）', toName: '林微（咨询）',
-        revenue: 8420, orders: 6, arrivals: 9,
-        importantNote: '晚班无异常；储值卡客户周婷已预约周六热玛吉。',
-        cashNote: '无现金交易，备用金账实相符。',
-        equipmentNote: '设备正常。',
-        confirmNote: '已核对营收与设备，待跟进事项已接收。',
-        todos: [
-          { kind: 'CUSTOMER', content: '周婷周六热玛吉到店提醒', urgent: false, done: true },
-          { kind: 'TASK', content: '整理本周到店未成交客户名单', urgent: false, done: false },
-        ],
-      },
-      {
-        shift: 'FULL', date: yesterday, status: 'CONFIRMED',
-        fromName: '苏晴（店长）', toName: '陈野（区域）',
-        revenue: 21100, orders: 15, arrivals: 23,
-        importantNote: '全天营业正常；新客 4 人，成交 2 人。',
-        cashNote: '当日现金全部缴存，账实相符。',
-        equipmentNote: '设备正常。',
-        confirmNote: '已确认。',
-        todos: [
-          { kind: 'TASK', content: '周一区域例会数据准备', urgent: false, done: true },
-        ],
-      },
-    ]
-
-    seedDefs.forEach((s, i) => {
-      seq += 1
-      const createdIso = new Date(s.date + 'T08:00:00').toISOString()
-      const h: Handover = {
-        id: nextId('ho'),
-        handoverNo: `HJ${s.date.replace(/-/g, '').slice(2)}${i + 1}`,
-        shift: s.shift,
-        date: s.date,
-        status: s.status,
-        fromName: s.fromName,
-        toName: s.toName,
-        revenueAmount: s.revenue,
-        orderCount: s.orders,
-        arrivalCount: s.arrivals,
-        todos: s.todos.map((t) => ({ ...t, id: nextId('todo') })),
-        importantNote: s.importantNote,
-        cashNote: s.cashNote,
-        equipmentNote: s.equipmentNote,
-        confirmNote: s.confirmNote,
-        timeline: [{ at: createdIso, by: s.fromName, action: '创建交接单' }],
-        createdAt: createdIso,
-      }
-      if (s.status !== 'DRAFT') {
-        h.submittedAt = new Date(s.date + 'T15:00:00').toISOString()
-        h.timeline.push({ at: h.submittedAt, by: s.fromName, action: '交班人提交', detail: `${s.fromName} → ${s.toName}` })
-      }
-      if (s.status === 'CONFIRMED') {
-        h.confirmedAt = new Date(s.date + 'T15:30:00').toISOString()
-        h.timeline.push({ at: h.confirmedAt, by: s.toName, action: '接班人确认接收', detail: s.confirmNote })
-      }
-      handovers.value.push(h)
-    })
+    try {
+      const { data } = await sendBackHandover(Number(id), reason)
+      replace(mapDto(data))
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '退回失败'))
+      return false
+    }
   }
 
   return {
-    handovers, drafts, submitted, confirmed, pendingCount, todayConfirmed, openTodos,
-    get, create, updateDraft, addTodo, removeTodo, toggleTodo, submit, confirm, sendBack, seed,
+    handovers, loading, drafts, submitted, confirmed, pendingCount, todayConfirmed, openTodos,
+    get, fetch, create, updateDraft, addTodo, removeTodo, toggleTodo, submit, confirm, sendBack,
     SHIFT_LABEL, STATUS_LABEL, TODO_KIND_LABEL,
   }
 })
