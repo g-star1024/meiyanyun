@@ -31,4 +31,28 @@ public interface MemberCardRepository extends JpaRepository<MemberCard, String> 
 
     /** 售卡开卡幂等反查：按售卡订单号（sale_no）查已开出的卡，收款回调重试重放不重复开卡。 */
     Optional<MemberCard> findFirstBySaleNo(String saleNo);
+
+    /**
+     * B83 卡1 L66 疗程跟踪聚合读：按门店列 COURSE 卡（JOIN customer 取姓名/手机号）。
+     * 只投影读模型所需列，trackStatus/daysLeft/usedTimes/phoneMask 在 Controller 侧 Java 推导。
+     * 与前端 mock store asset.ts 的 TimesAsset 结构对齐，全量返回（约 86 条在用卡，不分页）。
+     */
+    @Query(value = """
+            select mc.card_no as cardNo,
+                   mc.customer_id as customerId,
+                   c.name as customerName,
+                   c.phone as phone,
+                   mc.card_item as cardItem,
+                   mc.total_times as totalTimes,
+                   mc.remain_times as remainTimes,
+                   mc.balance as balance,
+                   mc.status as status,
+                   mc.expires_at as expiresAt
+            from member_card mc
+            join customer c on mc.customer_id = c.customer_id
+            where mc.card_type = 'COURSE'
+              and mc.store_code = :storeCode
+            order by mc.expires_at asc nulls last, mc.card_no asc
+            """, nativeQuery = true)
+    List<CourseTrackRow> findCourseTrackRows(@Param("storeCode") String storeCode);
 }

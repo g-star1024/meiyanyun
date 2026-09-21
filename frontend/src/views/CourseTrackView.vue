@@ -1,14 +1,19 @@
 <script setup lang="ts">
 /* ============================================================
  * 疗程跟踪（/course-track）
- * 消费 asset store 的 TimesAsset：疗程进度、剩余/总次数、有效期、核销记录、状态。
+ * B83 卡1 L66 切真：数据源 = customer-service 疗程跟踪聚合读（G1 /customer/cards/course-track）
+ * ＋ txn-service 按卡核销记录（G2 /txn/writeoffs/by-card/{cardNo}），不再消费 asset mock store。
+ * 门店上下文取登录人 storeId；trackStatus/daysLeft 由后端按 30 天阈值推导，前端不重复推算。
  * 按状态筛选（全部/进行中/即将到期/已用完）+ 客户搜索。
- * 权限：course:track（查看）；操作（预约下次）复用 appointment:create。
+ * 权限：course:track（查看，后端对齐 course:view）；操作（预约下次）复用 appointment:create。
  * ============================================================ */
 import { computed, ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAssetStore } from '@/stores/asset'
-import { useCustomerStore } from '@/stores/customer'
+import { useAuthStore } from '@/stores/auth'
+import { listCourseTrack } from '@/api/customer'
+import { listCardWriteoffs } from '@/api/writeoff'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
@@ -16,59 +21,86 @@ import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import CIcon from '@/components/CIcon.vue'
-import type { TimesAsset } from '@/types/domain'
 
-const asset = useAssetStore()
-const customer = useCustomerStore()
+const auth = useAuthStore()
 const router = useRouter()
-
-onMounted(() => asset.seed())
+const toast = useToast()
 
 type Filter = 'ALL' | 'ACTIVE' | 'EXPIRING' | 'FINISHED'
 const filter = ref<Filter>('ALL')
 const keyword = ref('')
 
-/** 即将到期阈值：30 天内 */
+/** 即将到期阈值：30 天内（与后端推导口径一致，仅用于筛选标签文案） */
 const EXPIRING_DAYS = 30
-function daysLeft(iso?: string): number | null {
-  if (!iso) return null
-  return Math.ceil((new Date(iso).getTime() - Date.now()) / 86400000)
-}
 
-interface TrackRow extends TimesAsset {
+interface TrackRow {
+  /** 卡号（G1 cardNo，行主键，兼作 G2 查询键） */
+  id: string
+  customerId: string
   customerName: string
   customerPhone: string
+  itemName: string
+  totalTimes: number
+  remainingTimes: number
   usedTimes: number
+  expiresAt?: string | null
   daysLeft: number | null
   trackStatus: 'ACTIVE' | 'EXPIRING' | 'FINISHED' | 'FROZEN'
-  lastConsumeAt?: string
 }
+
+/** 详情弹层核销记录行（对齐模板消费形状：at/remark/operatorName/times） */
+interface TrackTxn {
+  id: string
+  at: string
+  remark: string
+  operatorName: string
+  times: number
+  kind: 'CONSUME'
+}
+
+const rawRows = ref<TrackRow[]>([])
+const writeoffCache = ref<Record<string, TrackTxn[]>>({})
+
+/**
+ * 详情弹层核销记录入口：模板沿用 asset.txnsOf(...) 形状，
+ * 这里以本地只读适配对象提供同名方法（打开详情时懒加载＋按卡缓存）。
+ */
+const asset = {
+  txnsOf: (cardNo: string): TrackTxn[] => writeoffCache.value[cardNo] ?? [],
+}
+
+async function load() {
+  const storeCode = auth.user?.storeId || ''
+  if (!storeCode) {
+    rawRows.value = []
+    return
+  }
+  try {
+    const { data } = await listCourseTrack({ storeCode })
+    rawRows.value = (data || []).map((d) => ({
+      id: d.cardNo,
+      customerId: d.customerId,
+      customerName: d.customerName || d.customerId,
+      customerPhone: d.phoneMask || '',
+      itemName: d.cardItem,
+      totalTimes: d.totalTimes,
+      remainingTimes: d.remainTimes,
+      usedTimes: d.usedTimes,
+      expiresAt: d.expiresAt,
+      daysLeft: d.daysLeft ?? null,
+      trackStatus: d.trackStatus,
+    }))
+  } catch (e) {
+    rawRows.value = []
+    toast.error(errMsg(e, '疗程跟踪加载失败'))
+  }
+}
+
+onMounted(load)
 
 const rows = computed<TrackRow[]>(() => {
   const kw = keyword.value.trim()
-  return asset.timesAssets
-    .map((a) => {
-      const c = customer.get(a.customerId)
-      const consumeTxns = asset.txns
-        .filter((t) => t.assetId === a.id && t.kind === 'CONSUME')
-        .sort((x, y) => +new Date(y.at) - +new Date(x.at))
-      const trackStatus: TrackRow['trackStatus'] =
-        a.status === 'FINISHED' ? 'FINISHED'
-        : a.status === 'FROZEN' ? 'FROZEN'
-        : (() => {
-            const d = daysLeft(a.expiresAt)
-            return d !== null && d <= EXPIRING_DAYS ? 'EXPIRING' : 'ACTIVE'
-          })()
-      return {
-        ...a,
-        customerName: c?.name || a.customerId,
-        customerPhone: c?.phoneMask || '',
-        usedTimes: a.totalTimes - a.remainingTimes,
-        daysLeft: daysLeft(a.expiresAt),
-        trackStatus,
-        lastConsumeAt: consumeTxns[0]?.at,
-      }
-    })
+  return rawRows.value
     .filter((r) => {
       if (filter.value === 'ACTIVE') return r.trackStatus === 'ACTIVE'
       if (filter.value === 'EXPIRING') return r.trackStatus === 'EXPIRING'
@@ -85,16 +117,12 @@ const rows = computed<TrackRow[]>(() => {
 })
 
 const kpi = computed(() => {
-  const all = asset.timesAssets
+  const all = rawRows.value
   return {
-    active: all.filter((a) => a.status === 'ACTIVE').length,
-    expiring: all.filter((a) => {
-      if (a.status !== 'ACTIVE') return false
-      const d = daysLeft(a.expiresAt)
-      return d !== null && d <= EXPIRING_DAYS
-    }).length,
-    finished: all.filter((a) => a.status === 'FINISHED').length,
-    totalRemaining: all.reduce((s, a) => s + (a.status === 'ACTIVE' ? a.remainingTimes : 0), 0),
+    active: all.filter((r) => r.trackStatus === 'ACTIVE' || r.trackStatus === 'EXPIRING').length,
+    expiring: all.filter((r) => r.trackStatus === 'EXPIRING').length,
+    finished: all.filter((r) => r.trackStatus === 'FINISHED').length,
+    totalRemaining: all.reduce((s, r) => s + (r.trackStatus === 'ACTIVE' || r.trackStatus === 'EXPIRING' ? r.remainingTimes : 0), 0),
   }
 })
 
@@ -105,14 +133,34 @@ const FILTERS: { k: Filter; label: string }[] = [
   { k: 'FINISHED', label: '已用完' },
 ]
 
-function fmtDate(iso?: string) {
+function fmtDate(iso?: string | null) {
   if (!iso) return '—'
   const d = new Date(iso)
   return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`
 }
 
 const selected = ref<TrackRow | null>(null)
-function viewDetail(r: TrackRow) { selected.value = r }
+async function viewDetail(r: TrackRow) {
+  selected.value = r
+  if (writeoffCache.value[r.id]) return
+  try {
+    const { data } = await listCardWriteoffs(r.id)
+    writeoffCache.value = {
+      ...writeoffCache.value,
+      [r.id]: (data || []).map((w) => ({
+        id: w.writeoffId,
+        at: w.createdAt || '',
+        remark: w.project || '核销',
+        operatorName: w.operatorName || w.operator || '—',
+        times: -(w.timesUsed || 1),
+        kind: 'CONSUME' as const,
+      })),
+    }
+  } catch (e) {
+    writeoffCache.value = { ...writeoffCache.value, [r.id]: [] }
+    toast.error(errMsg(e, '核销记录加载失败'))
+  }
+}
 function closeDetail() { selected.value = null }
 function goAppointment() {
   if (!selected.value) return

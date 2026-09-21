@@ -339,6 +339,33 @@ export const rechargeCard = (cardNo: string, amount: number, payMethod: string, 
 export const listCardLedger = (cardNo: string) =>
   client.get<CardLedgerDTO[]>(`/customer/cards/${cardNo}/ledger`)
 
+/** 疗程跟踪聚合行（GET /customer/cards/course-track 真实字段；balance 单位「分」） */
+export interface CourseTrackDTO {
+  cardNo: string
+  customerId: string
+  customerName: string
+  /** 手机号脱敏串（139****0098），直接展示 */
+  phoneMask: string
+  cardItem: string
+  totalTimes: number
+  remainTimes: number
+  usedTimes: number
+  /** 卡余额（分）；疗程卡=单价×剩余次数，本页不展示 */
+  balance: number
+  /** 卡状态：中文 在用/退卡中/已退卡/已用完 */
+  status: string
+  /** 有效期截止（ISO-8601 UTC）；null=长期有效 */
+  expiresAt?: string | null
+  /** 剩余天数（后端推导）；null=无到期或已过期 */
+  daysLeft?: number | null
+  /** 跟踪状态（后端 30 天阈值推导）：ACTIVE 进行中/EXPIRING 即将到期/FINISHED 已用完/FROZEN 已冻结 */
+  trackStatus: 'ACTIVE' | 'EXPIRING' | 'FINISHED' | 'FROZEN'
+}
+
+/** 疗程跟踪聚合读（B83 卡1 L66）：storeCode 必填（页面取登录门店上下文）；status ALL/ACTIVE/EXPIRING/FINISHED 默认 ALL */
+export const listCourseTrack = (params: { storeCode: string; status?: string }) =>
+  client.get<CourseTrackDTO[]>('/customer/cards/course-track', { params })
+
 /** 全量标签字典（tagId → tagName/category/customerCount） */
 export const listAllTags = () =>
   client.get<CustomerTagDTO[]>('/customer/tags')

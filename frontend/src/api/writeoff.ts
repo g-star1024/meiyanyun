@@ -70,3 +70,24 @@ export const listWriteoffs = (params: {
   from?: string
   to?: string
 }) => client.get<WriteoffRecordDTO[]>('/txn/writeoff', { params })
+
+/** 疗程卡核销记录行（GET /txn/writeoffs/by-card/{cardNo}，B83 卡1 L66；金额单位「分」） */
+export interface CardWriteoffDTO {
+  writeoffId: string
+  cardNo: string
+  project: string | null
+  /** 本次核销次数（≥1） */
+  timesUsed: number
+  /** 本次划扣金额（分）；纯扣次为 0 */
+  amount: number
+  operator: string | null
+  /** 操作人中文名（org-service 只读解析；服务不可用降级 null，前端回退工号） */
+  operatorName: string | null
+  createdAt: string | null
+  /** 状态：DONE/ABNORMAL/VOID */
+  status: string
+}
+
+/** 按卡查核销记录（带次数视图，疗程跟踪详情弹层用；账龄倒序） */
+export const listCardWriteoffs = (cardNo: string) =>
+  client.get<CardWriteoffDTO[]>(`/txn/writeoffs/by-card/${cardNo}`)

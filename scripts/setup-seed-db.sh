@@ -728,6 +728,71 @@ UPDATE member_card SET card_type = 'CARD'   WHERE card_type IS NULL;
 SQL
 
 echo ""
+echo "==> B83：疗程跟踪演示数据（expires_at 回填 + card_ledger CONSUME 流水 + writeoff_record 核销记录）"
+# 幂等标记：card_ledger.biz_ref='WO-SEED'、writeoff_record.writeoff_id LIKE 'WO-SEED-%'，先删后插。
+# 在用卡前 30% 设 30 天内到期（即将到期样例），其余设 90-365 天；已用完/已退卡设已过期。
+# 核销流水/记录按 (total_times - remain_times) 生成，每次 1 次、金额 0（纯扣次），operator 取门店咨询师。
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -v ON_ERROR_STOP=1 <<'SQL'
+-- 幂等清理旧补数
+DELETE FROM card_ledger WHERE biz_ref = 'WO-SEED';
+DELETE FROM writeoff_record WHERE writeoff_id LIKE 'WO-SEED-%';
+
+-- 回填 expires_at（在用卡）
+WITH ranked AS (
+  SELECT card_no, ROW_NUMBER() OVER (ORDER BY card_no) AS rn, COUNT(*) OVER () AS cnt
+  FROM member_card WHERE status = '在用'
+)
+UPDATE member_card mc SET expires_at =
+  CASE
+    WHEN r.rn <= CEIL(r.cnt * 0.3) THEN now() + (5 + (r.rn % 21)) * interval '1 day'
+    ELSE now() + (90 + (r.rn % 276)) * interval '1 day'
+  END
+FROM ranked r
+WHERE mc.card_no = r.card_no AND mc.status = '在用' AND mc.expires_at IS NULL;
+
+-- 回填 expires_at（已用完/已退卡 = 已过期）
+UPDATE member_card SET expires_at = created_at + 180 * interval '1 day'
+  WHERE status IN ('已用完', '已退卡') AND expires_at IS NULL;
+
+-- 补 card_ledger CONSUME 流水（纯扣次，amount=0）
+INSERT INTO card_ledger (card_no, customer_id, change_type, amount, balance_after, biz_ref, operator, store_code, created_at, gift_amount, gift_after)
+SELECT mc.card_no, mc.customer_id, 'CONSUME', 0, mc.balance, 'WO-SEED',
+       CASE mc.store_code
+         WHEN 'SST01' THEN 'SE002' WHEN 'SST02' THEN 'SE006'
+         WHEN 'SST03' THEN 'SE010' WHEN 'SST04' THEN 'SE014'
+         WHEN 'SST05' THEN 'SE018' END,
+       mc.store_code,
+       mc.created_at + (gs.n * 15 + 10) * interval '1 day',
+       0, 0
+FROM member_card mc
+CROSS JOIN LATERAL generate_series(1, mc.total_times - mc.remain_times) AS gs(n)
+WHERE mc.status IN ('在用', '已用完') AND mc.total_times > mc.remain_times;
+
+-- 补 writeoff_record 核销记录（每次 1 次，amount=0，DONE 状态）
+INSERT INTO writeoff_record (writeoff_id, card_no, customer_id, store_code, project, times_used, amount, operator, created_at, status)
+SELECT 'WO-SEED-' || LPAD(row_number() OVER ()::text, 6, '0'),
+       t.card_no, t.customer_id, t.store_code, t.project,
+       1, 0, t.operator, t.created_at, 'DONE'
+FROM (
+  SELECT mc.card_no, mc.customer_id, mc.store_code, mc.card_item AS project,
+         CASE mc.store_code
+           WHEN 'SST01' THEN 'SE002' WHEN 'SST02' THEN 'SE006'
+           WHEN 'SST03' THEN 'SE010' WHEN 'SST04' THEN 'SE014'
+           WHEN 'SST05' THEN 'SE018' END AS operator,
+         mc.created_at + (gs.n * 15 + 10) * interval '1 day' AS created_at
+  FROM member_card mc
+  CROSS JOIN LATERAL generate_series(1, mc.total_times - mc.remain_times) AS gs(n)
+  WHERE mc.status IN ('在用', '已用完') AND mc.total_times > mc.remain_times
+) t;
+SQL
+
+echo "    疗程跟踪演示数据已灌入（expires_at 回填 + CONSUME 流水 + 核销记录）"
+docker exec -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$SEED_DB" -t -c \
+  "SELECT 'expires_at回填='||count(*) FILTER (WHERE expires_at IS NOT NULL) FROM member_card
+   UNION ALL SELECT 'card_ledger(WO-SEED)='||count(*) FROM card_ledger WHERE biz_ref='WO-SEED'
+   UNION ALL SELECT 'writeoff_record(WO-SEED)='||count(*) FROM writeoff_record WHERE writeoff_id LIKE 'WO-SEED-%';"
+
+echo ""
 echo "==> [可选] 若 seed 联调栈 org-service 在运行，重启它以触发 RBAC 启动播种"
 # reset 会 TRUNCATE staff/role_def 并重灌不含登录凭证的 01_master.sql；
 # 登录凭证（login_name/password_hash=meiyun123）、SE101-SE105/E001-E014 演示员工、
