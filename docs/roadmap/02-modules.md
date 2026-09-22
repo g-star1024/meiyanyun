@@ -64,7 +64,7 @@
 | 支付渠道 | ✅ | P3 | 渠道账实 B12 | — |
 | BOM 异常 | ✅ | B10/B34 | DELIVERY-P5-B34，BomDeductService/InventoryView | **B34 收口**：库存不足 422 `{message,shortages[]}` 结构化贯通（skuCode/skuName/needQty/stockQty/unit）→ detail_json + 审计 shortageLines + 页面缺料明细；附修 exc_id substring 起始位致序号恒为 1 |
 | 疗程跟踪 | ✅ | P5-B83 | feat `91f1921`＋fix `f9a9e09`（11＋1 文件） | **B83 卡1 收口**：G1 GET /api/customer/cards/course-track（customer-service，course:view 宽码⊃course:track 菜单窄码、DataScope 三守卫越权返空、trackStatus 未开始/进行中/即将到期/已完结四态服务端推导、缺 storeCode 400 中文）＋G2 GET /api/txn/writeoffs/by-card/{cardNo}（txn-service，越权/不存在统一 404）；种子 110 卡 expires_at 回填＋304 划扣流水＋304 核销；前端 CourseTrackView 整页接真（KPI 18/7/2/57＋21 行＋弹层 5 核销，只换数据源模板/style 零改动） |
-| 资产转移 / 合同 | ⬜ | — | business-flows 缺口 | Backlog |
+| 资产转移 / 合同 | ✅ | P5-B85 | feat 卡1 `7380c88`（6 files +252/-2）＋卡2 `80c6517`（4 files +121/-86）＋卡3 `ee8c8eb`（5 files +351）＋卡4 `ffebe89`（8 files +668/-351） | **B85 四卡收口**：D1 卡转移动账权威收口 customer 域（POST /api/customer/internal/cards/transfer）＋D2 transferGift 赠金随转＋D3 toCustomerId 跨客户强制审批＋D4 V43 card_ledger CHECK 加 TRANSFER＋D5 次数转移同 productCode＋D6 contractNo 合同联动（contract 实体 contract_no HT+yyyyMMdd-6位 PK、total_amount 分、penalty_rate 基点 2000=20%、状态机 草稿→生效中→已履行\|已终止、/api/txn/contracts 六端点）；前端合同/资产转移/复购三页接真（api/contract.ts 93 行六端点、stores/contract.ts 306 行重写、stores/transfer.ts 426 行重写，三 View template/style 零改） |
 
 ### 域⑤ 营销与留存（marketing-service）
 
