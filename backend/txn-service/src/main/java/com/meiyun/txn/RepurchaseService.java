@@ -37,16 +37,19 @@ public class RepurchaseService {
     private final AuditRecorder audit;
     private final CustomerCardClient cardClient;
     private final MemberCardRepository cardRepo;
+    private final ContractRepository contractRepo;
     private final ApprovalService approvalService;
     private final AtomicLong seq = new AtomicLong(System.nanoTime() % 1_000_000);
 
     public RepurchaseService(RepurchaseRepository repo, AuditRecorder audit,
                              CustomerCardClient cardClient, MemberCardRepository cardRepo,
+                             ContractRepository contractRepo,
                              @Lazy ApprovalService approvalService) {
         this.repo = repo;
         this.audit = audit;
         this.cardClient = cardClient;
         this.cardRepo = cardRepo;
+        this.contractRepo = contractRepo;
         this.approvalService = approvalService;
     }
 
@@ -110,6 +113,23 @@ public class RepurchaseService {
                                 + String.format("%.2f", gift / 100.0) + " 元");
             }
             transferGift = gift;
+        }
+        if (hasText(cmd.contractNo())) {
+            // B85 D6：填 contractNo 时校验合同存在＋生效中＋客户匹配转出或接收方，否则 400
+            Contract ct = contractRepo.findById(cmd.contractNo())
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "关联合同不存在: " + cmd.contractNo()));
+            if (!"生效中".equals(ct.getStatus())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "关联合同未生效（当前状态：" + ct.getStatus() + "）：" + cmd.contractNo());
+            }
+            boolean customerMatch = cmd.customerId().equals(ct.getCustomerId())
+                    || (hasText(cmd.toCustomerId()) && cmd.toCustomerId().equals(ct.getCustomerId()));
+            if (!customerMatch) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "关联合同客户不匹配：合同 " + cmd.contractNo() + " 客户 " + ct.getCustomerId()
+                                + "，须为转出或接收客户");
+            }
         }
         Repurchase r = new Repurchase();
         r.setRepurchaseNo(nextNo("RP"));
