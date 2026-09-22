@@ -13,7 +13,8 @@ import java.time.OffsetDateTime;
  * <p>member_card.balance 为该卡流水的累计快照，对账恒等式：Σ card_ledger.amount = member_card.balance；
  * B18 起赠金同口径对账：Σ card_ledger.gift_amount = member_card.gift_balance（历史行 gift 两列为 NULL，视为 0）。
  * change_type：RECHARGE 充值（正）/ CONSUME 消费扣额（负）/ REFUND 退款回加（订单退款为正、退卡清零为负）/
- * ADJUST 调整（退卡冻结/解冻，amount=0、gift_amount=0，仅作状态留痕）。
+ * ADJUST 调整（退卡冻结/解冻，amount=0、gift_amount=0，仅作状态留痕）/
+ * TRANSFER 资产转移（B85，V43 起）：转出卡负额、转入卡正额，同 bizRef（RP 单号）成对落账，恒等式净额为零不受影响。
  */
 @Entity
 @Table(name = "card_ledger")
@@ -31,7 +32,7 @@ public class CardLedger {
     @Column(name = "customer_id", nullable = false, length = 16)
     private String customerId;
 
-    /** RECHARGE / CONSUME / REFUND / ADJUST。 */
+    /** RECHARGE / CONSUME / REFUND / ADJUST / TRANSFER（B85 资产转移，V43 扩 CHECK）。 */
     @Column(name = "change_type", nullable = false, length = 16)
     private String changeType;
 

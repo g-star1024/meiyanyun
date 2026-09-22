@@ -159,6 +159,31 @@ public class CustomerCardClient {
     }
 
     /**
+     * 全量资产转移联动（B85 卡1，回购转移终审通过后回调）：POST /api/customer/internal/cards/transfer。
+     * customer 权威卡台账双卡行锁原子搬账：转出卡负额 TRANSFER 流水＋转入卡正额 TRANSFER 流水
+     * （同 bizRef=RP 单号）；本金/赠金/次数三维度独立可选随转（次数须同品项卡）；
+     * 以 RP 单号+转出卡号幂等，终审重试重放不二次动账；卡主不符/状态非在用 400、
+     * 账实不足 422、卡不存在 404 均中文透传（调用方据此中止回滚，杜绝「审批通过但资产未搬」）。
+     */
+    public void transfer(String bizRef, String fromCardNo, String toCardNo,
+                         String fromCustomerId, String toCustomerId,
+                         long amount, long giftAmount, int times,
+                         String operator, String storeCode) {
+        Map<String, Object> body = new java.util.HashMap<>();
+        body.put("bizRef", nz(bizRef));
+        body.put("fromCardNo", nz(fromCardNo));
+        body.put("toCardNo", nz(toCardNo));
+        body.put("fromCustomerId", nz(fromCustomerId));
+        body.put("toCustomerId", nz(toCustomerId));
+        body.put("amount", amount);
+        body.put("giftAmount", giftAmount);
+        body.put("times", times);
+        body.put("operator", nz(operator));
+        body.put("storeCode", nz(storeCode));
+        post("/api/customer/internal/cards/transfer", body, "资产转移");
+    }
+
+    /**
      * 划扣流水批量查询（B6 双账核对）：GET /api/customer/internal/cards/writeoff-ledgers。
      * 返回 WO 单号 → 流水（cardNo/changeType/amount/operator）；网络/5xx 异常 → 502 中文（核对中止，
      * 不容忍 customer 不可用时出「全部一致」的假结果）。

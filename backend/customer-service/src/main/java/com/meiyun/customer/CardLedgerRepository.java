@@ -23,6 +23,9 @@ public interface CardLedgerRepository extends JpaRepository<CardLedger, Long> {
     /** 订单退款回加幂等：按退款单号（bizRef=RF…）查已回加流水，终审重试重放不双加。 */
     Optional<CardLedger> findFirstByBizRefAndChangeType(String bizRef, String changeType);
 
+    /** 资产转移幂等锚点（B85 卡1）：按 RP 单号+转出卡号查 TRANSFER 流水，审批终审重试重放不二次动账。 */
+    Optional<CardLedger> findFirstByBizRefAndCardNo(String bizRef, String cardNo);
+
     /** 查某卡某订单的原始储值扣款流水（CONSUME），回加时定位原卡/原扣额。 */
     Optional<CardLedger> findFirstByCardNoAndOrderNoAndChangeType(String cardNo, String orderNo, String changeType);
 

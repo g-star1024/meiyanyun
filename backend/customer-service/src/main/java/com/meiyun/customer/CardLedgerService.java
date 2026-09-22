@@ -560,6 +560,149 @@ public class CardLedgerService {
         return saved;
     }
 
+    /**
+     * 全量资产转移动账（B85 卡1，动账权威收口 customer 域·定案 D1）：txn 回购转移终审通过后回调，
+     * 同一 RP 单号下转出卡负额 TRANSFER 流水＋转入卡正额 TRANSFER 流水成对落账（原子同事务）。
+     * 本金/赠金/次数三维度独立可选随转：赠金上限=来源卡赠金余额（D2）、次数转移须同品项卡（D5）；
+     * 金额维恒等式不受影响（Σ负额+Σ正额=0），次数维度不进 card_ledger 仅动 member_card.remain_times。
+     * 幂等锚点=bizRef（RP 单号）+转出卡号：终审重试/网络重放命中既有流水原样返回，不二次动账。
+     * 死锁防线：双卡行锁按卡号字典序拿锁（A→B 与 B→A 两单并发互不死锁）。
+     *
+     * @return 转出卡负额流水（转入卡正额流水随同事务落库）
+     */
+    @Transactional
+    public CardLedger transfer(String bizRef, String fromCardNo, String toCardNo,
+                               String fromCustomerId, String toCustomerId,
+                               long amount, long giftAmount, int times,
+                               String operator, String storeCode) {
+        if (bizRef == null || bizRef.isBlank()) {
+            throw new BadReq("bizRef（资产转移单号）不能为空");
+        }
+        if (fromCardNo == null || fromCardNo.isBlank() || toCardNo == null || toCardNo.isBlank()) {
+            throw new BadReq("转出/转入卡号不能为空");
+        }
+        if (fromCardNo.equals(toCardNo)) {
+            throw new BadReq("转出卡与转入卡不能是同一张卡");
+        }
+        if (fromCustomerId == null || fromCustomerId.isBlank()
+                || toCustomerId == null || toCustomerId.isBlank()) {
+            throw new BadReq("转出/接收客户不能为空");
+        }
+        if (amount < 0 || giftAmount < 0 || times < 0) {
+            throw new BadReq("转移本金/赠金/次数不能为负");
+        }
+        if (amount == 0 && giftAmount == 0 && times == 0) {
+            throw new BadReq("转移本金、赠金、次数至少一项大于 0");
+        }
+
+        // 幂等快路径：同一 RP 单号已转出过的原样返回既有流水（审批终审重试不二次动账）。
+        Optional<CardLedger> replayed = ledgerRepo.findFirstByBizRefAndCardNo(bizRef, fromCardNo);
+        if (replayed.isPresent()) {
+            return replayed.get();
+        }
+
+        // 双卡行锁按卡号字典序拿锁，防 A→B 与 B→A 并发互锁死锁。
+        String first = fromCardNo.compareTo(toCardNo) < 0 ? fromCardNo : toCardNo;
+        String second = first.equals(fromCardNo) ? toCardNo : fromCardNo;
+        MemberCard cardFirst = cardRepo.findForUpdate(first)
+                .orElseThrow(() -> new NotFound("会员卡不存在: " + first));
+        MemberCard cardSecond = cardRepo.findForUpdate(second)
+                .orElseThrow(() -> new NotFound("会员卡不存在: " + second));
+        MemberCard from = first.equals(fromCardNo) ? cardFirst : cardSecond;
+        MemberCard to = first.equals(toCardNo) ? cardFirst : cardSecond;
+
+        // 锁内幂等二次查：并发穿透防线（两请求同 RP 单号都过快路径时，后到者锁内命中重放）。
+        Optional<CardLedger> replayedLocked = ledgerRepo.findFirstByBizRefAndCardNo(bizRef, fromCardNo);
+        if (replayedLocked.isPresent()) {
+            return replayedLocked.get();
+        }
+
+        // 卡主绑定硬校验（D3）：转出卡须属转出客户、转入卡须属接收客户（跨客户转移经审批后同样落此校验）。
+        if (!fromCustomerId.equals(from.getCustomerId())) {
+            throw new BadReq("转出卡不属于转出客户：卡 " + fromCardNo + " 卡主 " + from.getCustomerId());
+        }
+        if (!toCustomerId.equals(to.getCustomerId())) {
+            throw new BadReq("转入卡不属于接收客户：卡 " + toCardNo + " 卡主 " + to.getCustomerId());
+        }
+        // 双卡均须「在用」（冻结/已退卡/已用完不可动账）。
+        if (!"在用".equals(from.getStatus())) {
+            throw new BadReq("转出卡状态非在用（" + from.getStatus() + "）：" + fromCardNo);
+        }
+        if (!"在用".equals(to.getStatus())) {
+            throw new BadReq("转入卡状态非在用（" + to.getStatus() + "）：" + toCardNo);
+        }
+        // D5：次数转移须同品项卡（本金/赠金不限卡项，次数维度 productCode 必须一致）。
+        if (times > 0 && !java.util.Objects.equals(from.getProductCode(), to.getProductCode())) {
+            throw new BadReq("次数转移要求两卡同品项（productCode 一致）："
+                    + from.getProductCode() + " ≠ " + to.getProductCode());
+        }
+
+        long fromBalance = from.getBalance() == null ? 0L : from.getBalance();
+        long fromGift = from.getGiftBalance() == null ? 0L : from.getGiftBalance();
+        int fromTimes = from.getRemainTimes() == null ? 0 : from.getRemainTimes();
+        if (amount > fromBalance) {
+            throw new Unprocessable("本金余额不足：卡 " + fromCardNo + " 余额 " + yuan(fromBalance)
+                    + " 元，需转出 " + yuan(amount) + " 元");
+        }
+        if (giftAmount > fromGift) {
+            throw new Unprocessable("赠金余额不足：卡 " + fromCardNo + " 赠金 " + yuan(fromGift)
+                    + " 元，需转出 " + yuan(giftAmount) + " 元");
+        }
+        if (times > fromTimes) {
+            throw new Unprocessable("剩余次数不足：卡 " + fromCardNo + " 余 " + fromTimes
+                    + " 次，需转出 " + times + " 次");
+        }
+
+        long fromAfter = fromBalance - amount;
+        long fromGiftAfter = fromGift - giftAmount;
+        int fromTimesAfter = fromTimes - times;
+        from.setBalance(fromAfter);
+        from.setGiftBalance(fromGiftAfter);
+        from.setRemainTimes(fromTimesAfter);
+        // 三项全部转尽置「已用完」（与消费扣尽同口径）。
+        if (fromAfter == 0 && fromGiftAfter == 0 && fromTimesAfter == 0) {
+            from.setStatus("已用完");
+        }
+        long toAfter = (to.getBalance() == null ? 0L : to.getBalance()) + amount;
+        long toGiftAfter = (to.getGiftBalance() == null ? 0L : to.getGiftBalance()) + giftAmount;
+        to.setBalance(toAfter);
+        to.setGiftBalance(toGiftAfter);
+        to.setRemainTimes((to.getRemainTimes() == null ? 0 : to.getRemainTimes()) + times);
+        cardRepo.save(from);
+        cardRepo.save(to);
+
+        String actor = actor(operator);
+        CardLedger out = new CardLedger();
+        out.setCardNo(fromCardNo);
+        out.setCustomerId(from.getCustomerId());
+        out.setChangeType("TRANSFER");
+        out.setAmount(-amount);
+        out.setBalanceAfter(fromAfter);
+        out.setGiftAmount(giftAmount > 0 ? -giftAmount : null);
+        out.setGiftAfter(giftAmount > 0 ? fromGiftAfter : null);
+        out.setBizRef(bizRef);
+        out.setOperator(actor);
+        out.setStoreCode(storeCode);
+        CardLedger in = new CardLedger();
+        in.setCardNo(toCardNo);
+        in.setCustomerId(to.getCustomerId());
+        in.setChangeType("TRANSFER");
+        in.setAmount(amount);
+        in.setBalanceAfter(toAfter);
+        in.setGiftAmount(giftAmount > 0 ? giftAmount : null);
+        in.setGiftAfter(giftAmount > 0 ? toGiftAfter : null);
+        in.setBizRef(bizRef);
+        in.setOperator(actor);
+        in.setStoreCode(storeCode);
+        ledgerRepo.save(in);
+
+        audit.record("CARD", bizRef, actor, "TRANSFER",
+                json(transferAudit(bizRef, fromCardNo, toCardNo, from.getCustomerId(), to.getCustomerId(),
+                        amount, giftAmount, times, fromAfter, fromGiftAfter, fromTimesAfter,
+                        toAfter, toGiftAfter, storeCode)));
+        return ledgerRepo.save(out);
+    }
+
     /** 卡储值流水（按账龄正序），卡详情「储值流水」读模型。 */
     public List<CardLedger> listLedger(String cardNo) {
         if (cardRepo.findById(cardNo).isEmpty()) {
@@ -729,6 +872,37 @@ public class CardLedgerService {
         m.put("backfill", true);
         m.put("authority", "customer");
         m.put("summary", summary);
+        return m;
+    }
+
+    /** 资产转移审计 payload（B85 卡1）：RP 单号/双卡双客户/本金·赠金·次数三维度明细＋双卡转后快照，完整还原一笔转移。 */
+    private static Map<String, Object> transferAudit(String bizRef, String fromCardNo, String toCardNo,
+                                                     String fromCustomerId, String toCustomerId,
+                                                     long amount, long giftAmount, int times,
+                                                     long fromAfter, long fromGiftAfter, int fromTimesAfter,
+                                                     long toAfter, long toGiftAfter, String storeCode) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("transferNo", bizRef);
+        m.put("fromCardNo", fromCardNo);
+        m.put("toCardNo", toCardNo);
+        m.put("fromCustomerId", fromCustomerId);
+        m.put("toCustomerId", toCustomerId);
+        m.put("amount", amount);
+        m.put("amountYuan", yuan(amount));
+        m.put("giftAmount", giftAmount);
+        m.put("giftAmountYuan", yuan(giftAmount));
+        m.put("times", times);
+        m.put("fromBalanceAfter", fromAfter);
+        m.put("fromGiftAfter", fromGiftAfter);
+        m.put("fromTimesAfter", fromTimesAfter);
+        m.put("toBalanceAfter", toAfter);
+        m.put("toGiftAfter", toGiftAfter);
+        m.put("storeCode", storeCode);
+        m.put("authority", "customer");
+        m.put("summary", "资产转移 卡 " + fromCardNo + " → " + toCardNo + "：本金 " + yuan(amount) + " 元"
+                + (giftAmount > 0 ? "、赠金 " + yuan(giftAmount) + " 元" : "")
+                + (times > 0 ? "、次数 " + times + " 次" : "")
+                + "（单号 " + bizRef + "）");
         return m;
     }
 

@@ -304,6 +304,35 @@ public class InternalCardController {
                 "status", card.getStatus() == null ? "在用" : card.getStatus());
     }
 
+    /**
+     * 全量资产转移动账（B85 卡1，txn 回购转移终审通过后回调）：POST /api/customer/internal/cards/transfer。
+     * customer 域双卡行锁原子搬账：转出卡负额 TRANSFER 流水＋转入卡正额 TRANSFER 流水（同 bizRef=RP 单号），
+     * 本金/赠金/次数三维度独立可选随转（次数须同品项卡）；以 RP 单号+转出卡号幂等，终审重试重放不二次动账；
+     * 卡主不符/状态非在用/同卡互转 400、账实不足 422、卡不存在 404 均中文透传，
+     * txn 侧整笔回滚（杜绝「审批通过但资产未搬」）。
+     */
+    @PostMapping("/cards/transfer")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> transfer(@RequestBody TransferCmd cmd) {
+        if (cmd == null) throw new CardLedgerService.BadReq("请求体不能为空");
+        CardLedger saved = ledgerService.transfer(
+                cmd.bizRef(), cmd.fromCardNo(), cmd.toCardNo(),
+                cmd.fromCustomerId(), cmd.toCustomerId(),
+                cmd.amount() == null ? 0L : cmd.amount(),
+                cmd.giftAmount() == null ? 0L : cmd.giftAmount(),
+                cmd.times() == null ? 0 : cmd.times(),
+                cmd.operator(), cmd.storeCode());
+        return Map.of(
+                "ledgerId", saved.getLedgerId(),
+                "changeType", saved.getChangeType(),
+                "bizRef", saved.getBizRef(),
+                "fromCardNo", saved.getCardNo(),
+                "toCardNo", cmd.toCardNo(),
+                "amount", saved.getAmount(),
+                "balanceAfter", saved.getBalanceAfter(),
+                "giftAfter", saved.getGiftAfter() == null ? 0L : saved.getGiftAfter());
+    }
+
     /** 储值扣款入参：cardNo/customerId/amount（分，&gt;0）/orderNo（幂等键）。 */
     public record ConsumeCmd(String cardNo, String customerId, Long amount, String orderNo) {}
 
@@ -349,4 +378,15 @@ public class InternalCardController {
     public record IssueCmd(String orderNo, String customerId, String storeCode, String productCode,
                            String cardType, String cardItem, Integer totalTimes, Integer validityDays,
                            Long priceFen, Long giftBalance, String operator) {}
+
+    /**
+     * 资产转移入参（B85 卡1）：bizRef（RP 资产转移单号，幂等键）/fromCardNo/toCardNo/
+     * fromCustomerId/toCustomerId（卡主绑定硬校验）/amount（转移本金分，≥0）/
+     * giftAmount（随转赠金分，≥0，可选）/times（随转次数，≥0，须同品项卡）/operator/storeCode；
+     * 本金、赠金、次数至少一项 &gt;0。
+     */
+    public record TransferCmd(String bizRef, String fromCardNo, String toCardNo,
+                              String fromCustomerId, String toCustomerId,
+                              Long amount, Long giftAmount, Integer times,
+                              String operator, String storeCode) {}
 }
