@@ -38,11 +38,23 @@ public class Repurchase {
     @Column(name = "to_card_no", length = 24)
     private String toCardNo;
 
+    /** B85 D3：接收客户编号（资产转移单必填，允许跨客户；复购单为空）。 */
+    @Column(name = "to_customer_id", length = 16)
+    private String toCustomerId;
+
     @Column(name = "transfer_times")
     private Integer transferTimes;
 
     @Column(name = "transfer_amount")
     private Long transferAmount;
+
+    /** B85 D2：随转赠金（分，≥0 默认 0，上限=来源卡 gift_balance 超 422）。 */
+    @Column(name = "transfer_gift")
+    private Long transferGift;
+
+    /** B85 D6：关联合同号（可空；卡3 合同实体建成后联动校验：存在＋生效中＋客户匹配）。 */
+    @Column(name = "contract_no", length = 24)
+    private String contractNo;
 
     @Column(name = "consent_ack", nullable = false)
     private boolean consentAck;        // 知情同意书已签（硬前置）

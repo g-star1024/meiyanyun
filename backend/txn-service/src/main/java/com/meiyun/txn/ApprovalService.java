@@ -212,7 +212,8 @@ public class ApprovalService {
 
     /**
      * 复购/资产转移大额审批提交（P5-B64 卡1 L87）：三方签核齐后由 RepurchaseService 同事务调用。
-     * bizType=REPURCHASE、bizNo=复购单号（RP...），签署层级按转移金额 tierFor（调用方保证 ≥ L1 ¥1000 才进入）；
+     * bizType=REPURCHASE、bizNo=复购单号（RP...），签署层级按转移金额 tierFor（大额 ≥ L1 ¥1000 进入；
+     * B85 D3 跨客户资产转移强制审批不受金额下限约束，零本金随转次数/赠金单按 L1 直达 FINANCE）；
      * L1 直达 FINANCE 单签；L2 REVIEW→FINANCE；L3 REVIEW→REGION→FINANCE（HIGH）。
      * 审批中不并账；FINANCE 终审通过同事务回调 RepurchaseService 搬卡账置「已完成」，任一阶段驳回置「已拒绝」不并账。
      * 幂等：同一复购单号重放回返原待办，不造重复审批单。
@@ -221,7 +222,13 @@ public class ApprovalService {
     public ApprovalTodo submitRepurchase(Repurchase r) {
         long amountFen = r.getTransferAmount() == null ? 0L : r.getTransferAmount();
         if (amountFen <= 0) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "复购审批金额必须大于 0（分）");
+            // B85 D3：跨客户资产转移强制审批，允许零本金单（仅随转次数/赠金）进入，按 L1 直达 FINANCE
+            boolean assetWithValue = "资产转移".equals(r.getBizType())
+                    && (r.getTransferTimes() != null && r.getTransferTimes() > 0
+                        || r.getTransferGift() != null && r.getTransferGift() > 0);
+            if (!assetWithValue) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "复购审批金额必须大于 0（分）");
+            }
         }
         String repurchaseNo = r.getRepurchaseNo();
         guardWriteStore(r.getStoreCode());
@@ -273,8 +280,11 @@ public class ApprovalService {
             m.put("targetProject", r.getTargetProject());
             m.put("fromCardNo", r.getFromCardNo());
             m.put("toCardNo", r.getToCardNo());
+            m.put("toCustomerId", r.getToCustomerId());
             m.put("transferTimes", r.getTransferTimes());
             m.put("transferAmount", amountFen);
+            m.put("transferGift", r.getTransferGift() == null ? 0L : r.getTransferGift());
+            m.put("contractNo", r.getContractNo());
             return MAPPER.writeValueAsString(m);
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "复购明细内容序列化失败");
