@@ -29,6 +29,12 @@ export interface RepurchaseDTO {
   transferTimes: number | null
   /** 转移金额：bigint，单位「分」（展示需 /100 转元） */
   transferAmount: number | null
+  /** B85：资产转移接收客户编号（跨客户时与 customerId 不同） */
+  toCustomerId: string | null
+  /** B85：随转赠金，bigint，单位「分」（赠金独立字段可选随转） */
+  transferGift: number | null
+  /** B85 D6：关联合同号（仅「生效中」合同可引用，客户须匹配转出或接收方） */
+  contractNo: string | null
   consentAck: boolean
   consentText: string | null
   status: RepurchaseStatus | string
@@ -57,6 +63,12 @@ export interface CreateRepurchaseCmd {
   transferTimes?: number
   /** 转移金额，单位「分」 */
   transferAmount?: number
+  /** B85：资产转移必填，接收客户编号（须与目标卡归属一致） */
+  toCustomerId?: string
+  /** B85：随转赠金，单位「分」（非负且来源卡赠金余额须足） */
+  transferGift?: number
+  /** B85 D6：关联合同号（可选；填则后端校验存在＋生效中＋客户匹配） */
+  contractNo?: string
   /** 知情同意硬前置：必须 true */
   consentAck: boolean
   consentText?: string

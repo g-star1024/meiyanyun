@@ -21,6 +21,7 @@ import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
 import { searchCustomers, listCustomerCards, type CustomerDTO, type MemberCardDTO } from '@/api/customer'
 import { listApprovals, type ApprovalTodoDTO } from '@/api/approval'
+import { listContracts, type ContractDTO } from '@/api/contract'
 
 const repurchase = useRepurchaseStore()
 const customer = useCustomerStore()
@@ -108,6 +109,9 @@ const emptyForm = () => ({
   toCardNo: '',
   transferTimes: '',
   transferAmount: '',
+  toCustomerKeyword: '',
+  transferGift: '',
+  contractNo: '',
   consent: false,
   consentText: '',
   note: '',
@@ -120,6 +124,76 @@ const cardOptions = computed(() => customerCards.value.map((c) => ({
   label: `${c.cardItem}（${c.cardNo}）余${c.remainTimes ?? 0}次/¥${(c.balance / 100).toFixed(2)}`,
 })))
 const cardByNo = (no: string) => customerCards.value.find((c) => c.cardNo === no) || null
+
+// ==================== B85 跨客户转移：接收客户 / 目标卡 / 赠金 / 关联合同 ====================
+const toSearching = ref(false)
+const toCustomerHits = ref<CustomerDTO[]>([])
+const pickedToCustomer = ref<CustomerDTO | null>(null)
+const toCardsLoading = ref(false)
+const toCustomerCards = ref<MemberCardDTO[]>([])
+const contractList = ref<ContractDTO[]>([])
+
+const toCardOptions = computed(() => toCustomerCards.value.map((c) => ({
+  value: c.cardNo,
+  label: `${c.cardItem}（${c.cardNo}）余${c.remainTimes ?? 0}次/¥${(c.balance / 100).toFixed(2)}`,
+})))
+const contractOptions = computed(() => [
+  { value: '', label: '不关联合同' },
+  ...contractList.value.map((c) => ({
+    value: c.contractNo,
+    label: `${c.title}（${c.contractNo}）`,
+  })),
+])
+
+async function searchToCustomer() {
+  const kw = form.value.toCustomerKeyword.trim()
+  if (!kw) { toCustomerHits.value = []; return }
+  toSearching.value = true
+  try {
+    const res = await searchCustomers(kw)
+    toCustomerHits.value = res.data ?? []
+    if (!toCustomerHits.value.length) toast.info('未检索到接收客户，请先建档或更换关键字')
+  } catch (e) {
+    toast.error(errMsg(e, '接收客户检索失败'))
+  } finally {
+    toSearching.value = false
+  }
+}
+
+async function pickToCustomer(c: CustomerDTO) {
+  pickedToCustomer.value = c
+  form.value.toCustomerKeyword = `${c.name}（${c.customerId}）`
+  toCustomerHits.value = []
+  customer.hydrate([{ customerId: c.customerId, customerName: c.name, phone: c.phone, storeCode: c.storeCode }])
+  form.value.toCardNo = ''
+  await loadToCards(c.customerId)
+  await refreshContracts()
+}
+
+async function loadToCards(customerId: string) {
+  toCardsLoading.value = true
+  try {
+    const res = await listCustomerCards(customerId)
+    toCustomerCards.value = res.data ?? []
+  } catch (e) {
+    toCustomerCards.value = []
+    toast.error(errMsg(e, '接收客户会员卡加载失败'))
+  } finally {
+    toCardsLoading.value = false
+  }
+}
+
+/** D6：可选关联「生效中」合同，客户须匹配转出或接收方 */
+async function refreshContracts() {
+  if (!isTransfer.value || !pickedCustomer.value) { contractList.value = []; return }
+  try {
+    const res = await listContracts(undefined, '生效中')
+    const ids = new Set([pickedCustomer.value.customerId, pickedToCustomer.value?.customerId ?? ''])
+    contractList.value = (res.data ?? []).filter((c) => ids.has(c.customerId))
+  } catch {
+    contractList.value = []
+  }
+}
 
 async function searchCustomer() {
   const kw = form.value.customerKeyword.trim()
@@ -142,6 +216,7 @@ async function pickCustomer(c: CustomerDTO) {
   customerHits.value = []
   customer.hydrate([{ customerId: c.customerId, customerName: c.name, phone: c.phone, storeCode: c.storeCode }])
   if (isTransfer.value) await loadCards(c.customerId)
+  await refreshContracts()
 }
 
 async function loadCards(customerId: string) {
@@ -160,8 +235,15 @@ async function loadCards(customerId: string) {
 watch(() => form.value.bizType, async (v) => {
   form.value.fromCardNo = ''
   form.value.toCardNo = ''
+  form.value.contractNo = ''
   if (v === '资产转移' && pickedCustomer.value) await loadCards(pickedCustomer.value.customerId)
-  if (v !== '资产转移') customerCards.value = []
+  if (v !== '资产转移') {
+    customerCards.value = []
+    pickedToCustomer.value = null
+    toCustomerCards.value = []
+    toCustomerHits.value = []
+  }
+  await refreshContracts()
 })
 
 function resetForm() {
@@ -169,6 +251,10 @@ function resetForm() {
   pickedCustomer.value = null
   customerHits.value = []
   customerCards.value = []
+  pickedToCustomer.value = null
+  toCustomerHits.value = []
+  toCustomerCards.value = []
+  contractList.value = []
 }
 function closeForm() { showForm.value = false; resetForm() }
 
@@ -180,10 +266,15 @@ const transferAmountNum = computed(() => {
   const n = Number(form.value.transferAmount)
   return Number.isFinite(n) && n >= 0 ? n : 0
 })
+const transferGiftNum = computed(() => {
+  const n = Number(form.value.transferGift)
+  return Number.isFinite(n) && n > 0 ? n : 0
+})
 
 const fromCard = computed(() => cardByNo(form.value.fromCardNo))
 const accountError = computed(() => {
   if (!isTransfer.value) return ''
+  if (!pickedToCustomer.value) return '资产转移须选择接收客户（D3 跨客户，目标卡归属接收方）'
   if (!form.value.fromCardNo || !form.value.toCardNo) return '资产转移须选择来源卡与目标卡'
   if (form.value.fromCardNo === form.value.toCardNo) return '来源卡与目标卡不能相同'
   if (fromCard.value && fromCard.value.remainTimes != null && fromCard.value.remainTimes < transferTimesNum.value) {
@@ -192,12 +283,16 @@ const accountError = computed(() => {
   if (fromCard.value && fromCard.value.balance < Math.round(transferAmountNum.value * 100)) {
     return `账实校验：来源卡余额 ¥${(fromCard.value.balance / 100).toFixed(2)} < 转移金额 ¥${transferAmountNum.value.toFixed(2)}`
   }
+  if (fromCard.value && transferGiftNum.value > 0 && (fromCard.value.giftBalance ?? 0) < Math.round(transferGiftNum.value * 100)) {
+    return `账实校验：来源卡赠金 ¥${((fromCard.value.giftBalance ?? 0) / 100).toFixed(2)} < 随转赠金 ¥${transferGiftNum.value.toFixed(2)}`
+  }
   return ''
 })
 
 const canCreate = computed(() => {
   if (!pickedCustomer.value) return false
   if (isTransfer.value) {
+    if (!pickedToCustomer.value) return false
     if (accountError.value) return false
   } else if (!form.value.targetProject.trim()) {
     return false
@@ -215,6 +310,9 @@ async function submitCreate() {
     toCardNo: isTransfer.value ? form.value.toCardNo : undefined,
     transferTimes: isTransfer.value ? transferTimesNum.value : undefined,
     transferAmountYuan: isTransfer.value ? transferAmountNum.value : undefined,
+    toCustomerId: isTransfer.value ? pickedToCustomer.value?.customerId : undefined,
+    transferGiftYuan: isTransfer.value && transferGiftNum.value > 0 ? transferGiftNum.value : undefined,
+    contractNo: isTransfer.value && form.value.contractNo ? form.value.contractNo : undefined,
     consentText: form.value.consentText,
     note: form.value.note,
   })
@@ -538,18 +636,40 @@ watch(
 
           <template v-if="isTransfer">
             <div class="nform__group-title">卡余额 / 次数转移</div>
-            <div v-if="cardsLoading" class="nform__hint">会员卡加载中…</div>
+            <div class="nform__row">
+              <label class="nform__label">接收客户 <span class="req">*</span></label>
+              <div class="pick">
+                <CInput v-model="form.toCustomerKeyword" placeholder="输入接收客户姓名 / 手机号 / 客户编号后点检索" />
+                <CButton variant="secondary" :disabled="toSearching" @click="searchToCustomer">
+                  <CIcon name="customer" :size="16" />检索
+                </CButton>
+              </div>
+              <div v-if="toCustomerHits.length" class="pick__panel">
+                <button
+                  v-for="c in toCustomerHits" :key="c.customerId"
+                  type="button" class="pick__opt"
+                  @click="pickToCustomer(c)"
+                >
+                  <span class="pick__name">{{ c.name }}</span>
+                  <span class="pick__sub">{{ c.customerId }} · {{ c.phone || '无手机号' }} · {{ c.level }}</span>
+                </button>
+              </div>
+            </div>
+            <div v-if="cardsLoading || toCardsLoading" class="nform__hint">会员卡加载中…</div>
             <div v-else-if="!customerCards.length && pickedCustomer" class="nform__hint nform__hint--warn">
               该客户名下无可转移会员卡，请先开卡
             </div>
+            <div v-else-if="pickedToCustomer && !toCustomerCards.length" class="nform__hint nform__hint--warn">
+              接收客户名下无会员卡，请先为接收客户开卡
+            </div>
             <div class="nform__row nform__row--2">
               <div>
-                <label class="nform__label">来源卡 <span class="req">*</span></label>
+                <label class="nform__label">来源卡（转出方） <span class="req">*</span></label>
                 <CSelect v-model="form.fromCardNo" width="100%" placeholder="选择扣出卡" :options="cardOptions" />
               </div>
               <div>
-                <label class="nform__label">目标卡 <span class="req">*</span></label>
-                <CSelect v-model="form.toCardNo" width="100%" placeholder="选择入卡" :options="cardOptions" />
+                <label class="nform__label">目标卡（接收方） <span class="req">*</span></label>
+                <CSelect v-model="form.toCardNo" width="100%" placeholder="选择入卡" :options="toCardOptions" />
               </div>
             </div>
             <div class="nform__row nform__row--2">
@@ -560,6 +680,16 @@ watch(
               <div>
                 <label class="nform__label">转移金额（元）</label>
                 <CInput v-model="form.transferAmount" type="number" placeholder="0.00" />
+              </div>
+            </div>
+            <div class="nform__row nform__row--2">
+              <div>
+                <label class="nform__label">随转赠金（元，选填）</label>
+                <CInput v-model="form.transferGift" type="number" placeholder="0.00" />
+              </div>
+              <div>
+                <label class="nform__label">关联合同（选填）</label>
+                <CSelect v-model="form.contractNo" width="100%" :options="contractOptions" />
               </div>
             </div>
             <div v-if="accountError" class="nform__hint nform__hint--warn">{{ accountError }}</div>

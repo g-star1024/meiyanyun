@@ -31,6 +31,12 @@ export interface RepurchaseRecord {
   toCardNo: string
   transferTimes: number
   transferAmount: number
+  /** B85：资产转移接收客户编号 */
+  toCustomerId: string
+  /** B85：随转赠金（分） */
+  transferGift: number
+  /** B85 D6：关联合同号 */
+  contractNo: string
   consentAck: boolean
   consentText: string
   status: string
@@ -92,6 +98,9 @@ export const useRepurchaseStore = defineStore('repurchase', () => {
       toCardNo: text(d.toCardNo),
       transferTimes: num(d.transferTimes),
       transferAmount: num(d.transferAmount),
+      toCustomerId: text(d.toCustomerId),
+      transferGift: num(d.transferGift),
+      contractNo: text(d.contractNo),
       consentAck: d.consentAck,
       consentText: text(d.consentText),
       status: d.status,
@@ -154,6 +163,12 @@ export const useRepurchaseStore = defineStore('repurchase', () => {
     transferTimes?: number
     /** 金额，单位「元」；入栈前转分 */
     transferAmountYuan?: number
+    /** B85：资产转移必填，接收客户编号 */
+    toCustomerId?: string
+    /** B85：随转赠金，单位「元」；入栈前转分 */
+    transferGiftYuan?: number
+    /** B85 D6：关联合同号（可选） */
+    contractNo?: string
     consentText?: string
     note?: string
   }): Promise<RepurchaseRecord | null> {
@@ -168,6 +183,11 @@ export const useRepurchaseStore = defineStore('repurchase', () => {
       transferAmount: input.transferAmountYuan != null
         ? Math.round(input.transferAmountYuan * 100)
         : undefined,
+      toCustomerId: input.toCustomerId?.trim() || undefined,
+      transferGift: input.transferGiftYuan != null
+        ? Math.round(input.transferGiftYuan * 100)
+        : undefined,
+      contractNo: input.contractNo?.trim() || undefined,
       consentAck: true,
       consentText: input.consentText?.trim() || undefined,
       note: input.note?.trim() || undefined,

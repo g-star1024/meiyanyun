@@ -193,12 +193,12 @@ function openForm() {
   showForm.value = true
 }
 
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
   const fromCust = customer.get(form.value.fromCustomerId)
   const toCust = customer.get(form.value.toCustomerId)
   if (!fromCust || !toCust) return
-  const t = transfer.create({
+  const t = await transfer.create({
     fromCustomerId: fromCust.id,
     fromCustomerName: fromCust.name,
     toCustomerId: toCust.id,

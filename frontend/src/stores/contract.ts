@@ -1,15 +1,28 @@
 // ============================================================
-// Contract 合同聚合 store
+// Contract 合同聚合 store（P5-B85 卡4 已接真实 txn-service 域 /api/txn/contracts）
 // 一个合同可对应多订单/多资产，承载退款条款（冷静期、违约金比例）。
-// 状态：草稿 → 生效中 → 已履行 / 已终止。
-// 对齐 docs/business-flows.md：合同是交易与退款条款的法律载体。
-// 后端就绪前以内存 + activity 流水兜底。
+// 状态机（后端兜底）：草稿 → 生效中 → 已履行；草稿|生效中 → 已终止（须原因）。
+// 适配层（铁律：模板/样式零改动，只换数据源；公开 API 签名不变）：
+//  - id=contractNo；状态中文四值 ↔ 英文枚举 DRAFT/EFFECTIVE/COMPLETED/TERMINATED
+//  - totalAmount 后端「分」→ 前端「元」；penaltyRate 后端基点万分比 → 前端 0-1 小数
+//  - ordersJson/assetsJson 为后端不透明 TEXT 快照：前端 JSON.parse 容错还原
+//    （orders.amount 单位「元」由前端自约定，仅作展示快照，不进资金台账）
+//  - 后端实体不冗余客户名：load 后按 customerId 逐路 GET /customer/{id} 富化并 hydrate 客户缓存
+//  - 权限/状态机/校验全部后端兜底，400/403/404/409 中文经 errMsg 外露 toast
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useCustomerStore } from './customer'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from './m5Coupon'
 import { shDateStr } from '@/utils/datetime'
+import { getCustomer } from '@/api/customer'
+import {
+  listContracts, createContract, activateContract, completeContract, terminateContract,
+  type ContractDTO, type CreateContractCmd,
+} from '@/api/contract'
 
 export type ContractType = 'COURSE' | 'STORED_VALUE' | 'PACKAGE' | 'SERVICE'
 export type ContractStatus = 'DRAFT' | 'EFFECTIVE' | 'COMPLETED' | 'TERMINATED'
@@ -58,12 +71,57 @@ export const CONTRACT_TYPE_LABEL: Record<ContractType, string> = {
   SERVICE: '服务合同',
 }
 
+/** 后端中文状态 → 前端英文枚举（视图字典 CONTRACT_STATUS 以英文为 key） */
+const STATUS_MAP: Record<string, ContractStatus> = {
+  草稿: 'DRAFT',
+  生效中: 'EFFECTIVE',
+  已履行: 'COMPLETED',
+  已终止: 'TERMINATED',
+}
+
+/** 快照 JSON 容错解析：非法/空一律回退 []（后端不透明 TEXT，绝不让解析异常炸掉列表） */
+function parseOrders(json: string | null): ContractOrder[] {
+  if (!json) return []
+  try {
+    const arr = JSON.parse(json)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .filter((o) => o && typeof o === 'object')
+      .map((o) => ({
+        orderNo: String(o.orderNo ?? ''),
+        amount: Number(o.amount) || 0,
+        itemName: String(o.itemName ?? ''),
+      }))
+  } catch {
+    return []
+  }
+}
+
+/** 卡资产快照容错解析：元素为对象取 cardNo，为字符串原样保留 */
+function parseAssetIds(json: string | null): string[] {
+  if (!json) return []
+  try {
+    const arr = JSON.parse(json)
+    if (!Array.isArray(arr)) return []
+    return arr
+      .map((a) => (a && typeof a === 'object' ? String(a.cardNo ?? '') : String(a ?? '')))
+      .filter((s) => s)
+  } catch {
+    return []
+  }
+}
+
 export const useContractStore = defineStore('contract', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const customer = useCustomerStore()
+  const toast = useToast()
 
   const contracts = ref<Contract[]>([])
-  let seq = 0
+  const loading = ref(false)
+
+  /** 兼容旧演示入口：真实数据由页面 onMounted 调 load 拉取 */
+  function seed() {}
 
   const drafts = computed(() => contracts.value.filter((c) => c.status === 'DRAFT'))
   const effective = computed(() => contracts.value.filter((c) => c.status === 'EFFECTIVE'))
@@ -74,88 +132,157 @@ export const useContractStore = defineStore('contract', () => {
     return contracts.value.find((c) => c.id === id)
   }
 
-  /** 新建/保存草稿 */
-  function saveDraft(input: Partial<Contract> & { customerId: string; customerName: string; title: string; totalAmount: number }): Contract | null {
+  function adapt(d: ContractDTO): Contract {
+    return {
+      id: d.contractNo,
+      contractNo: d.contractNo,
+      customerId: d.customerId,
+      customerName: customer.nameOf(d.customerId),
+      type: (d.contractType || 'COURSE') as ContractType,
+      title: d.title,
+      storeId: d.storeCode,
+      signDate: d.signDate,
+      totalAmount: d.totalAmount / 100,
+      orders: parseOrders(d.ordersJson),
+      assetIds: parseAssetIds(d.assetsJson),
+      coolingDays: d.coolingDays ?? 7,
+      penaltyRate: (d.penaltyRate ?? 2000) / 10000,
+      refundTerms: d.refundTerms ?? '',
+      remarks: d.remarks ?? undefined,
+      signedByName: d.signedBy ?? '',
+      status: STATUS_MAP[d.status] ?? 'DRAFT',
+      createdAt: d.createdAt,
+      effectiveAt: d.effectiveAt ?? undefined,
+      completedAt: d.completedAt ?? undefined,
+      terminatedAt: d.terminatedAt ?? undefined,
+      terminateReason: d.terminateReason ?? undefined,
+    }
+  }
+
+  /** 后端实体不冗余客户名：对未入缓存的 customerId 逐路拉详情富化（列表量小，去重并发） */
+  async function enrichCustomerNames(list: ContractDTO[]) {
+    const missing = [...new Set(
+      list.map((c) => c.customerId).filter((id) => !customer.get(id)),
+    )]
+    if (!missing.length) return
+    const results = await Promise.allSettled(missing.map((id) => getCustomer(id)))
+    const found = results
+      .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof getCustomer>>> => r.status === 'fulfilled')
+      .map((r) => r.value.data)
+    customer.hydrate(found.map((c) => ({
+      customerId: c.customerId,
+      customerName: c.name,
+      phone: c.phone,
+      storeCode: c.storeCode,
+    })))
+  }
+
+  /** 拉取合同列表（后端按 JWT 锁本店数据域，创建时间倒序） */
+  async function load(): Promise<boolean> {
+    loading.value = true
+    try {
+      const res = await listContracts()
+      const list = res.data ?? []
+      await enrichCustomerNames(list)
+      contracts.value = list.map(adapt)
+      return true
+    } catch (e) {
+      contracts.value = []
+      toast.error(errMsg(e, '合同列表加载失败'))
+      return false
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /** 新建草稿（后端无更新端点，本批仅创建；input.id 分支保留签名兼容但不可用） */
+  async function saveDraft(input: Partial<Contract> & { customerId: string; customerName: string; title: string; totalAmount: number }): Promise<Contract | null> {
     if (!auth.can('contract:edit')) {
       console.warn('[contract] 无 contract:edit 权限')
       return null
     }
     if (input.id) {
-      const c = contracts.value.find((x) => x.id === input.id)
-      if (c && c.status === 'DRAFT') {
-        Object.assign(c, input)
-        return c
-      }
+      console.warn('[contract] 后端无合同更新端点，仅支持新建草稿')
       return null
     }
-    seq += 1
-    const c: Contract = {
-      id: nextId('ct'),
-      contractNo: `HT${Date.now().toString().slice(-8)}${seq}`,
+    const cmd: CreateContractCmd = {
       customerId: input.customerId,
-      customerName: input.customerName,
-      type: input.type || 'COURSE',
-      title: input.title,
-      storeId: auth.user.storeId,
+      storeCode: auth.user.storeId,
+      contractType: input.type || 'COURSE',
+      title: input.title.trim(),
       signDate: input.signDate || shDateStr(),
-      totalAmount: input.totalAmount,
-      orders: input.orders || [],
-      assetIds: input.assetIds || [],
+      totalAmount: Math.round(input.totalAmount * 100),
+      ordersJson: input.orders?.length ? JSON.stringify(input.orders) : undefined,
+      assetsJson: input.assetIds?.length
+        ? JSON.stringify(input.assetIds.map((no) => ({ cardNo: no })))
+        : undefined,
       coolingDays: input.coolingDays ?? 7,
-      penaltyRate: input.penaltyRate ?? 0.2,
+      penaltyRate: Math.round((input.penaltyRate ?? 0.2) * 10000),
       refundTerms: input.refundTerms || '',
       remarks: input.remarks,
-      attachments: input.attachments,
-      signedByName: auth.user.name,
-      status: 'DRAFT',
-      createdAt: new Date().toISOString(),
+      signedBy: auth.user.name,
     }
-    contracts.value.unshift(c)
-    activity.log(auth.user.name, `创建合同草稿 ${c.contractNo}：${c.title}`, c.id)
-    return c
+    try {
+      const res = await createContract(cmd)
+      const c = adapt(res.data)
+      activity.log(auth.user.name, `创建合同草稿 ${c.contractNo}：${c.title}`, c.id)
+      await load()
+      return contracts.value.find((x) => x.id === c.id) ?? c
+    } catch (e) {
+      toast.error(errMsg(e, '新建合同草稿失败'))
+      return null
+    }
   }
 
-  /** 生效（草稿 → 生效中） */
-  function activate(id: string): boolean {
-    const c = contracts.value.find((x) => x.id === id)
-    if (!c || c.status !== 'DRAFT') return false
+  /** 生效（草稿 → 生效中；仅生效中可被复购/资产转移单 contractNo 引用） */
+  async function activate(id: string): Promise<boolean> {
     if (!auth.can('contract:edit')) {
       console.warn('[contract] 无 contract:edit 权限')
       return false
     }
-    c.status = 'EFFECTIVE'
-    c.effectiveAt = new Date().toISOString()
-    activity.log(auth.user.name, `合同 ${c.contractNo} 生效`, c.id)
-    return true
+    try {
+      await activateContract(id)
+      activity.log(auth.user.name, `合同 ${id} 生效`, id)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '合同生效失败'))
+      return false
+    }
   }
 
   /** 履行完成（生效中 → 已履行） */
-  function complete(id: string): boolean {
-    const c = contracts.value.find((x) => x.id === id)
-    if (!c || c.status !== 'EFFECTIVE') return false
+  async function complete(id: string): Promise<boolean> {
     if (!auth.can('contract:edit')) {
       console.warn('[contract] 无 contract:edit 权限')
       return false
     }
-    c.status = 'COMPLETED'
-    c.completedAt = new Date().toISOString()
-    activity.log(auth.user.name, `合同 ${c.contractNo} 已履行完成`, c.id)
-    return true
+    try {
+      await completeContract(id)
+      activity.log(auth.user.name, `合同 ${id} 已履行完成`, id)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '合同履行完成失败'))
+      return false
+    }
   }
 
-  /** 终止（生效中 → 已终止，记录原因） */
-  function terminate(id: string, reason: string): boolean {
-    const c = contracts.value.find((x) => x.id === id)
-    if (!c || c.status !== 'EFFECTIVE') return false
+  /** 终止（草稿|生效中 → 已终止，后端强制原因非空） */
+  async function terminate(id: string, reason: string): Promise<boolean> {
     if (!auth.can('contract:edit')) {
       console.warn('[contract] 无 contract:edit 权限')
       return false
     }
-    c.status = 'TERMINATED'
-    c.terminatedAt = new Date().toISOString()
-    c.terminateReason = reason
-    activity.log(auth.user.name, `合同 ${c.contractNo} 已终止：${reason}`, c.id)
-    return true
+    try {
+      await terminateContract(id, reason)
+      activity.log(auth.user.name, `合同 ${id} 已终止：${reason}`, id)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '合同终止失败'))
+      return false
+    }
   }
 
   /** 判断合同是否在冷静期内 */
@@ -173,70 +300,9 @@ export const useContractStore = defineStore('contract', () => {
     return { refund: paidAmount - penalty, penalty, inCooling: false }
   }
 
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const now = Date.now()
-    const seed: Array<Partial<Contract> & {
-      customerName: string; title: string; type: ContractType; status: ContractStatus; totalAmount: number;
-      effectiveDaysAgo?: number;
-    }> = [
-      {
-        customerId: 'C-201', customerName: '王小姐', type: 'COURSE', title: '光子嫩肤 6 次疗程合同',
-        totalAmount: 9800, status: 'EFFECTIVE', coolingDays: 7, penaltyRate: 0.2, effectiveDaysAgo: 12,
-        orders: [{ orderNo: 'SO2026082001', amount: 9800, itemName: '光子嫩肤 6 次卡' }],
-        assetIds: ['times-seed-1'], refundTerms: '冷静期 7 天内无责退款；超期按已消费次数原价扣减后，另收 20% 违约金。',
-      },
-      {
-        customerId: 'C-202', customerName: '李女士', type: 'STORED_VALUE', title: '储值卡充值合同（¥10000 送 ¥1200）',
-        totalAmount: 10000, status: 'EFFECTIVE', coolingDays: 7, penaltyRate: 0.15,
-        orders: [{ orderNo: 'SO2026081801', amount: 10000, itemName: '储值充值 ¥10000' }],
-        refundTerms: '冷静期 7 天内全额退款；赠送金额不退还；超期退款扣除 15% 违约金。',
-      },
-      {
-        customerId: 'C-202', customerName: '李女士', type: 'PACKAGE', title: '热玛吉四代套餐合同',
-        totalAmount: 26800, status: 'COMPLETED', coolingDays: 7, penaltyRate: 0.3,
-        orders: [{ orderNo: 'SO2026071501', amount: 26800, itemName: '热玛吉四代 3 次套餐' }],
-        assetIds: ['times-seed-2'], refundTerms: '套餐一经开启不退款；未消费部分可按原价折算转疗程。',
-      },
-      {
-        customerId: 'C-203', customerName: '张同学', type: 'SERVICE', title: '痤疮治疗季度服务合同',
-        totalAmount: 5980, status: 'DRAFT', coolingDays: 7, penaltyRate: 0.2,
-        orders: [], refundTerms: '季度服务含 6 次复诊；冷静期内可全额退款。',
-      },
-    ]
-    seed.forEach((s, i) => {
-      seq += 1
-      const status = s.status
-      const daysAgo = (s.effectiveDaysAgo ?? 0) + i * 5
-      contracts.value.push({
-        id: nextId('ct'),
-        contractNo: `HT2026082${4 - i}0${i + 1}`,
-        customerId: s.customerId!,
-        customerName: s.customerName,
-        type: s.type,
-        title: s.title,
-        storeId: 'store-jingan',
-        signDate: shDateStr(new Date(now - daysAgo * 86400000)),
-        totalAmount: s.totalAmount,
-        orders: s.orders || [],
-        assetIds: s.assetIds || [],
-        coolingDays: s.coolingDays ?? 7,
-        penaltyRate: s.penaltyRate ?? 0.2,
-        refundTerms: s.refundTerms || '',
-        signedByName: ['苏晴（店长）', '林微（咨询师）', '苏晴（店长）', '林微（咨询师）'][i],
-        status,
-        createdAt: new Date(now - daysAgo * 86400000).toISOString(),
-        effectiveAt: status === 'EFFECTIVE' || status === 'COMPLETED' || status === 'TERMINATED'
-          ? new Date(now - daysAgo * 86400000 + 3600_000).toISOString() : undefined,
-        completedAt: status === 'COMPLETED' ? new Date(now - 2 * 86400000).toISOString() : undefined,
-      })
-    })
-  }
-
   return {
-    contracts, drafts, effective, completed, terminated,
-    get, saveDraft, activate, complete, terminate, inCoolingPeriod, refundEstimate, seed,
+    contracts, loading, drafts, effective, completed, terminated,
+    get, saveDraft, activate, complete, terminate, inCoolingPeriod, refundEstimate,
+    seed, load,
   }
 })

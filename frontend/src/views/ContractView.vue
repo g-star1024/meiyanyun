@@ -27,7 +27,7 @@ const contract = useContractStore()
 const customer = useCustomerStore()
 const auth = useAuthStore()
 
-onMounted(() => contract.seed())
+onMounted(async () => { await contract.load() })
 
 type Tab = 'draft' | 'effective' | 'completed' | 'terminated'
 const tab = ref<Tab>('effective')
@@ -91,28 +91,28 @@ function fmtDateTime(iso?: string) {
 }
 
 // 操作
-function doActivate() {
+async function doActivate() {
   if (selected.value) {
     const id = selected.value.id
-    contract.activate(id)
+    await contract.activate(id)
     selectedId.value = id
     tab.value = 'effective'
   }
 }
-function doComplete() {
+async function doComplete() {
   if (selected.value) {
     const id = selected.value.id
-    contract.complete(id)
+    await contract.complete(id)
     selectedId.value = id
     tab.value = 'completed'
   }
 }
 const showTerminate = ref(false)
 const terminateReason = ref('')
-function doTerminate() {
+async function doTerminate() {
   if (selected.value && terminateReason.value.trim()) {
     const id = selected.value.id
-    contract.terminate(id, terminateReason.value.trim())
+    await contract.terminate(id, terminateReason.value.trim())
     showTerminate.value = false
     terminateReason.value = ''
     selectedId.value = id
@@ -171,11 +171,11 @@ function openForm() {
   }
   showForm.value = true
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
   const c = customer.get(form.value.customerId)
   if (!c) return
-  const ct = contract.saveDraft({
+  const ct = await contract.saveDraft({
     customerId: c.id,
     customerName: c.name,
     title: form.value.title.trim(),

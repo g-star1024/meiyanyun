@@ -1,16 +1,21 @@
-// ============================================================
-// AssetTransfer 资产转移聚合 store（客户间卡余额 / 疗程次数转移）
-// 状态：待审批 → 待财务执行 → 已转移 / 已驳回。
-// 对齐 docs/business-flows.md、permission-matrix.md（transfer:*）。
-// 签署层级由 settings.tierFor(金额) 推导：L1 直达财务；L2/L3 需店长审批。
-// 财务执行时调用 asset.applyTransfer 真实扣减/增加资产。
-// ============================================================
+// 资产转移 —— 真后端接入（复购 bizType=资产转移 镜像看板适配层）
+// 来源（DESIGN-P5-B85 L169 权威定案）：资产转移不落新端点，复用 RepurchaseService（bizType='资产转移'）。
+//   create → POST /txn/repurchase（from/toCardNo 由本 store 依客户持卡自动解析，须同品项/归属/在用/余额校验）
+//   列表 → GET /txn/repurchase 过滤 bizType='资产转移'，派生 Transfer 读模型
+//   approve/reject/execute → 由审批中心真链路承担（RepurchaseRecord.sign × 3 三方签核），本 store 只留读投影＋发起
+// 状态映射：待签核→PENDING_REVIEW / 审批中→PENDING_FINANCE / 已完成→TRANSFERRED / 已拒绝→REJECTED
+// 单位口径：后端分 → 前端元（amount）；签核时间戳取 sign3（终签）。
 import { defineStore } from 'pinia'
-import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useCustomerStore } from './customer'
 import { useSettingsStore } from './settings'
-import { useAssetStore } from './asset'
+import { useToast } from '../composables/useToast'
+import { errMsg } from './m5Coupon'
+import { createRepurchase, listRepurchase } from '../api/repurchase'
+import type { RepurchaseDTO } from '../api/repurchase'
+import { getCustomer, listCustomerCards } from '../api/customer'
+import type { MemberCardDTO } from '../api/customer'
 
 export type TransferAssetType = 'CASH' | 'TIMES'
 export type TransferStatus = 'PENDING_REVIEW' | 'PENDING_FINANCE' | 'TRANSFERRED' | 'REJECTED'
@@ -23,9 +28,7 @@ export interface Transfer {
   toCustomerId: string
   toCustomerName: string
   assetType: TransferAssetType
-  /** 现金型：转移金额 */
   amount?: number
-  /** 次数型：转移次数 */
   times?: number
   itemSku?: string
   itemName?: string
@@ -42,222 +45,215 @@ export interface Transfer {
   rejectionByName?: string
 }
 
-export const useTransferStore = defineStore('transfer', () => {
-  const auth = useAuthStore()
-  const settings = useSettingsStore()
-  const activity = useActivityStore()
-  const asset = useAssetStore()
+// 中文状态 → TransferStatus 四段映射（复购 sign1/2/3 三方签核 → REVIEW/FINANCE 两段投影）
+const STATUS_MAP: Record<string, TransferStatus> = {
+  待签核: 'PENDING_REVIEW',
+  审批中: 'PENDING_FINANCE',
+  已完成: 'TRANSFERRED',
+  已拒绝: 'REJECTED',
+}
 
-  const transfers = ref<Transfer[]>([])
-  let seq = 0
+function text(v: unknown): string {
+  return v == null ? '' : String(v)
+}
 
-  const pendingReview = computed(() => transfers.value.filter((t) => t.status === 'PENDING_REVIEW'))
-  const pendingFinance = computed(() => transfers.value.filter((t) => t.status === 'PENDING_FINANCE'))
-  const transferred = computed(() => transfers.value.filter((t) => t.status === 'TRANSFERRED'))
-  const rejected = computed(() => transfers.value.filter((t) => t.status === 'REJECTED'))
+function num(v: unknown): number {
+  const n = Number(v)
+  return Number.isFinite(n) ? n : 0
+}
 
-  function get(id: string) {
-    return transfers.value.find((t) => t.id === id)
-  }
-
-  /** 发起资产转移 */
-  function create(input: {
-    fromCustomerId: string
-    fromCustomerName: string
-    toCustomerId: string
-    toCustomerName: string
-    assetType: TransferAssetType
-    amount?: number
-    times?: number
-    itemSku?: string
-    itemName?: string
-    reason: string
-  }): Transfer | null {
-    if (!auth.can('transfer:create')) {
-      console.warn('[transfer] 无 transfer:create 权限')
-      return null
-    }
-    if (input.fromCustomerId === input.toCustomerId) {
-      console.warn('[transfer] 转出与转入客户不能相同')
-      return null
-    }
-    if (input.assetType === 'CASH') {
-      if (!input.amount || input.amount <= 0) return null
-    } else {
-      if (!input.times || input.times <= 0) return null
-    }
-    // 校验转出方资产充足
-    const acct = asset.account(input.fromCustomerId)
-    if (input.assetType === 'CASH') {
-      if (acct.totalBalance < (input.amount || 0)) {
-        console.warn('[transfer] 转出方余额不足')
-        return null
-      }
-    } else {
-      const hit = acct.timesAssets.find((a) => a.itemSku === input.itemSku)
-      if (!hit || hit.remainingTimes < (input.times || 0)) {
-        console.warn('[transfer] 转出方疗程次数不足')
-        return null
-      }
-    }
-    seq += 1
-    const tier = settings.tierFor(input.assetType === 'CASH' ? input.amount! : input.times! * 1000)
-    const t: Transfer = {
-      id: nextId('tr'),
-      transferNo: `AT${Date.now().toString().slice(-8)}${seq}`,
-      fromCustomerId: input.fromCustomerId,
-      fromCustomerName: input.fromCustomerName,
-      toCustomerId: input.toCustomerId,
-      toCustomerName: input.toCustomerName,
-      assetType: input.assetType,
-      amount: input.amount,
-      times: input.times,
-      itemSku: input.itemSku,
-      itemName: input.itemName,
-      reason: input.reason,
-      applicantName: auth.user.name,
-      signTier: tier,
-      status: tier === 'L1' ? 'PENDING_FINANCE' : 'PENDING_REVIEW',
-      createdAt: new Date().toISOString(),
-    }
-    transfers.value.unshift(t)
-    activity.log(
-      auth.user.name,
-      `发起资产转移 ${t.transferNo}：${input.fromCustomerName} → ${input.toCustomerName}，${
-        input.assetType === 'CASH' ? `¥${input.amount}` : `${input.itemName} × ${input.times} 次`
-      }（${tier}）`,
-      t.id,
-    )
-    return t
-  }
-
-  /** 店长/区域审批通过，进入财务执行 */
-  function approve(id: string): boolean {
-    const t = transfers.value.find((x) => x.id === id)
-    if (!t || t.status !== 'PENDING_REVIEW') return false
-    if (!auth.can('transfer:approve')) {
-      console.warn('[transfer] 无 transfer:approve 权限')
-      return false
-    }
-    t.status = 'PENDING_FINANCE'
-    t.reviewedByName = auth.user.name
-    t.reviewedAt = new Date().toISOString()
-    activity.log(auth.user.name, `资产转移 ${t.transferNo} 审批通过，进入财务执行`, t.id)
-    return true
-  }
-
-  /** 驳回 */
-  function reject(id: string, reason: string): boolean {
-    const t = transfers.value.find((x) => x.id === id)
-    if (!t || (t.status !== 'PENDING_REVIEW' && t.status !== 'PENDING_FINANCE')) return false
-    if (!auth.can('transfer:approve')) {
-      console.warn('[transfer] 无 transfer:approve 权限')
-      return false
-    }
-    t.status = 'REJECTED'
-    t.rejectionReason = reason
-    t.rejectionByName = auth.user.name
-    activity.log(auth.user.name, `资产转移 ${t.transferNo} 已驳回：${reason}`, t.id)
-    return true
-  }
-
-  /** 财务执行转移：真实扣减/增加资产 */
-  function execute(id: string): boolean {
-    const t = transfers.value.find((x) => x.id === id)
-    if (!t || t.status !== 'PENDING_FINANCE') return false
-    if (!auth.can('transfer:edit')) {
-      console.warn('[transfer] 无 transfer:edit 权限')
-      return false
-    }
-    const ok = asset.applyTransfer({
-      fromCustomerId: t.fromCustomerId,
-      toCustomerId: t.toCustomerId,
-      assetType: t.assetType,
-      amount: t.amount,
-      times: t.times,
-      itemSku: t.itemSku,
-      itemName: t.itemName,
-      operatorName: auth.user.name,
-      remark: t.transferNo,
-    })
-    if (!ok) {
-      console.warn('[transfer] 资产执行失败（可能余额/次数已变动）')
-      return false
-    }
-    t.status = 'TRANSFERRED'
-    t.financeByName = auth.user.name
-    t.transferredAt = new Date().toISOString()
-    activity.log(
-      auth.user.name,
-      `资产转移 ${t.transferNo} 执行完成：${t.fromCustomerName} → ${t.toCustomerName}，${
-        t.assetType === 'CASH' ? `¥${t.amount}` : `${t.itemName} × ${t.times} 次`
-      }`,
-      t.id,
-    )
-    return true
-  }
-
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const now = Date.now()
-    const seed: Array<Partial<Transfer> & {
-      fromCustomerName: string; toCustomerName: string; reason: string;
-      assetType: TransferAssetType; status: TransferStatus; signTier: 'L1' | 'L2' | 'L3'
-    }> = [
-      {
-        fromCustomerId: 'C-201', fromCustomerName: '王小姐', toCustomerId: 'C-202', toCustomerName: '李静',
-        assetType: 'CASH', amount: 2000, reason: '客户要求将部分储值转至家人账户',
-        status: 'PENDING_REVIEW', signTier: 'L2',
-      },
-      {
-        fromCustomerId: 'C-201', fromCustomerName: '王小姐', toCustomerId: 'C-202', toCustomerName: '李静',
-        assetType: 'TIMES', itemSku: 'SKU-OPT-01', itemName: '光子嫩肤疗程', times: 2,
-        reason: '剩余疗程转给同行好友', status: 'PENDING_FINANCE', signTier: 'L1',
-      },
-      {
-        fromCustomerId: 'C-202', fromCustomerName: '李静', toCustomerId: 'C-201', toCustomerName: '王小姐',
-        assetType: 'CASH', amount: 500, reason: '代付分摊转回',
-        status: 'TRANSFERRED', signTier: 'L1',
-      },
-      {
-        fromCustomerId: 'C-201', fromCustomerName: '王小姐', toCustomerId: 'C-202', toCustomerName: '李静',
-        assetType: 'CASH', amount: 9800, reason: '大额储值转移（信息待核实）',
-        status: 'REJECTED', signTier: 'L3',
-      },
-    ]
-    seed.forEach((s, i) => {
-      seq += 1
-      transfers.value.push({
-        id: nextId('tr'),
-        transferNo: `AT2026082${4 - i}0${i + 1}`,
-        fromCustomerId: s.fromCustomerId!,
-        fromCustomerName: s.fromCustomerName,
-        toCustomerId: s.toCustomerId!,
-        toCustomerName: s.toCustomerName,
-        assetType: s.assetType,
-        amount: s.amount,
-        times: s.times,
-        itemSku: s.itemSku,
-        itemName: s.itemName,
-        reason: s.reason,
-        applicantName: ['苏晴（店长）', '林微（咨询师）', '夏沫（前台）', '陈野（区域）'][i],
-        signTier: s.signTier,
-        status: s.status,
-        createdAt: new Date(now - i * 7200_000).toISOString(),
-        reviewedByName: s.status === 'PENDING_FINANCE' || s.status === 'TRANSFERRED' ? '陈野（区域）' : undefined,
-        reviewedAt: s.status === 'PENDING_FINANCE' || s.status === 'TRANSFERRED' ? new Date(now - i * 7200_000 + 1800_000).toISOString() : undefined,
-        financeByName: s.status === 'TRANSFERRED' ? '钱进（财务）' : undefined,
-        transferredAt: s.status === 'TRANSFERRED' ? new Date(now - i * 7200_000 + 3600_000).toISOString() : undefined,
-        rejectionReason: s.status === 'REJECTED' ? '单笔金额过大且双方关系无法核实，需客户本人到院签署确认' : undefined,
-        rejectionByName: s.status === 'REJECTED' ? '陈野（区域）' : undefined,
-      })
-    })
-  }
-
+// RepurchaseDTO（bizType=资产转移）→ Transfer 读模型
+function adapt(d: RepurchaseDTO): Transfer {
+  const times = num(d.transferTimes)
+  const amount = num(d.transferAmount) / 100
+  // 后端 Repurchase 无 signTier 列 —— 读投影按 settings 阈值本地推导（TIMES 按 times*1000 元估算，与历史口径一致）
+  const tier = useSettingsStore().tierFor(times > 0 ? times * 1000 : amount)
   return {
-    transfers, pendingReview, pendingFinance, transferred, rejected,
-    get, create, approve, reject, execute, seed,
+    id: text(d.repurchaseNo),
+    transferNo: text(d.repurchaseNo),
+    fromCustomerId: text(d.customerId),
+    fromCustomerName: useCustomerStore().nameOf(text(d.customerId)),
+    toCustomerId: text(d.toCustomerId),
+    toCustomerName: useCustomerStore().nameOf(text(d.toCustomerId)),
+    assetType: times > 0 ? 'TIMES' : 'CASH',
+    amount: times > 0 ? undefined : amount,
+    times: times > 0 ? times : undefined,
+    reason: text(d.note),
+    applicantName: text(d.sign2),
+    signTier: tier,
+    status: STATUS_MAP[text(d.status)] ?? 'PENDING_REVIEW',
+    createdAt: text(d.createdAt),
+    reviewedByName: text(d.sign3) || undefined,
+    reviewedAt: text(d.signedAt3) || undefined,
+    transferredAt: text(d.status) === '已完成' ? text(d.signedAt3) || undefined : undefined,
   }
+}
+
+export const useTransferStore = defineStore('transfer', {
+  state: () => ({
+    transfers: [] as Transfer[],
+    loading: false as boolean,
+    seeded: false as boolean,
+  }),
+  getters: {
+    byStatus:
+      s =>
+      (st: TransferStatus): Transfer[] =>
+        s.transfers.filter(t => t.status === st),
+    ofCustomer:
+      s =>
+      (custId: string): Transfer[] =>
+        s.transfers.filter(t => t.fromCustomerId === custId || t.toCustomerId === custId),
+    pendingReview: s => s.transfers.filter(t => t.status === 'PENDING_REVIEW'),
+    pendingFinance: s => s.transfers.filter(t => t.status === 'PENDING_FINANCE'),
+    transferred: s => s.transfers.filter(t => t.status === 'TRANSFERRED'),
+    rejected: s => s.transfers.filter(t => t.status === 'REJECTED'),
+    get:
+      s =>
+      (id: string): Transfer | undefined =>
+        s.transfers.find(t => t.id === id),
+  },
+  actions: {
+    // 后端实体不冗余客户名：对未入缓存的 customerId/toCustomerId 逐路拉详情富化（同 repurchase 样板）
+    async enrichCustomerNames(list: RepurchaseDTO[]) {
+      const customer = useCustomerStore()
+      const ids = new Set<string>()
+      for (const d of list) {
+        if (d.customerId) ids.add(text(d.customerId))
+        if (d.toCustomerId) ids.add(text(d.toCustomerId))
+      }
+      const missing = [...ids].filter(id => id && !customer.get(id))
+      if (!missing.length) return
+      const results = await Promise.allSettled(missing.map(id => getCustomer(id)))
+      const found = results
+        .filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof getCustomer>>> => r.status === 'fulfilled')
+        .map(r => r.value.data)
+      customer.hydrate(found.map(c => ({
+        customerId: c.customerId,
+        customerName: c.name,
+        phone: c.phone,
+        storeCode: c.storeCode,
+      })))
+    },
+
+    async load() {
+      this.loading = true
+      try {
+        const list = ((await listRepurchase()).data ?? []).filter(d => text(d.bizType) === '资产转移')
+        await this.enrichCustomerNames(list)
+        this.transfers = list.map(adapt)
+      } catch (e) {
+        useToast().error(errMsg(e, '资产转移列表加载失败'))
+      } finally {
+        this.loading = false
+      }
+    },
+
+    // 选卡：from 卡须属 fromCustomerId、在用、余额/次数足；to 卡须属 toCustomerId、在用、同品项（次数）。
+    pickCards(
+      fromCards: MemberCardDTO[],
+      toCards: MemberCardDTO[],
+      input: { assetType: TransferAssetType; amount?: number; times?: number; itemSku?: string },
+    ): { fromCardNo: string; toCardNo: string } | null {
+      const toast = useToast()
+      const alive = (c: MemberCardDTO) => text(c.status) === '在用'
+      if (input.assetType === 'TIMES') {
+        const sku = text(input.itemSku)
+        const from = fromCards.find(c => alive(c) && text(c.productCode) === sku && num(c.remainTimes) >= num(input.times))
+        if (!from) {
+          toast.error(`转出客户无可用品项 ${sku} 且剩余次数充足的疗程卡`)
+          return null
+        }
+        const to = toCards.find(c => alive(c) && text(c.productCode) === sku)
+        if (!to) {
+          toast.error(`接收客户无同品项 ${sku} 的在用疗程卡（次数转移要求同品项）`)
+          return null
+        }
+        return { fromCardNo: text(from.cardNo), toCardNo: text(to.cardNo) }
+      }
+      const amountFen = Math.round(num(input.amount) * 100)
+      // 储值口径与 CardCourseView 一致：cardType 非 'COURSE' 即余额卡（真数据含 '储值卡'/'' 等快照值）
+      const isCashCard = (c: MemberCardDTO) => text(c.cardType) !== 'COURSE'
+      const from = fromCards.find(c => alive(c) && isCashCard(c) && num(c.balance) >= amountFen)
+      if (!from) {
+        toast.error('转出客户无余额充足的在用储值卡')
+        return null
+      }
+      const to = toCards.find(c => alive(c) && isCashCard(c))
+      if (!to) {
+        toast.error('接收客户无在用储值卡')
+        return null
+      }
+      return { fromCardNo: text(from.cardNo), toCardNo: text(to.cardNo) }
+    },
+
+    async create(input: {
+      fromCustomerId: string
+      fromCustomerName: string
+      toCustomerId: string
+      toCustomerName: string
+      assetType: TransferAssetType
+      amount?: number
+      times?: number
+      itemSku?: string
+      itemName?: string
+      reason: string
+    }): Promise<Transfer | null> {
+      const auth = useAuthStore()
+      const toast = useToast()
+      try {
+        const [fromRes, toRes] = await Promise.all([
+          listCustomerCards(input.fromCustomerId),
+          listCustomerCards(input.toCustomerId),
+        ])
+        const picked = this.pickCards(fromRes.data ?? [], toRes.data ?? [], input)
+        if (!picked) return null
+        const cmd = {
+          customerId: input.fromCustomerId,
+          storeCode: auth.user.storeId,
+          bizType: '资产转移',
+          fromCardNo: picked.fromCardNo,
+          toCardNo: picked.toCardNo,
+          toCustomerId: input.toCustomerId,
+          transferTimes: input.assetType === 'TIMES' ? input.times : undefined,
+          transferAmount: input.assetType === 'CASH' ? Math.round(num(input.amount) * 100) : undefined,
+          consentAck: true,
+          consentText: '资产转移知情同意（双方）',
+          note: input.reason,
+        }
+        await createRepurchase(cmd)
+        await this.load()
+        const t = this.transfers[0]
+        useActivityStore().log(
+          auth.user.name,
+          `资产转移申请 ${input.fromCustomerName} → ${input.toCustomerName}（${input.assetType === 'CASH' ? `¥${input.amount}` : `${input.times} 次`}），已提交三方签核`,
+          t?.transferNo ?? '',
+        )
+        return t ?? null
+      } catch (e) {
+        toast.error(errMsg(e, '转移申请提交失败'))
+        return null
+      }
+    },
+
+    // approve/reject/execute 由审批中心真链路承担（RepurchaseRecord.sign 三方签核）—— DESIGN L169
+    approve(_no: string, _byName?: string): boolean {
+      useToast().info('资产转移签核请至「复购/审批中心」完成三方签核')
+      return false
+    },
+    reject(_no: string, _reason?: string): boolean {
+      useToast().info('资产转移拒绝请至「复购/审批中心」操作')
+      return false
+    },
+    execute(_no: string, _byName?: string): boolean {
+      useToast().info('资产转移执行在签核完成后由台账自动搬账，见「复购/审批中心」')
+      return false
+    },
+
+    // 视图 onMounted 兼容钩子 —— 改调真加载
+    async seed() {
+      await this.load()
+      this.seeded = true
+    },
+  },
 })
