@@ -283,9 +283,11 @@ async function openRoles(s: Staff) {
   }
 }
 
-// 已持「全局」行的角色通吃所有范围，不再出现在可授列表；仅范围行的角色可继续补授其他范围或升级全局
+// 已持「全局」行的角色通吃所有范围，不再出现在可授列表——主角色 '' 锚点行除外（可继续授予范围行，
+// 兼岗路由按主角色∪兼岗并集生效）；仅范围行的角色可继续补授其他范围或升级全局
 const assignableRoles = computed(() =>
-  activeRoles.value.filter((r) => !staffRoles.value.some((row) => row.roleCode === r.roleCode && !row.orgCode)),
+  activeRoles.value.filter((r) => r.roleCode === staffPrimary.value
+    || !staffRoles.value.some((row) => row.roleCode === r.roleCode && !row.orgCode)),
 )
 const assignRoleOptions = computed(() => [
   { value: '', label: '选择要授予的兼岗角色' },
@@ -327,7 +329,7 @@ async function onAddRole() {
 async function onRemoveRole(row: StaffRoleScopeRow) {
   const s = activeStaff.value
   if (!s) return
-  if (row.roleCode === staffPrimary.value) {
+  if (row.roleCode === staffPrimary.value && !row.orgCode) {
     toast.warning('主角色不可直接摘除，请先通过「调整主角色」切换')
     return
   }
@@ -598,7 +600,7 @@ onMounted(() => { seed() })
                 @click="onSetPrimary(row.roleCode)"
               >设为主角色</CButton>
               <CButton
-                v-if="canAssign && row.roleCode !== staffPrimary"
+                v-if="canAssign && (row.roleCode !== staffPrimary || row.orgCode)"
                 variant="text" size="sm"
                 @click="onRemoveRole(row)"
               >摘除</CButton>

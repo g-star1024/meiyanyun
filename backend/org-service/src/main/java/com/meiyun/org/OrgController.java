@@ -263,9 +263,11 @@ public class OrgController {
      *
      * <p>命中口径与公开 /staff 一致——主角色 staff.role_code 或兼岗 staff_role.role_code 任一命中即返回，
      * 且仅返回在职（status=在职）。无 DataScope（系统内部任务使用，调用方持 internal:name-map）。
-     * storeCode / region 为可选收敛过滤：REGION_MGR 无门店归属，调方传 storeCode 时主角色路径仍把门店
-     * 解析为区域按 staff.region 过滤，兼岗路径改按 staff_role.org_code 范围命中（''=全局通吃，
-     * 否则须等于本单大区节点码或门店节点码）；STORE_MGR / FINANCE 直接忽略 region（前者按门店、后者全量）。
+     * storeCode / region 为可选收敛过滤：REGION_MGR 无门店归属，调方传 storeCode 时把门店解析为区域，
+     * 同一员工两路径按并集判定——主角色命中（staff.role_code=role 且 staff.region 等值）或兼任者范围
+     * 命中（staff_role.org_code ∈ {''=全局, 本单大区节点码, 本单门店节点码}）任一成立即保留；主角色双写
+     * 的 '' 锚点行仅对纯兼任者（主角色≠role）计全局通吃，防主角色者借 '' 绕行；
+     * STORE_MGR / FINANCE 直接忽略 region（前者按门店、后者全量）。
      */
     @GetMapping("/internal/staff/by-role")
     @RequirePerm("internal:name-map")
@@ -295,18 +297,16 @@ public class OrgController {
             if (!"在职".equals(s.getStatus())) continue;
             if (storeCode != null && !storeCode.isBlank()) {
                 if (regionScoped) {
-                    // 主角色路径仍按 staff.region 等值；兼岗路径按 staff_role.org_code 范围命中
-                    // （''=全局 / 大区节点码 / 门店节点码），不看 staff.region——主角色双写的 '' 行
-                    // 归主角色路径，避免兼任者借双写行绕过范围。
-                    boolean hit;
-                    if (role.equals(s.getRoleCode())) {
-                        hit = storeRegion != null && storeRegion.equals(s.getRegion());
-                    } else {
-                        hit = extraScopes.getOrDefault(s.getStaffId(), List.of()).stream()
-                                .anyMatch(sc -> sc == null || sc.isEmpty()
-                                        || sc.equals(regionNodeCode) || sc.equals(storeNodeCode));
-                    }
-                    if (!hit) continue;
+                    // 并集口径（§4.1）：主角色命中（staff.region 等值）OR 兼任者范围命中
+                    // （staff_role.org_code ∈ {'', 大区节点码, 门店节点码}）任一成立即保留；
+                    // 主角色双写的 '' 锚点行仅对纯兼任者（主角色≠role）计全局，防借 '' 绕行。
+                    boolean primaryHit = role.equals(s.getRoleCode())
+                            && storeRegion != null && storeRegion.equals(s.getRegion());
+                    boolean scopeHit = extraScopes.getOrDefault(s.getStaffId(), List.of()).stream()
+                            .anyMatch(sc -> (sc == null || sc.isEmpty())
+                                    ? !role.equals(s.getRoleCode())
+                                    : sc.equals(regionNodeCode) || sc.equals(storeNodeCode));
+                    if (!primaryHit && !scopeHit) continue;
                 } else if (!storeCode.trim().equals(s.getStoreCode())) {
                     continue;
                 }

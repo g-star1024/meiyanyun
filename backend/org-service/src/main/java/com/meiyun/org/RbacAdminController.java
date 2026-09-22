@@ -215,17 +215,17 @@ public class RbacAdminController {
         return Map.of("staffId", id, "roleCode", roleCode, "orgCode", orgCode, "added", added);
     }
 
-    /** 摘除兼岗角色：主角色不可摘（请先调整主角色）；内置角色仅当非主角色时可摘。 */
+    /** 摘除兼岗角色：主角色 '' 锚点行不可摘（请先调整主角色）；同角色非空范围行可摘（授摘对称）。 */
     @DeleteMapping("/admin/staff/{id}/roles/{roleCode}")
     @RequirePerm("role:assign")
     @Transactional
     public Map<String, Object> removeStaffRole(@PathVariable String id, @PathVariable String roleCode,
                                                @RequestParam(value = "orgCode", required = false, defaultValue = "") String orgCode) {
         Staff s = getManageableStaff(id);
-        if (roleCode.equals(s.getRoleCode())) {
+        String scope = orgCode == null ? "" : orgCode.trim();
+        if (scope.isEmpty() && roleCode.equals(s.getRoleCode())) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "主角色不可摘除，请先调整主角色");
         }
-        String scope = orgCode == null ? "" : orgCode.trim();
         boolean removed = staffRoleRepo.findById(new StaffRole.Key(id, roleCode, scope))
                 .map(sr -> {
                     staffRoleRepo.delete(sr);
