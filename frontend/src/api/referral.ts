@@ -121,3 +121,71 @@ export const grantReferralReward = (rewardId: string) =>
 
 export const rejectReferralReward = (rewardId: string, reason?: string) =>
   client.put<ReferralRewardRow>(`/customer/referral/rewards/${rewardId}/reject`, { reason })
+
+// ============================================================
+// P5-B89 转介绍活动四 mock 块后端化：活动列表 / 全局配置读写 / 邀请排行。
+// 奖励类型与前端词表一致（POINTS/COUPON/CASH，V47 chk 独立词表），
+// ladders.amount 口径为「元」（与前端活规格一致，无需换算）。
+// ============================================================
+
+export interface ReferralCampaignRow {
+  campaignId: string
+  name: string
+  status: string
+  startAt: string
+  endAt: string
+  storeCode: string | null
+  remark: string | null
+  createdBy: string | null
+  createdAt: string
+}
+
+export interface ReferralCampaignLadder {
+  threshold: number
+  type: string
+  amount: number
+  desc: string
+}
+
+export interface ReferralCampaignLevel {
+  level: number
+  rate: number
+  desc: string
+}
+
+export interface ReferralCampaignConfigRow {
+  rewardType: string
+  validDays: number
+  script: string
+  ladders: ReferralCampaignLadder[]
+  levels: ReferralCampaignLevel[]
+  updatedBy: string | null
+  updatedAt: string | null
+}
+
+export interface ReferralCampaignConfigInput {
+  rewardType?: string
+  validDays?: number
+  script?: string
+  ladders?: ReferralCampaignLadder[]
+  levels?: ReferralCampaignLevel[]
+}
+
+export interface TopReferrerRow {
+  referrerCustomerId: string
+  name: string | null
+  total: number
+  deal: number
+}
+
+export const fetchReferralCampaigns = () =>
+  client.get<ReferralCampaignRow[]>('/customer/referral/campaigns')
+
+export const fetchReferralCampaignConfig = () =>
+  client.get<ReferralCampaignConfigRow>('/customer/referral/campaign-config')
+
+export const putReferralCampaignConfig = (body: ReferralCampaignConfigInput) =>
+  client.put<ReferralCampaignConfigRow>('/customer/referral/campaign-config', body)
+
+export const fetchTopReferrers = (limit = 5) =>
+  client.get<TopReferrerRow[]>('/customer/referral/top-referrers', { params: { limit } })
