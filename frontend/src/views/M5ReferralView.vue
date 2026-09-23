@@ -57,10 +57,11 @@ function rewardLabel(t: RewardType, n: number) {
   return money(n)
 }
 
-const STATUS_PILL: Record<string, 'default' | 'primary' | 'info' | 'success'> = {
+const STATUS_PILL: Record<string, 'default' | 'primary' | 'info' | 'success' | 'danger'> = {
   PENDING: 'default', CONFIRMED: 'primary', VISITED: 'info', DEAL: 'success',
+  EXPIRED: 'default', REJECTED: 'danger',
 }
-const REWARD_PILL: Record<string, 'warning' | 'success'> = { PENDING: 'warning', PAID: 'success' }
+const REWARD_PILL: Record<string, 'warning' | 'success' | 'danger'> = { PENDING: 'warning', PAID: 'success', REJECTED: 'danger' }
 
 function fmtTime(iso: string) {
   try { return new Date(iso).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) } catch { return iso }
@@ -138,9 +139,9 @@ function openApprove() {
   approveTarget.value = selected.value
   showApprove.value = true
 }
-function confirmApprove() {
+async function confirmApprove() {
   if (approveTarget.value) {
-    const ok = store.approveReward(approveTarget.value.id)
+    const ok = await store.approveReward(approveTarget.value.id)
     if (ok) showApprove.value = false
   }
 }

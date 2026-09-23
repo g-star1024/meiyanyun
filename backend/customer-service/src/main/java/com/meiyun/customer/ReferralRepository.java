@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.time.OffsetDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -31,6 +32,10 @@ public interface ReferralRepository extends JpaRepository<Referral, String>, Jpa
 
     /** 被推荐人活跃绑定查重（与 V44 部分唯一索引 uk_referral_referee_active 同口径：代码友好报错 + 索引兜底）。 */
     boolean existsByRefereeCustomerIdAndStatusIn(String refereeCustomerId, List<String> statuses);
+
+    /** 卡3 列表富化：按推荐人批量统计累计推荐数（group by 一次查询，防 N+1）。 */
+    @Query("select r.referrerCustomerId, count(r) from Referral r where r.referrerCustomerId in :ids group by r.referrerCustomerId")
+    List<Object[]> countGroupByReferrer(@Param("ids") Collection<String> ids);
 
     /** 到期扫描（ReferralExpireJob：expire_at 已过且状态仍活跃的单，按到期时间升序批处理）。 */
     List<Referral> findByStatusInAndExpireAtBeforeOrderByExpireAtAsc(List<String> statuses, OffsetDateTime now, Pageable pageable);

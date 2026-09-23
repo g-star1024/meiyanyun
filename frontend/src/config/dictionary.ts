@@ -311,6 +311,7 @@ export const REFERRAL_STATUS = {
   REJECTED: { value: 'REJECTED', label: '已拒绝', color: 'danger' },
   VISITED: { value: 'VISITED', label: '已到访', color: 'success' },
   DEAL: { value: 'DEAL', label: '已成交', color: 'success' },
+  EXPIRED: { value: 'EXPIRED', label: '已过期', color: 'info' },
 } as const
 
 // ===== 工单相关 =====
@@ -364,6 +365,7 @@ export const RECTIFY_STATUS = {
 export const REWARD_STATUS = {
   PENDING: { value: 'PENDING', label: '待发放', color: 'warning' },
   PAID: { value: 'PAID', label: '已发放', color: 'success' },
+  REJECTED: { value: 'REJECTED', label: '已驳回', color: 'danger' },
 } as const
 
 // ===== 恢复状态（术后回访） =====

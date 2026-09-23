@@ -135,7 +135,7 @@ export const useM5ReferralCampaignStore = defineStore('m5ReferralCampaign', () =
   }
 
   /** 审核通过并发放奖励（委托 referral.payReward，需要 referral:approve） */
-  function approveReward(id: string): boolean {
+  async function approveReward(id: string): Promise<boolean> {
     return referral.payReward(id)
   }
 

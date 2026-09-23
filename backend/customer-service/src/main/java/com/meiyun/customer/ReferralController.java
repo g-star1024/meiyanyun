@@ -81,10 +81,38 @@ public class ReferralController {
         spec = spec.and(DataScope.storeSpec("storeCode"));
         Page<Referral> p = referralRepo.findAll(spec, pageable);
         Set<String> ids = new HashSet<>();
-        p.getContent().forEach(r -> { ids.add(r.getReferrerCustomerId()); ids.add(r.getRefereeCustomerId()); });
+        Set<String> referrerIds = new HashSet<>();
+        p.getContent().forEach(r -> {
+            ids.add(r.getReferrerCustomerId());
+            ids.add(r.getRefereeCustomerId());
+            referrerIds.add(r.getReferrerCustomerId());
+        });
         Map<String, Customer> custMap = new HashMap<>();
         if (!ids.isEmpty()) customerRepo.findAllById(ids).forEach(c -> custMap.put(c.getCustomerId(), c));
-        return p.map(r -> row(r, custMap));
+        // 卡3 前端接真富化：最新一条奖励 + 推荐人等级 + 累计推荐数（批量查询防 N+1，HashMap 空安全）
+        List<String> refIds = p.getContent().stream().map(Referral::getReferralId).toList();
+        Map<String, ReferralReward> latestReward = new HashMap<>();
+        if (!refIds.isEmpty()) rewardRepo.findByReferralIdInOrderByCreatedAtDesc(refIds)
+                .forEach(w -> latestReward.putIfAbsent(w.getReferralId(), w));
+        Map<String, Long> referrerTotal = new HashMap<>();
+        if (!referrerIds.isEmpty()) referralRepo.countGroupByReferrer(referrerIds)
+                .forEach(row -> referrerTotal.put((String) row[0], (Long) row[1]));
+        return p.map(r -> {
+            Map<String, Object> m = row(r, custMap);
+            Customer referrer = custMap.get(r.getReferrerCustomerId());
+            m.put("referrerLevel", referrer != null ? referrer.getLevel() : null);
+            m.put("referrerTotal", referrerTotal.getOrDefault(r.getReferrerCustomerId(), 0L));
+            ReferralReward w = latestReward.get(r.getReferralId());
+            if (w != null) {
+                m.put("rewardId", w.getRewardId());
+                m.put("rewardType", w.getRewardType());
+                m.put("rewardAmountCents", w.getAmountCents());
+                m.put("rewardPoints", w.getPoints());
+                m.put("rewardStatus", w.getStatus());
+                m.put("rewardPaidAt", w.getGrantedAt());
+            }
+            return m;
+        });
     }
 
     /** 四 KPI：总量 / 待确认 / 已到访 / 成交金额（分，DEAL 态求和）。 */
