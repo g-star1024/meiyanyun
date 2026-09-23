@@ -1,5 +1,6 @@
 package com.meiyun.customer;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.meiyun.customer.audit.AuditRecorder;
@@ -9,6 +10,7 @@ import jakarta.persistence.criteria.Predicate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.web.PageableDefault;
@@ -29,6 +31,8 @@ import java.util.Set;
  * 状态机：PENDING→CONFIRMED→VISITED→DEAL；PENDING→REJECTED；PENDING/CONFIRMED→EXPIRED（卡2 Job）。
  * D3-A：EXPIRED/REJECTED 释放绑定，被推荐人可被重新推荐（部分唯一索引 uk_referral_referee_active）。
  * D4-A：奖励 v1 手动登记，idem_key={referralId}:{triggerEvent}:{rewardType} 幂等（v2 自动发放挂钩点）。
+ * P5-B89 转介绍活动四端点（卡1）：活动列表 / 全局配置读写 / 邀请排行；
+ * D2 奖励自动发放链路 v1 仅配置持久化；D4 活动统计聚合留 v2。
  */
 @RestController
 @RequestMapping("/api/customer/referral")
@@ -39,10 +43,16 @@ public class ReferralController {
     private static final List<String> REWARD_TYPES = List.of("POINT", "GRANT", "COUPON", "COMMISSION");
     /** 触发事件白名单（与 V44 chk_referral_reward_event CHECK 约束一致）。 */
     private static final List<String> TRIGGER_EVENTS = List.of("CONFIRMED", "VISITED", "DEAL");
+    /** 活动配置奖励形式白名单（前端词表，与 V47 chk_rcc_reward_type CHECK 约束一致）。 */
+    private static final List<String> CAMPAIGN_REWARD_TYPES = List.of("POINTS", "COUPON", "CASH");
+    /** 邀请机制全局配置单行主键（V47 chk_rcc_config_id 约束恒 'GLOBAL'）。 */
+    private static final String GLOBAL_CONFIG_ID = "GLOBAL";
 
     private final ReferralRepository referralRepo;
     private final CustomerRepository customerRepo;
     private final ReferralRewardRepository rewardRepo;
+    private final ReferralCampaignRepository campaignRepo;
+    private final ReferralCampaignConfigRepository campaignConfigRepo;
 
     @Autowired
     private AuditRecorder audit;
@@ -50,10 +60,13 @@ public class ReferralController {
     private final ObjectMapper om = new ObjectMapper().registerModule(new JavaTimeModule());
 
     public ReferralController(ReferralRepository referralRepo, CustomerRepository customerRepo,
-                              ReferralRewardRepository rewardRepo) {
+                              ReferralRewardRepository rewardRepo, ReferralCampaignRepository campaignRepo,
+                              ReferralCampaignConfigRepository campaignConfigRepo) {
         this.referralRepo = referralRepo;
         this.customerRepo = customerRepo;
         this.rewardRepo = rewardRepo;
+        this.campaignRepo = campaignRepo;
+        this.campaignConfigRepo = campaignConfigRepo;
     }
 
     /** 分页列表：status/storeCode/referrerCustomerId/refereeCustomerId/kw（单号模糊），富化推荐人/被推荐人姓名+手机。 */
@@ -327,6 +340,183 @@ public class ReferralController {
         if (!DataScope.canReadOwned(r.getStoreCode(), null))
             throw new CustomerService.NotFound("数据不存在或无权查看");
         return r;
+    }
+
+    // ── P5-B89 转介绍活动四端点 ────────────────────────────────────────────
+
+    /** 活动列表（v1 无分页）：全部门店行（store_code 空）＋本店行，按创建时间倒序。 */
+    @GetMapping("/campaigns")
+    @RequirePerm("referralCampaign:view")
+    public List<Map<String, Object>> campaigns() {
+        Specification<ReferralCampaign> visible = (root, q, cb) ->
+                cb.or(cb.isNull(root.get("storeCode")),
+                        DataScope.<ReferralCampaign>storeSpec("storeCode").toPredicate(root, q, cb));
+        return campaignRepo.findAll(visible, Sort.by(Sort.Direction.DESC, "createdAt"))
+                .stream().map(this::campaignRow).toList();
+    }
+
+    /** 邀请机制全局配置读取：无行返回默认（CASH / 30 天 / 空话术 / 空阶梯层级）。 */
+    @GetMapping("/campaign-config")
+    @RequirePerm("referralCampaign:view")
+    public Map<String, Object> getCampaignConfig() {
+        return configRow(campaignConfigRepo.findById(GLOBAL_CONFIG_ID).orElse(null));
+    }
+
+    /** 邀请机制全局配置全量 upsert：服务端复核（validDays clamp≥1、rate clamp 0~1、词表校验）。 */
+    @PutMapping("/campaign-config")
+    @RequirePerm("referralCampaign:edit")
+    public Map<String, Object> putCampaignConfig(@RequestBody Map<String, Object> body) {
+        ReferralCampaignConfig c = campaignConfigRepo.findById(GLOBAL_CONFIG_ID)
+                .orElseGet(() -> {
+                    ReferralCampaignConfig n = new ReferralCampaignConfig();
+                    n.setConfigId(GLOBAL_CONFIG_ID);
+                    return n;
+                });
+        if (body.containsKey("rewardType")) {
+            String rt = str(body.get("rewardType"));
+            if (rt == null || !CAMPAIGN_REWARD_TYPES.contains(rt))
+                throw new CustomerService.BadReq("奖励形式非法（POINTS/COUPON/CASH）");
+            c.setRewardType(rt);
+        }
+        if (body.containsKey("validDays")) {
+            Object vd = body.get("validDays");
+            if (!(vd instanceof Number n)) throw new CustomerService.BadReq("有效天数必须为数字");
+            c.setValidDays(Math.max(1, n.intValue()));
+        }
+        if (body.containsKey("script")) {
+            String s = str(body.get("script"));
+            c.setScript(s == null ? "" : s);
+        }
+        if (body.containsKey("ladders")) c.setLadders(json(normalizeLadders(body.get("ladders"))));
+        if (body.containsKey("levels")) c.setLevels(json(normalizeLevels(body.get("levels"))));
+        c.setUpdatedBy(DataScope.currentActor());
+        c = campaignConfigRepo.save(c);
+        audit.record("REFERRAL_CAMPAIGN_CONFIG", GLOBAL_CONFIG_ID, DataScope.currentActor(), "UPSERT", json(c));
+        return configRow(c);
+    }
+
+    /** 邀请排行：按推荐人聚合（总量倒序、成交次之），limit 默认 5（1~50），姓名富化。 */
+    @GetMapping("/top-referrers")
+    @RequirePerm("referralCampaign:view")
+    public List<Map<String, Object>> topReferrers(@RequestParam(defaultValue = "5") int limit) {
+        int capped = Math.max(1, Math.min(50, limit));
+        Map<String, long[]> agg = new HashMap<>();
+        referralRepo.findAll(DataScope.storeSpec("storeCode")).forEach(r -> {
+            long[] t = agg.computeIfAbsent(r.getReferrerCustomerId(), k -> new long[2]);
+            t[0] += 1;
+            if ("DEAL".equals(r.getStatus())) t[1] += 1;
+        });
+        List<String> topIds = agg.entrySet().stream()
+                .sorted((a, b) -> {
+                    int c = Long.compare(b.getValue()[0], a.getValue()[0]);
+                    return c != 0 ? c : Long.compare(b.getValue()[1], a.getValue()[1]);
+                })
+                .limit(capped).map(Map.Entry::getKey).toList();
+        Map<String, Customer> custMap = new HashMap<>();
+        if (!topIds.isEmpty()) customerRepo.findAllById(topIds).forEach(cu -> custMap.put(cu.getCustomerId(), cu));
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (String id : topIds) {
+            long[] t = agg.get(id);
+            Map<String, Object> m = new HashMap<>();
+            m.put("referrerCustomerId", id);
+            Customer cu = custMap.get(id);
+            m.put("name", cu != null ? cu.getName() : null);
+            m.put("total", t[0]);
+            m.put("deal", t[1]);
+            out.add(m);
+        }
+        return out;
+    }
+
+    private Map<String, Object> campaignRow(ReferralCampaign c) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("campaignId", c.getCampaignId());
+        m.put("name", c.getName());
+        m.put("status", c.getStatus());
+        m.put("startAt", c.getStartAt());
+        m.put("endAt", c.getEndAt());
+        m.put("storeCode", c.getStoreCode());
+        m.put("remark", c.getRemark());
+        m.put("createdBy", c.getCreatedBy());
+        m.put("createdAt", c.getCreatedAt());
+        return m;
+    }
+
+    private Map<String, Object> configRow(ReferralCampaignConfig c) {
+        Map<String, Object> m = new HashMap<>();
+        if (c == null) {
+            m.put("rewardType", "CASH");
+            m.put("validDays", 30);
+            m.put("script", "");
+            m.put("ladders", List.of());
+            m.put("levels", List.of());
+            m.put("updatedBy", null);
+            m.put("updatedAt", null);
+            return m;
+        }
+        m.put("rewardType", c.getRewardType());
+        m.put("validDays", c.getValidDays());
+        m.put("script", c.getScript());
+        m.put("ladders", parseJsonArray(c.getLadders()));
+        m.put("levels", parseJsonArray(c.getLevels()));
+        m.put("updatedBy", c.getUpdatedBy());
+        m.put("updatedAt", c.getUpdatedAt());
+        return m;
+    }
+
+    /** 阶梯奖励复核：每项 {threshold≥1, type 词表内, amount≥0 数值原样保留, desc≤128}，amount 口径为元。 */
+    private List<Map<String, Object>> normalizeLadders(Object raw) {
+        if (!(raw instanceof List<?> list)) throw new CustomerService.BadReq("阶梯奖励必须为数组");
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> it)) throw new CustomerService.BadReq("阶梯奖励项格式非法");
+            Object th = it.get("threshold");
+            if (!(th instanceof Number n)) throw new CustomerService.BadReq("阶梯门槛必须为数字");
+            String type = str(it.get("type"));
+            if (type == null || !CAMPAIGN_REWARD_TYPES.contains(type))
+                throw new CustomerService.BadReq("阶梯奖励形式非法（POINTS/COUPON/CASH）");
+            Object amount = it.get("amount");
+            if (!(amount instanceof Number a) || a.doubleValue() < 0)
+                throw new CustomerService.BadReq("阶梯奖励额度必须为非负数字");
+            Map<String, Object> m = new HashMap<>();
+            m.put("threshold", Math.max(1, n.intValue()));
+            m.put("type", type);
+            m.put("amount", amount);
+            String desc = str(it.get("desc"));
+            m.put("desc", desc == null ? "" : clip(desc, 128));
+            out.add(m);
+        }
+        return out;
+    }
+
+    /** 层级奖励复核：每项 {level∈{1,2}, rate clamp 0~1, desc≤128}。 */
+    private List<Map<String, Object>> normalizeLevels(Object raw) {
+        if (!(raw instanceof List<?> list)) throw new CustomerService.BadReq("层级奖励必须为数组");
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            if (!(item instanceof Map<?, ?> it)) throw new CustomerService.BadReq("层级奖励项格式非法");
+            Object lv = it.get("level");
+            if (!(lv instanceof Number n) || (n.intValue() != 1 && n.intValue() != 2))
+                throw new CustomerService.BadReq("层级仅支持 1/2 级");
+            Object rate = it.get("rate");
+            if (!(rate instanceof Number rt)) throw new CustomerService.BadReq("层级比例必须为数字");
+            Map<String, Object> m = new HashMap<>();
+            m.put("level", n.intValue());
+            m.put("rate", Math.max(0, Math.min(1, rt.doubleValue())));
+            String desc = str(it.get("desc"));
+            m.put("desc", desc == null ? "" : clip(desc, 128));
+            out.add(m);
+        }
+        return out;
+    }
+
+    private List<Object> parseJsonArray(String s) {
+        if (s == null || s.isBlank()) return List.of();
+        try {
+            return om.readValue(s, new TypeReference<>() {});
+        } catch (Exception e) {
+            return List.of();
+        }
     }
 
     private void requireStatus(Referral r, String expected, String op) {
