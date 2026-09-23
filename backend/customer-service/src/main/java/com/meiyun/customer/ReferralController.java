@@ -25,27 +25,35 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * P5-B86 转介绍：卡1 七端点（page/stats/创建/确认/到访/成交/拒绝）。
+ * P5-B86 转介绍：卡1 七端点（page/stats/创建/确认/到访/成交/拒绝）＋卡2 奖励三端点（登记/发放/驳回）。
  * 状态机：PENDING→CONFIRMED→VISITED→DEAL；PENDING→REJECTED；PENDING/CONFIRMED→EXPIRED（卡2 Job）。
  * D3-A：EXPIRED/REJECTED 释放绑定，被推荐人可被重新推荐（部分唯一索引 uk_referral_referee_active）。
+ * D4-A：奖励 v1 手动登记，idem_key={referralId}:{triggerEvent}:{rewardType} 幂等（v2 自动发放挂钩点）。
  */
 @RestController
 @RequestMapping("/api/customer/referral")
 public class ReferralController {
 
     private static final List<String> ACTIVE_STATUSES = List.of("PENDING", "CONFIRMED", "VISITED", "DEAL");
+    /** 奖励类型白名单（与 V44 chk_referral_reward_type CHECK 约束一致，铁律 6 先查真实约束）。 */
+    private static final List<String> REWARD_TYPES = List.of("POINT", "GRANT", "COUPON", "COMMISSION");
+    /** 触发事件白名单（与 V44 chk_referral_reward_event CHECK 约束一致）。 */
+    private static final List<String> TRIGGER_EVENTS = List.of("CONFIRMED", "VISITED", "DEAL");
 
     private final ReferralRepository referralRepo;
     private final CustomerRepository customerRepo;
+    private final ReferralRewardRepository rewardRepo;
 
     @Autowired
     private AuditRecorder audit;
 
     private final ObjectMapper om = new ObjectMapper().registerModule(new JavaTimeModule());
 
-    public ReferralController(ReferralRepository referralRepo, CustomerRepository customerRepo) {
+    public ReferralController(ReferralRepository referralRepo, CustomerRepository customerRepo,
+                              ReferralRewardRepository rewardRepo) {
         this.referralRepo = referralRepo;
         this.customerRepo = customerRepo;
+        this.rewardRepo = rewardRepo;
     }
 
     /** 分页列表：status/storeCode/referrerCustomerId/refereeCustomerId/kw（单号模糊），富化推荐人/被推荐人姓名+手机。 */
@@ -207,6 +215,82 @@ public class ReferralController {
         return row(r, Map.of());
     }
 
+    /** 奖励登记（D4-A 手动登记）：idem_key 幂等，同触发事件同类型重复登记返回既有记录不重复落库。 */
+    @PostMapping("/{id}/rewards")
+    @RequirePerm("referral:approve")
+    public Map<String, Object> createReward(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        Referral r = getOwned(id);
+        String rewardType = str(body.get("rewardType"));
+        if (rewardType == null || !REWARD_TYPES.contains(rewardType))
+            throw new CustomerService.BadReq("奖励类型需为 POINT/GRANT/COUPON/COMMISSION");
+        String triggerEvent = str(body.get("triggerEvent"));
+        if (triggerEvent == null || !TRIGGER_EVENTS.contains(triggerEvent))
+            throw new CustomerService.BadReq("触发事件需为 CONFIRMED/VISITED/DEAL");
+        Long amountCents = longOrNull(body.get("amountCents"));
+        Long points = longOrNull(body.get("points"));
+        if ("POINT".equals(rewardType)) {
+            if (points == null || points <= 0) throw new CustomerService.BadReq("积分奖励需填写大于 0 的积分");
+            amountCents = null;
+        } else if ("GRANT".equals(rewardType) || "COMMISSION".equals(rewardType)) {
+            if (amountCents == null || amountCents <= 0)
+                throw new CustomerService.BadReq("赠金/佣金奖励需填写大于 0 的金额（分）");
+            points = null;
+        } else {
+            if (amountCents != null && amountCents <= 0) throw new CustomerService.BadReq("金额（分）需大于 0");
+            if (points != null && points <= 0) throw new CustomerService.BadReq("积分需大于 0");
+        }
+        String idemKey = r.getReferralId() + ":" + triggerEvent + ":" + rewardType;
+        var dup = rewardRepo.findFirstByIdemKey(idemKey);
+        if (dup.isPresent()) return rewardRow(dup.get());
+        ReferralReward w = new ReferralReward();
+        w.setRewardId(nextRewardNo());
+        w.setReferralId(r.getReferralId());
+        w.setRewardType(rewardType);
+        w.setTriggerEvent(triggerEvent);
+        w.setAmountCents(amountCents);
+        w.setPoints(points);
+        w.setIdemKey(idemKey);
+        w.setRemark(clip(str(body.get("remark")), 256));
+        try {
+            w = rewardRepo.save(w);
+        } catch (DataIntegrityViolationException e) {
+            var existing = rewardRepo.findFirstByIdemKey(idemKey);
+            if (existing.isPresent()) return rewardRow(existing.get());
+            throw new CustomerService.Conflict("同类奖励已登记，请勿重复提交");
+        }
+        audit.record("REFERRAL", r.getReferralId(), DataScope.currentActor(), "REWARD_CREATE", json(w));
+        return rewardRow(w);
+    }
+
+    /** 奖励发放确认：PENDING→GRANTED。 */
+    @PutMapping("/rewards/{rewardId}/grant")
+    @RequirePerm("referral:approve")
+    public Map<String, Object> grantReward(@PathVariable String rewardId) {
+        ReferralReward w = getRewardOwned(rewardId);
+        requireRewardPending(w, "发放确认");
+        w.setStatus("GRANTED");
+        w.setGrantedBy(DataScope.currentActor());
+        w.setGrantedAt(OffsetDateTime.now());
+        w = rewardRepo.save(w);
+        audit.record("REFERRAL", w.getReferralId(), DataScope.currentActor(), "REWARD_GRANT", json(w));
+        return rewardRow(w);
+    }
+
+    /** 奖励驳回：PENDING→REJECTED，驳回原因可选（写入 remark）。 */
+    @PutMapping("/rewards/{rewardId}/reject")
+    @RequirePerm("referral:approve")
+    public Map<String, Object> rejectReward(@PathVariable String rewardId,
+                                            @RequestBody(required = false) Map<String, Object> body) {
+        ReferralReward w = getRewardOwned(rewardId);
+        requireRewardPending(w, "驳回");
+        w.setStatus("REJECTED");
+        String reason = body != null ? str(body.get("reason")) : null;
+        if (reason != null) w.setRemark(clip(reason, 256));
+        w = rewardRepo.save(w);
+        audit.record("REFERRAL", w.getReferralId(), DataScope.currentActor(), "REWARD_REJECT", json(w));
+        return rewardRow(w);
+    }
+
     // ---- 内部 ----
 
     private Referral getOwned(String id) {
@@ -220,6 +304,39 @@ public class ReferralController {
     private void requireStatus(Referral r, String expected, String op) {
         if (!expected.equals(r.getStatus()))
             throw new CustomerService.Conflict("当前状态不允许" + op + "（当前：" + r.getStatus() + "）");
+    }
+
+    /** 奖励越权收敛：经所属转介绍单 storeCode 判数据域，越权 404（与 getOwned 同口径）。 */
+    private ReferralReward getRewardOwned(String rewardId) {
+        ReferralReward w = rewardRepo.findById(rewardId)
+                .orElseThrow(() -> new CustomerService.NotFound("奖励记录不存在"));
+        Referral r = referralRepo.findById(w.getReferralId())
+                .orElseThrow(() -> new CustomerService.NotFound("转介绍单不存在"));
+        if (!DataScope.canReadOwned(r.getStoreCode(), null))
+            throw new CustomerService.NotFound("数据不存在或无权查看");
+        return w;
+    }
+
+    private void requireRewardPending(ReferralReward w, String op) {
+        if (!"PENDING".equals(w.getStatus()))
+            throw new CustomerService.Conflict("当前状态不允许" + op + "（当前：" + w.getStatus() + "）");
+    }
+
+    private Map<String, Object> rewardRow(ReferralReward w) {
+        Map<String, Object> m = new HashMap<>();
+        m.put("rewardId", w.getRewardId());
+        m.put("referralId", w.getReferralId());
+        m.put("rewardType", w.getRewardType());
+        m.put("triggerEvent", w.getTriggerEvent());
+        m.put("amountCents", w.getAmountCents());
+        m.put("points", w.getPoints());
+        m.put("status", w.getStatus());
+        m.put("grantedBy", w.getGrantedBy());
+        m.put("grantedAt", w.getGrantedAt());
+        m.put("idemKey", w.getIdemKey());
+        m.put("remark", w.getRemark());
+        m.put("createdAt", w.getCreatedAt());
+        return m;
     }
 
     private Map<String, Object> row(Referral r, Map<String, Customer> custMap) {
@@ -257,6 +374,18 @@ public class ReferralController {
         String prefix = "RF" + day + "-";
         long seq = referralRepo.maxSeqOfDay(prefix + "%");
         return prefix + String.format("%06d", seq + 1);
+    }
+
+    /** 奖励单号 RW+8位日期-6位当日序号（当日 max+1，synchronized 防重，与转介绍单号同范式）。 */
+    private synchronized String nextRewardNo() {
+        String day = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        String prefix = "RW" + day + "-";
+        long seq = rewardRepo.maxSeqOfDay(prefix + "%");
+        return prefix + String.format("%06d", seq + 1);
+    }
+
+    private static Long longOrNull(Object o) {
+        return o instanceof Number n ? n.longValue() : null;
     }
 
     private String json(Object o) {
