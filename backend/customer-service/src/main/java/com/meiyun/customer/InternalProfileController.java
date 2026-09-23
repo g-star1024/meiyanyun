@@ -210,6 +210,33 @@ public class InternalProfileController {
     }
 
     /**
+     * 生日候选投影（P5-B90 营销 Flow BIRTHDAY trigger）：
+     * GET /api/customer/internal/birthday-on?month=9&day=24。
+     * 回当日生日（月/日匹配）且活跃（未合并/未匿名化）客户的 customerId/name/storeCode/level，
+     * 供 marketing-service MarketingFlowJob 生成生日关怀任务；仅系统身份可调，不回手机号等敏感字段。
+     */
+    @GetMapping("/birthday-on")
+    @RequirePerm("internal:customer-directory")
+    public List<BirthdayDTO> birthdayOn(@RequestParam("month") int month, @RequestParam("day") int day) {
+        if (month < 1 || month > 12 || day < 1 || day > 31) {
+            throw new CardLedgerService.BadReq("month/day 参数不合法");
+        }
+        return customerRepo.findBirthdayOn(month, day).stream()
+                .map(c -> new BirthdayDTO(
+                        c.getCustomerId(),
+                        c.getName() == null ? "" : c.getName(),
+                        c.getStoreCode() == null ? "" : c.getStoreCode(),
+                        c.getLevel() == null ? "" : c.getLevel()))
+                .toList();
+    }
+
+    /**
+     * 生日候选投影：客户号 + 姓名 + 门店码 + 中文等级。
+     */
+    public record BirthdayDTO(String customerId, String name, String storeCode, String level) {
+    }
+
+    /**
      * 会员等级折扣投影：客户号 + 中文等级 + 英文 tier + 折扣率（1.00 表示无折扣）。
      */
     public record LevelDiscountDTO(String customerId, String level, String tier, BigDecimal discount) {

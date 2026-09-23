@@ -84,4 +84,11 @@ public interface CustomerRepository extends JpaRepository<Customer, String>, Jpa
             order by created_at asc
             """, nativeQuery = true)
     List<DuplicatePhoneRow> findDuplicatePhoneRows();
+
+    /**
+     * 生日候选（P5-B90 营销 Flow BIRTHDAY trigger）：出生月/日匹配且活跃（未合并、未匿名化）的客户。
+     * 供 marketing-service 经 internal 端点拉取生日关怀候选；已合并/已匿名化档案不参与触达（合规）。
+     */
+    @Query("select c from Customer c where month(c.birthDate) = :month and day(c.birthDate) = :day and c.mergedInto is null and c.anonymizedAt is null")
+    List<Customer> findBirthdayOn(@Param("month") int month, @Param("day") int day);
 }

@@ -76,4 +76,13 @@ public class MarketingCfg {
      */
     @Column(name = "writeoff_fallback_store_code", length = 32)
     private String writeoffFallbackStoreCode;
+
+    // ==================== B90 关怀模板（DESIGN §2.5：marketing_cfg KV 承载，不新建表） ====================
+
+    /**
+     * 关怀模板 JSON 数组文本：[{"id","name","channel","content"}]，channel ∈ SMS/WECHAT/PHONE。
+     * 由 CareTemplateDataInitializer 幂等播种 5 条（对齐前端 care.ts mock 活规格）。
+     */
+    @Column(name = "care_templates", columnDefinition = "jsonb")
+    private String careTemplates;
 }
