@@ -33,8 +33,8 @@ const auth = useAuthStore()
 
 const canEdit = computed(() => auth.can('calendar:edit'))
 
-onMounted(() => {
-  store.seed()
+onMounted(async () => {
+  await store.seed()
   selectedNodes.value = store.nodesOfDay(todayStr)
 })
 
@@ -173,9 +173,9 @@ function toggleChannel(ch: PushChannel) {
   else form.channels.push(ch)
 }
 
-function submitSchedule() {
+async function submitSchedule() {
   if (!scheduleTarget.value) return
-  const r = store.createSchedule({
+  const r = await store.createSchedule({
     nodeId: scheduleTarget.value.id,
     name: form.name,
     benefitDesc: form.benefitDesc,

@@ -16,7 +16,7 @@ import { useM5LandingStore } from '@/stores/m5Landing'
 import { checkSensitive } from '@/composables/useSensitiveWords'
 
 const store = useM5LandingStore()
-onMounted(() => store.seed())
+onMounted(() => { void store.seed() })
 
 const kpis = computed(() => [
   { label: '已发布页面', icon: 'check-square', value: String(store.publishedCount), tone: 'brand' as const },
@@ -58,7 +58,7 @@ function openCreate() {
   formError.value = ''
   showCreate.value = true
 }
-function submitCreate() {
+async function submitCreate() {
   formError.value = ''
   if (!form.value.name.trim()) { formError.value = '请输入页面名称'; return }
   const chk = checkSensitive(`${form.value.headline} ${form.value.subtitle} ${form.value.project}`)
@@ -67,7 +67,7 @@ function submitCreate() {
   if (form.value.fields.name) fields.push('姓名')
   if (form.value.fields.phone) fields.push('手机')
   if (form.value.fields.intent) fields.push('意向项目')
-  store.createPage({
+  const r = await store.createPage({
     name: form.value.name.trim(),
     template: form.value.template as 'NEWBIE' | 'PROJECT' | 'FESTIVAL' | 'MEMBER' | 'BRAND',
     headline: form.value.headline.trim(),
@@ -75,6 +75,7 @@ function submitCreate() {
     project: form.value.project.trim(),
     formFields: fields,
   })
+  if (!r.ok) { formError.value = r.reason ?? '创建失败'; return }
   showCreate.value = false
 }
 </script>
