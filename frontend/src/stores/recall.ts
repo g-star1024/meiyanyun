@@ -1,17 +1,32 @@
 // ============================================================
-// Recall 聚合 store（复诊提醒管理）
+// Recall 聚合 store（复诊提醒管理）—— B90 卡2 去 mock 切真
 // 状态机：PENDING（待提醒）→ NOTIFIED（已提醒/待客户确认）
 //          → CONFIRMED（确认复诊）/ BOOKED（已预约）/ SKIPPED（已跳过）
 // - 复诊建议通常由医生在病历经疗后发起（schedule），前台/运营执行提醒（notify）。
 // - 客户确认复诊后可登记确认结果；实际预约落地后置 BOOKED。
 // - dueDate 早于今天且仍 PENDING 的视为"超期未提醒"，页面高亮预警。
+// 数据：对接 marketing-service /api/marketing/recall（@/api/recall 薄封装）。
+// 状态机服务端权威：TRANSITIONS 仅客户端预检，非法转移 409 经 errMsg 透传。
+// KPI 保留本地 computed（与后端 kpi 同口径；View .length 语义不可破）。
 // 权限：recall:create 建提醒 / recall:edit 执行提醒与确认。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from './m5Coupon'
 import { shDateStr } from '@/utils/datetime'
+import {
+  fetchRecalls,
+  scheduleRecall,
+  notifyRecall,
+  confirmRecall,
+  bookRecall,
+  rescheduleRecall,
+  skipRecall,
+  type RecallRow,
+} from '@/api/recall'
 
 export type RecallMethod = 'PHONE' | 'WECHAT' | 'SMS' | 'IN_STORE'
 export type RecallStatus = 'PENDING' | 'NOTIFIED' | 'CONFIRMED' | 'BOOKED' | 'SKIPPED'
@@ -53,9 +68,11 @@ export interface Recall {
   note?: string
   timeline: RecallTimelineEntry[]
   createdAt: string
+  /** 来源规则编号：非空 = Flow 引擎自动创建（页面展示「自动」徽标） */
+  ruleNo?: string | null
 }
 
-/** 状态机转移表 */
+/** 状态机转移表（客户端预检；服务端为权威，非法转移 409） */
 const TRANSITIONS: Record<RecallStatus, RecallStatus[]> = {
   PENDING: ['NOTIFIED', 'SKIPPED'],
   NOTIFIED: ['CONFIRMED', 'BOOKED', 'SKIPPED', 'PENDING'], // NOTIFIED→PENDING 用于改期重提醒
@@ -68,12 +85,46 @@ function canTransit(from: RecallStatus, to: RecallStatus): boolean {
   return TRANSITIONS[from]?.includes(to) ?? false
 }
 
+/** 后端行 → 前端提醒（timeline JSON 串解析；null → undefined） */
+function rowToRecall(row: RecallRow): Recall {
+  let timeline: RecallTimelineEntry[] = []
+  try {
+    const arr = JSON.parse(row.timeline || '[]')
+    if (Array.isArray(arr)) timeline = arr
+  } catch {
+    timeline = []
+  }
+  return {
+    id: row.id,
+    recallNo: row.recallNo,
+    customerId: row.customerId,
+    customerName: row.customerName,
+    source: row.source as RecallChannel,
+    reason: row.reason,
+    relatedEmrNo: row.relatedEmrNo ?? undefined,
+    relatedOrderNo: row.relatedOrderNo ?? undefined,
+    lastVisitDate: row.lastVisitDate ?? '',
+    dueDate: row.dueDate,
+    method: row.method as RecallMethod,
+    status: row.status as RecallStatus,
+    notifiedByName: row.notifiedByName ?? undefined,
+    notifiedAt: row.notifiedAt ?? undefined,
+    customerReply: row.customerReply ?? undefined,
+    confirmedDate: row.confirmedDate ?? undefined,
+    skipReason: row.skipReason ?? undefined,
+    note: row.note ?? undefined,
+    timeline,
+    createdAt: row.createdAt,
+    ruleNo: row.ruleNo,
+  }
+}
+
 export const useRecallStore = defineStore('recall', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const toast = useToast()
 
   const recalls = ref<Recall[]>([])
-  let seq = 0
 
   const pending = computed(() => recalls.value.filter((r) => r.status === 'PENDING'))
   const notified = computed(() => recalls.value.filter((r) => r.status === 'NOTIFIED'))
@@ -114,12 +165,28 @@ export const useRecallStore = defineStore('recall', () => {
     return recalls.value.find((r) => r.id === id)
   }
 
-  function pushTimeline(r: Recall, action: string, detail?: string) {
-    r.timeline.push({ at: new Date().toISOString(), by: auth.user.name, action, detail })
+  function upsert(r: Recall) {
+    const idx = recalls.value.findIndex((x) => x.id === r.id)
+    if (idx >= 0) recalls.value.splice(idx, 1, r)
+    else recalls.value.unshift(r)
   }
 
-  /** 新建复诊提醒（医生建议/手动） */
-  function schedule(input: {
+  /** 加载真实复诊提醒列表（幂等；函数名保留 seed，View onMounted 零改） */
+  let seeded = false
+  async function seed(): Promise<void> {
+    if (seeded) return
+    seeded = true
+    try {
+      const res = await fetchRecalls()
+      recalls.value = (res.data.recalls ?? []).map(rowToRecall)
+    } catch (e) {
+      seeded = false
+      toast.error(errMsg(e, '复诊提醒加载失败'))
+    }
+  }
+
+  /** 新建复诊提醒（医生建议/手动；customerName 不上送，后端按 customerId 解析回填） */
+  async function schedule(input: {
     customerId: string
     customerName: string
     source: RecallChannel
@@ -130,193 +197,133 @@ export const useRecallStore = defineStore('recall', () => {
     dueDate: string
     method?: RecallMethod
     note?: string
-  }): Recall | null {
+  }): Promise<Recall | null> {
     if (!auth.can('recall:create')) {
-      console.warn('[recall] 无 recall:create 权限')
+      toast.error('无新建复诊提醒权限')
       return null
     }
-    seq += 1
-    const now = new Date().toISOString()
-    const r: Recall = {
-      id: nextId('rc'),
-      recallNo: `RC${Date.now().toString().slice(-8)}${seq}`,
-      customerId: input.customerId,
-      customerName: input.customerName,
-      source: input.source,
-      reason: input.reason,
-      relatedEmrNo: input.relatedEmrNo,
-      relatedOrderNo: input.relatedOrderNo,
-      lastVisitDate: input.lastVisitDate,
-      dueDate: input.dueDate,
-      method: input.method ?? 'PHONE',
-      status: 'PENDING',
-      note: input.note?.trim() || undefined,
-      timeline: [{ at: now, by: auth.user.name, action: '创建复诊提醒', detail: input.reason }],
-      createdAt: now,
+    try {
+      const res = await scheduleRecall({
+        customerId: input.customerId,
+        source: input.source,
+        reason: input.reason,
+        relatedEmrNo: input.relatedEmrNo?.trim() || undefined,
+        relatedOrderNo: input.relatedOrderNo?.trim() || undefined,
+        lastVisitDate: input.lastVisitDate ? input.lastVisitDate.slice(0, 10) : undefined,
+        dueDate: input.dueDate.slice(0, 10),
+        method: input.method,
+        note: input.note?.trim() || undefined,
+      })
+      const r = rowToRecall(res.data)
+      recalls.value.unshift(r)
+      activity.log(auth.user.name, `创建复诊提醒 ${r.recallNo}（${r.customerName}·${r.reason}）`, r.id)
+      return r
+    } catch (e) {
+      toast.error(errMsg(e, '新建复诊提醒失败'))
+      return null
     }
-    recalls.value.unshift(r)
-    activity.log(auth.user.name, `创建复诊提醒 ${r.recallNo}（${r.customerName}·${r.reason}）`, r.id)
-    return r
   }
 
   /** 执行提醒：PENDING → NOTIFIED */
-  function notify(id: string, method?: RecallMethod): boolean {
+  async function notify(id: string, method?: RecallMethod): Promise<boolean> {
     const r = recalls.value.find((x) => x.id === id)
     if (!r || !canTransit(r.status, 'NOTIFIED')) return false
     if (!auth.can('recall:edit')) {
-      console.warn('[recall] 无 recall:edit 权限')
+      toast.error('无复诊提醒执行权限')
       return false
     }
-    const now = new Date().toISOString()
-    r.status = 'NOTIFIED'
-    if (method) r.method = method
-    r.notifiedByName = auth.user.name
-    r.notifiedAt = now
-    pushTimeline(r, '已发送提醒', `方式：${method ?? r.method}`)
-    activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 已通过${method ?? r.method}触达客户`, r.id)
-    return true
+    try {
+      const res = await notifyRecall(r.recallNo, method)
+      upsert(rowToRecall(res.data))
+      activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 已通过${method ?? r.method}触达客户`, r.id)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '执行提醒失败'))
+      return false
+    }
   }
 
   /** 登记客户确认复诊：NOTIFIED → CONFIRMED */
-  function confirm(id: string, reply?: string, confirmedDate?: string): boolean {
+  async function confirm(id: string, reply?: string, confirmedDate?: string): Promise<boolean> {
     const r = recalls.value.find((x) => x.id === id)
     if (!r || !canTransit(r.status, 'CONFIRMED')) return false
     if (!auth.can('recall:edit')) {
-      console.warn('[recall] 无 recall:edit 权限')
+      toast.error('无复诊提醒执行权限')
       return false
     }
-    r.status = 'CONFIRMED'
-    r.customerReply = reply?.trim() || undefined
-    r.confirmedDate = confirmedDate
-    pushTimeline(r, '客户确认复诊', reply)
-    activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 客户确认复诊${confirmedDate ? `（拟 ${confirmedDate}）` : ''}`, r.id)
-    return true
+    try {
+      const res = await confirmRecall(r.recallNo, {
+        reply: reply?.trim() || undefined,
+        confirmedDate: confirmedDate ? confirmedDate.slice(0, 10) : undefined,
+      })
+      upsert(rowToRecall(res.data))
+      activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 客户确认复诊${confirmedDate ? `（拟 ${confirmedDate.slice(0, 10)}）` : ''}`, r.id)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '登记确认失败'))
+      return false
+    }
   }
 
   /** 已预约落地：CONFIRMED/NOTIFIED → BOOKED */
-  function markBooked(id: string, detail?: string): boolean {
+  async function markBooked(id: string, detail?: string): Promise<boolean> {
     const r = recalls.value.find((x) => x.id === id)
     if (!r || !canTransit(r.status, 'BOOKED')) return false
     if (!auth.can('recall:edit')) {
-      console.warn('[recall] 无 recall:edit 权限')
+      toast.error('无复诊提醒执行权限')
       return false
     }
-    r.status = 'BOOKED'
-    pushTimeline(r, '已生成预约', detail)
-    activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 已转为预约`, r.id)
-    return true
+    try {
+      const res = await bookRecall(r.recallNo, detail?.trim() || undefined)
+      upsert(rowToRecall(res.data))
+      activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 已转为预约`, r.id)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '登记预约失败'))
+      return false
+    }
   }
 
   /** 跳过：PENDING/NOTIFIED/CONFIRMED → SKIPPED */
-  function skip(id: string, reason: string): boolean {
+  async function skip(id: string, reason: string): Promise<boolean> {
     const r = recalls.value.find((x) => x.id === id)
     if (!r || !canTransit(r.status, 'SKIPPED')) return false
     if (!auth.can('recall:edit')) {
-      console.warn('[recall] 无 recall:edit 权限')
+      toast.error('无复诊提醒执行权限')
       return false
     }
-    r.status = 'SKIPPED'
-    r.skipReason = reason.trim()
-    pushTimeline(r, '已跳过', reason)
-    activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 跳过：${reason}`, r.id)
-    return true
+    try {
+      const res = await skipRecall(r.recallNo, reason.trim())
+      upsert(rowToRecall(res.data))
+      activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 跳过：${reason}`, r.id)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '跳过失败'))
+      return false
+    }
   }
 
-  /** 改期：调整建议复诊日期并回到待提醒（NOTIFIED → PENDING） */
-  function reschedule(id: string, dueDate: string, note?: string): boolean {
+  /** 改期：调整建议复诊日期（仅 PENDING/NOTIFIED；NOTIFIED → PENDING 清通知信息） */
+  async function reschedule(id: string, dueDate: string, note?: string): Promise<boolean> {
     const r = recalls.value.find((x) => x.id === id)
     if (!r) return false
+    if (r.status !== 'PENDING' && r.status !== 'NOTIFIED') return false
     if (!auth.can('recall:edit')) {
-      console.warn('[recall] 无 recall:edit 权限')
+      toast.error('无复诊提醒执行权限')
       return false
     }
-    r.dueDate = dueDate
-    if (note) r.note = note.trim()
-    if (r.status === 'NOTIFIED') {
-      r.status = 'PENDING'
-      r.notifiedByName = undefined
-      r.notifiedAt = undefined
+    try {
+      const res = await rescheduleRecall(r.recallNo, {
+        dueDate: dueDate.slice(0, 10),
+        note: note?.trim() || undefined,
+      })
+      upsert(rowToRecall(res.data))
+      activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 改期至 ${dueDate.slice(0, 10)}`, r.id)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '改期失败'))
+      return false
     }
-    pushTimeline(r, '改期重新提醒', `复诊日期调整为 ${dueDate.slice(0, 10)}${note ? `；${note}` : ''}`)
-    activity.log(auth.user.name, `复诊提醒 ${r.recallNo} 改期至 ${dueDate.slice(0, 10)}`, r.id)
-    return true
-  }
-
-  /** 开发期种子 */
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const today = new Date()
-    const iso = (d: Date) => shDateStr(d)
-    const dayShift = (n: number) => { const d = new Date(today); d.setDate(d.getDate() + n); return iso(d) }
-
-    type Seed = Partial<Recall> & {
-      customerName: string; reason: string; source: RecallChannel
-      lastVisitDate: string; dueDate: string; status: RecallStatus
-    }
-    const seedData: Seed[] = [
-      // 超期 3 天未提醒（医生建议光子嫩肤复治）
-      { customerName: '王美丽', reason: '光子嫩肤二次治疗', source: 'DOCTOR_ADVICE', lastVisitDate: dayShift(-30), dueDate: dayShift(-3), status: 'PENDING', relatedEmrNo: 'EMR2026072501', method: 'PHONE' },
-      // 今日待提醒（疗程跟进）
-      { customerName: '陈思', reason: '热玛吉疗程第 2 次', source: 'COURSE_FOLLOW', lastVisitDate: dayShift(-45), dueDate: dayShift(0), status: 'PENDING', relatedOrderNo: 'SO20260710002', method: 'WECHAT' },
-      // 今日待提醒
-      { customerName: '赵敏', reason: '水光针补水复购', source: 'MANUAL', lastVisitDate: dayShift(-20), dueDate: dayShift(0), status: 'PENDING', method: 'PHONE' },
-      // 2 天后到期
-      { customerName: '林晚', reason: '瘦脸针补量', source: 'DOCTOR_ADVICE', lastVisitDate: dayShift(-90), dueDate: dayShift(2), status: 'PENDING', relatedEmrNo: 'EMR2026052003', method: 'WECHAT' },
-      // 已提醒待确认
-      { customerName: '周婷', reason: '果酸焕肤复诊', source: 'DOCTOR_ADVICE', lastVisitDate: dayShift(-15), dueDate: dayShift(-1), status: 'NOTIFIED', method: 'PHONE', customerReply: undefined },
-      // 已提醒 - 客户确认
-      { customerName: '吴桐', reason: '光子嫩肤术后复查', source: 'DOCTOR_ADVICE', lastVisitDate: dayShift(-10), dueDate: dayShift(-2), status: 'CONFIRMED', method: 'PHONE', customerReply: '周三下午可以到院', confirmedDate: dayShift(2) },
-      // 已预约
-      { customerName: '孙莉', reason: '热玛吉疗程第 3 次', source: 'COURSE_FOLLOW', lastVisitDate: dayShift(-60), dueDate: dayShift(-5), status: 'BOOKED', method: 'WECHAT', customerReply: '已约本周六上午', relatedOrderNo: 'SO20260625007' },
-      // 已跳过
-      { customerName: '李娜', reason: '皮肤检测复查', source: 'SYSTEM_AUTO', lastVisitDate: dayShift(-25), dueDate: dayShift(-8), status: 'SKIPPED', method: 'SMS', skipReason: '客户为外地游客，近期无法到院，下月再联系。' },
-    ]
-
-    seedData.forEach((s, i) => {
-      seq += 1
-      const createdIso = new Date(s.lastVisitDate).toISOString()
-      const r: Recall = {
-        id: nextId('rc'),
-        recallNo: `RC202608${String(18 + i).padStart(2, '0')}0${i + 1}`,
-        customerId: `C-60${i}`,
-        customerName: s.customerName!,
-        source: s.source,
-        reason: s.reason!,
-        relatedEmrNo: s.relatedEmrNo,
-        relatedOrderNo: s.relatedOrderNo,
-        lastVisitDate: s.lastVisitDate,
-        dueDate: s.dueDate,
-        method: s.method ?? 'PHONE',
-        status: s.status,
-        note: s.note,
-        timeline: [{ at: createdIso, by: '顾屿（医生）', action: '创建复诊提醒', detail: s.reason }],
-        createdAt: createdIso,
-      }
-      if (s.status !== 'PENDING') {
-        const notifiedIso = new Date(s.dueDate).toISOString()
-        r.notifiedByName = '夏沫（前台）'
-        r.notifiedAt = notifiedIso
-        r.timeline.push({ at: notifiedIso, by: '夏沫（前台）', action: '已发送提醒', detail: `方式：${r.method}` })
-      }
-      if (s.status === 'CONFIRMED' || s.status === 'BOOKED') {
-        r.customerReply = s.customerReply
-        r.confirmedDate = s.confirmedDate
-        r.timeline.push({
-          at: new Date(s.confirmedDate ?? s.dueDate).toISOString(),
-          by: '夏沫（前台）', action: '客户确认复诊', detail: s.customerReply,
-        })
-      }
-      if (s.status === 'BOOKED') {
-        r.timeline.push({ at: new Date().toISOString(), by: '夏沫（前台）', action: '已生成预约', detail: s.customerReply })
-      }
-      if (s.status === 'SKIPPED') {
-        r.skipReason = s.skipReason
-        r.timeline.push({ at: new Date(s.dueDate).toISOString(), by: '夏沫（前台）', action: '已跳过', detail: s.skipReason })
-      }
-      recalls.value.push(r)
-    })
   }
 
   return {

@@ -20,9 +20,11 @@ import {
 } from '@/stores/care'
 import { CARE_STATUS, dictPill } from '@/config/dictionary'
 import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
 
 const store = useCareStore()
 const auth = useAuthStore()
+const toast = useToast()
 onMounted(() => store.seed())
 
 const selectedId = ref<string | null>(null)
@@ -69,12 +71,13 @@ function openForm() {
   form.value = { customerName: '', customerLevel: '普通', type: 'BIRTHDAY', channel: 'SMS', templateId: '', scheduledAt: local }
   showForm.value = true
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
-  const t = store.create({ ...form.value })
+  const t = await store.create({ ...form.value })
   if (t) {
     showForm.value = false
     selectedId.value = t.id
+    toast.success('关怀任务已创建')
   }
 }
 const templateOptions = computed(() =>
@@ -83,14 +86,18 @@ const templateOptions = computed(() =>
     .map((t) => ({ value: t.id, label: t.name })),
 )
 
-function doSend() {
-  if (selected.value) store.send(selected.value.id)
+async function doSend() {
+  if (selected.value && await store.send(selected.value.id)) toast.success('已发送')
 }
-function toggleReached() {
-  if (selected.value) store.markReached(selected.value.id, !selected.value.reached)
+async function toggleReached() {
+  if (!selected.value) return
+  const target = !selected.value.reached
+  if (await store.markReached(selected.value.id, target)) toast.success(target ? '已标记触达' : '已取消触达')
 }
-function toggleConverted() {
-  if (selected.value) store.markConverted(selected.value.id, !selected.value.convertedBooking)
+async function toggleConverted() {
+  if (!selected.value) return
+  const target = !selected.value.convertedBooking
+  if (await store.markConverted(selected.value.id, target)) toast.success(target ? '已登记转化预约' : '已取消转化')
 }
 </script>
 

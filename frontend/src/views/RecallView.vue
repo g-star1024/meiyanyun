@@ -23,6 +23,8 @@ import {
 } from '@/stores/recall'
 import { RECALL_STATUS, dictPill } from '@/config/dictionary'
 import { useToast } from '@/composables/useToast'
+import { searchCustomers, type CustomerDTO } from '@/api/customer'
+import { errMsg } from '@/stores/m5Coupon'
 
 const recall = useRecallStore()
 const router = useRouter()
@@ -80,6 +82,10 @@ const sourceTone: Record<RecallChannel, string> = {
   SYSTEM_AUTO: 'src src--system',
   MANUAL: 'src src--manual',
 }
+// 规则引擎自动生成的提醒单（ruleNo 非空）来源徽标统一展示「自动」
+function sourceLabel(r: Recall) {
+  return r.ruleNo ? '自动' : RECALL_SOURCE_LABEL[r.source]
+}
 
 function isOverdue(r: Recall) {
   if (r.status !== 'PENDING') return false
@@ -130,43 +136,48 @@ watch(
   { immediate: true },
 )
 
-function doNotify() {
+async function doNotify() {
   if (!selected.value) return
-  selectedId.value = selected.value.id
-  recall.notify(selected.value.id, notifyMethod.value)
-  toast.success('复诊提醒已发送')
+  if (await recall.notify(selected.value.id, notifyMethod.value)) {
+    selectedId.value = selected.value.id
+    toast.success('复诊提醒已发送')
+  }
 }
-function doConfirm() {
+async function doConfirm() {
   if (!selected.value || !confirmDate.value) return
-  selectedId.value = selected.value.id
-  recall.confirm(selected.value.id, confirmReply.value, new Date(confirmDate.value).toISOString())
-  showReschedule.value = false
-  toast.success('已登记客户确认复诊日期')
+  if (await recall.confirm(selected.value.id, confirmReply.value || undefined, confirmDate.value)) {
+    selectedId.value = selected.value.id
+    showReschedule.value = false
+    toast.success('已登记客户确认复诊日期')
+  }
 }
-function doBooked() {
+async function doBooked() {
   if (!selected.value) return
-  selectedId.value = selected.value.id
-  recall.markBooked(selected.value.id, selected.value.customerReply)
-  toast.success('已标记生成预约')
+  if (await recall.markBooked(selected.value.id, confirmReply.value || undefined)) {
+    selectedId.value = selected.value.id
+    toast.success('已标记生成预约')
+  }
 }
 function openReschedule() {
   if (!selected.value) return
   rescheduleDate.value = selected.value.dueDate.slice(0, 10)
   showReschedule.value = true
 }
-function doReschedule() {
+async function doReschedule() {
   if (!selected.value || !rescheduleDate.value) return
-  selectedId.value = selected.value.id
-  recall.reschedule(selected.value.id, new Date(rescheduleDate.value).toISOString(), rescheduleNote.value)
-  showReschedule.value = false; rescheduleNote.value = ''
-  toast.info('已改期并重新提醒')
+  if (await recall.reschedule(selected.value.id, rescheduleDate.value, rescheduleNote.value || undefined)) {
+    selectedId.value = selected.value.id
+    showReschedule.value = false; rescheduleNote.value = ''
+    toast.info('已改期并重新提醒')
+  }
 }
-function doSkip() {
+async function doSkip() {
   if (!selected.value || !skipReason.value.trim()) return
-  selectedId.value = selected.value.id
-  recall.skip(selected.value.id, skipReason.value.trim())
-  showSkip.value = false; skipReason.value = ''
-  toast.info('已跳过该提醒')
+  if (await recall.skip(selected.value.id, skipReason.value.trim())) {
+    selectedId.value = selected.value.id
+    showSkip.value = false; skipReason.value = ''
+    toast.info('已跳过该提醒')
+  }
 }
 
 function goBooking() { router.push('/appointment') }
@@ -174,36 +185,62 @@ function goBooking() { router.push('/appointment') }
 // ---- 新建提醒 ----
 const showForm = ref(false)
 const newRecall = ref({
-  customerName: '', reason: '', source: 'MANUAL' as RecallChannel,
+  customerId: '', customerName: '', reason: '', source: 'MANUAL' as RecallChannel,
   relatedEmrNo: '', relatedOrderNo: '',
   lastVisitDate: '', dueDate: '', method: 'PHONE' as RecallMethod, note: '',
 })
+const customerHits = ref<CustomerDTO[]>([])
+const searching = ref(false)
+
+async function searchCustomer() {
+  const kw = newRecall.value.customerName.trim()
+  if (!kw) { customerHits.value = []; return }
+  searching.value = true
+  try {
+    const res = await searchCustomers(kw)
+    customerHits.value = res.data ?? []
+    if (!customerHits.value.length) toast.info('未检索到客户，请先建档或更换关键字')
+  } catch (e) {
+    toast.error(errMsg(e, '客户检索失败'))
+  } finally {
+    searching.value = false
+  }
+}
+
+function pickCustomer(c: CustomerDTO) {
+  newRecall.value.customerId = c.customerId
+  newRecall.value.customerName = c.name
+  customerHits.value = []
+}
+
 const canSubmit = computed(
-  () => newRecall.value.customerName.trim() && newRecall.value.reason.trim()
+  () => newRecall.value.customerId.trim() && newRecall.value.reason.trim()
     && newRecall.value.lastVisitDate && newRecall.value.dueDate,
 )
-function submitRecall() {
+async function submitRecall() {
   if (!canSubmit.value) return
-  const r = recall.schedule({
-    customerId: 'C-NEW',
+  const r = await recall.schedule({
+    customerId: newRecall.value.customerId,
     customerName: newRecall.value.customerName.trim(),
     source: newRecall.value.source,
     reason: newRecall.value.reason.trim(),
     relatedEmrNo: newRecall.value.relatedEmrNo.trim() || undefined,
     relatedOrderNo: newRecall.value.relatedOrderNo.trim() || undefined,
-    lastVisitDate: new Date(newRecall.value.lastVisitDate).toISOString(),
-    dueDate: new Date(newRecall.value.dueDate).toISOString(),
+    lastVisitDate: newRecall.value.lastVisitDate,
+    dueDate: newRecall.value.dueDate,
     method: newRecall.value.method,
     note: newRecall.value.note,
   })
   if (r) {
     showForm.value = false
     newRecall.value = {
-      customerName: '', reason: '', source: 'MANUAL', relatedEmrNo: '', relatedOrderNo: '',
+      customerId: '', customerName: '', reason: '', source: 'MANUAL', relatedEmrNo: '', relatedOrderNo: '',
       lastVisitDate: '', dueDate: '', method: 'PHONE', note: '',
     }
+    customerHits.value = []
     selectedId.value = r.id
     tab.value = 'PENDING'
+    toast.success('复诊提醒单已创建')
   }
 }
 </script>
@@ -258,7 +295,7 @@ function submitRecall() {
             </div>
             <div class="rec__reason">{{ r.reason }}</div>
             <div class="rec__meta">
-              <span class="rec__src" :class="sourceTone[r.source]">{{ RECALL_SOURCE_LABEL[r.source] }}</span>
+              <span class="rec__src" :class="sourceTone[r.source]">{{ sourceLabel(r) }}</span>
               <span class="rec__due" :class="{ 'rec__due--overdue': isOverdue(r) }">
                 <CIcon name="clock" :size="12" />{{ dueLabel(r) }}
               </span>
@@ -272,7 +309,7 @@ function submitRecall() {
         <div v-if="selected" class="wb-head">
           <h3 class="rc__detail-title">{{ selected.customerName }}</h3>
           <div class="rc__detail-tags">
-            <span class="src" :class="sourceTone[selected.source]">{{ RECALL_SOURCE_LABEL[selected.source] }}</span>
+            <span class="src" :class="sourceTone[selected.source]">{{ sourceLabel(selected) }}</span>
             <CStatusPill :status="dictPill(RECALL_STATUS[selected.status]).status">{{ dictPill(RECALL_STATUS[selected.status]).text }}</CStatusPill>
           </div>
         </div>
@@ -432,7 +469,22 @@ function submitRecall() {
           <div class="form__row form__row--2">
             <div>
               <label class="form__label">客户姓名</label>
-              <CInput v-model="newRecall.customerName" placeholder="如：王美丽" />
+              <div class="pick">
+                <CInput v-model="newRecall.customerName" placeholder="输入姓名 / 手机号 / 客户编号后点检索" />
+                <CButton variant="secondary" :disabled="searching" @click="searchCustomer">
+                  <CIcon name="customer" :size="16" />检索
+                </CButton>
+              </div>
+              <div v-if="customerHits.length" class="pick__panel">
+                <button
+                  v-for="c in customerHits" :key="c.customerId"
+                  type="button" class="pick__opt"
+                  @click="pickCustomer(c)"
+                >
+                  <span class="pick__name">{{ c.name }}</span>
+                  <span class="pick__sub">{{ c.customerId }} · {{ c.phone || '无手机号' }} · {{ c.level }}</span>
+                </button>
+              </div>
             </div>
             <div>
               <label class="form__label">提醒来源</label>
@@ -587,4 +639,15 @@ function submitRecall() {
 
 .modal-mask { position: fixed; inset: 0; background: rgba(20,21,43,.45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: var(--s-lg); }
 .modal { width: 600px; max-width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: var(--shadow-pop); }
+
+.pick { display: flex; gap: var(--s-sm); align-items: center; }
+.pick :deep(.cinput) { flex: 1; }
+.pick__panel {
+  margin-top: var(--s-xs); border: 1px solid var(--c-border); border-radius: var(--r-md);
+  overflow: hidden; background: var(--c-surface); box-shadow: var(--shadow-card); max-height: 220px; overflow-y: auto;
+}
+.pick__opt { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: var(--s-sm) var(--s-md); background: none; border: none; border-bottom: 1px solid var(--c-border-light); cursor: pointer; }
+.pick__opt:hover { background: var(--c-brand-soft); }
+.pick__name { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); }
+.pick__sub { font-size: var(--t-xs); color: var(--c-text-3); }
 </style>

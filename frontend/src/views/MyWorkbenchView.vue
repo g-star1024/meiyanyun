@@ -4,8 +4,8 @@
  * 一线个人首页：我的待办（行内计数 → 点击直达对应作业页）+ 高频操作 + 今日概览。
  * 待办项用「权限 + 实时计数」驱动，天然按当前角色/权限过滤，无需硬编码角色分支。
  * 真实计数：审批待办 / 待收款订单 / 今日预约（看板剔除已取消）/ 方案单五态队列（listPlans totalElements）
- *           / 候诊待接待（今日 WAITING）/ 病历草稿待签（DRAFT）/ 术后 SOP 待回访与超期（完成治疗自动排程）。
- * 演示计数：复诊提醒（所属域暂无后端，文案带「演示」后缀、不计入真实总数）。
+ *           / 候诊待接待（今日 WAITING）/ 病历草稿待签（DRAFT）/ 术后 SOP 待回访与超期（完成治疗自动排程）
+ *           / 复诊待提醒（recall store 已切真后端，PENDING 计数）。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -171,7 +171,7 @@ async function loadTxnCounts() {
 }
 
 onMounted(() => {
-  // 复诊提醒域暂无后端，计数为演示数据；其余计数均在 loadTxnCounts 真实拉取
+  // 复诊提醒 store 已切真后端（seed 幂等拉取）；其余计数均在 loadTxnCounts 真实拉取
   recall.seed()
   loadTxnCounts()
 })
@@ -186,8 +186,6 @@ interface Todo {
   icon: IconName
   tone: 'brand' | 'warning' | 'danger' | 'success'
   perm?: string
-  /** 演示数据：所属域暂无后端（复诊提醒），不计入真实待办总数 */
-  demo?: boolean
   group: '临床诊疗' | '收银履约' | '术后跟进' | '管理协同'
 }
 
@@ -203,10 +201,10 @@ const todos = computed<Todo[]>(() => {
     { key: 'treating', label: '治疗中待归档', count: planTreatingCount.value, to: '/doctor', icon: 'tool', tone: 'brand', perm: 'consult:review', group: '临床诊疗' },
     // 收银履约：订单口径（含方案单自动生成的缴费单 + 零售/药妆应收单），不遗漏非诊疗单
     { key: 'pay', label: '待收款订单', count: pendingPayCount.value, to: '/order', icon: 'pos', tone: 'danger', perm: 'cashier:view', group: '收银履约' },
-    // 术后待回访 / SOP 超期（真实计数，完成治疗 AFTER_COMMIT 自动排程）；复诊提醒域暂无后端→演示数据
+    // 术后待回访 / SOP 超期（真实计数，完成治疗 AFTER_COMMIT 自动排程）；复诊待提醒（真实计数，规则引擎自动排程 + 手动新建）
     { key: 'fu', label: '术后待回访', count: sopPendingCount.value, to: '/followup', icon: 'phone', tone: 'success', perm: 'followup:view', group: '术后跟进' },
     { key: 'fu-overdue', label: 'SOP 超期未回访', count: sopOverdueCount.value, to: '/sop', icon: 'alert', tone: 'danger', perm: 'followup:view', group: '术后跟进' },
-    { key: 'recall', label: '复诊待提醒（演示）', count: recall.pending.length, to: '/recall', icon: 'bell', tone: 'warning', perm: 'recall:view', demo: true, group: '术后跟进' },
+    { key: 'recall', label: '复诊待提醒', count: recall.pending.length, to: '/recall', icon: 'bell', tone: 'warning', perm: 'recall:view', group: '术后跟进' },
     // 管理协同（真实计数）
     { key: 'approval', label: '待我审批', count: myTodoCount.value, to: '/approval', icon: 'check-square', tone: 'warning', perm: 'approval:view', group: '管理协同' },
   ]
@@ -221,8 +219,8 @@ const groups = computed(() => {
     .filter((g) => g.items.length > 0)
 })
 
-// 真实待办总数（演示域不计入欢迎条数字，避免把 mock 当真实工作量）
-const todoTotal = computed(() => todos.value.filter((t) => !t.demo).reduce((s, t) => s + t.count, 0))
+// 真实待办总数（全部待办项均为真实计数）
+const todoTotal = computed(() => todos.value.reduce((s, t) => s + t.count, 0))
 
 const quickActions = computed(() => {
   const acts: { label: string; icon: IconName; to: string; perm?: string }[] = [
