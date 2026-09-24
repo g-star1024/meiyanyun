@@ -542,3 +542,50 @@ export const getMarketingConfig = () => client.get<MarketingCfgDTO>('/marketing/
 
 export const saveMarketingConfig = (cmd: MarketingCfgCmd) =>
   client.post<TransitResult>('/marketing/config', cmd)
+
+// -------------------- M5-14 看板导出 / 周报订阅（P5-B94 D10） --------------------
+// 导出：GET /stats/export.csv 同步 CSV（UTF-8 BOM + 中文表头，后端七节单文件，方法级 marketing:export）。
+// 订阅：GET/POST /weekly-sub 本人态（无行回落 enabled=false；同值重 POST changed=false 幂等零审计）。
+
+/** 从 Content-Disposition 解析后端文件名（filename*=UTF-8'' 优先），取不到用兜底名 */
+function downloadCsv(resp: { data?: BlobPart; headers?: unknown }, fallback: string) {
+  const h = (resp?.headers ?? {}) as { get?(k: string): unknown } & Record<string, unknown>
+  const raw = typeof h.get === 'function' ? h.get('content-disposition') : h['content-disposition']
+  const disposition = String(raw ?? '')
+  let filename = fallback
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(disposition)
+  if (star && star[1]) {
+    try {
+      filename = decodeURIComponent(star[1])
+    } catch {
+      filename = star[1]
+    }
+  }
+  const blob = new Blob([resp.data as BlobPart], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
+}
+
+/** 营销总览导出 CSV（浏览器触发下载；无 marketing:export 权限后端 403，由视图 toast 兜底）。 */
+export const exportMarketingStatsCsv = async () => {
+  const resp = await client.get('/marketing/stats/export.csv', { responseType: 'blob' })
+  downloadCsv(resp, '营销总览.csv')
+}
+
+/** 本人周报订阅态：{enabled, lastSentWeek}，无行回落 enabled=false。 */
+export interface WeeklySubView {
+  enabled: boolean
+  lastSentWeek: string | null
+}
+
+export const getWeeklySub = () => client.get<WeeklySubView>('/marketing/weekly-sub')
+
+/** 订阅翻转（upsert 幂等；返回 {enabled, changed, lastSentWeek}）。 */
+export const postWeeklySub = (enabled: boolean) =>
+  client.post<WeeklySubView & { changed: boolean }>('/marketing/weekly-sub', { enabled })

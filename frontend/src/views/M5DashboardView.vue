@@ -16,11 +16,18 @@ import CDonutChart from '@/components/CDonutChart.vue'
 import { useM5DashStore } from '@/stores/m5Dash'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { exportMarketingStatsCsv } from '@/api/marketing'
 
 const store = useM5DashStore()
 const activity = useActivityStore()
 const auth = useAuthStore()
-onMounted(() => store.seed())
+const toast = useToast()
+onMounted(() => {
+  store.seed()
+  store.fetchWeeklySub()
+})
 
 const kpis = computed(() => [
   {
@@ -54,16 +61,21 @@ function big(n: number) {
 }
 
 const exported = ref(false)
-const subscribed = ref(false)
-function onExport() {
-  if (!auth.can('marketing:export')) return
-  activity.log(auth.user?.name ?? '系统', '导出营销数据看板报告', 'm5-dashboard')
-  exported.value = true
-  setTimeout(() => (exported.value = false), 1800)
+async function onExport() {
+  if (!auth.can('marketing:export') || exported.value) return
+  try {
+    await exportMarketingStatsCsv()
+    activity.log(auth.user?.name ?? '系统', '导出营销数据看板报告', 'm5-dashboard')
+    exported.value = true
+    setTimeout(() => (exported.value = false), 1800)
+  } catch (e) {
+    toast.error(errMsg(e, '导出失败，请稍后重试'))
+  }
 }
 function onSubscribe() {
-  activity.log(auth.user?.name ?? '系统', subscribed.value ? '取消订阅营销看板周报' : '订阅营销看板周报', 'm5-dashboard')
-  subscribed.value = !subscribed.value
+  const subscribing = !store.weeklySub.enabled
+  activity.log(auth.user?.name ?? '系统', subscribing ? '订阅营销看板周报' : '取消订阅营销看板周报', 'm5-dashboard')
+  store.toggleWeeklySub()
 }
 
 // 漏斗最大宽度用于收窄
@@ -90,8 +102,10 @@ const funnelMax = computed(() => Math.max(1, ...store.funnel.map((f) => f.value)
             <span>近 6 月触达 / 转化趋势</span>
             <div class="db__card-head-right">
               <CButton variant="ghost" size="sm" @click="onSubscribe">
-                <CIcon :name="subscribed ? 'check' : 'bell'" :size="14" />
-                {{ subscribed ? '已订阅' : '订阅周报' }}
+                <CIcon :name="store.weeklySub.enabled ? 'check' : 'bell'" :size="14" />
+                {{ store.weeklySub.enabled
+                  ? (store.weeklySub.lastSentWeek ? `已订阅（最近推送 ${store.weeklySub.lastSentWeek}）` : '已订阅')
+                  : '订阅周报' }}
               </CButton>
               <CButton variant="secondary" size="sm" v-perm.disable="'marketing:export'" @click="onExport">
                 <CIcon name="export" :size="14" />{{ exported ? '已导出' : '导出报告' }}

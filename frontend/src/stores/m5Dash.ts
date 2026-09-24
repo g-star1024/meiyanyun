@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import * as api from '@/api/marketing'
 import { CAMPAIGN_TYPE_LABEL, type CampaignType } from '@/stores/m1Marketing'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
 
 // ============================================================
 // M5-14 营销数据看板 store（已接真实 GET /marketing/stats/overview）
@@ -157,6 +159,37 @@ export const useM5DashStore = defineStore('m5Dash', () => {
     }
   }
 
+  // -------------------- M5-14 周报订阅（P5-B94 D11） --------------------
+  const toast = useToast()
+
+  /** 本人周报订阅态（无行回落 enabled=false；lastSentWeek 为最近一次成功推送的 ISO 周，未推送过为 null） */
+  const weeklySub = ref<api.WeeklySubView>({ enabled: false, lastSentWeek: null })
+
+  /** 拉取本人订阅态（失败不白屏，仅 console） */
+  async function fetchWeeklySub() {
+    try {
+      const res = await api.getWeeklySub()
+      weeklySub.value = res.data
+    } catch (e) {
+      console.error('营销周报订阅态加载失败', e)
+    }
+  }
+
+  /** 订阅/退订翻转（乐观更新：先翻后请求，失败回滚快照；成功后回包重赋值拿 lastSentWeek） */
+  async function toggleWeeklySub() {
+    const prev = { ...weeklySub.value }
+    const next = !prev.enabled
+    weeklySub.value = { ...weeklySub.value, enabled: next }
+    try {
+      const res = await api.postWeeklySub(next)
+      weeklySub.value = { enabled: res.data.enabled, lastSentWeek: res.data.lastSentWeek }
+      toast.success(next ? '已订阅营销周报，每周一 9:00 推送' : '已取消订阅营销周报')
+    } catch (e) {
+      weeklySub.value = prev
+      toast.error(errMsg(e, '订阅操作失败，请稍后重试'))
+    }
+  }
+
   return {
     trends,
     kpis,
@@ -172,5 +205,8 @@ export const useM5DashStore = defineStore('m5Dash', () => {
     funnel,
     pushEffectiveness,
     seed,
+    weeklySub,
+    fetchWeeklySub,
+    toggleWeeklySub,
   }
 })
