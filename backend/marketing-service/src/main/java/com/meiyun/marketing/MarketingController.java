@@ -1,13 +1,18 @@
 package com.meiyun.marketing;
 
 import com.meiyun.common.ratelimit.RateLimiter;
+import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -42,6 +47,8 @@ public class MarketingController {
     private final MarketingCfgService cfgService;
     private final CouponWriteoffService writeoffService;
     private final PushService pushService;
+    private final MarketingExportService exportService;
+    private final MarketingWeeklySubService weeklySubService;
 
     private static final int PUSH_WINDOW_SECONDS = PushService.WINDOW_SECONDS; // 周频窗口
 
@@ -55,7 +62,9 @@ public class MarketingController {
                                LiveService liveService,
                                MarketingCfgService cfgService,
                                CouponWriteoffService writeoffService,
-                               PushService pushService) {
+                               PushService pushService,
+                               MarketingExportService exportService,
+                               MarketingWeeklySubService weeklySubService) {
         this.campaignService = campaignService;
         this.couponService = couponService;
         this.statsService = statsService;
@@ -69,6 +78,8 @@ public class MarketingController {
         this.cfgService = cfgService;
         this.writeoffService = writeoffService;
         this.pushService = pushService;
+        this.exportService = exportService;
+        this.weeklySubService = weeklySubService;
     }
 
     // ==================== 配置 ====================
@@ -101,6 +112,36 @@ public class MarketingController {
     @GetMapping("/stats/overview")
     public Map<String, Object> statsOverview() {
         return statsService.overview();
+    }
+
+    /**
+     * 营销总览导出 CSV（P5-B94 D2-D4）：GET /api/marketing/stats/export.csv。
+     * 与 overview 同源七节单文件（KPI/券/活动/推送/漏斗/渠道/趋势），UTF-8 BOM + 中文表头 + 金额「元」；
+     * 方法级 marketing:export 收紧（店长/超管），审计 MARKETING_DASH+EXPORT 在 {@link MarketingExportService}。
+     */
+    @GetMapping("/stats/export.csv")
+    @RequirePerm("marketing:export")
+    public ResponseEntity<byte[]> exportStats() {
+        return csvResponse(exportService.exportOverview());
+    }
+
+    // ==================== 周报订阅（P5-B94 D6/D7） ====================
+
+    /** 本人周报订阅态：{enabled, lastSentWeek}，无行回落 enabled=false（类级 marketing:view 覆盖）。 */
+    @GetMapping("/weekly-sub")
+    public Map<String, Object> weeklySub() {
+        return weeklySubService.view(DataScope.currentActor());
+    }
+
+    /**
+     * 本人周报订阅翻转：body {enabled}，upsert 幂等（同值重复 POST changed=false 零审计；
+     * 无行且 enabled=false 不建行不审计），实际翻转审计 MARKETING_WEEKLY_SUB + SUBSCRIBE/UNSUBSCRIBE
+     * 在 {@link MarketingWeeklySubService}。
+     */
+    @PostMapping("/weekly-sub")
+    public Map<String, Object> saveWeeklySub(@RequestBody(required = false) SubCmd cmd) {
+        return weeklySubService.set(DataScope.currentActor(),
+                cmd != null && Boolean.TRUE.equals(cmd.enabled()));
     }
 
     // ==================== 活动 ====================
@@ -391,7 +432,21 @@ public class MarketingController {
         return Map.of("changed", liveService.toggleVideo(id, cmd == null ? null : cmd.status()));
     }
 
+    /** 统一 CSV 附件响应（复刻 FinanceController）：中文文件名走 filename*=UTF-8'' 编码，兼容 BOM 防乱码。 */
+    private ResponseEntity<byte[]> csvResponse(MarketingExportService.CsvReport report) {
+        String encoded = URLEncoder.encode(report.filename(), StandardCharsets.UTF_8).replace("+", "%20");
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, "text/csv; charset=UTF-8")
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"export.csv\"; filename*=UTF-8''" + encoded)
+                .contentLength(report.content().length)
+                .body(report.content());
+    }
+
     // ==================== 命令 DTO ====================
+
+    /** 周报订阅翻转命令（P5-B94 D7）：enabled 空视为 false（退订）。 */
+    public record SubCmd(Boolean enabled) {}
 
     public record PushCmd(
             @NotBlank String customerId, @NotBlank String pushType, @NotBlank String content) {}

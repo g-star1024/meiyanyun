@@ -19,6 +19,9 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
 
     boolean existsByIdemKey(String idemKey);
 
+    /** 幂等键反查（P5-B94 D9：重放返既有 notificationId）。 */
+    java.util.Optional<Notification> findByIdemKey(String idemKey);
+
     /** 某人全部未读置已读（通知中心「全部已读」）。 */
     @Modifying
     @Transactional

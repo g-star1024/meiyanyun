@@ -109,6 +109,11 @@ class MarketingControllerTest {
     CouponWriteoffService writeoffService;
     @MockBean
     PushService pushService;
+    // P5-B94 构造扩至 15 参（导出/周报订阅两个服务），同 B22 先例缺一即 UnsatisfiedDependency。
+    @MockBean
+    MarketingExportService exportService;
+    @MockBean
+    MarketingWeeklySubService weeklySubService;
 
     private String token(String staffId, List<String> roles, List<String> perms) {
         LoginUser u = new LoginUser(staffId, "测试员", roles, "S001", "STORE", perms, false, null, null);

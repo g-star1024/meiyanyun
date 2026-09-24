@@ -169,6 +169,47 @@ public class InternalNotificationController {
         return Map.of("recipients", recipients.size(), "sent", sent, "muted", muted);
     }
 
+    /**
+     * 营销周报站内信写入（P5-B94 D9，营销域 {@code MarketingWeeklyReportJob} → txn 通知中心）。
+     * body {staffNo(必填), weekStamp(必填 ISO 周戳 yyyy-Www), title(必填), content(必填)}。
+     * 订阅态由营销域 marketing_weekly_sub 自持（Job 只推 enabled 订阅人），本端点不再查类别偏好。
+     * category=MARKETING、level=INFO、link=/m5-dashboard；幂等键 MKT-WEEKLY:{weekStamp}:{staffNo} UK，
+     * 重放返既有 {notificationId, duplicated:true}（Job 侧 last_sent_week 为第一道防重，此处兜底）。
+     */
+    @PostMapping("/marketing-weekly")
+    @RequirePerm("internal:notify")
+    public Map<String, Object> marketingWeekly(@RequestBody MarketingWeeklyRequest req) {
+        String staffNo = req.staffNo() == null ? "" : req.staffNo().trim();
+        String weekStamp = req.weekStamp() == null ? "" : req.weekStamp().trim();
+        String title = req.title() == null ? "" : req.title().trim();
+        String content = req.content() == null ? "" : req.content().trim();
+        if (staffNo.isBlank() || weekStamp.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "接收人工号与周戳不能为空");
+        }
+        if (title.isBlank() || content.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "周报标题与内容不能为空");
+        }
+
+        String idemKey = "MKT-WEEKLY:" + truncate(weekStamp, 32) + ":" + staffNo;
+        var existing = notificationRepo.findByIdemKey(idemKey);
+        if (existing.isPresent()) {
+            return Map.of("notificationId", existing.get().getId(), "duplicated", true);
+        }
+        Notification note = new Notification();
+        note.setRecipient(staffNo);
+        note.setCategory("MARKETING");
+        note.setLevel("INFO");
+        note.setTitle(truncate(title, 128));
+        note.setContent(truncate(content, 500));
+        note.setLink("/m5-dashboard");
+        note.setBizRef(truncate(weekStamp, 32));
+        note.setSender("system");
+        note.setIdemKey(idemKey);
+        note.setCreatedAt(OffsetDateTime.now());
+        notificationRepo.save(note);
+        return Map.of("notificationId", note.getId(), "duplicated", false);
+    }
+
     /** 合规巡检告警写入请求体（与客户域调用方字段对齐）。 */
     public record ComplianceAlertRequest(String level, String title, String content, String link, String bizRef) {
     }
@@ -176,6 +217,10 @@ public class InternalNotificationController {
     /** 会员等级降级预警写入请求体（按门店收敛店长；与客户域 LevelDowngradeNotifier 字段对齐）。 */
     public record LevelDowngradeAlertRequest(String storeCode, String title, String content,
                                              String link, String bizRef) {
+    }
+
+    /** 营销周报写入请求体（P5-B94 D9；与营销域 MarketingWeeklyReportJob 推送字段对齐）。 */
+    public record MarketingWeeklyRequest(String staffNo, String weekStamp, String title, String content) {
     }
 
     private static String truncate(String s, int max) {
