@@ -306,12 +306,16 @@ public class MarketingController {
 
     // ==================== M5-04 裂变海报（模板启停 / 生成海报） ====================
 
+    /** 模板列表（P5-B92 D7：方法级 OR 放开，poster:view 角色可直读）。 */
     @GetMapping("/poster-templates")
+    @RequirePerm({ "marketing:view", "poster:view" })
     public List<PosterTemplate> posterTemplates() {
         return posterService.listTemplates();
     }
 
+    /** 海报列表（P5-B92 D7：同上 OR 放开）。 */
     @GetMapping("/posters")
+    @RequirePerm({ "marketing:view", "poster:view" })
     public List<PosterRecord> posters() {
         return posterService.listPosters();
     }
@@ -329,14 +333,18 @@ public class MarketingController {
         return posterService.createPoster(cmd);
     }
 
-    // ==================== M5-05 直播团购（场次创建/开播/结束；短视频只读） ====================
+    // ==================== M5-05 直播团购（场次创建/开播/结束；P5-B92 起短视频可写） ====================
 
+    /** 场次列表（P5-B92 D7：方法级 OR 放开，live:view 角色可直读）。 */
     @GetMapping("/live-sessions")
+    @RequirePerm({ "marketing:view", "live:view" })
     public List<LiveSession> liveSessions() {
         return liveService.listSessions();
     }
 
+    /** 视频列表（P5-B92 D7：同上 OR 放开；OFFLINE 随列表下发，管理视图自渲染徽标）。 */
     @GetMapping("/short-videos")
+    @RequirePerm({ "marketing:view", "live:view" })
     public List<ShortVideo> shortVideos() {
         return liveService.listVideos();
     }
@@ -359,6 +367,28 @@ public class MarketingController {
     @RequirePerm("live:edit")
     public Map<String, Object> endLive(@PathVariable String id) {
         return Map.of("changed", liveService.endLive(id));
+    }
+
+    /** 发布短视频（P5-B92）：计数置 0、当日发布、违禁词校验；审计 SHORT_VIDEO/CREATE。 */
+    @PostMapping("/short-videos")
+    @RequirePerm("live:edit")
+    public ShortVideo createShortVideo(@RequestBody LiveService.VideoCmd cmd) {
+        return liveService.createVideo(cmd);
+    }
+
+    /** 编辑短视频（P5-B92）：仅 title/platform/tags，404/违禁词/词表同发布；审计 SHORT_VIDEO/UPDATE。 */
+    @PutMapping("/short-videos/{id}")
+    @RequirePerm("live:edit")
+    public ShortVideo updateShortVideo(@PathVariable String id, @RequestBody LiveService.VideoCmd cmd) {
+        return liveService.updateVideo(id, cmd);
+    }
+
+    /** 上架/下架（P5-B92）：body 空=翻转；显式同态 changed=false 幂等；仅实际翻转审计 SHORT_VIDEO/TOGGLE。 */
+    @PostMapping("/short-videos/{id}/toggle")
+    @RequirePerm("live:edit")
+    public Map<String, Object> toggleShortVideo(@PathVariable String id,
+                                                @RequestBody(required = false) LiveService.ToggleCmd cmd) {
+        return Map.of("changed", liveService.toggleVideo(id, cmd == null ? null : cmd.status()));
     }
 
     // ==================== 命令 DTO ====================

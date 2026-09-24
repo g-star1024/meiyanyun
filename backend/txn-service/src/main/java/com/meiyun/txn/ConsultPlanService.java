@@ -120,15 +120,22 @@ public class ConsultPlanService {
     /** 完成治疗：治疗过程/操作记录必填，术后医嘱选填；以登录医生身份电子签名归档。 */
     public record TreatDoneCmd(String operator, String treatmentNote, String prescription) {}
 
+    /**
+     * 零售开单入参。sourceType/sourceId（P5-B92，可选）：成交来源 NONE/LIVE_SESSION/SHORT_VIDEO
+     * ＋来源标识（场次号/视频号），营销域据此回写成交计数；缺省 NONE 不落来源列。
+     */
     public record RetailCmd(String customerId, String storeCode, String consultant,
-                            String project, List<M4FlowController.OrderItemCmd> items, String operator) {}
+                            String project, List<M4FlowController.OrderItemCmd> items, String operator,
+                            String sourceType, String sourceId) {}
 
     /**
      * 售卡下单入参（B16）：customerId/storeCode/consultant/productCode（CD-/CS- 模板编码）。
      * 售价/卡名/次数/有效期一律以后端 store 域在售模板为准，不接收前端价格（防改价）。
+     * sourceType/sourceId（P5-B92，可选）：成交来源，口径同 RetailCmd。
      */
     public record CardSaleCmd(String customerId, String storeCode, String consultant,
-                              String productCode, String operator) {}
+                              String productCode, String operator,
+                              String sourceType, String sourceId) {}
 
     public record PlanItemView(String itemCode, String itemName, String spec, Integer qty,
                                Long unitPrice, Long amount, String riskTags) {}
@@ -570,8 +577,11 @@ public class ConsultPlanService {
         // 会员等级折扣（B62 卡2）：fail-closed 取折扣率，零售明细折后价开单
         MemberDiscountClient.MemberDiscount discount =
                 memberDiscountClient.getForCustomer(cmd.customerId());
+        String[] src = normalizeSource(cmd.sourceType(), cmd.sourceId());
         TxnOrder order = buildPendingOrder(cmd.customerId(), cmd.storeCode(), cmd.consultant(),
                 project, cmd.items(), "GREEN", null, discount);
+        order.setSourceType(src[0]);
+        order.setSourceId(src[1]);
         orderRepo.save(order);
         int ln = 1;
         for (M4FlowController.OrderItemCmd it : cmd.items()) {
@@ -625,6 +635,7 @@ public class ConsultPlanService {
         if (blank(cmd.productCode())) {
             throw bad("未选择卡项模板，请先选择在售卡项");
         }
+        String[] src = normalizeSource(cmd.sourceType(), cmd.sourceId());
         Map<String, Object> tpl = catalogClient.getForSale(cmd.productCode(), cmd.storeCode());
 
         String cardItem = str(tpl.get("name"));
@@ -652,6 +663,8 @@ public class ConsultPlanService {
         order.setCardType(blank(productType) ? null : productType);
         order.setCardTotalTimes(totalTimes);
         order.setCardValidityDays(Math.max(validityDays, 0));
+        order.setSourceType(src[0]);
+        order.setSourceId(src[1]);
         orderRepo.save(order);
 
         OrderItem oi = new OrderItem();
@@ -894,6 +907,26 @@ public class ConsultPlanService {
     }
 
     // ==================== 内部 ====================
+
+    /**
+     * 成交来源参数归一化（P5-B92）：空/NONE → 双 null（不落来源列）；非 NONE 须为
+     * LIVE_SESSION/SHORT_VIDEO 且 sourceId 必填，非法一律 400 中文。
+     * 返回 {sourceType, sourceId} 二元组（均可空，成对出现）。
+     */
+    private String[] normalizeSource(String sourceType, String sourceId) {
+        String type = sourceType == null ? "" : sourceType.trim();
+        String id = sourceId == null ? "" : sourceId.trim();
+        if (type.isEmpty() || "NONE".equals(type)) {
+            return new String[] { null, null };
+        }
+        if (!"LIVE_SESSION".equals(type) && !"SHORT_VIDEO".equals(type)) {
+            throw bad("成交来源类型不合法（NONE/LIVE_SESSION/SHORT_VIDEO）");
+        }
+        if (id.isEmpty()) {
+            throw bad("已选择成交来源时来源标识必填（sourceId）");
+        }
+        return new String[] { type, id };
+    }
 
     private TxnOrder buildPendingOrder(String customerId, String storeCode, String consultant,
                                        String project, List<M4FlowController.OrderItemCmd> items,

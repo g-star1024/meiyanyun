@@ -32,6 +32,8 @@ public class TxnInternalClient {
     private static final Logger log = LoggerFactory.getLogger(TxnInternalClient.class);
     private static final ParameterizedTypeReference<List<PaidOrder>> PAID_TYPE =
             new ParameterizedTypeReference<>() {};
+    private static final ParameterizedTypeReference<List<RefundedOrder>> REFUNDED_TYPE =
+            new ParameterizedTypeReference<>() {};
 
     private final RestTemplate restTemplate;
 
@@ -45,9 +47,15 @@ public class TxnInternalClient {
         this.restTemplate = restTemplate;
     }
 
-    /** 已收款订单精简视图（与 txn InternalOrderController.PaidOrderView 七字段对齐）。 */
+    /** 已收款订单精简视图（与 txn InternalOrderController.PaidOrderView 九字段对齐，
+     * P5-B92 加 sourceType/sourceId 成交来源，可空向后兼容）。 */
     public record PaidOrder(String orderNo, String customerId, String storeCode,
-                            Long amount, String status, String bizKind, OffsetDateTime createdAt) {}
+                            Long amount, String status, String bizKind, OffsetDateTime createdAt,
+                            String sourceType, String sourceId) {}
+
+    /** 已退款流水精简视图（与 txn InternalOrderController.RefundedOrderView 六字段对齐，P5-B92）。 */
+    public record RefundedOrder(String txnNo, String orderNo, String customerId,
+                                String storeCode, Long refundAmt, OffsetDateTime createdAt) {}
 
     /**
      * 拉取 [from, to]（yyyy-MM-dd，按 created_at 闭区间）已收款订单。
@@ -67,6 +75,27 @@ public class TxnInternalClient {
             log.warn("拉取 txn 已收款订单失败，本轮自动发赠金跳过：{}", e.getMessage());
             throw new TxnServiceUnavailableException(
                     "txn-service 已收款订单投影暂不可用：" + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 拉取 [from, to]（yyyy-MM-dd，按 created_at 闭区间）已退款流水（P5-B92 成交回写 refund 段）。
+     *
+     * @throws TxnServiceUnavailableException txn 域不可用（连接/超时/HTTP 故障）
+     */
+    public List<RefundedOrder> fetchRefundedOrders(String from, String to) {
+        String url = txnBaseUrl + "/api/txn/internal/refunded-orders?from=" + from + "&to=" + to;
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+        try {
+            ResponseEntity<List<RefundedOrder>> resp =
+                    restTemplate.exchange(url, HttpMethod.GET, new HttpEntity<>(headers), REFUNDED_TYPE);
+            List<RefundedOrder> body = resp.getBody();
+            return body == null ? List.of() : body;
+        } catch (Exception e) {
+            log.warn("拉取 txn 已退款流水失败，本轮成交回写退款段跳过：{}", e.getMessage());
+            throw new TxnServiceUnavailableException(
+                    "txn-service 已退款流水投影暂不可用：" + e.getMessage(), e);
         }
     }
 }

@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
@@ -18,17 +19,22 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 直播团购写链路（M5-05）：场次创建 / 开播 / 结束；短视频库本期只读。
+ * 直播团购写链路（M5-05）：场次创建 / 开播 / 结束；P5-B92 起短视频库同域可写
+ *（发布 / 编辑 / 上下架）。
  *
  * <p>写接口四件套：① 参数校验（平台白名单、标题/开播时间必填、简介文案合规）；
  * ② 幂等（开播仅 NOT_STARTED 可执行、结束仅 LIVE 可执行，状态不符返回 false 不审计）；
- * ③ 全动作审计（bizType=LIVE_SESSION，CREATE/START/END，payload JSON）；④ 中文错误。
+ * ③ 全动作审计（bizType=LIVE_SESSION，CREATE/START/END；SHORT_VIDEO，CREATE/UPDATE/TOGGLE，
+ * payload JSON）；④ 中文错误。
  * 金额口径：dealAmount bigint 存「分」。
  */
 @Service
 public class LiveService {
 
     public static final List<String> PLATFORMS = List.of("DOUYIN", "WECHAT_CHANNEL");
+
+    /** 短视频平台词表（比直播场次多 XIAOHONGSHU 小红书，对齐种子与前端 mock 活规格）。 */
+    public static final List<String> VIDEO_PLATFORMS = List.of("DOUYIN", "WECHAT_CHANNEL", "XIAOHONGSHU");
 
     private static final DateTimeFormatter DT_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
 
@@ -137,11 +143,97 @@ public class LiveService {
         return true;
     }
 
+    // ==================== 短视频写链路（P5-B92） ====================
+
+    /** 发布视频：计数全部置 0、status=PUBLISHED、publishedAt=当日；审计 SHORT_VIDEO/CREATE。 */
+    @Transactional
+    public ShortVideo createVideo(VideoCmd cmd) {
+        NormVideo n = normalizeVideo(cmd);
+        ShortVideo v = new ShortVideo();
+        v.setVideoId(noGen.next("SV", like -> videoRepo
+                .findTopByVideoIdLikeOrderByVideoIdDesc(like).map(ShortVideo::getVideoId).orElse(null)));
+        v.setTitle(n.title());
+        v.setPlatform(n.platform());
+        v.setPlays(0);
+        v.setLikes(0);
+        v.setDealCount(0);
+        v.setDealAmount(0L);
+        v.setStatus("PUBLISHED");
+        v.setTags(writeJson(n.tags()));
+        v.setPublishedAt(LocalDate.now());
+        ShortVideo saved = videoRepo.save(v);
+        audit("SHORT_VIDEO", "CREATE", saved.getVideoId(), Map.of(
+                "title", n.title(), "platform", n.platform(), "tags", n.tags()));
+        return saved;
+    }
+
+    /** 编辑视频：仅 title/platform/tags 可改（播放/点赞/成交等计数列服务端忽略，防刷数据）；审计 SHORT_VIDEO/UPDATE。 */
+    @Transactional
+    public ShortVideo updateVideo(String videoId, VideoCmd cmd) {
+        ShortVideo v = mustGetVideo(videoId);
+        NormVideo n = normalizeVideo(cmd);
+        v.setTitle(n.title());
+        v.setPlatform(n.platform());
+        v.setTags(writeJson(n.tags()));
+        ShortVideo saved = videoRepo.save(v);
+        audit("SHORT_VIDEO", "UPDATE", saved.getVideoId(), Map.of(
+                "title", n.title(), "platform", n.platform(), "tags", n.tags()));
+        return saved;
+    }
+
+    /**
+     * 上架/下架：PUBLISHED⇄OFFLINE。targetStatus 空=翻转；显式同态=幂等 false 不审计；
+     * 非法词表 400 中文。仅实际翻转审计 SHORT_VIDEO/TOGGLE。
+     */
+    @Transactional
+    public boolean toggleVideo(String videoId, String targetStatus) {
+        ShortVideo v = mustGetVideo(videoId);
+        String target;
+        if (targetStatus == null || targetStatus.isBlank()) {
+            target = "PUBLISHED".equals(v.getStatus()) ? "OFFLINE" : "PUBLISHED";
+        } else {
+            target = targetStatus.trim();
+            if (!"PUBLISHED".equals(target) && !"OFFLINE".equals(target)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "上下架状态不合法（PUBLISHED/OFFLINE）");
+            }
+        }
+        if (target.equals(v.getStatus())) {
+            return false;
+        }
+        v.setStatus(target);
+        videoRepo.save(v);
+        audit("SHORT_VIDEO", "TOGGLE", videoId, Map.of("title", v.getTitle(), "to", target));
+        return true;
+    }
+
     // ==================== 内部方法 ====================
 
     private LiveSession mustGet(String sessionId) {
         return sessionRepo.findById(sessionId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "直播场次不存在：" + sessionId));
+    }
+
+    private ShortVideo mustGetVideo(String videoId) {
+        return videoRepo.findById(videoId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "短视频不存在：" + videoId));
+    }
+
+    /** 视频入参归一化：标题必填≤64、平台词表、违禁词实时校验、标签去空白去重。 */
+    private NormVideo normalizeVideo(VideoCmd cmd) {
+        String title = cmd.title() == null ? "" : cmd.title().trim();
+        String platform = cmd.platform() == null ? "" : cmd.platform().trim();
+        if (title.isEmpty() || title.length() > 64) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "视频标题不可为空且长度不超过 64 字");
+        }
+        if (!VIDEO_PLATFORMS.contains(platform)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "视频平台不合法（DOUYIN/WECHAT_CHANNEL/XIAOHONGSHU）");
+        }
+        List<String> hits = forbiddenWordService.check(title);
+        if (!hits.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "营销合规拦截：命中违禁词 " + String.join("、", hits));
+        }
+        return new NormVideo(title, platform, normalizeCodes(cmd.tags()));
     }
 
     private LocalDateTime parseTime(String s) {
@@ -178,11 +270,15 @@ public class LiveService {
     }
 
     private void audit(String action, String txnNo, Map<String, Object> payload) {
+        audit("LIVE_SESSION", action, txnNo, payload);
+    }
+
+    private void audit(String bizType, String action, String txnNo, Map<String, Object> payload) {
         try {
-            audit.record("LIVE_SESSION", txnNo, DataScope.currentActor(), action,
+            audit.record(bizType, txnNo, DataScope.currentActor(), action,
                     objectMapper.writeValueAsString(payload));
         } catch (JsonProcessingException e) {
-            audit.record("LIVE_SESSION", txnNo, DataScope.currentActor(), action, "{}");
+            audit.record(bizType, txnNo, DataScope.currentActor(), action, "{}");
         }
     }
 
@@ -191,6 +287,15 @@ public class LiveService {
     /** 创建直播场次命令（startTime：yyyy-MM-dd HH:mm 或 datetime-local 的 yyyy-MM-ddTHH:mm）。 */
     public record SessionCmd(String title, String platform, String startTime,
                              List<String> mountedCouponIds, String intro) {}
+
+    /** 发布/编辑短视频命令（P5-B92）：title 必填≤64、platform 词表、tags 文本数组。 */
+    public record VideoCmd(String title, String platform, List<String> tags) {}
+
+    /** 短视频上下架命令（P5-B92）：status 空=翻转；显式 PUBLISHED/OFFLINE 同态幂等 false。 */
+    public record ToggleCmd(String status) {}
+
+    /** 视频入参归一化结果（title/platform 已 trim、tags 已去空白去重）。 */
+    private record NormVideo(String title, String platform, List<String> tags) {}
 
     /** 供播种器反序列化挂载券 JSON 复用。 */
     static List<String> readCouponIds(String json) {

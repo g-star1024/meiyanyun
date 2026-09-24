@@ -53,7 +53,8 @@ public class InternalOrderController {
             @RequestParam(value = "to", required = false) @DateTimeFormat(pattern = "yyyy-MM-dd") LocalDate to) {
         return orderRepo.findAll(paidSpec(storeCode, from, to)).stream()
                 .map(o -> new PaidOrderView(o.getOrderNo(), o.getCustomerId(), o.getStoreCode(),
-                        o.getAmount(), o.getStatus(), o.getBizKind(), o.getCreatedAt()))
+                        o.getAmount(), o.getStatus(), o.getBizKind(), o.getCreatedAt(),
+                        o.getSourceType(), o.getSourceId()))
                 .toList();
     }
 
@@ -113,9 +114,10 @@ public class InternalOrderController {
         };
     }
 
-    /** 已收款订单精简视图。 */
+    /** 已收款订单精简视图（P5-B92 七→九字段：+sourceType/sourceId 成交来源，可空向后兼容）。 */
     public record PaidOrderView(String orderNo, String customerId, String storeCode,
-                               Long amount, String status, String bizKind, OffsetDateTime createdAt) {}
+                               Long amount, String status, String bizKind, OffsetDateTime createdAt,
+                               String sourceType, String sourceId) {}
 
     /** 已退款流水精简视图。 */
     public record RefundedOrderView(String txnNo, String orderNo, String customerId,

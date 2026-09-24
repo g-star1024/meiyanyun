@@ -103,6 +103,14 @@ public class TxnOrder {
     @Column(name = "writeoff_at")
     private OffsetDateTime writeoffAt;
 
+    /** 成交来源类型（P5-B92，可空）：LIVE_SESSION 直播场次 / SHORT_VIDEO 短视频；null=无来源。 */
+    @Column(name = "source_type", length = 32)
+    private String sourceType;
+
+    /** 成交来源标识（P5-B92，可空）：场次号/视频号；sourceType 非空时必填（营销域回写锚）。 */
+    @Column(name = "source_id", length = 64)
+    private String sourceId;
+
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 

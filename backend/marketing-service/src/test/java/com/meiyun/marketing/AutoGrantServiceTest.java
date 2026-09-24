@@ -72,7 +72,7 @@ class AutoGrantServiceTest {
     private TxnInternalClient.PaidOrder order(String no, String customer, String store,
                                               long amount, String bizKind) {
         return new TxnInternalClient.PaidOrder(no, customer, store, amount, "已收款",
-                bizKind, OffsetDateTime.now());
+                bizKind, OffsetDateTime.now(), null, null);
     }
 
     /** 桩规则：仅一条满 100 元赠 20 元、全部门店规则。 */
