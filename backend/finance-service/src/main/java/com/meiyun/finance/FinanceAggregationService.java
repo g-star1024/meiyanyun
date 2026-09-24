@@ -129,7 +129,10 @@ public class FinanceAggregationService {
 
             switch (kind) {
                 case "ORDER" -> entries.add(toOrderEntry(row, storeName, ++seq));
-                case "REFUND" -> entries.add(toRefundEntry(row, storeName, ++seq, orderChannel));
+                case "REFUND" -> {
+                    entries.add(toRefundEntry(row, storeName, ++seq, orderChannel));
+                    if (yuan(row.get("penaltyAmt")) > 0) entries.add(toRefundPenaltyEntry(row, storeName, ++seq)); // B95：无合同单 penaltyAmt=0 不计
+                }
                 case "WRITEOFF" -> {
                     String cardNo = str(row.get("cardNo"));
                     if (cardNo == null || cardNo.isBlank()) continue; // 订单整单核销不计（无新资金）
@@ -167,6 +170,15 @@ public class FinanceAggregationService {
                 yuan(r.get("refundAmt")), resolveRefundChannel(str(r.get("channel")), str(r.get("orderNo")), orderChannel),
                 "CASHIER", "REFUND",
                 txnNo, storeName, "退款支出 · " + nz(str(r.get("customerName")), txnNo), false, false);
+    }
+
+    /** B95 合同违约金：RF-PENALTY / IN / ERP（退款扣留转收入，内部结转 channel=null；penaltyAmt=0 时调用方已跳过）。 */
+    private FinanceViewDTO.LedgerEntry toRefundPenaltyEntry(Map<String, Object> r, String storeName, long seq) {
+        String txnNo = str(r.get("txnNo"));
+        return new FinanceViewDTO.LedgerEntry(
+                "L" + seq, txnNo + "-P", dateOf(r.get("createdAt")), "RF-PENALTY", "IN",
+                yuan(r.get("penaltyAmt")), null, "ERP", "REFUND",
+                txnNo, storeName, "合同违约金收入 · " + nz(str(r.get("customerName")), txnNo), true, false);
     }
 
     private FinanceViewDTO.LedgerEntry toWriteoffDepositEntry(Map<String, Object> w, String storeName, long seq) {

@@ -47,6 +47,7 @@ class TxnServiceTest {
     @Mock OrderPaymentRepository payRepo;
     @Mock CustomerCardClient cardClient;
     @Mock MarketingGrantClient grantClient;
+    @Mock ContractPenaltyJudge penaltyJudge;
 
     FinanceEventPublisher financeEvents;
     TxnService service;
@@ -57,7 +58,7 @@ class TxnServiceTest {
     void setUp() {
         financeEvents = publisherCapturing(new ArrayList<>());
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
         lenient().when(refundRepo.save(any(TxnRefund.class))).thenAnswer(i -> i.getArgument(0));
     }
 
@@ -126,7 +127,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
         stubRefund(r, List.of(payment("grant", 3000L), payment("balance", 2000L), payment("cash", 5000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -153,7 +154,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
         stubRefund(r, List.of(payment("grant", 3000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -170,7 +171,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
         stubRefund(r, List.of(payment("cash", 5000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -189,7 +190,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
         stubRefund(r, List.of(payment("grant", 3000L), payment("cash", 7000L)));
         doThrow(new ResponseStatusException(HttpStatus.BAD_GATEWAY,
                 "赠金退款回加失败：营销服务暂不可用，请稍后重试（本笔操作已回滚，未扣款未记账）"))

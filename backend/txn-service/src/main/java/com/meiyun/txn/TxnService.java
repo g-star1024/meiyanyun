@@ -45,12 +45,13 @@ public class TxnService {
     private final FinanceEventPublisher financeEvents;
     private final CustomerCardClient cardClient;
     private final MarketingGrantClient grantClient;
+    private final ContractPenaltyJudge penaltyJudge;
 
     public TxnService(TxnRefundRepository refundRepo, TxnCardCancelRepository cancelRepo,
                       TxnOrderRepository orderRepo, MemberCardRepository cardRepo,
                       AuditRecorder audit, @Lazy ApprovalService approvalService,
                       FinanceEventPublisher financeEvents, CustomerCardClient cardClient,
-                      MarketingGrantClient grantClient) {
+                      MarketingGrantClient grantClient, ContractPenaltyJudge penaltyJudge) {
         this.refundRepo = refundRepo;
         this.cancelRepo = cancelRepo;
         this.orderRepo = orderRepo;
@@ -60,6 +61,7 @@ public class TxnService {
         this.financeEvents = financeEvents;
         this.cardClient = cardClient;
         this.grantClient = grantClient;
+        this.penaltyJudge = penaltyJudge;
     }
 
     // ---------------- 退款 RF ----------------
@@ -80,6 +82,22 @@ public class TxnService {
             }
             fee = cmd.feeCents();
         }
+        ContractPenaltyJudge.PenaltyVerdict verdict = null;
+        if (cmd.contractNo() != null && !cmd.contractNo().isBlank()) {
+            if (cmd.paidAmt() == null || cmd.paidAmt() <= 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "关联合同退款时必须给出已付金额（违约金计算基数）");
+            }
+            verdict = penaltyJudge.judge(cmd.contractNo(), cmd.customer(), cmd.paidAmt());
+            long expected = cmd.paidAmt() - verdict.penaltyAmt();
+            if (cmd.refundAmt() != expected) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "实退金额与合同口径不符：已付 ¥" + fenToYuan(cmd.paidAmt())
+                                + (verdict.inCooling() ? "（冷静期内免违约金）"
+                                : " 扣违约金 ¥" + fenToYuan(verdict.penaltyAmt()))
+                                + "，应退 ¥" + fenToYuan(expected));
+            }
+        }
         String tier = tierFor(cmd.refundAmt());
         String storeCode = resolveRefundStore(cmd.orderNo());
         TxnRefund r = new TxnRefund();
@@ -96,14 +114,22 @@ public class TxnService {
         r.setFee(fee);
         r.setFeeManualOverride(Boolean.TRUE.equals(cmd.feeManualOverride()));
         r.setFeeOverrideReason(cmd.feeOverrideReason());
+        if (verdict != null) {
+            r.setContractNo(verdict.contractNo());
+            r.setPenaltyAmt(verdict.penaltyAmt());
+            r.setContractSnapshot(verdict.snapshot());
+        }
         r.setSignTier(tier);
         r.setApplicant(currentActor());
         r.setStatus("L1".equals(tier) ? "PENDING_FINANCE" : "PENDING_REVIEW");
         refundRepo.save(r);
         audit.record("REFUND", r.getTxnNo(), currentActor(), "CREATE",
-                String.format("{\"orderNo\":%s,\"customer\":\"%s\",\"refundAmt\":%d,\"paidAmt\":%s,\"fee\":%d,\"tier\":\"%s\",\"status\":\"%s\",\"channel\":\"%s\"}",
+                String.format("{\"orderNo\":%s,\"customer\":\"%s\",\"refundAmt\":%d,\"paidAmt\":%s,\"fee\":%d,\"tier\":\"%s\",\"status\":\"%s\",\"channel\":\"%s\"%s}",
                         jsonStr(r.getOrderNo()), r.getCustomer(), cmd.refundAmt(),
-                        cmd.paidAmt() == null ? "null" : cmd.paidAmt().toString(), fee, tier, r.getStatus(), r.getChannel()));
+                        cmd.paidAmt() == null ? "null" : cmd.paidAmt().toString(), fee, tier, r.getStatus(), r.getChannel(),
+                        verdict == null ? "" : String.format(",\"contractNo\":%s,\"penaltyAmt\":%d,\"inCooling\":%b,\"penaltyRate\":%d,\"coolingDays\":%d",
+                                jsonStr(verdict.contractNo()), verdict.penaltyAmt(), verdict.inCooling(),
+                                verdict.penaltyRate(), verdict.coolingDays())));
         approvalService.submitForTxn("REFUND", r.getTxnNo(),
                 "退款 · " + nvl(r.getProject(), "订单退款"),
                 "客户" + nvl(r.getCustomerName(), r.getCustomer()) + "申请退款 ¥" + fenToYuan(cmd.refundAmt()),
@@ -133,16 +159,29 @@ public class TxnService {
                 cmd.balance(), Boolean.TRUE.equals(cmd.medical()),
                 Boolean.TRUE.equals(cmd.feeManualOverride()), cmd.feeCents());
 
+        // B95 合同分支（D5）：medical 禁忌免收优先（fee=0 不动）；否则挂合同则违约金＝合同口径 penaltyAmt
+        ContractPenaltyJudge.PenaltyVerdict verdict = null;
+        boolean hasContract = cmd.contractNo() != null && !cmd.contractNo().isBlank();
+        long feeCents = plan.feeCents();
+        long refundCents = plan.refundCents();
+        if (!Boolean.TRUE.equals(cmd.medical()) && hasContract) {
+            verdict = penaltyJudge.judge(cmd.contractNo(), cmd.customer(), cmd.balance());
+            feeCents = verdict.penaltyAmt();
+            refundCents = cmd.balance() - feeCents;
+        }
+
         // 等价 chk_tk_fee_override：禁忌免收 OR 手动覆盖 OR 比例恰为 10%（与 DDL balance/10 整数除法一致）
+        // B95：挂合同退卡（contract_no 非空）为第四通道（DDL 同步放宽 OR contract_no IS NOT NULL）
         boolean rateOk = Boolean.TRUE.equals(cmd.medical())
                 || Boolean.TRUE.equals(cmd.feeManualOverride())
+                || hasContract
                 || plan.feeCents() == cmd.balance() / 10;
         if (!rateOk) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "手续费比例约束不满足（须为禁忌免收 / 手动覆盖 / 恰好 10%）");
         }
 
-        String tier = tierFor(plan.refundCents());
+        String tier = tierFor(refundCents);
         String storeCode = resolveCancelStore(cmd.cardNo());
         TxnCardCancel c = new TxnCardCancel();
         c.setTxnNo(nextNo("CC", cancelRepo::maxSeqOfDay));
@@ -153,14 +192,20 @@ public class TxnService {
         c.setCardItem(cmd.cardItem());
         c.setChannel(nvl(cmd.channel(), "ORIGINAL"));
         c.setBalance(cmd.balance());
-        c.setRefundAmt(plan.refundCents());
-        c.setFee(plan.feeCents());
+        c.setRefundAmt(refundCents);
+        c.setFee(feeCents);
         c.setFeeRate(Boolean.TRUE.equals(cmd.medical()) ? BigDecimal.ZERO
-                : (Boolean.TRUE.equals(cmd.feeManualOverride())
-                    ? BigDecimal.valueOf(cmd.feeCents()).divide(BigDecimal.valueOf(cmd.balance()), 4, java.math.RoundingMode.HALF_UP)
-                    : BigDecimal.valueOf(0.1)));
-        c.setFeeManualOverride(Boolean.TRUE.equals(cmd.feeManualOverride()));
-        c.setFeeOverrideReason(cmd.feeOverrideReason());
+                : (verdict != null
+                    ? BigDecimal.valueOf(verdict.penaltyRate()).divide(BigDecimal.valueOf(10000), 4, java.math.RoundingMode.HALF_UP)
+                    : (Boolean.TRUE.equals(cmd.feeManualOverride())
+                        ? BigDecimal.valueOf(cmd.feeCents()).divide(BigDecimal.valueOf(cmd.balance()), 4, java.math.RoundingMode.HALF_UP)
+                        : BigDecimal.valueOf(0.1))));
+        c.setFeeManualOverride(verdict == null && Boolean.TRUE.equals(cmd.feeManualOverride()));
+        c.setFeeOverrideReason(verdict == null ? cmd.feeOverrideReason() : null);
+        if (verdict != null) {
+            c.setContractNo(verdict.contractNo());
+            c.setContractSnapshot(verdict.snapshot());
+        }
         c.setMedicalContraindication(Boolean.TRUE.equals(cmd.medical()));
         c.setRemainTimes(cmd.remainTimes());
         c.setSignTier(tier);
@@ -168,14 +213,17 @@ public class TxnService {
         c.setStatus("L1".equals(tier) ? "PENDING_FINANCE" : "PENDING_REVIEW");
         cancelRepo.save(c);
         audit.record("CARD_CANCEL", c.getTxnNo(), currentActor(), "CREATE",
-                String.format("{\"cardNo\":%s,\"customer\":\"%s\",\"balance\":%d,\"refund\":%d,\"fee\":%d,\"medical\":%b,\"tier\":\"%s\",\"status\":\"%s\",\"channel\":\"%s\"}",
-                        jsonStr(c.getCardNo()), c.getCustomer(), cmd.balance(), plan.refundCents(), plan.feeCents(),
-                        Boolean.TRUE.equals(cmd.medical()), tier, c.getStatus(), c.getChannel()));
+                String.format("{\"cardNo\":%s,\"customer\":\"%s\",\"balance\":%d,\"refund\":%d,\"fee\":%d,\"medical\":%b,\"tier\":\"%s\",\"status\":\"%s\",\"channel\":\"%s\"%s}",
+                        jsonStr(c.getCardNo()), c.getCustomer(), cmd.balance(), refundCents, feeCents,
+                        Boolean.TRUE.equals(cmd.medical()), tier, c.getStatus(), c.getChannel(),
+                        verdict == null ? "" : String.format(",\"contractNo\":%s,\"penaltyAmt\":%d,\"inCooling\":%b,\"penaltyRate\":%d,\"coolingDays\":%d",
+                                jsonStr(verdict.contractNo()), verdict.penaltyAmt(), verdict.inCooling(),
+                                verdict.penaltyRate(), verdict.coolingDays())));
         approvalService.submitForTxn("CARD_CANCEL", c.getTxnNo(),
                 "退卡 · " + nvl(c.getCardItem(), "疗程卡退卡"),
-                "客户" + nvl(c.getCustomerName(), c.getCustomer()) + "退卡，违约金 ¥" + fenToYuan(plan.feeCents())
-                        + "，实退 ¥" + fenToYuan(plan.refundCents()),
-                plan.refundCents(), tier, storeCode);
+                "客户" + nvl(c.getCustomerName(), c.getCustomer()) + "退卡，违约金 ¥" + fenToYuan(feeCents)
+                        + "，实退 ¥" + fenToYuan(refundCents),
+                refundCents, tier, storeCode);
         // B18 退卡冻结：CC 单创建同事务回调 customer 冻结卡（在用→退卡中，ADJUST 流水 bizRef=CC…-F）；
         // 冻结期充值/消费/划扣/订单退款回加由 customer 侧「非在用」校验中文拦截。远程失败抛异常 → 本事务
         // 整体回滚（CC 单不留存、审批任务不生成），杜绝「单据已建卡未冻」。customer 以 CC…-F 幂等，重试安全。
@@ -518,7 +566,8 @@ public class TxnService {
             String reason,
             Boolean feeManualOverride,
             Long feeCents,
-            String feeOverrideReason) {
+            String feeOverrideReason,
+            String contractNo) {
     }
 
     public record CreateCardCancelCmd(
@@ -533,7 +582,8 @@ public class TxnService {
             Boolean medical,
             Boolean feeManualOverride,
             Long feeCents,
-            String feeOverrideReason) {
+            String feeOverrideReason,
+            String contractNo) {
     }
 
     /** 审批动作命令（同意/驳回/财务确认共用；驳回时 comment 必填）。 */

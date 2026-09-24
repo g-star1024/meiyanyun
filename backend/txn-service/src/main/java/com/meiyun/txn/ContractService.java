@@ -4,6 +4,7 @@ import com.meiyun.security.DataScope;
 import com.meiyun.txn.audit.AuditRecorder;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
@@ -16,7 +17,6 @@ import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * P5-B85 卡3 合同服务：签署快照落库＋生命周期状态机（草稿→生效中→已履行|已终止）。
@@ -31,7 +31,6 @@ public class ContractService {
 
     private final ContractRepository repo;
     private final AuditRecorder audit;
-    private final AtomicLong seq = new AtomicLong(System.nanoTime() % 1_000_000);
 
     public ContractService(ContractRepository repo, AuditRecorder audit) {
         this.repo = repo;
@@ -74,7 +73,11 @@ public class ContractService {
         c.setSignedBy(cmd.signedBy());
         c.setStatus("草稿");
         c.setCreatedAt(OffsetDateTime.now());
-        repo.save(c);
+        try {
+            repo.saveAndFlush(c);
+        } catch (DataIntegrityViolationException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "合同号冲突，请重试");
+        }
         audit.record("CONTRACT", c.getContractNo(), DataScope.currentActor(),
                 "CREATE", "{\"contractType\":\"" + cmd.contractType() + "\",\"totalAmount\":" + c.getTotalAmount() + "}");
         return c;
@@ -152,10 +155,11 @@ public class ContractService {
         return c;
     }
 
-    private String nextNo(String prefix) {
-        long n = seq.incrementAndGet() % 1_000_000;
-        return prefix + OffsetDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))
-                + "-" + String.format("%06d", n);
+    /** B95-D7：库内化发号（库内当日最大号递增，进程重启/多实例不撞号；唯一索引兜底，撞号 409）。 */
+    private synchronized String nextNo(String prefix) {
+        String day = OffsetDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        long n = repo.maxSeqOfDay(prefix + day + "-%") + 1;
+        return prefix + day + "-" + String.format("%06d", n);
     }
 
     private boolean hasText(String v) {

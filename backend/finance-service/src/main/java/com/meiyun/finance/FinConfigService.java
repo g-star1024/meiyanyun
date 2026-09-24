@@ -40,9 +40,9 @@ public class FinConfigService {
     private static final List<String> BUDGET_SUBJECTS = List.of(
             "REVENUE", "COST", "MATERIAL", "LABOR", "DEPRECIATION", "LOSS", "MARKETING", "RENT");
 
-    /** 11 个会计科目码（与前端 financeCore SUBJECT_LABEL 对齐）；RF-RECEIVABLE 默认停用。 */
+    /** 12 个会计科目码（与前端 financeCore SUBJECT_LABEL 对齐）；RF-RECEIVABLE 默认停用。 */
     private static final List<String> SUBJECT_CODES = List.of(
-            "RF-CASH", "RF-BANK", "RF-RECEIVABLE", "RF-DEPOSIT", "RF-REVENUE", "RF-REFUND",
+            "RF-CASH", "RF-BANK", "RF-RECEIVABLE", "RF-DEPOSIT", "RF-REVENUE", "RF-REFUND", "RF-PENALTY",
             "TK-MATERIAL", "TK-COST", "TK-DEPRECIATION", "TK-LOSS", "TK-LABOR");
     private static final Map<String, String> SUBJECT_LABEL = Map.ofEntries(
             Map.entry("RF-CASH", "库存现金"),
@@ -51,6 +51,7 @@ public class FinConfigService {
             Map.entry("RF-DEPOSIT", "预收账款"),
             Map.entry("RF-REVENUE", "主营业务收入"),
             Map.entry("RF-REFUND", "退款（收入抵减）"),
+            Map.entry("RF-PENALTY", "违约金收入"),
             Map.entry("TK-MATERIAL", "耗材库存"),
             Map.entry("TK-COST", "主营业务成本"),
             Map.entry("TK-DEPRECIATION", "设备折旧"),

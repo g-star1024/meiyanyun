@@ -124,6 +124,12 @@ public class FinanceEventPublisher {
                     "CASHIER", "REFUND",
                     r.getStoreCode(), "退款支出 · " + who));
         }
+        long penalty = r.getPenaltyAmt() == null ? 0L : r.getPenaltyAmt();
+        if (penalty > 0) {
+            cmds.add(entry("REFUND-PENALTY:" + r.getTxnNo(), r.getTxnNo(), "REFUND",
+                    "RF-PENALTY", "IN", penalty, null, "ERP", "REFUND",
+                    r.getStoreCode(), "合同违约金收入 · " + who));
+        }
         if (cmds.isEmpty()) {
             log.info("退款终审 {} 无资金动账（赠金段 {} 分不产生分录），跳过资金事件", r.getTxnNo(), split.grant());
             return;

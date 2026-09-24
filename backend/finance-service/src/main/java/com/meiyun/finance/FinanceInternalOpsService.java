@@ -172,13 +172,21 @@ public class FinanceInternalOpsService {
         }
         for (Map<String, Object> rf : refunds) {
             long refundAmt = longOf(rf.get("refundAmt"));
-            if (refundAmt <= 0) continue;
             String txnNo = str(rf.get("txnNo"));
-            cmds.add(new FundEntryCmd("REFUND-PAID:" + txnNo, txnNo, "REFUND",
-                    "RF-REFUND", "OUT", refundAmt,
-                    resolveRefundChannel(str(rf.get("channel")), str(rf.get("orderNo")), orderChannel),
-                    "CASHIER", "REFUND", str(rf.get("storeCode")),
-                    "退款支出 · " + nz(str(rf.get("customerName")), txnNo), str(rf.get("createdAt"))));
+            if (refundAmt > 0) {
+                cmds.add(new FundEntryCmd("REFUND-PAID:" + txnNo, txnNo, "REFUND",
+                        "RF-REFUND", "OUT", refundAmt,
+                        resolveRefundChannel(str(rf.get("channel")), str(rf.get("orderNo")), orderChannel),
+                        "CASHIER", "REFUND", str(rf.get("storeCode")),
+                        "退款支出 · " + nz(str(rf.get("customerName")), txnNo), str(rf.get("createdAt"))));
+            }
+            long penaltyAmt = longOf(rf.get("penaltyAmt"));
+            if (penaltyAmt > 0) {
+                cmds.add(new FundEntryCmd("REFUND-PENALTY:" + txnNo, txnNo, "REFUND",
+                        "RF-PENALTY", "IN", penaltyAmt, null,
+                        "ERP", "REFUND", str(rf.get("storeCode")),
+                        "合同违约金收入 · " + nz(str(rf.get("customerName")), txnNo), str(rf.get("createdAt"))));
+            }
         }
         for (Map<String, Object> w : writeoffs) {
             // 双守卫对齐聚合侧：cardNo 非空（卡扣划扣）且金额 > 0；整单核销/纯扣次无资金动账

@@ -116,6 +116,14 @@ public class TxnCardCancel {
     @Column(name = "signed_at3")
     private OffsetDateTime signedAt3;
 
+    // B95 合同联动：挂关联合同号（可空；空＝旧链零行为变化；违约金即 fee 不另列）
+    @Column(name = "contract_no", length = 24)
+    private String contractNo;
+
+    // B95 判定快照 JSON（合同要素＋窗口判定＋口径，D6 复核留证）
+    @Column(name = "contract_snapshot", columnDefinition = "TEXT")
+    private String contractSnapshot;
+
     @Column(name = "created_at")
     private OffsetDateTime createdAt;
 

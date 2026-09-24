@@ -54,12 +54,12 @@ class ReportVerifyHashTest {
     @Test
     void 文件名锚createdAt_与下载时刻无关() {
         OffsetDateTime created = OffsetDateTime.of(2026, 9, 16, 22, 30, 5, 0, ZoneOffset.ofHours(8));
-        String f1 = ReportCsvBuilder.downloadFileName("门店营收日报", "2026-09-15", created);
-        String f2 = ReportCsvBuilder.downloadFileName("门店营收日报", "2026-09-15", created);
+        String f1 = ReportCsvBuilder.downloadFileName("门店营收日报", "2026-09-15", created, "CSV");
+        String f2 = ReportCsvBuilder.downloadFileName("门店营收日报", "2026-09-15", created, "CSV");
         assertEquals("门店营收日报-2026-09-15-20260916-223005.csv", f1);
         assertEquals(f1, f2);
         // UTC 存储值也按东八区落名（不依赖容器默认时区）
         OffsetDateTime utc = created.withOffsetSameInstant(ZoneOffset.UTC);
-        assertEquals(f1, ReportCsvBuilder.downloadFileName("门店营收日报", "2026-09-15", utc));
+        assertEquals(f1, ReportCsvBuilder.downloadFileName("门店营收日报", "2026-09-15", utc, "CSV"));
     }
 }

@@ -33,6 +33,7 @@ class BizTargetServiceTest {
     @Mock BizTargetRepository targetRepo;
     @Mock FinanceAuditRecorder audit;
     @Mock com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    @Mock RevenueMonthlyRepository revenueMonthlyRepo;
     @InjectMocks BizTargetService service;
 
     @AfterEach

@@ -40,7 +40,7 @@ public class FundEntryService {
     private static final Logger log = LoggerFactory.getLogger(FundEntryService.class);
 
     static final Set<String> SUBJECTS = Set.of(
-            "RF-REVENUE", "RF-REFUND", "RF-DEPOSIT",
+            "RF-REVENUE", "RF-REFUND", "RF-DEPOSIT", "RF-PENALTY",
             "TK-MATERIAL", "TK-LOSS", "TK-DEPRECIATION", "TK-LABOR");
     static final Set<String> DIRECTIONS = Set.of("IN", "OUT");
     static final Set<String> CHANNELS = Set.of("cash", "card", "wxpay", "alipay", "balance", "transfer");
@@ -188,7 +188,7 @@ public class FundEntryService {
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "业务类型 bizType 非法，允许值：ORDER/REFUND/WRITEOFF/RECHARGE/ADJUST/COST");
         if (isBlank(c.subject()) || !SUBJECTS.contains(c.subject()))
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY,
-                    "科目 subject 非法，允许值：RF-REVENUE/RF-REFUND/RF-DEPOSIT（资金类）、TK-MATERIAL/TK-LOSS/TK-DEPRECIATION/TK-LABOR（成本类）");
+                    "科目 subject 非法，允许值：RF-REVENUE/RF-REFUND/RF-DEPOSIT/RF-PENALTY（资金类）、TK-MATERIAL/TK-LOSS/TK-DEPRECIATION/TK-LABOR（成本类）");
         if (isBlank(c.direction()) || !DIRECTIONS.contains(c.direction()))
             throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, "方向 direction 非法，允许值：IN/OUT");
         if (c.amount() == null || c.amount() <= 0)

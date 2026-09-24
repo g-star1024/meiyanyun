@@ -111,7 +111,7 @@ public class InternalFinanceController {
         List<FinanceFlowDTO.RefundFlow> refunds = refundRepo.findAll(refundSpec(storeCode, fromTime, toTime)).stream()
                 .map(r -> new FinanceFlowDTO.RefundFlow(r.getTxnNo(), r.getOrderNo(), r.getStoreCode(),
                         r.getCustomerName(), r.getChannel(), r.getRefundAmt(), r.getFee(), r.getStatus(),
-                        r.getCreatedAt()))
+                        r.getCreatedAt(), r.getPenaltyAmt()))
                 .toList();
 
         List<FinanceFlowDTO.WriteoffFlow> writeoffs = writeoffRepo.findAll(writeoffSpec(storeCode, fromTime, toTime)).stream()

@@ -33,7 +33,7 @@ public final class FinanceFlowDTO {
     ) {
     }
 
-    /** 退款流水（status=REFUNDED 已退款）。 */
+    /** 退款流水（status=REFUNDED 已退款）。B95 尾增 penaltyAmt（合同违约金，无合同单为 0；向后兼容）。 */
     public record RefundFlow(
             String txnNo,
             String orderNo,
@@ -43,7 +43,8 @@ public final class FinanceFlowDTO {
             Long refundAmt,
             Long fee,
             String status,
-            java.time.OffsetDateTime createdAt
+            java.time.OffsetDateTime createdAt,
+            Long penaltyAmt
     ) {
     }
 
