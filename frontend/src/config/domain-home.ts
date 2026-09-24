@@ -270,7 +270,7 @@ export const MODULE_STATS: Record<string, string> = {
   '/m5-coupons': '6 张券在投放',
   '/m5-writeoff': '今日核销 286 张',
   '/m5-push': '今日送达 3,420 人',
-  '/m5-poster': '12 套裂变模板',
+  '/m5-poster': '6 套裂变模板',
   '/m5-referral': '本月老带新 58 人',
   '/m5-calendar': '下个会员日 9/1',
   '/m5-live': '2 场直播预告中',

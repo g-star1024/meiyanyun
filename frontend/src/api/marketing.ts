@@ -444,6 +444,8 @@ export interface ShortVideoDTO {
   dealAmount: number
   tags: string
   publishedAt: string
+  /** P5-B92 V51 加列：PUBLISHED/OFFLINE；存量种子 DEFAULT PUBLISHED 回填。 */
+  status: string
 }
 
 export interface SessionCmd {
@@ -452,6 +454,13 @@ export interface SessionCmd {
   startTime: string
   mountedCouponIds: string[]
   intro: string
+}
+
+/** 短视频发布/编辑命令（P5-B92）：title 必填≤64、platform 词表、tags 文本数组。 */
+export interface VideoCmd {
+  title: string
+  platform: string
+  tags: string[]
 }
 
 // -------------------- 素材库接口 --------------------
@@ -483,6 +492,14 @@ export const startLiveSession = (id: string) =>
   client.post<TransitResult>(`/marketing/live-sessions/${id}/start`)
 export const endLiveSession = (id: string) =>
   client.post<TransitResult>(`/marketing/live-sessions/${id}/end`)
+
+// 短视频三写（P5-B92，live:edit）：发布/编辑/上下架（toggle 幂等 changed=false 同态）
+export const createShortVideo = (cmd: VideoCmd) =>
+  client.post<ShortVideoDTO>('/marketing/short-videos', cmd)
+export const updateShortVideo = (id: string, cmd: VideoCmd) =>
+  client.put<ShortVideoDTO>(`/marketing/short-videos/${id}`, cmd)
+export const toggleShortVideo = (id: string, status?: string) =>
+  client.post<TransitResult>(`/marketing/short-videos/${id}/toggle`, status ? { status } : {})
 
 // -------------------- M5-15 营销设置（GET/POST /config） --------------------
 // B37 收口：GET 返回独立只读视图 ConfigView，与写命令 ConfigCmd 字段名/类型完全对称；

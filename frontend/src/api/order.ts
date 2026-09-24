@@ -115,6 +115,10 @@ export interface RetailOrderCmd {
   project?: string
   items: OrderItemCmd[]
   operator?: string
+  /** 成交来源类型（B92 卡1）：NONE|LIVE_SESSION|SHORT_VIDEO，缺省 NONE。 */
+  sourceType?: string
+  /** 来源标识（sourceType 非 NONE 时后端必填校验）。 */
+  sourceId?: string
 }
 
 /** 售卡/开卡命令（/txn/card-order，不走医生审核直接待收款；售价/次数/有效期以后端在售模板为准，不接收前端价格）。 */
@@ -126,6 +130,10 @@ export interface CardSaleCmd {
   /** 在售卡项模板编码（CD-/CS-）。 */
   productCode: string
   operator?: string
+  /** 成交来源类型（B92 卡1）：NONE|LIVE_SESSION|SHORT_VIDEO，缺省 NONE。 */
+  sourceType?: string
+  /** 来源标识（sourceType 非 NONE 时后端必填校验）。 */
+  sourceId?: string
 }
 
 /** 订单分页列表（status/storeCode 可选过滤）。 */

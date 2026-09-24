@@ -108,7 +108,7 @@ function openCreate() {
     title: selected.value?.defaultTitle ?? '',
     subtitle: selected.value?.defaultSubtitle ?? '',
     project: '',
-    referrerName: store.referrerOptions[0]?.name ?? '',
+    referrerName: store.referrerOptions[0]?.empNo ?? '',
   }
   formError.value = ''
   showCreate.value = true
@@ -118,10 +118,13 @@ const templateOptions = computed(() =>
   store.templates
     .filter((t) => t.status === 'ENABLED')
     .map((t) => ({ value: t.id, label: `${t.name}（${store.STYLE_LABEL[t.style]}）` })))
+// D3 选择器 value=推荐人工号（staffId）；label 展示姓名·角色·工号·累计推荐
 const referrerOptions = computed(() =>
   store.referrerOptions.map((r) => ({
-    value: r.name,
-    label: r.total > 0 ? `${r.name} · ${r.level} · 已推荐 ${r.total} 人` : `${r.name} · ${r.level}`,
+    value: r.empNo,
+    label: r.total > 0
+      ? `${r.name} · ${r.level} · 工号 ${r.empNo} · 已推荐 ${r.total} 人`
+      : `${r.name} · ${r.level} · 工号 ${r.empNo}`,
   })))
 
 async function submitCreate() {
@@ -145,6 +148,23 @@ async function submitCreate() {
     toast.success('海报已生成')
   } catch (e) {
     formError.value = errMsg(e)
+  }
+}
+
+// ---------- D1/D2 真码预览 + 纯前端 PNG 导出 ----------
+const posterEl = ref<HTMLElement | null>(null)
+const qrDataUrl = ref('')
+watch(latestPoster, async (p) => {
+  qrDataUrl.value = p ? await store.qrDataUrl(store.buildQrPayload(p)).catch(() => '') : ''
+}, { immediate: true })
+
+async function onExport() {
+  if (!posterEl.value || !latestPoster.value) return
+  try {
+    await store.exportPosterPng(posterEl.value, latestPoster.value.id)
+    toast.success('海报 PNG 已导出下载')
+  } catch (e) {
+    toast.error('导出失败：' + errMsg(e))
   }
 }
 
@@ -217,17 +237,22 @@ async function onToggleTemplate() {
                 <span class="mp__uses">累计使用 {{ selected.uses }} 次</span>
               </div>
             </div>
-            <CButton v-if="canEdit" variant="text" size="sm" @click="onToggleTemplate">
-              <CIcon name="settings" :size="14" />
-              {{ selected.status === 'ENABLED' ? '停用模板' : '启用模板' }}
-            </CButton>
+            <div class="mp__detail-actions">
+              <CButton v-if="canEdit && latestPoster" variant="text" size="sm" @click="onExport">
+                <CIcon name="export" :size="14" />导出 PNG
+              </CButton>
+              <CButton v-if="canEdit" variant="text" size="sm" @click="onToggleTemplate">
+                <CIcon name="settings" :size="14" />
+                {{ selected.status === 'ENABLED' ? '停用模板' : '启用模板' }}
+              </CButton>
+            </div>
           </div>
         </template>
 
         <div class="detail-body">
           <!-- 预览 + 绑定 -->
           <div class="preview-grid">
-            <div class="poster" :style="{ background: ACCENT_BG[selected.accent] }">
+            <div ref="posterEl" class="poster" :style="{ background: ACCENT_BG[selected.accent] }">
               <div class="poster__bar">
                 <span class="poster__logo">美研云 · 限时礼遇</span>
               </div>
@@ -240,11 +265,12 @@ async function onToggleTemplate() {
               </div>
               <div class="poster__foot">
                 <div class="poster__qr">
-                  <CIcon name="scan" :size="28" />
+                  <img v-if="qrDataUrl" :src="qrDataUrl" class="poster__qr-img" alt="分销码" />
+                  <CIcon v-else name="scan" :size="28" />
                 </div>
                 <div class="poster__foot-text">
                   <div>长按识别 · 立即预约</div>
-                  <div class="poster__referrer">推荐人：{{ latestPoster?.referrerName || '—' }}</div>
+                  <div class="poster__referrer">推荐人：{{ latestPoster?.referrerName ? store.displayReferrer(latestPoster.referrerName) : '—' }}</div>
                 </div>
               </div>
             </div>
@@ -253,7 +279,7 @@ async function onToggleTemplate() {
               <div class="block__title"><span>分销码绑定</span></div>
               <div class="bind__row">
                 <span class="bind__label">当前推荐人</span>
-                <span class="bind__value">{{ latestPoster?.referrerName || '未绑定' }}</span>
+                <span class="bind__value">{{ latestPoster?.referrerName ? store.displayReferrer(latestPoster.referrerName) : '未绑定' }}</span>
               </div>
               <div class="bind__row">
                 <span class="bind__label">奖励比例</span>
@@ -422,6 +448,8 @@ async function onToggleTemplate() {
 }
 .poster__foot-text { font-size: var(--t-xs); line-height: var(--lh-xs); }
 .poster__referrer { opacity: .9; margin-top: 2px; }
+.poster__qr-img { width: 44px; height: 44px; display: block; }
+.mp__detail-actions { display: flex; align-items: center; gap: var(--s-xs); flex-shrink: 0; }
 
 .bind { background: var(--c-bg-right); border-radius: var(--r-md); padding: var(--s-md); display: flex; flex-direction: column; gap: var(--s-sm); }
 .bind__row { display: flex; justify-content: space-between; align-items: center; font-size: var(--t-sm); }

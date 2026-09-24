@@ -10,9 +10,14 @@
 //  - 后端 commissionRate = 百分比×10（5% = 50），前端用 0~1：rate50↔view（×1000 / ÷1000）
 //  - 字段名 templateId/posterId → id、templateName → name
 //  - 推荐人选项取真实在职员工（org-service /api/org/staff，B22 收口；原 referral mock 已移除）
+//  - P5-B92 D3：referrerName 语义升级「推荐人工号」（B18 工号化先例），展示经 listStaff
+//    解析姓名失败回落工号原文（存量种子姓名文本亦自然回落原样展示）
+//  - P5-B92 D1/D2：html2canvas 纯前端导出 PNG（不入库）＋qrcode 前端真码（协议串 buildQrPayload）
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import QRCode from 'qrcode'
+import html2canvas from 'html2canvas'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
 import { listStaff } from '@/api/org'
@@ -66,6 +71,7 @@ export interface Poster {
   title: string
   subtitle: string
   project: string
+  /** 推荐人工号（B92 D3 语义升级）；存量种子为姓名文本，展示一律经 displayReferrer 解析回落 */
   referrerName: string
   status: PosterStage
   funnel: PosterFunnel
@@ -137,7 +143,8 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
 
   const templates = ref<PosterTemplate[]>([])
   const posters = ref<Poster[]>([])
-  const referrerOptions = ref<{ name: string; level: string; total: number }[]>([])
+  /** 推荐人选项：empNo=工号（提交值），name=姓名（展示解析） */
+  const referrerOptions = ref<{ empNo: string; name: string; level: string; total: number }[]>([])
   const filterStatus = ref<'ALL' | PosterStatus>('ALL')
   const loaded = ref(false)
 
@@ -148,15 +155,41 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
       referrerOptions.value = (data ?? [])
         .filter((s) => s.status !== '离职')
         .map((s) => ({
+          empNo: s.staffId,
           name: s.staffName,
           level: s.role?.roleName || s.roleCode || '员工',
           total: 0,
         }))
         .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
     } catch {
-      // 员工服务不可用时下拉为空，页面仍可展示已生成海报（推荐人姓名已随海报记录持久化）
+      // 员工服务不可用时下拉为空，页面仍可展示已生成海报（推荐人工号已随海报记录持久化）
       referrerOptions.value = []
     }
+  }
+
+  /** D3 展示解析：工号 → 在职员工姓名；未命中回落原文（存量种子姓名文本自然原样展示） */
+  function displayReferrer(code?: string | null): string {
+    if (!code) return ''
+    return referrerOptions.value.find((o) => o.empNo === code)?.name ?? code
+  }
+
+  /** D2 分销码协议串：MEIYUN:POSTER:{posterId}:REF:{推荐人工号}（确定性生成，无需后端存储） */
+  function buildQrPayload(p: Poster): string {
+    return `MEIYUN:POSTER:${p.id}:REF:${p.referrerName || 'NONE'}`
+  }
+
+  /** 前端真码 dataURL（qrcode）；以 <img> 注入预览 DOM 后供 html2canvas 快照 */
+  async function qrDataUrl(payload: string): Promise<string> {
+    return QRCode.toDataURL(payload, { width: 156, margin: 1 })
+  }
+
+  /** D1 纯前端导出 PNG：预览 DOM 快照 → dataURL → a[download]，不入库 */
+  async function exportPosterPng(el: HTMLElement, posterId: string): Promise<void> {
+    const canvas = await html2canvas(el, { scale: 2 })
+    const a = document.createElement('a')
+    a.href = canvas.toDataURL('image/png')
+    a.download = `poster-${posterId}.png`
+    a.click()
   }
 
   const filteredTemplates = computed(() => {
@@ -212,7 +245,7 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
     const res = await api.createPoster(cmd)
     activity.log(
       auth.user?.name ?? '系统',
-      `生成裂变海报「${input.title}」（模板：${tpl.name}，推荐人：${input.referrerName}）`,
+      `生成裂变海报「${input.title}」（模板：${tpl.name}，推荐人：${displayReferrer(input.referrerName)}）`,
       res.data.posterId,
     )
     await seed(true)
@@ -243,6 +276,7 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
     get, getPoster,
     totalShares, totalScans, totalDeals, totalCommission,
     toggleTemplateStatus, createPoster, simulateCommission,
+    displayReferrer, buildQrPayload, qrDataUrl, exportPosterPng,
     STYLE_LABEL, TEMPLATE_STATUS_LABEL, TEMPLATE_STATUS_PILL, STAGE_LABEL, STAGE_PILL,
     DEFAULT_COMMISSION_RATE,
     seed,

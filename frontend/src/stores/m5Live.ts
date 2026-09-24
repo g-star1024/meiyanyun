@@ -23,6 +23,8 @@ import { fen2yuan } from '@/stores/m5Coupon'
 export type LivePlatform = 'DOUYIN' | 'WECHAT_CHANNEL'
 export type LiveStatus = 'NOT_STARTED' | 'LIVE' | 'ENDED'
 export type VideoPlatform = 'DOUYIN' | 'WECHAT_CHANNEL' | 'XIAOHONGSHU'
+/** P5-B92 V51 加列：上架 PUBLISHED / 下架 OFFLINE */
+export type VideoStatus = 'PUBLISHED' | 'OFFLINE'
 
 /** yyyy-MM-dd（LocalDate / OffsetDateTime 均可直接截取） */
 function dayOf(s?: string | null): string {
@@ -74,6 +76,7 @@ export interface ShortVideo {
   dealAmount: number
   tags: string[]
   publishedAt: string
+  status: VideoStatus
 }
 
 export const PLATFORM_LABEL: Record<LivePlatform, string> = {
@@ -87,6 +90,12 @@ export const LIVE_STATUS_LABEL: Record<LiveStatus, string> = {
 }
 export const LIVE_STATUS_PILL: Record<LiveStatus, 'default' | 'success' | 'disabled'> = {
   NOT_STARTED: 'default', LIVE: 'success', ENDED: 'disabled',
+}
+export const VIDEO_STATUS_LABEL: Record<VideoStatus, string> = {
+  PUBLISHED: '已上架', OFFLINE: '已下架',
+}
+export const VIDEO_STATUS_PILL: Record<VideoStatus, 'success' | 'disabled'> = {
+  PUBLISHED: 'success', OFFLINE: 'disabled',
 }
 
 /** 后端直播场次 → 前端活规格（分→元、时间格式化、挂载券 JSON.parse） */
@@ -119,6 +128,7 @@ export function adaptVideo(d: ShortVideoDTO): ShortVideo {
     dealAmount: fen2yuan(d.dealAmount),
     tags: jsonArr(d.tags),
     publishedAt: dayOf(d.publishedAt),
+    status: (d.status === 'OFFLINE' ? 'OFFLINE' : 'PUBLISHED') as VideoStatus,
   }
 }
 
@@ -207,6 +217,45 @@ export const useM5LiveStore = defineStore('m5Live', () => {
     }
   }
 
+  // -------------------- 短视频三写（P5-B92，live:edit；写后 seed(true) 重拉，changed 才审计） --------------------
+
+  /** 发布短视频：后端计数置 0、当日发布、违禁词/词表校验（复用 LiveService 词库） */
+  async function createVideo(input: {
+    title: string
+    platform: VideoPlatform
+    tags: string[]
+  }): Promise<ShortVideo> {
+    if (!auth.can('live:edit')) throw new Error('无直播编辑权限')
+    const res = await api.createShortVideo({ title: input.title, platform: input.platform, tags: input.tags })
+    activity.log(
+      auth.user?.name ?? '运营',
+      `发布短视频「${input.title}」（${VIDEO_PLATFORM_LABEL[input.platform]}）`,
+      res.data.videoId,
+    )
+    await seed(true)
+    return videos.value.find((v) => v.id === res.data.videoId) ?? adaptVideo(res.data)
+  }
+
+  /** 编辑短视频：仅 title/platform/tags（播放/点赞/成交服务端忽略防刷数据） */
+  async function updateVideo(id: string, input: { title: string; platform: VideoPlatform; tags: string[] }) {
+    if (!auth.can('live:edit')) throw new Error('无直播编辑权限')
+    await api.updateShortVideo(id, { title: input.title, platform: input.platform, tags: input.tags })
+    activity.log(auth.user?.name ?? '运营', `编辑短视频「${input.title}」`, id)
+    await seed(true)
+  }
+
+  /** 上架/下架翻转（后端幂等 changed；仅实际翻转审计） */
+  async function toggleVideo(id: string) {
+    if (!auth.can('live:edit')) throw new Error('无直播编辑权限')
+    const v = videos.value.find((x) => x.id === id)
+    const action = v?.status === 'OFFLINE' ? '上架' : '下架'
+    const res = await api.toggleShortVideo(id)
+    await seed(true)
+    if (res.data.changed && v) {
+      activity.log(auth.user?.name ?? '运营', `${action}短视频「${v.title}」`, id)
+    }
+  }
+
   /** 拉取真实场次 + 短视频（幂等：已加载默认不重复，force 用于写后重拉）；券名解析依赖 m1.coupons */
   async function seed(force = false) {
     if (loaded.value && !force) return
@@ -222,7 +271,9 @@ export const useM5LiveStore = defineStore('m5Live', () => {
     filteredSessions, get,
     liveCount, monthSessions, totalViews, totalDealAmount, dealChartItems,
     createSession, startLive, endLive,
+    createVideo, updateVideo, toggleVideo,
     PLATFORM_LABEL, VIDEO_PLATFORM_LABEL, LIVE_STATUS_LABEL, LIVE_STATUS_PILL,
+    VIDEO_STATUS_LABEL, VIDEO_STATUS_PILL,
     seed,
   }
 })

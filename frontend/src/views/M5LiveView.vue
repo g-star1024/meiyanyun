@@ -15,7 +15,7 @@ import CKpi from '@/components/CKpi.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import CTextarea from '@/components/CTextarea.vue'
 import CBarChart from '@/components/CBarChart.vue'
-import { useM5LiveStore } from '@/stores/m5Live'
+import { useM5LiveStore, type VideoPlatform } from '@/stores/m5Live'
 import { useM1MarketingStore } from '@/stores/m1Marketing'
 import { errMsg } from '@/stores/m5Coupon'
 import { checkSensitive } from '@/composables/useSensitiveWords'
@@ -111,6 +111,60 @@ async function onEndLive(s: { id: string; status: string }) {
   try {
     await store.endLive(s.id)
     toast.success('直播已结束')
+  } catch (e) {
+    toast.error('操作失败：' + errMsg(e))
+  }
+}
+
+// ---------- 短视频发布/编辑弹层（P5-B92 三写） ----------
+const showVideo = ref(false)
+const editingVideoId = ref<string | null>(null)
+const videoForm = ref({ title: '', platform: 'DOUYIN', tagsText: '' })
+const videoError = ref('')
+const videoPlatformOptions = Object.entries(store.VIDEO_PLATFORM_LABEL).map(([value, label]) => ({ value, label }))
+
+function parseTags(text: string): string[] {
+  return text.split(/[,，、\s]+/).map((t) => t.trim()).filter(Boolean).slice(0, 6)
+}
+function openVideoCreate() {
+  editingVideoId.value = null
+  videoForm.value = { title: '', platform: 'DOUYIN', tagsText: '' }
+  videoError.value = ''
+  showVideo.value = true
+}
+function openVideoEdit(v: { id: string; title: string; platform: string; tags: string[] }) {
+  editingVideoId.value = v.id
+  videoForm.value = { title: v.title, platform: v.platform, tagsText: v.tags.join('，') }
+  videoError.value = ''
+  showVideo.value = true
+}
+async function submitVideo() {
+  videoError.value = ''
+  if (!videoForm.value.title.trim()) { videoError.value = '请输入视频标题'; return }
+  const chk = checkSensitive(videoForm.value.title)
+  if (chk.hit) { videoError.value = chk.message; return }
+  const input = {
+    title: videoForm.value.title.trim(),
+    platform: videoForm.value.platform as VideoPlatform,
+    tags: parseTags(videoForm.value.tagsText),
+  }
+  try {
+    if (editingVideoId.value) {
+      await store.updateVideo(editingVideoId.value, input)
+      toast.success('短视频已更新')
+    } else {
+      await store.createVideo(input)
+      toast.success('短视频已发布')
+    }
+    showVideo.value = false
+  } catch (e) {
+    videoError.value = errMsg(e)
+  }
+}
+async function onToggleVideo(v: { id: string; status: string }) {
+  try {
+    await store.toggleVideo(v.id)
+    toast.success(v.status === 'OFFLINE' ? '短视频已上架' : '短视频已下架')
   } catch (e) {
     toast.error('操作失败：' + errMsg(e))
   }
@@ -226,21 +280,40 @@ function couponName(id: string) {
 
       <!-- 右：短视频库 -->
       <CCard class="lv__videos" padding="none">
-        <template #header><span>短视频库</span></template>
+        <template #header>
+          <div class="lv__card-head">
+            <span>短视频库</span>
+            <CButton variant="primary" size="sm" v-perm.disable="'live:edit'" @click="openVideoCreate">
+              <CIcon name="plus" :size="14" />发布视频
+            </CButton>
+          </div>
+        </template>
         <div class="lv__video-list">
-          <div v-for="v in store.videos" :key="v.id" class="lv__video">
+          <div v-for="v in store.videos" :key="v.id" class="lv__video" :class="{ 'lv__video--offline': v.status === 'OFFLINE' }">
             <div class="lv__video-thumb">
               <CIcon name="volume" :size="24" />
-              <span class="lv__video-duration">0:30</span>
             </div>
             <div class="lv__video-info">
-              <div class="lv__video-title">{{ v.title }}</div>
+              <div class="lv__video-title">
+                <span class="lv__video-title-text">{{ v.title }}</span>
+                <CStatusPill v-if="v.status === 'OFFLINE'" :status="store.VIDEO_STATUS_PILL[v.status]">
+                  {{ store.VIDEO_STATUS_LABEL[v.status] }}
+                </CStatusPill>
+              </div>
               <div class="lv__video-meta">
                 <CStatusPill status="info">{{ store.VIDEO_PLATFORM_LABEL[v.platform] }}</CStatusPill>
                 <span><CIcon name="customer" :size="12" />{{ fmtNum(v.plays) }}</span>
                 <span><CIcon name="check" :size="12" />{{ fmtNum(v.likes) }}</span>
               </div>
               <div class="lv__video-deal">挂链成交 {{ v.dealCount }} 单 · {{ money(v.dealAmount) }}</div>
+              <div class="lv__video-actions">
+                <CButton variant="text" size="sm" v-perm.disable="'live:edit'" @click="openVideoEdit(v)">
+                  <CIcon name="edit" :size="12" />编辑
+                </CButton>
+                <CButton variant="text" size="sm" v-perm.disable="'live:edit'" @click="onToggleVideo(v)">
+                  <CIcon :name="v.status === 'OFFLINE' ? 'check' : 'close'" :size="12" />{{ v.status === 'OFFLINE' ? '上架' : '下架' }}
+                </CButton>
+              </div>
             </div>
           </div>
         </div>
@@ -273,6 +346,30 @@ function couponName(id: string) {
         <template #footer>
           <CButton variant="ghost" @click="showCreate = false">取消</CButton>
           <CButton variant="primary" @click="submitCreate">创建</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- 短视频发布/编辑弹层 -->
+    <div v-if="showVideo" class="modal-mask" @click.self="showVideo = false">
+      <CCard class="lv__modal" :title="editingVideoId ? '编辑短视频' : '发布短视频'" padding="lg">
+        <div class="lv__form">
+          <label class="lv__form-label">视频标题</label>
+          <CInput v-model="videoForm.title" placeholder="如：水光自由卡 30 秒种草" />
+
+          <label class="lv__form-label">发布平台</label>
+          <CSelect v-model="videoForm.platform" width="100%" :options="videoPlatformOptions" />
+
+          <label class="lv__form-label">话题标签（逗号/空格分隔，至多 6 个）</label>
+          <CInput v-model="videoForm.tagsText" placeholder="如：水光，夏季护肤，团购" />
+
+          <div v-if="videoError" class="lv__form-error">
+            <CIcon name="alert" :size="14" />{{ videoError }}
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showVideo = false">取消</CButton>
+          <CButton variant="primary" @click="submitVideo">{{ editingVideoId ? '保存' : '发布' }}</CButton>
         </template>
       </CCard>
     </div>
@@ -333,9 +430,11 @@ function couponName(id: string) {
 .lv__video-list { display: flex; flex-direction: column; gap: var(--s-sm); padding: var(--s-md); max-height: 520px; overflow-y: auto; }
 .lv__video { display: flex; gap: var(--s-sm); padding: var(--s-sm); border-radius: var(--r-md); background: var(--c-bg-right); }
 .lv__video-thumb { width: 96px; height: 72px; border-radius: var(--r-sm); background: linear-gradient(135deg, var(--c-brand-soft), var(--c-brand)); display: flex; align-items: center; justify-content: center; color: #fff; flex-shrink: 0; position: relative; }
-.lv__video-duration { position: absolute; right: 4px; bottom: 4px; font-size: 10px; background: rgba(0,0,0,.5); color: #fff; padding: 0 4px; border-radius: 2px; }
 .lv__video-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.lv__video-title { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv__video--offline { opacity: .62; }
+.lv__video-title { display: flex; align-items: center; gap: var(--s-xs); font-size: var(--t-sm); font-weight: 600; color: var(--c-text); }
+.lv__video-title-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lv__video-actions { display: flex; gap: var(--s-xs); }
 .lv__video-meta { display: flex; align-items: center; gap: var(--s-sm); font-size: var(--t-xs); color: var(--c-text-3); }
 .lv__video-meta span { display: inline-flex; align-items: center; gap: 2px; }
 .lv__video-deal { font-size: var(--t-xs); color: var(--c-orange-dark); font-weight: 600; }

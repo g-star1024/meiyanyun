@@ -29,6 +29,7 @@ import { listCustomers, searchCustomers, listCustomerCards, listCardLedger, rech
   type CustomerDTO, type MemberCardDTO, type CardLedgerDTO } from '@/api/customer'
 import { listCatalog, type CatalogProductDTO } from '@/api/catalog'
 import { createCardOrder, payOrder, type OrderViewDTO, type PayResultDTO } from '@/api/order'
+import { listLiveSessions, listShortVideos } from '@/api/marketing'
 
 const auth = useAuthStore()
 const storeCtx = useStoreContext()
@@ -233,6 +234,16 @@ const filteredTemplates = computed(() => {
   return list.filter((t) => t.name.includes(q) || t.productCode.includes(q))
 })
 
+// ---------------- B92 成交来源（售卡归因直播场次/短视频） ----------------
+const dealSource = ref('NONE')
+const liveSourceOptions = ref<{ value: string; label: string }[]>([])
+const videoSourceOptions = ref<{ value: string; label: string }[]>([])
+const sourceOptions = computed(() => [
+  { value: 'NONE', label: '无（自然到店 / 口碑）' },
+  ...liveSourceOptions.value,
+  ...videoSourceOptions.value,
+])
+
 async function openPurchase() {
   if (!canSell.value) {
     toast.error('无售卡开卡权限（需处方/开单权限）')
@@ -249,12 +260,26 @@ async function openPurchase() {
   payResult.value = null
   payMethod.value = 'wxpay'
   payAmt.value = ''
+  dealSource.value = 'NONE'
   try {
     const res = await listCatalog({ storeCode: storeCtx.currentStoreCode, status: 'ON_SHELF' })
     templates.value = (res.data ?? []).filter((t) => t.productType === 'CARD' || t.productType === 'COURSE')
   } catch (e: any) {
     templates.value = []
     toast.error('在售卡项加载失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  }
+  // B92 成交来源选项：直播场次（未开始/直播中）＋短视频（已上架）；加载失败不阻断售卡主流程
+  try {
+    const [sRes, vRes] = await Promise.all([listLiveSessions(), listShortVideos()])
+    liveSourceOptions.value = (sRes.data ?? [])
+      .filter((s) => s.status === 'NOT_STARTED' || s.status === 'LIVE')
+      .map((s) => ({ value: `LIVE_SESSION:${s.sessionId}`, label: `直播 · ${s.title}` }))
+    videoSourceOptions.value = (vRes.data ?? [])
+      .filter((v) => v.status !== 'OFFLINE')
+      .map((v) => ({ value: `SHORT_VIDEO:${v.videoId}`, label: `短视频 · ${v.title}` }))
+  } catch {
+    liveSourceOptions.value = []
+    videoSourceOptions.value = []
   }
 }
 
@@ -287,12 +312,16 @@ async function submitOrder() {
   if (!pickedTpl.value) { toast.error('请选择在售卡项模板'); return }
   busy.value = true
   try {
+    // B92：成交来源归因（NONE 时不传 sourceId，后端缺省 NONE；非 NONE 时后端必填校验）
+    const [srcType, srcId] = dealSource.value === 'NONE' ? ['NONE', ''] : dealSource.value.split(':')
     const res = await createCardOrder({
       customerId: buyCustomer.value.customerId,
       storeCode: storeCtx.currentStoreCode,
       productCode: pickedTpl.value.productCode,
       consultant: auth.user.staffId || undefined,
       operator: auth.user.staffId || 'cashier',
+      sourceType: srcType,
+      sourceId: srcId || undefined,
     })
     pendingOrder.value = res.data
     payResult.value = null
@@ -701,6 +730,10 @@ function tplSessionsText(t: CatalogProductDTO) {
                 </button>
                 <div v-if="!filteredTemplates.length" class="buy-tpl-empty">暂无在售卡项模板</div>
               </div>
+            </div>
+            <div class="dlg__row">
+              <label>成交来源（直播/短视频挂链归因，可选）</label>
+              <CSelect v-model="dealSource" width="100%" :options="sourceOptions" />
             </div>
           </template>
 
