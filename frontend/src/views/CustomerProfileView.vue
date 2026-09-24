@@ -30,11 +30,15 @@ import {
   rechargeCard,
   changeCustomerPoints,
   listCardLedger,
+  getCustomerBenefits,
+  writeoffBenefit,
   type CustomerDTO,
   type MemberCardDTO,
   type PointsLedgerDTO,
   type CardLedgerDTO,
   type CustomerTagDTO,
+  type BenefitWalletDTO,
+  type BenefitWriteoffDTO,
 } from '@/api/customer'
 import {
   listCustomerOrders,
@@ -99,6 +103,10 @@ const consults = ref<CustomerConsultView[]>([])
 const appts = ref<CustomerApptView[]>([])
 const rfm = ref<CustomerRfmView | null>(null)
 const writeoffs = ref<WriteoffRecordDTO[]>([])
+// P5-B93 卡2：权益钱包 + 核销流水（GET /customer/{id}/benefits 当月期懒建钱包；独立容错空态）
+const benefitWallets = ref<BenefitWalletDTO[]>([])
+const benefitWriteoffs = ref<BenefitWriteoffDTO[]>([])
+const canWriteoffBenefit = computed(() => auth.can('benefit:writeoff'))
 // P5-B58 卡5：DSAR 工单 + 同意状态
 const consent = ref<ConsentStatusDTO | null>(null)
 const dsarRequests = ref<DsarRequestDTO[]>([])
@@ -184,6 +192,16 @@ const memberBenefits = computed<string[]>(() => memberLevel.value?.benefits ?? [
 const memberUpgradeText = computed(() =>
   memberLevel.value?.isTop ? '已达最高等级' : memberLevel.value?.upgradeCondition || '',
 )
+// P5-B93 D8：结构化免费护理（FREE_CARE 当月钱包；无钱包时回退等级月配额文案）＋近 5 条核销记录
+const freeCareWallet = computed(() => benefitWallets.value.find((w) => w.benefitType === 'FREE_CARE'))
+const monthFreeCareQuota = computed(() => memberLevel.value?.freeCareTimes ?? 0)
+const recentBenefitWriteoffs = computed(() => benefitWriteoffs.value.slice(0, 5))
+function benefitWoStatus(s: string): { pill: PillStatus; text: string } {
+  if (s === 'OK') return { pill: 'success', text: '已核销' }
+  if (s === 'EXHAUSTED') return { pill: 'warning', text: '次数用尽' }
+  if (s === 'NO_WALLET') return { pill: 'disabled', text: '无权益钱包' }
+  return { pill: 'draft', text: s }
+}
 
 const statusPill = computed<{ status: PillStatus; text: string }>(() => {
   const s = customer.value?.status
@@ -399,6 +417,58 @@ async function submitAdjust() {
   }
 }
 
+// ---- P5-B93 卡2：免费护理核销弹层（POST /customer/{id}/benefit-writeoffs；开层生成 UUID 幂等键，撞键重放返既有单，提交中禁双击） ----
+const benefitWoShow = ref(false)
+const benefitWoProject = ref('')
+const benefitWoReqId = ref('')
+const benefitWoBusy = ref(false)
+const canSubmitBenefitWo = computed(() => {
+  const p = benefitWoProject.value.trim()
+  return !benefitWoBusy.value && p.length > 0 && p.length <= 40
+})
+
+function openBenefitWriteoff() {
+  benefitWoProject.value = ''
+  benefitWoReqId.value = (crypto as Crypto).randomUUID()
+  benefitWoShow.value = true
+}
+
+async function loadBenefits() {
+  try {
+    const res = await getCustomerBenefits(customerId.value)
+    benefitWallets.value = res.data.wallets ?? []
+    benefitWriteoffs.value = res.data.writeoffs ?? []
+  } catch (e) {
+    console.warn('[CustomerProfile] 权益数据加载失败（接口未就绪或无权限），权益区显空态', e)
+    benefitWallets.value = []
+    benefitWriteoffs.value = []
+  }
+}
+
+async function submitBenefitWriteoff() {
+  if (!canSubmitBenefitWo.value) return
+  benefitWoBusy.value = true
+  try {
+    const res = await writeoffBenefit(customerId.value, {
+      projectName: benefitWoProject.value.trim(),
+      clientRequestId: benefitWoReqId.value,
+    })
+    const r = res.data
+    if (r.ok) {
+      toast.success(`核销成功：${r.writeoffNo}${r.remaining != null ? `，本月剩余 ${r.remaining} 次` : ''}`)
+      benefitWoShow.value = false
+    } else {
+      // EXHAUSTED/NO_WALLET：HTTP 200 但 ok=false，中文原因照播，弹层保持打开
+      toast.warning(r.reason ?? '核销未成功')
+    }
+    await loadBenefits()
+  } catch (e: any) {
+    toast.error('核销失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    benefitWoBusy.value = false
+  }
+}
+
 // ---- B23 卡3 360 页打标 / 删标（POST/DELETE /customer/{id}/tags/{tagId}；后端防重 409、未打删 404） ----
 // 五分类中文 → chip 配色，与标签管理页 TagsView 固定色一致
 const TAG_CHIP: Record<string, string> = {
@@ -542,6 +612,9 @@ async function load() {
   } catch (e) {
     console.error('[CustomerProfile] 加载交易域数据失败', e)
   }
+
+  // P5-B93 卡2：权益钱包/核销流水（customer:view 可读；自带容错，失败显空态不阻断主域）
+  await loadBenefits()
 }
 
 onMounted(() => {
@@ -1042,6 +1115,34 @@ const compliance = [
                 <span class="benefit-card__discount-label">项目结算折扣</span>
                 <strong>{{ memberDiscountText }}</strong>
               </div>
+              <!-- P5-B93 D8：结构化免费护理行（当月钱包剩余 X/Y＋核销按钮 benefit:writeoff；无钱包回退月配额文案） -->
+              <div v-if="freeCareWallet" class="benefit-card__freecare">
+                <div class="benefit-card__freecare-main">
+                  <span class="benefit-card__freecare-label">免费护理</span>
+                  <strong>剩余 {{ freeCareWallet.remaining }}/{{ freeCareWallet.totalTimes }} 次</strong>
+                  <span class="benefit-card__freecare-period">{{ freeCareWallet.period }} 期 · {{ freeCareWallet.levelSnap }} · 月配额 {{ freeCareWallet.monthQuota }} 次</span>
+                </div>
+                <CButton
+                  v-if="canWriteoffBenefit"
+                  variant="primary" size="sm"
+                  :disabled="freeCareWallet.remaining <= 0"
+                  @click="openBenefitWriteoff"
+                >核销</CButton>
+              </div>
+              <div v-else-if="monthFreeCareQuota > 0" class="benefit-card__freecare">
+                <div class="benefit-card__freecare-main">
+                  <span class="benefit-card__freecare-label">免费护理</span>
+                  <strong>每月 {{ monthFreeCareQuota }} 次</strong>
+                  <span class="benefit-card__freecare-period">本月钱包待生成，刷新后自动到账</span>
+                </div>
+              </div>
+              <ul v-if="recentBenefitWriteoffs.length" class="benefit-card__writeoffs">
+                <li v-for="w in recentBenefitWriteoffs" :key="w.writeoffNo">
+                  <CStatusPill :status="benefitWoStatus(w.status).pill">{{ benefitWoStatus(w.status).text }}</CStatusPill>
+                  <span class="benefit-card__wo-project" :title="w.projectName">{{ w.projectName }}</span>
+                  <span class="benefit-card__wo-meta">{{ fmtDateTime(w.createdAt) }} · {{ w.operator }}</span>
+                </li>
+              </ul>
               <ul v-if="memberBenefits.length" class="benefit-card__list">
                 <li v-for="b in memberBenefits" :key="b">
                   <CIcon name="check" :size="12" class="benefit-card__tick" />{{ b }}
@@ -1156,6 +1257,32 @@ const compliance = [
           <CButton variant="ghost" @click="adjustShow = false">取消</CButton>
           <CButton variant="primary" :disabled="!canAdjust" @click="submitAdjust">
             {{ adjusting ? '提交中…' : `确认调分${adjustAmtNum !== 0 ? ' ' + (adjustAmtNum > 0 ? '+' : '') + adjustAmtNum.toLocaleString('zh-CN') : ''}` }}
+          </CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- P5-B93 卡2 免费护理核销弹层（POST /customer/{id}/benefit-writeoffs；UUID 幂等键开层生成，提交中禁双击） -->
+    <div v-if="benefitWoShow" class="modal-mask" @click.self="benefitWoShow = false">
+      <CCard class="modal" title="免费护理核销" padding="lg">
+        <div class="form">
+          <div class="form__row">
+            <label class="form__label">客户</label>
+            <div class="recharge-cardno">{{ customer?.customerId }} · {{ customer?.name }}</div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">本月剩余</label>
+            <div class="recharge-cardno">{{ freeCareWallet ? `${freeCareWallet.remaining}/${freeCareWallet.totalTimes} 次（${freeCareWallet.period} 期）` : '—' }}</div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">护理项目</label>
+            <CInput v-model="benefitWoProject" placeholder="必填，不超过 40 字" maxlength="40" />
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="benefitWoShow = false">取消</CButton>
+          <CButton variant="primary" :disabled="!canSubmitBenefitWo" @click="submitBenefitWriteoff">
+            {{ benefitWoBusy ? '提交中…' : '确认核销' }}
           </CButton>
         </template>
       </CCard>
@@ -1360,6 +1487,20 @@ const compliance = [
   border: 1px dashed var(--c-border); border-radius: var(--r-sm, 6px); margin-bottom: var(--s-sm);
 }
 .benefit-card__note { margin: 0; font-size: var(--t-xs); color: var(--c-text-3); line-height: 1.6; }
+/* P5-B93 卡2 结构化免费护理行 + 核销记录 */
+.benefit-card__freecare {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm);
+  padding: var(--s-xs) var(--s-sm); margin-bottom: var(--s-sm);
+  background: var(--c-info-bg); border-radius: var(--r-sm, 6px);
+}
+.benefit-card__freecare-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.benefit-card__freecare-label { font-size: var(--t-xs); color: var(--c-text-3); }
+.benefit-card__freecare-main strong { font-size: var(--t-base); color: var(--c-blue); font-variant-numeric: tabular-nums; }
+.benefit-card__freecare-period { font-size: var(--t-xs); color: var(--c-text-3); }
+.benefit-card__writeoffs { display: flex; flex-direction: column; gap: 6px; margin: 0 0 var(--s-sm); padding: 0; list-style: none; }
+.benefit-card__writeoffs li { display: flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--c-text-2); }
+.benefit-card__wo-project { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 110px; }
+.benefit-card__wo-meta { color: var(--c-text-3); margin-left: auto; flex-shrink: 0; }
 .risks { display: flex; flex-direction: column; gap: var(--s-sm); }
 .comp-cell { display: flex; align-items: center; gap: 6px; padding: 6px var(--s-md); border-radius: var(--r-lg); font-size: var(--t-sm); color: var(--c-text); }
 .comp-cell--success { background: var(--c-success-bg); color: var(--c-teal-fg); }

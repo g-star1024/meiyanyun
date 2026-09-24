@@ -81,6 +81,8 @@ export interface MemberLevelDTO {
   isTop: boolean
   /** 会员等级折扣率（1.00/0.95/0.90/0.85/0.80；开单计价以后端为准，前端仅展示/预估） */
   discount: number
+  /** 每月免费护理次数（B93 D3，0~31；可空＝未配置，前端按 0 展示） */
+  freeCareTimes?: number | null
 }
 
 /**
@@ -98,6 +100,8 @@ export interface LevelCatalogDTO {
   benefits: string[]
   isTop: boolean
   discount: number
+  /** 每月免费护理次数（B93，一线岗同口径可读） */
+  freeCareTimes?: number | null
 }
 
 /** 升降级规则（GET/PUT /customer/level-rule，单行 rule_id=1；未配置时后端返回默认不落库） */
@@ -290,10 +294,10 @@ export const getMemberLevels = () =>
 export const getMemberLevelCatalog = () =>
   client.get<LevelCatalogDTO[]>('/customer/member-levels/catalog')
 
-/** 更新等级阈值/权益（阈值必填非负；benefits 原值回传，页面只改阈值）；同态短路返回未变更 DTO 不审计 */
+/** 更新等级阈值/权益/免费护理次数（阈值必填非负的全量体契约；benefits 原值回传；freeCareTimes 0~31）；同态短路返回未变更 DTO 不审计 */
 export const updateMemberLevel = (
   level: string,
-  data: { upgradeThreshold: number; benefits: string[] },
+  data: { upgradeThreshold: number; benefits: string[]; freeCareTimes?: number | null },
 ) => client.put<MemberLevelDTO>(`/customer/member-levels/${encodeURIComponent(level)}`, data)
 
 /** 按累计消费批量自动升级（手动触发，只升不降；upgraded=0 后端不落审计） */
@@ -330,6 +334,54 @@ export const changeCustomerPoints = (
 /** 客户会员卡（balance 单位「分」） */
 export const listCustomerCards = (id: string) =>
   client.get<MemberCardDTO[]>(`/customer/${id}/cards`)
+
+/** 权益钱包（B93 D4：当月期懒建；total/used/remaining 均为次数整数） */
+export interface BenefitWalletDTO {
+  benefitType: string
+  period: string
+  levelSnap: string
+  totalTimes: number
+  usedTimes: number
+  remaining: number
+  monthQuota: number
+}
+
+/** 权益核销流水（B93 D5：status OK/NO_WALLET/EXHAUSTED；ok=false 异常单也入列） */
+export interface BenefitWriteoffDTO {
+  writeoffNo: string
+  period: string
+  projectName: string
+  status: string
+  reason: string | null
+  operator: string
+  storeName: string
+  createdAt: string
+}
+
+/** GET /customer/{id}/benefits 响应（customer:view 可读） */
+export interface CustomerBenefitsDTO {
+  wallets: BenefitWalletDTO[]
+  writeoffs: BenefitWriteoffDTO[]
+}
+
+/** POST benefit-writeoffs 响应（ok=false 时 HTTP 仍 200，reason 为中文可读原因） */
+export interface BenefitWriteoffResult {
+  ok: boolean
+  writeoffNo: string
+  status: string
+  reason: string | null
+  remaining: number | null
+}
+
+/** 客户权益读模型（B93 D7：当月期懒建钱包＋核销流水，customer:view） */
+export const getCustomerBenefits = (id: string) =>
+  client.get<CustomerBenefitsDTO>(`/customer/${id}/benefits`)
+
+/** 权益核销（B93 D5：benefit:writeoff；benefitType 缺省 FREE_CARE；clientRequestId UUID 幂等，撞键重放返既有流水） */
+export const writeoffBenefit = (
+  id: string,
+  data: { benefitType?: string; projectName: string; clientRequestId: string },
+) => client.post<BenefitWriteoffResult>(`/customer/${id}/benefit-writeoffs`, data)
 
 /** 会员卡充值（amount 本金分；giftAmount 赠送金额分，默认 0；payMethod cash/card/wxpay/alipay，禁用 balance；RC 单号重放幂等） */
 export const rechargeCard = (cardNo: string, amount: number, payMethod: string, giftAmount = 0) =>

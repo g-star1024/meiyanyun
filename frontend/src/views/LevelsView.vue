@@ -31,15 +31,17 @@ const kpis = computed(() => [
   { label: '本月降级', icon: 'customer', value: String(store.monthDowngraded), tone: 'warning' as const },
 ])
 
-// 等级阈值编辑（本地草稿，保存时随该等级现有权益原样回传）
-const drafts = ref<Record<string, { threshold: string }>>({})
+// 等级阈值/免费护理次数编辑（本地草稿，保存时随该等级现有权益原样回传；PUT 全量体契约 threshold 必填）
+const drafts = ref<Record<string, { threshold: string; freeCare: string }>>({})
 function ensureDraft(l: MemberLevel) {
-  if (!drafts.value[l.id]) drafts.value[l.id] = { threshold: String(l.upgradeThreshold) }
+  if (!drafts.value[l.id]) {
+    drafts.value[l.id] = { threshold: String(l.upgradeThreshold), freeCare: String(l.freeCareTimes ?? 0) }
+  }
   return drafts.value[l.id]
 }
 function isDirty(l: MemberLevel) {
   const d = drafts.value[l.id]
-  return d && d.threshold !== String(l.upgradeThreshold)
+  return d && (d.threshold !== String(l.upgradeThreshold) || d.freeCare !== String(l.freeCareTimes ?? 0))
 }
 async function saveLevel(l: MemberLevel) {
   const d = drafts.value[l.id]
@@ -49,10 +51,19 @@ async function saveLevel(l: MemberLevel) {
     showToast('请输入不小于 0 的阈值')
     return
   }
-  const r = await store.updateLevel(l.id, { upgradeThreshold: n })
+  const f = Number(d.freeCare)
+  if (d.freeCare.trim() === '' || !Number.isInteger(f) || f < 0 || f > 31) {
+    showToast('免费护理次数须为 0~31 的整数')
+    return
+  }
+  const r = await store.updateLevel(l.id, { upgradeThreshold: n, freeCareTimes: f })
   if (r.ok) {
-    drafts.value[l.id] = { threshold: String(store.get(l.id)?.upgradeThreshold ?? n) }
-    showToast(`${l.name}阈值已保存`)
+    const cur = store.get(l.id)
+    drafts.value[l.id] = {
+      threshold: String(cur?.upgradeThreshold ?? n),
+      freeCare: String(cur?.freeCareTimes ?? f),
+    }
+    showToast(`${l.name}配置已保存`)
   } else {
     showToast(r.reason ?? '保存失败')
   }
@@ -84,8 +95,10 @@ async function resetDefault() {
   const r = await store.resetDefault()
   if (r.ok) {
     Object.assign(ruleDraft, store.rule)
-    Object.values(drafts.value).forEach((d) => { d.threshold = '' })
-    store.levels.forEach((l) => (drafts.value[l.id] = { threshold: String(l.upgradeThreshold) }))
+    Object.values(drafts.value).forEach((d) => { d.threshold = ''; d.freeCare = '' })
+    store.levels.forEach((l) => {
+      drafts.value[l.id] = { threshold: String(l.upgradeThreshold), freeCare: String(l.freeCareTimes ?? 0) }
+    })
     ruleDirty.value = false
     showToast('已恢复默认')
   } else {
@@ -134,13 +147,20 @@ onMounted(async () => {
           当前 <b>{{ l.memberCount.toLocaleString() }}</b> 人（{{ l.memberPercent }}%）
         </div>
 
-        <!-- 阈值编辑 -->
-        <div v-if="l.tier !== 'NORMAL'" class="lv-card__edit">
+        <!-- 阈值/免费护理编辑（阈值普通等级不编；免费护理全等级可编 0~31） -->
+        <div class="lv-card__edit">
           <CInput
+            v-if="l.tier !== 'NORMAL'"
             label="升级阈值（元）"
             type="number"
             :model-value="ensureDraft(l).threshold"
             @update:model-value="(v) => (ensureDraft(l).threshold = v)"
+          />
+          <CInput
+            label="每月免费护理次数"
+            type="number"
+            :model-value="ensureDraft(l).freeCare"
+            @update:model-value="(v) => (ensureDraft(l).freeCare = v)"
           />
           <CButton
             variant="text" size="sm"

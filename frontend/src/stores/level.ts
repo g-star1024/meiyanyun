@@ -40,6 +40,8 @@ export interface MemberLevel {
   isTop?: boolean
   /** 会员等级折扣率（普通 1.00、银卡 0.95 …）；以后端实算为准，前端仅用于预估展示 */
   discount: number
+  /** 每月免费护理次数（B93 D3，0~31；null＝未配置按 0 展示） */
+  freeCareTimes: number | null
 }
 
 export interface LevelRule {
@@ -86,12 +88,12 @@ const DEFAULT_RULE: LevelRule = {
   autoUpgrade: true,
   pointsMultiplier: 1.0,
 }
-const DEFAULT_LEVELS: Array<{ id: string; upgradeThreshold: number; benefits: string[] }> = [
-  { id: '普通', upgradeThreshold: 0, benefits: ['项目基础价'] },
-  { id: '银卡', upgradeThreshold: 5000, benefits: ['项目折扣 9.5 折', '生日当月 1.2 倍积分'] },
-  { id: '金卡', upgradeThreshold: 20000, benefits: ['项目折扣 9 折', '生日当月 1.5 倍积分', '专属咨询师'] },
-  { id: '钻石', upgradeThreshold: 50000, benefits: ['项目折扣 8.5 折', '生日当月 2 倍积分', '专属咨询师 + 免排队', '每月 1 次免费护理'] },
-  { id: '黑卡', upgradeThreshold: 100000, benefits: ['项目折扣 8 折', '生日当月 3 倍积分', '专属咨询师 + 免排队', '每月 2 次免费护理'] },
+const DEFAULT_LEVELS: Array<{ id: string; upgradeThreshold: number; benefits: string[]; freeCareTimes: number }> = [
+  { id: '普通', upgradeThreshold: 0, benefits: ['项目基础价'], freeCareTimes: 0 },
+  { id: '银卡', upgradeThreshold: 5000, benefits: ['项目折扣 9.5 折', '生日当月 1.2 倍积分'], freeCareTimes: 0 },
+  { id: '金卡', upgradeThreshold: 20000, benefits: ['项目折扣 9 折', '生日当月 1.5 倍积分', '专属咨询师'], freeCareTimes: 0 },
+  { id: '钻石', upgradeThreshold: 50000, benefits: ['项目折扣 8.5 折', '生日当月 2 倍积分', '专属咨询师 + 免排队', '每月 1 次免费护理'], freeCareTimes: 1 },
+  { id: '黑卡', upgradeThreshold: 100000, benefits: ['项目折扣 8 折', '生日当月 3 倍积分', '专属咨询师 + 免排队', '每月 2 次免费护理'], freeCareTimes: 2 },
 ]
 
 export const useLevelStore = defineStore('level', () => {
@@ -184,6 +186,7 @@ export const useLevelStore = defineStore('level', () => {
       memberPercent: d.memberPercent,
       isTop: d.isTop,
       discount: typeof d.discount === 'number' ? d.discount : 1,
+      freeCareTimes: typeof d.freeCareTimes === 'number' ? d.freeCareTimes : null,
     }
   }
 
@@ -204,6 +207,7 @@ export const useLevelStore = defineStore('level', () => {
       memberPercent: 0,
       isTop: d.isTop,
       discount: typeof d.discount === 'number' ? d.discount : 1,
+      freeCareTimes: typeof d.freeCareTimes === 'number' ? d.freeCareTimes : null,
     }
   }
 
@@ -217,12 +221,12 @@ export const useLevelStore = defineStore('level', () => {
   }
 
   /**
-   * 更新等级阈值（页面只改阈值；benefits 原值回传防误清，后端同态短路不审计）。
+   * 更新等级阈值/免费护理次数（benefits 原值回传防误清，PUT 全量体契约 threshold 必填，后端同态短路不审计）。
    * 成功后用返回 DTO 就地替换并刷新审计链/KPI。
    */
   async function updateLevel(
     id: string,
-    patch: Partial<Pick<MemberLevel, 'upgradeThreshold' | 'benefits' | 'name'>>,
+    patch: Partial<Pick<MemberLevel, 'upgradeThreshold' | 'benefits' | 'name' | 'freeCareTimes'>>,
   ): Promise<{ ok: boolean; reason?: string }> {
     const cur = levels.value.find((x) => x.id === id)
     if (!cur) return { ok: false, reason: '等级不存在' }
@@ -231,6 +235,7 @@ export const useLevelStore = defineStore('level', () => {
       const { data } = await updateMemberLevel(id, {
         upgradeThreshold: threshold,
         benefits: cur.benefits,
+        freeCareTimes: patch.freeCareTimes ?? cur.freeCareTimes,
       })
       const idx = levels.value.findIndex((x) => x.id === id)
       if (idx >= 0) levels.value[idx] = adaptLevel(data)
@@ -261,7 +266,7 @@ export const useLevelStore = defineStore('level', () => {
     try {
       await Promise.all(
         DEFAULT_LEVELS.map((d) =>
-          updateMemberLevel(d.id, { upgradeThreshold: d.upgradeThreshold, benefits: d.benefits }),
+          updateMemberLevel(d.id, { upgradeThreshold: d.upgradeThreshold, benefits: d.benefits, freeCareTimes: d.freeCareTimes }),
         ),
       )
       await apiSaveLevelRule({ ...DEFAULT_RULE })
@@ -334,6 +339,9 @@ export const useLevelStore = defineStore('level', () => {
       }
       if (JSON.stringify(before.benefits ?? []) !== JSON.stringify(after.benefits ?? [])) {
         parts.push(`权益 ${before.benefits?.length ?? 0} 项→${after.benefits?.length ?? 0} 项`)
+      }
+      if (Number(before.freeCareTimes ?? 0) !== Number(after.freeCareTimes ?? 0)) {
+        parts.push(`免费护理 ${before.freeCareTimes ?? 0}→${after.freeCareTimes ?? 0} 次`)
       }
       return `调整${label}${parts.join('，') || '等级配置'}`
     }
