@@ -248,6 +248,7 @@ public final class PermissionMatrix {
             "push:send",
             "channel:edit",
             "couponWriteoff:verify",
+            "benefit:writeoff",
             "landing:edit",
             "poster:edit",
             "live:edit",
@@ -557,6 +558,7 @@ public final class PermissionMatrix {
                 "push:send",
                 "channel:edit",
                 "couponWriteoff:verify",
+                "benefit:writeoff",
                 "landing:edit",
                 "poster:edit",
                 "live:edit",
@@ -830,6 +832,7 @@ public final class PermissionMatrix {
                 "push:create",
                 "push:send",
                 "couponWriteoff:verify",
+                "benefit:writeoff",
                 "poster:edit",
                 "live:edit",
                 "calendar:edit",
@@ -870,7 +873,8 @@ public final class PermissionMatrix {
                 "report:view",
                 "schedule:view",
                 "customer:phone:decrypt",
-                "aiScript:view"
+                "aiScript:view",
+                "benefit:writeoff"
         ));
         m.put("DOCTOR", List.of(
                 "emr:view",

@@ -78,6 +78,9 @@ public class CustomerService {
             "金卡", List.of("项目折扣 9 折", "生日当月 1.5 倍积分", "专属咨询师"),
             "钻石", List.of("项目折扣 8.5 折", "生日当月 2 倍积分", "专属咨询师 + 免排队", "每月 1 次免费护理"),
             "黑卡", List.of("项目折扣 8 折", "生日当月 3 倍积分", "专属咨询师 + 免排队", "每月 2 次免费护理"));
+    /** 每月免费护理次数兜底（B93，free_care_times 列回填前；钻石 1/黑卡 2，其余 0=无此权益）。包可见供 BenefitService 钱包懒发放取同口径。 */
+    static final Map<String, Integer> LEVEL_FREE_CARE = Map.of(
+            "普通", 0, "银卡", 0, "金卡", 0, "钻石", 1, "黑卡", 2);
     /** 升降级规则单行主键（仿 point_rule rule_id=1）。 */
     private static final int RULE_ID = 1;
     /** 等级判定统一北京时区（月聚合口径同源）。 */
@@ -611,7 +614,8 @@ public class CustomerService {
                     upgradeCondition(threshold),
                     benefits,
                     top,
-                    lv.getDiscount());
+                    lv.getDiscount(),
+                    freeCareTimesOf(lv));
         }).toList();
     }
 
@@ -645,7 +649,14 @@ public class CustomerService {
                 count,
                 percent,
                 top,
-                lv.getDiscount());
+                lv.getDiscount(),
+                freeCareTimesOf(lv));
+    }
+
+    /** 每月免费护理次数现值：列已配置读列，未配置兜底 LEVEL_FREE_CARE（包可见，BenefitService 钱包懒发放同口径）。 */
+    static int freeCareTimesOf(MemberLevel lv) {
+        return lv.getFreeCareTimes() != null ? lv.getFreeCareTimes()
+                : LEVEL_FREE_CARE.getOrDefault(lv.getLevel(), 0);
     }
 
     /** 升级条件文案：阈值 0=注册即享；>0=累计消费 ≥ ¥x,xxx（美式千分位，对齐前端 toLocaleString）。 */
@@ -658,11 +669,13 @@ public class CustomerService {
     }
 
     /**
-     * 更新等级阈值/权益（写接口四件套）：等级不存在 404；阈值必填非负、普通固定 0、不得超过 1 亿；
-     * 权益清单最多 10 条、单条 ≤40 字。全部参数与现值相同则 changed=false（幂等同态短路，Controller 不重复审计）。
+     * 更新等级阈值/权益/免费护理次数（写接口四件套）：等级不存在 404；阈值必填非负、普通固定 0、不得超过 1 亿；
+     * 权益清单最多 10 条、单条 ≤40 字；freeCareTimes 可空（null=不动），非空须 0~31（0=本等级无免费护理权益）。
+     * 全部参数与现值相同则 changed=false（幂等同态短路，Controller 不重复审计）。
      */
     @Transactional
-    public synchronized LevelConfigResult updateLevelConfig(String level, BigDecimal threshold, List<String> benefits) {
+    public synchronized LevelConfigResult updateLevelConfig(String level, BigDecimal threshold, List<String> benefits,
+                                                            Integer freeCareTimes) {
         MemberLevel lv = levelRepo.findById(level)
                 .orElseThrow(() -> new NotFound("会员等级不存在：" + level));
         if (threshold == null) throw new BadReq("升级阈值不能为空");
@@ -670,6 +683,9 @@ public class CustomerService {
         if (threshold.compareTo(new BigDecimal("100000000")) > 0) throw new BadReq("升级阈值超出合理上限（1 亿）");
         if ("普通".equals(level) && threshold.signum() != 0) {
             throw new BadReq("普通会员为注册即享等级，阈值必须为 0");
+        }
+        if (freeCareTimes != null && (freeCareTimes < 0 || freeCareTimes > 31)) {
+            throw new BadReq("每月免费护理次数须为 0~31（0=无此权益）");
         }
         List<String> cleaned = List.of();
         if (benefits != null) {
@@ -686,10 +702,13 @@ public class CustomerService {
         List<String> oldBenefits = lv.getBenefits() != null && !lv.getBenefits().isEmpty()
                 ? List.copyOf(lv.getBenefits())
                 : LEVEL_BENEFITS.getOrDefault(level, List.of());
-        boolean changed = oldThreshold.compareTo(threshold) != 0 || !oldBenefits.equals(cleaned);
+        int oldFreeCareTimes = freeCareTimesOf(lv);
+        boolean changed = oldThreshold.compareTo(threshold) != 0 || !oldBenefits.equals(cleaned)
+                || (freeCareTimes != null && oldFreeCareTimes != freeCareTimes);
         if (changed) {
             lv.setUpgradeThreshold(threshold);
             lv.setBenefits(cleaned);
+            if (freeCareTimes != null) lv.setFreeCareTimes(freeCareTimes);
             levelRepo.save(lv);
         }
         Map<String, Long> counts = new HashMap<>();
@@ -698,12 +717,13 @@ public class CustomerService {
         }
         long total = counts.values().stream().mapToLong(Long::longValue).sum();
         return new LevelConfigResult(toLevelDTO(lv, counts.getOrDefault(level, 0L), total), changed,
-                oldThreshold, oldBenefits);
+                oldThreshold, oldBenefits, oldFreeCareTimes);
     }
 
     /** 等级配置更新结果：dto 为更新后读模型；changed=false 表示同态短路不审计；old* 供审计 before/after。 */
     public record LevelConfigResult(MemberLevelDTO dto, boolean changed,
-                                    BigDecimal oldThreshold, List<String> oldBenefits) {}
+                                    BigDecimal oldThreshold, List<String> oldBenefits,
+                                    int oldFreeCareTimes) {}
 
     /** 升降级规则读模型：未配置时返回默认（不落库，与积分规则 orElseGet 同风格）。 */
     @Transactional(readOnly = true)

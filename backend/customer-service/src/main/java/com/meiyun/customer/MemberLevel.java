@@ -47,6 +47,10 @@ public class MemberLevel {
     @Column(name = "benefits", columnDefinition = "text")
     private List<String> benefits;
 
+    /** 每月免费护理次数（B93 权益核销定义列；NULL=未配置，读模型兜底 CustomerService.LEVEL_FREE_CARE：钻石 1/黑卡 2/其余 0）。 */
+    @Column(name = "free_care_times")
+    private Integer freeCareTimes;
+
     /** 等级主色（十六进制，用于卡片左边框/圆点/升级条件底色）。 */
     @Column(length = 16)
     private String color;

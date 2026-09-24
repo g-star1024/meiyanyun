@@ -20,6 +20,7 @@ public record MemberLevelDTO(
         long memberCount,
         long memberPercent,
         boolean isTop,
-        BigDecimal discount
+        BigDecimal discount,
+        Integer freeCareTimes
 ) {
 }

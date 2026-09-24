@@ -18,6 +18,7 @@ public record LevelCatalogDTO(
         String upgradeCondition,
         List<String> benefits,
         boolean isTop,
-        BigDecimal discount
+        BigDecimal discount,
+        Integer freeCareTimes
 ) {
 }

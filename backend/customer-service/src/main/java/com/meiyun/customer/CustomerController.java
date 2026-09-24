@@ -6,6 +6,7 @@ import com.meiyun.customer.search.CustomerSearchService;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
@@ -35,6 +36,7 @@ public class CustomerController {
     private final LevelInitService levelInitService;
     private final LevelDowngradeNotifier downgradeNotifier;
     private final MergeCandidateService mergeCandidateService;
+    private final BenefitService benefitService;
 
     @Autowired
     private AuditRecorder audit;
@@ -48,7 +50,8 @@ public class CustomerController {
                               MonthlySpendService monthlySpendService,
                               LevelInitService levelInitService,
                               LevelDowngradeNotifier downgradeNotifier,
-                              MergeCandidateService mergeCandidateService) {
+                              MergeCandidateService mergeCandidateService,
+                              BenefitService benefitService) {
         this.service = service;
         this.customerRepo = customerRepo;
         this.cardRepo = cardRepo;
@@ -62,6 +65,7 @@ public class CustomerController {
         this.levelInitService = levelInitService;
         this.downgradeNotifier = downgradeNotifier;
         this.mergeCandidateService = mergeCandidateService;
+        this.benefitService = benefitService;
     }
 
     // ---- 客户主数据（分页 + 过滤 + 标签） ----
@@ -145,14 +149,17 @@ public class CustomerController {
     @RequirePerm("level:edit")
     public MemberLevelDTO updateLevel(@PathVariable String level, @RequestBody LevelConfigReq req) {
         CustomerService.LevelConfigResult result = service.updateLevelConfig(
-                level, req == null ? null : req.upgradeThreshold(), req == null ? null : req.benefits());
+                level, req == null ? null : req.upgradeThreshold(), req == null ? null : req.benefits(),
+                req == null ? null : req.freeCareTimes());
         if (result.changed()) {
             audit.record("LEVEL", level, DataScope.currentActor(), "UPDATE",
                     "{\"level\":\"" + esc(level) + "\",\"name\":\"" + esc(result.dto().name())
                             + "\",\"before\":{\"upgradeThreshold\":" + result.oldThreshold()
                             + ",\"benefits\":" + jsonList(result.oldBenefits())
+                            + ",\"freeCareTimes\":" + result.oldFreeCareTimes()
                             + "},\"after\":{\"upgradeThreshold\":" + result.dto().upgradeThreshold()
-                            + ",\"benefits\":" + jsonList(result.dto().benefits()) + "}}");
+                            + ",\"benefits\":" + jsonList(result.dto().benefits())
+                            + ",\"freeCareTimes\":" + result.dto().freeCareTimes() + "}}");
         }
         return result.dto();
     }
@@ -305,6 +312,34 @@ public class CustomerController {
                                   @RequestParam(defaultValue = "false") boolean activeOnly) {
         requireReadable(id);
         return service.listCards(id, activeOnly);
+    }
+
+    // ---- 会员权益（B93）：钱包/流水读模型 + 免费护理核销（幂等/三态/审计在 service 内） ----
+
+    /** 权益读模型：当期钱包（懒发放触发）+ 近 20 条核销流水；customer:view 与 360 页同门槛零新增。 */
+    @GetMapping("/{id}/benefits")
+    @RequirePerm("customer:view")
+    public CustomerBenefitsDTO benefits(@PathVariable String id) {
+        Customer c = requireReadable(id);
+        return benefitService.listBenefits(c);
+    }
+
+    /**
+     * 免费护理核销：参数非法中文 400（项目名空/超长、clientRequestId 非 UUID、客户已合并）；
+     * clientRequestId 幂等重放返既有流水；业务异常落流水 ok=false 不抛 400；全动作 BENEFIT/WRITEOFF 审计。
+     */
+    @PostMapping("/{id}/benefit-writeoffs")
+    @RequirePerm("benefit:writeoff")
+    public BenefitService.WriteoffResult writeoffBenefit(@PathVariable String id,
+                                                         @RequestBody BenefitWriteoffReq req) {
+        Customer c = requireReadable(id);
+        try {
+            return benefitService.writeoff(c, req == null ? null : req.benefitType(),
+                    req == null ? null : req.projectName(), req == null ? null : req.clientRequestId());
+        } catch (DataIntegrityViolationException dup) {
+            // client_request_id UK 并发撞行：本次写入已整体回滚（未重复扣次），按幂等重放返既有流水
+            return benefitService.replayResultByReqId(req == null ? null : req.clientRequestId());
+        }
     }
 
     // ---- 积分：台账（分页倒序） + 池 DTO + 人工调分（幂等 + 审计） ----
@@ -546,8 +581,11 @@ public class CustomerController {
     /** 积分池读模型：累计发放 / 本月获得 / 本月核销 / 90 天内到期。 */
     public record PointsPoolDTO(long totalIssued, long gainedMonth, long redeemedMonth, long expiring90d) {}
 
-    /** 等级阈值/权益更新请求体：阈值必填非负（普通固定 0），权益可空（空数组=无权益）。 */
-    public record LevelConfigReq(BigDecimal upgradeThreshold, List<String> benefits) {}
+    /** 等级阈值/权益更新请求体：阈值必填非负（普通固定 0），权益可空（空数组=无权益）；freeCareTimes 可空（null=不动，0~31，B93）。 */
+    public record LevelConfigReq(BigDecimal upgradeThreshold, List<String> benefits, Integer freeCareTimes) {}
+
+    /** 免费护理核销请求体（B93）：benefitType 缺省 FREE_CARE；projectName 必填 ≤40 字；clientRequestId 必填 UUID 幂等键。 */
+    public record BenefitWriteoffReq(String benefitType, String projectName, String clientRequestId) {}
 
     /** 升降级规则保存请求体：五字段对齐前端 LevelRule（缺省由 service 置默认并校验区间）。 */
     public record LevelRuleReq(String calcPeriod, Integer downgradeProtectMonths,
