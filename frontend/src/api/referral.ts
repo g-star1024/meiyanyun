@@ -138,6 +138,9 @@ export interface ReferralCampaignRow {
   remark: string | null
   createdBy: string | null
   createdAt: string
+  /** P5-B91 D8：活动统计列（后端聚合 countGroupByCampaignId，防 N+1） */
+  invited: number
+  converted: number
 }
 
 export interface ReferralCampaignLadder {
@@ -180,6 +183,27 @@ export interface TopReferrerRow {
 
 export const fetchReferralCampaigns = () =>
   client.get<ReferralCampaignRow[]>('/customer/referral/campaigns')
+
+// P5-B91 D10：活动 CRUD（referralCampaign:edit；状态逐级 DRAFT→ONGOING→ENDED，
+// ENDED 冻结禁编，跳态/回退 409）。起止日期 yyyy-MM-dd。
+export const createReferralCampaign = (body: {
+  name: string
+  startAt: string
+  endAt: string
+  storeCode?: string
+  remark?: string
+}) => client.post<ReferralCampaignRow>('/customer/referral/campaigns', body)
+
+export const updateReferralCampaign = (id: string, body: {
+  name?: string
+  startAt?: string
+  endAt?: string
+  storeCode?: string
+  remark?: string
+}) => client.put<ReferralCampaignRow>(`/customer/referral/campaigns/${id}`, body)
+
+export const putReferralCampaignStatus = (id: string, status: string) =>
+  client.put<ReferralCampaignRow>(`/customer/referral/campaigns/${id}/status`, { status })
 
 export const fetchReferralCampaignConfig = () =>
   client.get<ReferralCampaignConfigRow>('/customer/referral/campaign-config')

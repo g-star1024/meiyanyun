@@ -17,8 +17,9 @@ import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
 import { useReferralStore, type RewardType } from '@/stores/referral'
 import {
-  fetchReferralCampaigns, fetchReferralCampaignConfig, fetchTopReferrers,
-  putReferralCampaignConfig, type ReferralCampaignConfigRow,
+  createReferralCampaign, fetchReferralCampaigns, fetchReferralCampaignConfig,
+  fetchTopReferrers, putReferralCampaignConfig, putReferralCampaignStatus,
+  updateReferralCampaign, type ReferralCampaignConfigRow, type ReferralCampaignRow,
 } from '@/api/referral'
 
 export type CampaignStatus = 'ONGOING' | 'ENDED' | 'DRAFT'
@@ -31,6 +32,9 @@ export interface InviteCampaign {
   endAt: string
   invited: number
   converted: number
+  /** P5-B91 卡2：编辑弹层回填用（可空=全部门店） */
+  storeCode: string | null
+  remark: string | null
 }
 
 export interface LadderTier {
@@ -114,17 +118,24 @@ export const useM5ReferralCampaignStore = defineStore('m5ReferralCampaign', () =
     applyConfig(resp.data)
   }
 
-  async function refreshCampaigns() {
-    const resp = await fetchReferralCampaigns()
-    campaigns.value = resp.data.map((c) => ({
+  // P5-B91 D8：invited/converted 统计列接真（后端聚合下发，去 v1 恒 0）
+  function mapCampaignRow(c: ReferralCampaignRow): InviteCampaign {
+    return {
       id: c.campaignId,
       name: c.name,
       status: (c.status === 'ONGOING' || c.status === 'ENDED' ? c.status : 'DRAFT') as CampaignStatus,
       startAt: c.startAt ?? '',
       endAt: c.endAt ?? '',
-      invited: 0,
-      converted: 0,
-    }))
+      invited: Number(c.invited ?? 0),
+      converted: Number(c.converted ?? 0),
+      storeCode: c.storeCode ?? null,
+      remark: c.remark ?? null,
+    }
+  }
+
+  async function refreshCampaigns() {
+    const resp = await fetchReferralCampaigns()
+    campaigns.value = resp.data.map(mapCampaignRow)
   }
 
   async function refreshTopReferrers() {
@@ -216,6 +227,92 @@ export const useM5ReferralCampaignStore = defineStore('m5ReferralCampaign', () =
     return referral.payReward(id)
   }
 
+  // -------------------- P5-B91 D10：活动 CRUD（referralCampaign:edit） --------------------
+  // 乐观更新+失败回滚同 pushConfig 范式；create 无本地行可改，成功后插入返回行。
+
+  function snapshotCampaigns() {
+    return campaigns.value.map((c) => ({ ...c }))
+  }
+
+  function rollbackCampaigns(snap: InviteCampaign[], e: unknown) {
+    console.warn('[m5ReferralCampaign] 活动操作失败，已回滚', e)
+    campaigns.value = snap
+    return false
+  }
+
+  async function createCampaign(input: {
+    name: string
+    startAt: string
+    endAt: string
+    storeCode?: string
+    remark?: string
+  }): Promise<boolean> {
+    if (!auth.can('referralCampaign:edit')) return false
+    try {
+      const resp = await createReferralCampaign({
+        name: input.name,
+        startAt: input.startAt,
+        endAt: input.endAt,
+        storeCode: input.storeCode || undefined,
+        remark: input.remark || undefined,
+      })
+      campaigns.value.unshift(mapCampaignRow(resp.data))
+      activity.log(auth.user.name, `新建邀请活动：${input.name}`)
+      return true
+    } catch (e) {
+      console.warn('[m5ReferralCampaign] 新建邀请活动失败', e)
+      return false
+    }
+  }
+
+  async function updateCampaign(id: string, input: {
+    name: string
+    startAt: string
+    endAt: string
+    storeCode?: string
+    remark?: string
+  }): Promise<boolean> {
+    if (!auth.can('referralCampaign:edit')) return false
+    const snap = snapshotCampaigns()
+    const c = campaigns.value.find((x) => x.id === id)
+    if (!c || c.status === 'ENDED') return false
+    c.name = input.name
+    c.startAt = input.startAt
+    c.endAt = input.endAt
+    c.storeCode = input.storeCode || null
+    c.remark = input.remark || null
+    try {
+      await updateReferralCampaign(id, {
+        name: input.name,
+        startAt: input.startAt,
+        endAt: input.endAt,
+        storeCode: input.storeCode || undefined,
+        remark: input.remark || undefined,
+      })
+      activity.log(auth.user.name, `编辑邀请活动：${input.name}`)
+      return true
+    } catch (e) {
+      return rollbackCampaigns(snap, e)
+    }
+  }
+
+  /** 状态逐级流转（DRAFT→ONGOING 开始／ONGOING→ENDED 结束；跳态/回退后端 409） */
+  async function transitionCampaignStatus(id: string, target: CampaignStatus): Promise<boolean> {
+    if (!auth.can('referralCampaign:edit')) return false
+    const snap = snapshotCampaigns()
+    const c = campaigns.value.find((x) => x.id === id)
+    if (!c) return false
+    const from = c.status
+    c.status = target
+    try {
+      await putReferralCampaignStatus(id, target)
+      activity.log(auth.user.name, `邀请活动状态流转：${c.name} ${CAMPAIGN_STATUS_LABEL[from]}→${CAMPAIGN_STATUS_LABEL[target]}`)
+      return true
+    } catch (e) {
+      return rollbackCampaigns(snap, e)
+    }
+  }
+
   async function seed() {
     referral.seed()
     if (seeded.value) return
@@ -232,6 +329,7 @@ export const useM5ReferralCampaignStore = defineStore('m5ReferralCampaign', () =
     ongoingCount, totalInvited, convertedCount, pendingRewardCount, pendingRewardAmount,
     topReferrers, levelReward,
     updateLevelRate, updateLadder, saveConfig, approveReward,
+    createCampaign, updateCampaign, transitionCampaignStatus,
     CAMPAIGN_STATUS_LABEL, CAMPAIGN_STATUS_PILL, REWARD_TYPE_OPTIONS,
     seed,
   }

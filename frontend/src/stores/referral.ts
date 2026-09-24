@@ -15,8 +15,8 @@ import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import {
-  confirmReferral, createReferralReward, dealReferral, fetchReferralPage,
-  grantReferralReward, visitReferral, type ReferralRow,
+  confirmReferral, createReferral, createReferralReward, dealReferral,
+  fetchReferralPage, grantReferralReward, visitReferral, type ReferralRow,
 } from '@/api/referral'
 
 export type ReferralStatus = 'PENDING' | 'CONFIRMED' | 'VISITED' | 'DEAL' | 'EXPIRED' | 'REJECTED'
@@ -258,8 +258,43 @@ export const useReferralStore = defineStore('referral', () => {
     }
   }
 
+  // P5-B91 卡2：新建绑定接真（M5 视图「新建绑定」弹层入口）。
+  // clientToken=crypto.randomUUID() 幂等（重复提交/重放返回同一绑定单）；
+  // campaignId 可空（空=不挂活动），validDays 可空（空=后端 GLOBAL 配置回退）；
+  // campaignId 非空须存在且 ONGOING（后端 422），成功后全量 refresh。
+  async function createBinding(input: {
+    referrerCustomerId: string
+    refereeCustomerId: string
+    campaignId?: string
+    validDays?: number
+    remark?: string
+  }): Promise<boolean> {
+    if (!auth.can('referral:edit')) return false
+    try {
+      const resp = await createReferral({
+        referrerCustomerId: input.referrerCustomerId,
+        refereeCustomerId: input.refereeCustomerId,
+        campaignId: input.campaignId || undefined,
+        validDays: input.validDays,
+        remark: input.remark || undefined,
+        clientToken: crypto.randomUUID(),
+      })
+      const row = resp.data
+      activity.log(
+        auth.user.name,
+        `新建转介绍绑定：${row.referrerName ?? row.referrerCustomerId} → ${row.refereeName ?? row.refereeCustomerId}`,
+        row.referralId,
+      )
+      await load()
+      return true
+    } catch (e) {
+      console.warn('[referral] 新建转介绍绑定失败', e)
+      return false
+    }
+  }
+
   // 创建保留内存行为：B86 不接真——旧页 /m3-referral 无 customerId 选择入口
-  // （后端创建需 referrerCustomerId/refereeCustomerId），M5 视图无创建入口。后续批次接真。
+  // （后端创建需 referrerCustomerId/refereeCustomerId）。M5 视图创建入口已走 createBinding 接真。
   function create(input: {
     referrerName: string
     referrerLevel?: string
@@ -318,7 +353,7 @@ export const useReferralStore = defineStore('referral', () => {
   return {
     referrals, rules, filterTab,
     total, newThisMonth, dealt, pendingReward, totalRewardPaid, filtered,
-    get, create, confirm, markVisited, markDeal, payReward, updateRule, seed, load,
+    get, create, createBinding, confirm, markVisited, markDeal, payReward, updateRule, seed, load,
     STATUS_LABEL, REWARD_LABEL, REWARD_TYPE_LABEL, STATUS_ORDER,
   }
 })
