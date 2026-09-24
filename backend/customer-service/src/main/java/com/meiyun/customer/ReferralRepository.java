@@ -39,4 +39,15 @@ public interface ReferralRepository extends JpaRepository<Referral, String>, Jpa
 
     /** 到期扫描（ReferralExpireJob：expire_at 已过且状态仍活跃的单，按到期时间升序批处理）。 */
     List<Referral> findByStatusInAndExpireAtBeforeOrderByExpireAtAsc(List<String> statuses, OffsetDateTime now, Pageable pageable);
+
+    /** P5-B91 D2：阶梯触发统计——推荐人全局累计成交单数（含当前单，不过滤活动）。 */
+    long countByReferrerCustomerIdAndStatus(String referrerCustomerId, String status);
+
+    /** P5-B91 D3：二级返佣上线追溯——被推荐人=当前推荐人且仍活跃的最新一条绑定（其推荐人即上线）。 */
+    Optional<Referral> findFirstByRefereeCustomerIdAndStatusInOrderByCreatedAtDesc(String refereeCustomerId, List<String> statuses);
+
+    /** P5-B91 D8：活动统计列——按活动聚合邀请数/成交数（一次 group by 防 N+1，铁律 4）。 */
+    @Query("select r.campaignId, count(r), sum(case when r.status = 'DEAL' then 1 else 0 end) "
+            + "from Referral r where r.campaignId in :ids group by r.campaignId")
+    List<Object[]> countGroupByCampaignId(@Param("ids") Collection<String> ids);
 }

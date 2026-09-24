@@ -14,6 +14,7 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.web.PageableDefault;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
@@ -33,6 +34,8 @@ import java.util.Set;
  * D4-A：奖励 v1 手动登记，idem_key={referralId}:{triggerEvent}:{rewardType} 幂等（v2 自动发放挂钩点）。
  * P5-B89 转介绍活动四端点（卡1）：活动列表 / 全局配置读写 / 邀请排行；
  * D2 奖励自动发放链路 v1 仅配置持久化；D4 活动统计聚合留 v2。
+ * P5-B91 转介绍 v2 四纵深：deal() 钩子自动登记阶梯/层级奖励（D1-D5，PENDING 人审兜底）＋活动 CRUD 三端点（D10）
+ * ＋活动统计列 invited/converted（D8）＋valid_days 三级回退（D9）＋campaignId 建单校验（D7）＋V50 受益人列（D6）。
  */
 @RestController
 @RequestMapping("/api/customer/referral")
@@ -172,17 +175,30 @@ public class ReferralController {
             throw new CustomerService.NotFound("数据不存在或无权查看");
         if (referralRepo.existsByRefereeCustomerIdAndStatusIn(refereeId, ACTIVE_STATUSES))
             throw new CustomerService.Unprocessable("该客户已有进行中的转介绍绑定");
+        // P5-B91 D9：validDays 三级回退——body 显式传（1-365 校验）＞ GLOBAL 配置 valid_days ＞ 30 兜底
         int validDays = 30;
         Object vd = body.get("validDays");
         if (vd instanceof Number n) {
             validDays = n.intValue();
             if (validDays < 1 || validDays > 365) throw new CustomerService.BadReq("有效天数需在 1-365 之间");
+        } else {
+            Integer cfgDays = campaignConfigRepo.findById(GLOBAL_CONFIG_ID)
+                    .map(ReferralCampaignConfig::getValidDays).orElse(null);
+            if (cfgDays != null && cfgDays >= 1 && cfgDays <= 365) validDays = cfgDays;
+        }
+        // P5-B91 D7：campaignId 非空须活动存在且进行中，否则 422；空=不挂活动（兼容现状）
+        String campaignId = str(body.get("campaignId"));
+        if (campaignId != null) {
+            ReferralCampaign campaign = campaignRepo.findById(campaignId)
+                    .orElseThrow(() -> new CustomerService.Unprocessable("活动不存在或未在进行中"));
+            if (!"ONGOING".equals(campaign.getStatus()))
+                throw new CustomerService.Unprocessable("活动不存在或未在进行中");
         }
         Referral r = new Referral();
         r.setReferralId(nextReferralNo());
         r.setReferrerCustomerId(referrerId);
         r.setRefereeCustomerId(refereeId);
-        r.setCampaignId(str(body.get("campaignId")));
+        r.setCampaignId(campaignId);
         r.setValidDays(validDays);
         r.setStoreCode(referee.getStoreCode());
         r.setRemark(clip(str(body.get("remark")), 256));
@@ -223,9 +239,10 @@ public class ReferralController {
         return row(r, Map.of());
     }
 
-    /** 成交：VISITED→DEAL，成交金额（分）必填且 > 0。 */
+    /** 成交：VISITED→DEAL，成交金额（分）必填且 > 0。P5-B91 D1：成交后按配置自动登记阶梯/层级奖励（PENDING，人审兜底，单事务同原子）。 */
     @PutMapping("/{id}/deal")
     @RequirePerm("referral:edit")
+    @Transactional
     public Map<String, Object> deal(@PathVariable String id, @RequestBody Map<String, Object> body) {
         Referral r = getOwned(id);
         requireStatus(r, "VISITED", "成交登记");
@@ -237,6 +254,8 @@ public class ReferralController {
         r.setDealAmountCents(n.longValue());
         r = referralRepo.save(r);
         audit.record("REFERRAL", r.getReferralId(), DataScope.currentActor(), "DEAL", json(r));
+        // P5-B91 D1-D5：成交钩子自动发放（阶梯命中 + 二级返佣，idem_key 防重，撞键跳过）
+        autoRewardsOnDeal(r);
         return row(r, Map.of());
     }
 
@@ -344,15 +363,98 @@ public class ReferralController {
 
     // ── P5-B89 转介绍活动四端点 ────────────────────────────────────────────
 
-    /** 活动列表（v1 无分页）：全部门店行（store_code 空）＋本店行，按创建时间倒序。 */
+    /** 活动列表（v1 无分页）：全部门店行（store_code 空）＋本店行，按创建时间倒序。P5-B91 D8：行加 invited/converted 统计（一次 group by 防 N+1，铁律 4）。 */
     @GetMapping("/campaigns")
     @RequirePerm("referralCampaign:view")
     public List<Map<String, Object>> campaigns() {
         Specification<ReferralCampaign> visible = (root, q, cb) ->
                 cb.or(cb.isNull(root.get("storeCode")),
                         DataScope.<ReferralCampaign>storeSpec("storeCode").toPredicate(root, q, cb));
-        return campaignRepo.findAll(visible, Sort.by(Sort.Direction.DESC, "createdAt"))
-                .stream().map(this::campaignRow).toList();
+        List<ReferralCampaign> rows = campaignRepo.findAll(visible, Sort.by(Sort.Direction.DESC, "createdAt"));
+        Map<String, long[]> aggMap = new HashMap<>();
+        List<String> campaignIds = rows.stream().map(ReferralCampaign::getCampaignId).toList();
+        if (!campaignIds.isEmpty()) {
+            for (Object[] agg : referralRepo.countGroupByCampaignId(campaignIds)) {
+                long invited = agg[1] instanceof Number n ? n.longValue() : 0L;
+                long converted = agg[2] instanceof Number n ? n.longValue() : 0L;
+                aggMap.put((String) agg[0], new long[]{invited, converted});
+            }
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (ReferralCampaign c : rows) {
+            out.add(campaignRow(c, aggMap.getOrDefault(c.getCampaignId(), new long[2])));
+        }
+        return out;
+    }
+
+    /** P5-B91 D10：新建转介绍活动——name 必填 ≤64、startAt/endAt 必填且 endAt ≥ startAt、storeCode 可空（空=全部门店），status 默认 DRAFT。 */
+    @PostMapping("/campaigns")
+    @RequirePerm("referralCampaign:edit")
+    public Map<String, Object> createCampaign(@RequestBody Map<String, Object> body) {
+        String name = clip(str(body.get("name")), 64);
+        if (name == null) throw new CustomerService.BadReq("活动名称必填（≤64 字符）");
+        LocalDate startAt = parseDate(body.get("startAt"), "startAt");
+        LocalDate endAt = parseDate(body.get("endAt"), "endAt");
+        if (startAt == null || endAt == null) throw new CustomerService.BadReq("startAt/endAt 必填（YYYY-MM-DD）");
+        if (endAt.isBefore(startAt)) throw new CustomerService.BadReq("endAt 不得早于 startAt");
+        ReferralCampaign c = new ReferralCampaign();
+        c.setCampaignId(nextCampaignNo());
+        c.setName(name);
+        c.setStartAt(startAt);
+        c.setEndAt(endAt);
+        c.setStoreCode(clip(str(body.get("storeCode")), 32));
+        c.setRemark(clip(str(body.get("remark")), 256));
+        c.setCreatedBy(DataScope.currentActor());
+        c = campaignRepo.save(c);
+        audit.record("REFERRAL_CAMPAIGN", c.getCampaignId(), DataScope.currentActor(), "CREATE", json(c));
+        return campaignRow(c, new long[2]);
+    }
+
+    /** P5-B91 D10：编辑转介绍活动——name/dates/storeCode/remark 局部更新；ENDED 冻结 409。 */
+    @PutMapping("/campaigns/{id}")
+    @RequirePerm("referralCampaign:edit")
+    public Map<String, Object> updateCampaign(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        ReferralCampaign c = getCampaignOwned(id);
+        if ("ENDED".equals(c.getStatus())) throw new CustomerService.Conflict("活动已结束，禁止编辑");
+        if (body.containsKey("name")) {
+            String name = clip(str(body.get("name")), 64);
+            if (name == null) throw new CustomerService.BadReq("活动名称不得为空（≤64 字符）");
+            c.setName(name);
+        }
+        if (body.containsKey("startAt")) {
+            LocalDate d = parseDate(body.get("startAt"), "startAt");
+            if (d == null) throw new CustomerService.BadReq("startAt 不得为空（YYYY-MM-DD）");
+            c.setStartAt(d);
+        }
+        if (body.containsKey("endAt")) {
+            LocalDate d = parseDate(body.get("endAt"), "endAt");
+            if (d == null) throw new CustomerService.BadReq("endAt 不得为空（YYYY-MM-DD）");
+            c.setEndAt(d);
+        }
+        if (c.getEndAt().isBefore(c.getStartAt())) throw new CustomerService.BadReq("endAt 不得早于 startAt");
+        if (body.containsKey("storeCode")) c.setStoreCode(clip(str(body.get("storeCode")), 32));
+        if (body.containsKey("remark")) c.setRemark(clip(str(body.get("remark")), 256));
+        c = campaignRepo.save(c);
+        audit.record("REFERRAL_CAMPAIGN", c.getCampaignId(), DataScope.currentActor(), "UPDATE", json(c));
+        return campaignRow(c, campaignAgg(c.getCampaignId()));
+    }
+
+    /** P5-B91 D10：活动状态流转——仅正向 DRAFT→ONGOING→ENDED，跳态/回退 409。 */
+    @PutMapping("/campaigns/{id}/status")
+    @RequirePerm("referralCampaign:edit")
+    public Map<String, Object> putCampaignStatus(@PathVariable String id, @RequestBody Map<String, Object> body) {
+        ReferralCampaign c = getCampaignOwned(id);
+        String target = str(body.get("status"));
+        Map<String, Integer> order = Map.of("DRAFT", 0, "ONGOING", 1, "ENDED", 2);
+        Integer tgt = target != null ? order.get(target) : null;
+        if (tgt == null) throw new CustomerService.BadReq("status 仅支持 DRAFT/ONGOING/ENDED");
+        Integer cur = order.get(c.getStatus());
+        if (cur == null || tgt != cur + 1)
+            throw new CustomerService.Conflict("活动状态仅可逐级正向流转 DRAFT→ONGOING→ENDED（当前：" + c.getStatus() + "）");
+        c.setStatus(target);
+        c = campaignRepo.save(c);
+        audit.record("REFERRAL_CAMPAIGN", c.getCampaignId(), DataScope.currentActor(), "STATUS", json(c));
+        return campaignRow(c, campaignAgg(c.getCampaignId()));
     }
 
     /** 邀请机制全局配置读取：无行返回默认（CASH / 30 天 / 空话术 / 空阶梯层级）。 */
@@ -428,7 +530,7 @@ public class ReferralController {
         return out;
     }
 
-    private Map<String, Object> campaignRow(ReferralCampaign c) {
+    private Map<String, Object> campaignRow(ReferralCampaign c, long[] agg) {
         Map<String, Object> m = new HashMap<>();
         m.put("campaignId", c.getCampaignId());
         m.put("name", c.getName());
@@ -439,6 +541,8 @@ public class ReferralController {
         m.put("remark", c.getRemark());
         m.put("createdBy", c.getCreatedBy());
         m.put("createdAt", c.getCreatedAt());
+        m.put("invited", agg[0]);
+        m.put("converted", agg[1]);
         return m;
     }
 
@@ -552,9 +656,125 @@ public class ReferralController {
         m.put("grantedBy", w.getGrantedBy());
         m.put("grantedAt", w.getGrantedAt());
         m.put("idemKey", w.getIdemKey());
+        m.put("beneficiaryCustomerId", w.getBeneficiaryCustomerId());
         m.put("remark", w.getRemark());
         m.put("createdAt", w.getCreatedAt());
         return m;
+    }
+
+    /** P5-B91 D1-D5：成交钩子自动发放——阶梯命中（全局累计 DEAL 数含当前单）＋二级返佣，PENDING 落库。 */
+    private void autoRewardsOnDeal(Referral r) {
+        ReferralCampaignConfig cfg = campaignConfigRepo.findById(GLOBAL_CONFIG_ID).orElse(null);
+        if (cfg == null) return;
+        long total = referralRepo.countByReferrerCustomerIdAndStatus(r.getReferrerCustomerId(), "DEAL");
+        for (Object o : parseJsonArray(cfg.getLadders())) {
+            if (!(o instanceof Map<?, ?> lad)) continue;
+            Object th = lad.get("threshold");
+            if (!(th instanceof Number n) || n.intValue() != total) continue;
+            String type = str(lad.get("type"));
+            Object amount = lad.get("amount");
+            if (type == null || !(amount instanceof Number a)) continue;
+            String mapped = mapLadderRewardType(type);
+            Long amountCents = "POINT".equals(mapped) ? null : Math.round(a.doubleValue() * 100);
+            Long points = "POINT".equals(mapped) ? (long) a.intValue() : null;
+            String idem = r.getReferralId() + ":DEAL:" + mapped + ":T" + n.intValue();
+            registerAutoReward(r, mapped, amountCents, points, idem, null, str(lad.get("desc")));
+        }
+        for (Object o : parseJsonArray(cfg.getLevels())) {
+            if (!(o instanceof Map<?, ?> lv)) continue;
+            Object lvNo = lv.get("level");
+            Object rate = lv.get("rate");
+            if (!(lvNo instanceof Number ln) || !(rate instanceof Number rt)) continue;
+            if (rt.doubleValue() <= 0) continue;
+            long cents = Math.round(r.getDealAmountCents() * rt.doubleValue());
+            if (cents <= 0) continue;
+            if (ln.intValue() == 1) {
+                registerAutoReward(r, "COMMISSION", cents, null,
+                        r.getReferralId() + ":DEAL:COMMISSION:L1", null, str(lv.get("desc")));
+            } else if (ln.intValue() == 2) {
+                String upline = uplineOf(r.getReferrerCustomerId());
+                if (upline == null || upline.equals(r.getReferrerCustomerId())) continue;
+                registerAutoReward(r, "COMMISSION", cents, null,
+                        r.getReferralId() + ":DEAL:COMMISSION:L2", upline, str(lv.get("desc")));
+            }
+        }
+    }
+
+    /** P5-B91 D4：阶梯词表映射（CASH→GRANT，POINTS→POINT，COUPON→COUPON）。 */
+    private String mapLadderRewardType(String campaignType) {
+        return switch (campaignType) {
+            case "CASH" -> "GRANT";
+            case "POINTS" -> "POINT";
+            default -> "COUPON";
+        };
+    }
+
+    /** P5-B91 D3：上线追溯——被推荐人=当前推荐人且活跃的最新绑定之推荐人。 */
+    private String uplineOf(String referrerCustomerId) {
+        return referralRepo.findFirstByRefereeCustomerIdAndStatusInOrderByCreatedAtDesc(referrerCustomerId, ACTIVE_STATUSES)
+                .map(Referral::getReferrerCustomerId).orElse(null);
+    }
+
+    /** P5-B91 D1/D5：自动奖励登记——复用 v1 幂等范式（预查＋唯一约束兜底），PENDING 落库；撞键重放跳过返回 null 不重复审计（铁律 6）。 */
+    private ReferralReward registerAutoReward(Referral r, String rewardType, Long amountCents, Long points,
+                                              String idemKey, String beneficiaryCustomerId, String remark) {
+        var dup = rewardRepo.findFirstByIdemKey(idemKey);
+        if (dup.isPresent()) return null;
+        ReferralReward w = new ReferralReward();
+        w.setRewardId(nextRewardNo());
+        w.setReferralId(r.getReferralId());
+        w.setRewardType(rewardType);
+        w.setTriggerEvent("DEAL");
+        w.setAmountCents(amountCents);
+        w.setPoints(points);
+        w.setIdemKey(idemKey);
+        w.setBeneficiaryCustomerId(beneficiaryCustomerId);
+        w.setRemark(clip(remark, 256));
+        try {
+            w = rewardRepo.save(w);
+        } catch (DataIntegrityViolationException e) {
+            return null;
+        }
+        audit.record("REFERRAL", r.getReferralId(), DataScope.currentActor(), "REWARD_CREATE", json(w));
+        return w;
+    }
+
+    /** P5-B91 D10：活动归属校验（读口径：storeCode NULL=全部门店可管，否则须数据域内，越权 404 同 getOwned）。 */
+    private ReferralCampaign getCampaignOwned(String campaignId) {
+        ReferralCampaign c = campaignRepo.findById(campaignId)
+                .orElseThrow(() -> new CustomerService.NotFound("转介绍活动不存在"));
+        if (c.getStoreCode() != null && !DataScope.canReadOwned(c.getStoreCode(), null))
+            throw new CustomerService.NotFound("数据不存在或无权查看");
+        return c;
+    }
+
+    /** P5-B91 D8：单活动统计（邀请数/成交数），无记录返回 {0, 0}。 */
+    private long[] campaignAgg(String campaignId) {
+        for (Object[] agg : referralRepo.countGroupByCampaignId(List.of(campaignId))) {
+            long invited = agg[1] instanceof Number n ? n.longValue() : 0L;
+            long converted = agg[2] instanceof Number n ? n.longValue() : 0L;
+            return new long[]{invited, converted};
+        }
+        return new long[2];
+    }
+
+    /** P5-B91 D10：日期入参解析（YYYY-MM-DD），非法格式 400。 */
+    private static LocalDate parseDate(Object o, String field) {
+        String s = str(o);
+        if (s == null) return null;
+        try {
+            return LocalDate.parse(s);
+        } catch (Exception e) {
+            throw new CustomerService.BadReq(field + " 日期格式须为 YYYY-MM-DD");
+        }
+    }
+
+    /** P5-B91 D10：活动单号 RC+8位日期-6位当日序号（当日 max+1，synchronized 防重，与 RF/RW 同范式）。 */
+    private synchronized String nextCampaignNo() {
+        String day = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        String prefix = "RC" + day + "-";
+        long seq = campaignRepo.maxSeqOfDay(prefix + "%");
+        return prefix + String.format("%06d", seq + 1);
     }
 
     private Map<String, Object> row(Referral r, Map<String, Customer> custMap) {

@@ -55,9 +55,13 @@ public class ReferralReward {
     @Column(name = "granted_at")
     private OffsetDateTime grantedAt;
 
-    /** 幂等键：referralId:triggerEvent:rewardType（唯一，ApprovalSlaJob idemKey 范式）。 */
+    /** 幂等键：v1 手动 referralId:triggerEvent:rewardType；v2 自动加来源段 :T{threshold}/:L{level}（唯一，ApprovalSlaJob idemKey 范式）。 */
     @Column(name = "idem_key", nullable = false, length = 80, unique = true)
     private String idemKey;
+
+    /** 受益人客户号（P5-B91 D6，V50）：NULL=所属单推荐人；二级返佣填上线推荐人。 */
+    @Column(name = "beneficiary_customer_id", length = 24)
+    private String beneficiaryCustomerId;
 
     @Column(length = 256)
     private String remark;
