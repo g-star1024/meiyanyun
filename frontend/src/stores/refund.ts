@@ -33,12 +33,50 @@ export interface Refund {
   assetId?: string
   /** 违约金（退卡扣减，展示用） */
   penaltyAmount?: number
+  /** B95：关联合同号（挂合同退款/退卡；旧单为空） */
+  contractNo?: string
+  /** B95：判定时点合同快照 JSON（旧单为空，展示用 parseContractSnapshot 容错解析） */
+  contractSnapshot?: string
   reviewedByName?: string
   reviewedAt?: string
   financeByName?: string
   refundedAt?: string
   rejectionReason?: string
   rejectionByName?: string
+}
+
+/** B95 合同判定快照视图模型（与后端 ContractPenaltyJudge 快照 JSON 字段一一对应；金额单位「分」） */
+export interface ContractSnapshotVm {
+  contractNo: string
+  title: string
+  coolingDays: number
+  /** 违约金率：基点万分比（2000=20%） */
+  penaltyRate: number
+  inCooling: boolean
+  baseCents: number
+  penaltyAmt: number
+  judgedAt: string
+}
+
+/** B95 快照 JSON 容错解析：空/非法一律回退 null（旧单无快照，绝不让解析异常炸掉详情） */
+export function parseContractSnapshot(json?: string): ContractSnapshotVm | null {
+  if (!json) return null
+  try {
+    const o = JSON.parse(json)
+    if (!o || typeof o !== 'object') return null
+    return {
+      contractNo: String(o.contractNo ?? ''),
+      title: String(o.title ?? ''),
+      coolingDays: Number(o.coolingDays) || 0,
+      penaltyRate: Number(o.penaltyRate) || 0,
+      inCooling: Boolean(o.inCooling),
+      baseCents: Number(o.baseCents) || 0,
+      penaltyAmt: Number(o.penaltyAmt) || 0,
+      judgedAt: String(o.judgedAt ?? ''),
+    }
+  } catch {
+    return null
+  }
 }
 
 export const useRefundStore = defineStore('refund', () => {

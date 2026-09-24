@@ -7,6 +7,10 @@
  * 退卡应退金额按 settings.system.dualSign.cardClawbackRate 倒扣计算。
  * 权限：cardcancel:view / create / approve / sign。
  * 样式/模板沿用原版，仅替换退卡单数据源（mock refund store → 真实 API）。
+ * B95：发起表单增「关联合同」选择器（所选客户名下生效中合同，选中按后端同款口径
+ *   估算：冷静期内免收违约金 / 期后按合同违约金率倒扣，金额按分计算与
+ *   ContractPenaltyJudge 逐分一致；挂合同后 fee 由后端自动覆写，前端不再手传
+ *   feeManualOverride/feeCents）；详情展示判定时点合同快照块（旧单无快照不渲染）。
  * ============================================================ */
 import { computed, onMounted, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
@@ -19,7 +23,8 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CFab from '@/components/CFab.vue'
 import { useAuthStore } from '@/stores/auth'
-import type { Refund } from '@/stores/refund'
+import { parseContractSnapshot, type Refund } from '@/stores/refund'
+import { useContractStore } from '@/stores/contract'
 import { useAssetStore } from '@/stores/asset'
 import { useCustomerStore } from '@/stores/customer'
 import { useSettingsStore } from '@/stores/settings'
@@ -33,6 +38,7 @@ import { REFUND_STATUS, REFUND_CHANNEL, dictPill, type RefundChannel } from '@/c
 
 const auth = useAuthStore()
 const asset = useAssetStore()
+const contract = useContractStore()
 const customer = useCustomerStore()
 const settings = useSettingsStore()
 const toast = useToast()
@@ -59,6 +65,8 @@ function adaptCard(d: CardCancelDTO): Refund {
     createdAt: d.createdAt || '',
     assetId: d.cardNo,
     penaltyAmount: fen2yuan(d.fee),
+    contractNo: d.contractNo ?? undefined,
+    contractSnapshot: d.contractSnapshot ?? undefined,
     reviewedByName: d.reviewedBy || undefined,
     reviewedAt: d.reviewedAt || undefined,
     financeByName: d.financeBy || undefined,
@@ -82,6 +90,7 @@ async function load() {
 onMounted(() => {
   asset.seed()
   load()
+  contract.load()
 })
 
 const actor = () => auth.user.staffId || 'cashier'
@@ -102,6 +111,7 @@ async function create(input: {
   assetId?: string
   penaltyAmount?: number
   remainTimes?: number
+  contractNo?: string
 }): Promise<Refund | null> {
   try {
     const balance = Math.round(input.paidAmount * 100)
@@ -118,9 +128,13 @@ async function create(input: {
       channel: input.channel,
       balance,
       remainTimes: input.remainTimes,
-      feeManualOverride: true,
-      feeCents,
-      feeOverrideReason: input.reason || '前台退卡手动核算违约金',
+      ...(input.contractNo
+        ? { contractNo: input.contractNo }
+        : {
+            feeManualOverride: true,
+            feeCents,
+            feeOverrideReason: input.reason || '前台退卡手动核算违约金',
+          }),
     })
     await load()
     return adaptCard(res.data)
@@ -224,7 +238,19 @@ const formCustomerId = ref('')
 const formAssetId = ref('')
 const formChannel = ref<RefundChannel>('ORIGINAL')
 const formReason = ref('')
+const formContractNo = ref('')
 const clawbackRate = computed(() => settings.system.dualSign.cardClawbackRate)
+
+// B95：关联合同选择器（仅所选客户名下生效中合同，与后端 ContractPenaltyJudge 客户匹配校验一致）
+const contractOptions = computed(() => [
+  { value: '', label: '不关联合同（手动核算）' },
+  ...contract.effective
+    .filter((c) => !formCustomerId.value || c.customerId === formCustomerId.value)
+    .map((c) => ({ value: c.contractNo, label: `${c.contractNo} · ${c.title}` })),
+])
+const selectedContract = computed(
+  () => contract.effective.find((c) => c.contractNo === formContractNo.value) ?? null,
+)
 
 const customerAssets = computed(() => {
   if (!formCustomerId.value) return []
@@ -252,6 +278,17 @@ const refundCalc = computed(() => {
   const refundAmount = Math.max(0, paidAmount - clawback)
   return { paidAmount, clawback, refundAmount }
 })
+// B95 合同口径估算（分单位逐分一致）：基数=卡内可退余额；冷静期内违约金 0 全额退，期后按基点万分比倒扣
+const contractEstimate = computed(() => {
+  const c = selectedContract.value
+  const baseCents = Math.round(refundCalc.value.paidAmount * 100)
+  if (!c || baseCents <= 0) return null
+  const inCooling = contract.inCoolingPeriod(c)
+  const penalty = inCooling ? 0 : Math.round((baseCents * Math.round(c.penaltyRate * 10000)) / 10000)
+  return { inCooling, penaltyYuan: penalty / 100, refundYuan: (baseCents - penalty) / 100 }
+})
+// 详情快照块（判定时点留存；旧单无快照回退 null 不渲染）
+const selectedSnapshot = computed(() => parseContractSnapshot(selected.value?.contractSnapshot))
 const formTier = computed(() => settings.tierFor(refundCalc.value.refundAmount))
 const canSubmit = computed(
   () =>
@@ -269,6 +306,7 @@ function openForm() {
   formChannel.value = 'ORIGINAL'
   formReason.value = ''
   formUnitPrice.value = ''
+  formContractNo.value = ''
 }
 
 async function submitForm() {
@@ -287,6 +325,7 @@ async function submitForm() {
     assetId: a.id,
     penaltyAmount: calc.clawback,
     remainTimes: a.type === 'TIMES' ? a.remaining : undefined,
+    contractNo: formContractNo.value || undefined,
   })
   if (r) {
     showForm.value = false
@@ -362,6 +401,22 @@ async function submitForm() {
           <div class="field"><span class="field__label">发起时间</span><span class="field__val">{{ fmtTime(selected.createdAt) }}</span></div>
         </div>
 
+        <!-- B95 合同判定快照（判定时点留存；旧单无快照不渲染，仅挂合同旧链显示合同号） -->
+        <div v-if="selectedSnapshot" class="grid grid--snapshot">
+          <div class="field"><span class="field__label">关联合同</span><span class="field__val">{{ selectedSnapshot.contractNo }}</span></div>
+          <div class="field"><span class="field__label">合同标题</span><span class="field__val">{{ selectedSnapshot.title || '—' }}</span></div>
+          <div class="field"><span class="field__label">冷静期</span><span class="field__val">{{ selectedSnapshot.coolingDays }} 天</span></div>
+          <div class="field"><span class="field__label">违约金率</span><span class="field__val">{{ (selectedSnapshot.penaltyRate / 100).toFixed(1) }}%</span></div>
+          <div class="field">
+            <span class="field__label">判定结果</span>
+            <span class="field__val">{{ selectedSnapshot.inCooling ? '冷静期内 · 免收违约金' : `已过冷静期 · 违约金 ${fmtMoney(selectedSnapshot.penaltyAmt / 100)}` }}</span>
+          </div>
+          <div class="field"><span class="field__label">判定时间</span><span class="field__val">{{ fmtTime(selectedSnapshot.judgedAt) }}</span></div>
+        </div>
+        <div v-else-if="selected.contractNo" class="grid grid--snapshot">
+          <div class="field"><span class="field__label">关联合同</span><span class="field__val">{{ selected.contractNo }}</span></div>
+        </div>
+
         <div class="tip">
           <CIcon name="alert" :size="14" />
           退卡倒扣比例 {{ (clawbackRate * 100).toFixed(0) }}%（已用疗程按原价倒扣），参数可在设置中心调整。
@@ -431,7 +486,7 @@ async function submitForm() {
               v-model="formCustomerId"
               :options="asset.customersWithAssets.map(c => ({ value: c!.id, label: `${c!.name}（${c!.phoneMask}）` }))"
               placeholder="选择持卡客户"
-              @update:model-value="formAssetId = ''"
+              @update:model-value="formAssetId = ''; formContractNo = ''"
             />
           </div>
           <div v-if="formCustomerId" class="form__row">
@@ -453,13 +508,26 @@ async function submitForm() {
             <label class="form__label">单次原价（元）</label>
             <CInput v-model="formUnitPrice" type="number" placeholder="用于计算卡面金额与倒扣" />
           </div>
+          <div v-if="formCustomerId" class="form__row">
+            <label class="form__label">关联合同</label>
+            <CSelect v-model="formContractNo" :options="contractOptions" placeholder="不关联合同（手动核算）" />
+          </div>
           <div v-if="selectedAsset" class="calc">
             <div class="calc__row"><span>卡面金额</span><strong>{{ fmtMoney(refundCalc.paidAmount) }}</strong></div>
-            <div v-if="selectedAsset.type === 'TIMES'" class="calc__row">
-              <span>违约金倒扣（{{ (clawbackRate * 100).toFixed(0) }}% × 已用）</span>
-              <strong class="calc__penalty">-{{ fmtMoney(refundCalc.clawback) }}</strong>
-            </div>
-            <div class="calc__row calc__row--total"><span>应退金额</span><strong>{{ fmtMoney(refundCalc.refundAmount) }}</strong></div>
+            <template v-if="selectedContract && contractEstimate">
+              <div class="calc__row">
+                <span>合同违约金（{{ selectedContract.contractNo }} · {{ (selectedContract.penaltyRate * 100).toFixed(0) }}%）</span>
+                <strong class="calc__penalty">{{ contractEstimate.inCooling ? '冷静期内免收' : `-${fmtMoney(contractEstimate.penaltyYuan)}` }}</strong>
+              </div>
+              <div class="calc__row calc__row--total"><span>应退金额（合同口径）</span><strong>{{ fmtMoney(contractEstimate.refundYuan) }}</strong></div>
+            </template>
+            <template v-else>
+              <div v-if="selectedAsset.type === 'TIMES'" class="calc__row">
+                <span>违约金倒扣（{{ (clawbackRate * 100).toFixed(0) }}% × 已用）</span>
+                <strong class="calc__penalty">-{{ fmtMoney(refundCalc.clawback) }}</strong>
+              </div>
+              <div class="calc__row calc__row--total"><span>应退金额</span><strong>{{ fmtMoney(refundCalc.refundAmount) }}</strong></div>
+            </template>
             <div class="calc__tier">签署层级：<strong>{{ formTier }}</strong></div>
           </div>
           <div class="form__row">
@@ -520,6 +588,7 @@ async function submitForm() {
 .cust__sub { font-size: var(--t-sm); color: var(--c-text-3); margin-top: 2px; }
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-md) var(--s-lg); margin: var(--s-lg) 0; }
+.grid--snapshot { margin-top: 0; padding: var(--s-md); background: var(--c-bg-page); border-radius: var(--r-md); }
 .field { display: flex; flex-direction: column; gap: 2px; }
 .field--full { grid-column: 1 / -1; }
 .field__label { font-size: var(--t-xs); color: var(--c-text-3); }

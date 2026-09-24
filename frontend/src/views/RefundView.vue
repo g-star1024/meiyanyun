@@ -5,8 +5,13 @@
  * 数据源：txn-service 真实 API（/txn/refund、/txn/card-cancel 列表 +
  *   /txn/{no}/approve|reject|confirm 审批动作）；金额后端存「分」，适配层转「元」。
  * 样式/模板沿用原版，仅替换数据源（mock refund store → 真实 API），未改布局与交互。
+ * B95：发起表单增「关联合同」选择器（生效中合同下拉，选中按后端同款口径估算：
+ *   冷静期内全额 / 期后扣违约金；金额按分计算与 ContractPenaltyJudge 逐分一致，
+ *   提交 refundAmt=已付−违约金，否则后端 400）；支持合同页 ?contractNo= 跳转预选；
+ *   详情展示判定时点合同快照块（旧单无快照不渲染）。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
@@ -17,8 +22,9 @@ import CIcon from '@/components/CIcon.vue'
 import CFab from '@/components/CFab.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
+import { useContractStore } from '@/stores/contract'
 import { useToast } from '@/composables/useToast'
-import type { Refund, RefundKind } from '@/stores/refund'
+import { parseContractSnapshot, type Refund, type RefundKind } from '@/stores/refund'
 import {
   listRefunds, listCardCancels, createRefund, createCardCancel,
   approveTxn, rejectTxn, confirmTxn,
@@ -28,6 +34,8 @@ import { REFUND_STATUS, REFUND_CHANNEL, dictPill, type RefundChannel } from '@/c
 
 const auth = useAuthStore()
 const settings = useSettingsStore()
+const contract = useContractStore()
+const route = useRoute()
 const toast = useToast()
 
 // ---- 适配层：后端实体（分）→ 模板原有 Refund 形状（元） ----
@@ -50,6 +58,8 @@ function adaptRefund(d: RefundDTO): Refund {
     signTier: (d.signTier as Refund['signTier']) || 'L1',
     status: d.status as Refund['status'],
     createdAt: d.createdAt || '',
+    contractNo: d.contractNo ?? undefined,
+    contractSnapshot: d.contractSnapshot ?? undefined,
     reviewedByName: d.reviewedBy || undefined,
     reviewedAt: d.reviewedAt || undefined,
     financeByName: d.financeBy || undefined,
@@ -77,6 +87,8 @@ function adaptCard(d: CardCancelDTO): Refund {
     createdAt: d.createdAt || '',
     assetId: d.cardNo,
     penaltyAmount: fen2yuan(d.fee),
+    contractNo: d.contractNo ?? undefined,
+    contractSnapshot: d.contractSnapshot ?? undefined,
     reviewedByName: d.reviewedBy || undefined,
     reviewedAt: d.reviewedAt || undefined,
     financeByName: d.financeBy || undefined,
@@ -97,7 +109,22 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  const qno = typeof route.query.contractNo === 'string' ? route.query.contractNo : ''
+  if (!qno) return
+  if (!contract.contracts.length) await contract.load()
+  const c = contract.get(qno)
+  showForm.value = true
+  if (c && c.status === 'EFFECTIVE') {
+    form.value.contractNo = c.contractNo
+    form.value.customerName = c.customerName
+    form.value.project = c.title
+    form.value.paidAmount = c.totalAmount > 0 ? c.totalAmount.toFixed(2) : ''
+  } else {
+    toast.error(c ? `合同 ${qno} 非生效中，请手动关联` : `合同 ${qno} 不存在，请手动关联`)
+  }
+})
 
 const actor = () => auth.user.staffId || 'cashier'
 
@@ -121,6 +148,7 @@ async function create(input: {
   reason: string
   assetId?: string
   penaltyAmount?: number
+  contractNo?: string
 }): Promise<Refund | null> {
   try {
     if (input.kind === 'CARD') {
@@ -134,9 +162,13 @@ async function create(input: {
         cardItem: input.project,
         channel: input.channel,
         balance,
-        feeManualOverride: true,
-        feeCents: Math.max(0, balance - refundCents),
-        feeOverrideReason: input.reason || '前台退卡手动核算违约金',
+        ...(input.contractNo
+          ? { contractNo: input.contractNo }
+          : {
+              feeManualOverride: true,
+              feeCents: Math.max(0, balance - refundCents),
+              feeOverrideReason: input.reason || '前台退卡手动核算违约金',
+            }),
       })
       await load()
       return adaptCard(res.data)
@@ -150,6 +182,7 @@ async function create(input: {
       paidAmt: Math.round(input.paidAmount * 100),
       refundAmt: Math.round(input.refundAmount * 100),
       reason: input.reason,
+      ...(input.contractNo ? { contractNo: input.contractNo } : {}),
     })
     await load()
     return adaptRefund(res.data)
@@ -262,10 +295,39 @@ const form = ref({
   refundAmount: '',
   channel: 'ORIGINAL' as RefundChannel,
   reason: '',
+  contractNo: '',
 })
 const paidNum = computed(() => Number(form.value.paidAmount) || 0)
 const refundNum = computed(() => Number(form.value.refundAmount) || 0)
 const formTier = computed(() => settings.tierFor(refundNum.value))
+
+// B95：关联合同选择器（仅生效中合同可被引用，与后端 ContractPenaltyJudge 校验一致）
+const contractOptions = computed(() => [
+  { value: '', label: '不关联合同（手动核算）' },
+  ...contract.effective.map((c) => ({
+    value: c.contractNo,
+    label: `${c.contractNo} · ${c.customerName} · ${c.title}`,
+  })),
+])
+const selectedContract = computed(
+  () => contract.effective.find((c) => c.contractNo === form.value.contractNo) ?? null,
+)
+// 后端同款口径估算（分单位逐分一致）：冷静期内违约金 0 全额退；期后按基点万分比倒扣
+const contractEstimate = computed(() => {
+  const c = selectedContract.value
+  const paidCents = Math.round(paidNum.value * 100)
+  if (!c || paidCents <= 0) return null
+  const inCooling = contract.inCoolingPeriod(c)
+  const penalty = inCooling ? 0 : Math.round((paidCents * Math.round(c.penaltyRate * 10000)) / 10000)
+  return { inCooling, penaltyYuan: penalty / 100, refundYuan: (paidCents - penalty) / 100 }
+})
+// 挂合同后退款金额由合同口径锁定（后端强校验 refundAmt=已付−违约金，不符 400），自动回填防手误
+watch(contractEstimate, (est) => {
+  if (est && selectedContract.value) form.value.refundAmount = est.refundYuan.toFixed(2)
+})
+// 详情快照块（判定时点留存；旧单无快照回退 null 不渲染）
+const selectedSnapshot = computed(() => parseContractSnapshot(selected.value?.contractSnapshot))
+
 const canSubmit = computed(
   () =>
     form.value.customerName.trim() &&
@@ -279,17 +341,18 @@ async function submitForm() {
   if (!canSubmit.value) return
   const r = await refund.create({
     kind: form.value.kind,
-    customerId: 'C-NEW',
+    customerId: selectedContract.value?.customerId || 'C-NEW',
     customerName: form.value.customerName.trim(),
     project: form.value.project.trim(),
     paidAmount: paidNum.value,
     refundAmount: refundNum.value,
     channel: form.value.channel,
     reason: form.value.reason.trim(),
+    contractNo: form.value.contractNo || undefined,
   })
   if (r) {
     showForm.value = false
-    form.value = { kind: 'ORDER', customerName: '', project: '', paidAmount: '', refundAmount: '', channel: 'ORIGINAL', reason: '' }
+    form.value = { kind: 'ORDER', customerName: '', project: '', paidAmount: '', refundAmount: '', channel: 'ORIGINAL', reason: '', contractNo: '' }
     selectedId.value = r.id
     tab.value = r.status === 'PENDING_REVIEW' ? 'pending_review' : 'pending_finance'
   }
@@ -371,6 +434,22 @@ async function submitForm() {
           <div class="field"><span class="field__label">发起时间</span><span class="field__val">{{ fmtTime(selected.createdAt) }}</span></div>
         </div>
 
+        <!-- B95 合同判定快照（判定时点留存；旧单无快照不渲染，仅挂合同旧链显示合同号） -->
+        <div v-if="selectedSnapshot" class="grid grid--snapshot">
+          <div class="field"><span class="field__label">关联合同</span><span class="field__val">{{ selectedSnapshot.contractNo }}</span></div>
+          <div class="field"><span class="field__label">合同标题</span><span class="field__val">{{ selectedSnapshot.title || '—' }}</span></div>
+          <div class="field"><span class="field__label">冷静期</span><span class="field__val">{{ selectedSnapshot.coolingDays }} 天</span></div>
+          <div class="field"><span class="field__label">违约金率</span><span class="field__val">{{ (selectedSnapshot.penaltyRate / 100).toFixed(1) }}%</span></div>
+          <div class="field">
+            <span class="field__label">判定结果</span>
+            <span class="field__val">{{ selectedSnapshot.inCooling ? '冷静期内 · 全额退' : `已过冷静期 · 违约金 ${fmtMoney(selectedSnapshot.penaltyAmt / 100)}` }}</span>
+          </div>
+          <div class="field"><span class="field__label">判定时间</span><span class="field__val">{{ fmtTime(selectedSnapshot.judgedAt) }}</span></div>
+        </div>
+        <div v-else-if="selected.contractNo" class="grid grid--snapshot">
+          <div class="field"><span class="field__label">关联合同</span><span class="field__val">{{ selected.contractNo }}</span></div>
+        </div>
+
         <!-- 审批轨迹 -->
         <div class="trace">
           <div class="trace__step" :class="{ 'trace__step--done': true }">
@@ -437,6 +516,19 @@ async function submitForm() {
               <button :class="{ 'form__seg--on': form.kind === 'ORDER' }" @click="form.kind = 'ORDER'">订单退款</button>
               <button :class="{ 'form__seg--on': form.kind === 'CARD' }" @click="form.kind = 'CARD'">退卡</button>
             </div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">关联合同</label>
+            <CSelect v-model="form.contractNo" :options="contractOptions" placeholder="不关联合同（手动核算）" />
+          </div>
+          <div v-if="contractEstimate" class="form__estimate">
+            <template v-if="contractEstimate.inCooling">
+              冷静期内 · 全额退款 <strong>{{ fmtMoney(contractEstimate.refundYuan) }}</strong>
+            </template>
+            <template v-else>
+              已过冷静期 · 违约金 <strong class="form__estimate-penalty">-{{ fmtMoney(contractEstimate.penaltyYuan) }}</strong>
+              · 应退 <strong>{{ fmtMoney(contractEstimate.refundYuan) }}</strong>
+            </template>
           </div>
           <div class="form__row">
             <label class="form__label">客户姓名</label>
@@ -538,6 +630,7 @@ async function submitForm() {
 .cust__sub { font-size: var(--t-sm); color: var(--c-text-3); margin-top: 2px; }
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-md) var(--s-lg); margin: var(--s-lg) 0; }
+.grid--snapshot { margin-top: 0; padding: var(--s-md); background: var(--c-bg-page); border-radius: var(--r-md); }
 .field { display: flex; flex-direction: column; gap: 2px; }
 .field--full { grid-column: 1 / -1; }
 .field__label { font-size: var(--t-xs); color: var(--c-text-3); }
@@ -573,6 +666,9 @@ async function submitForm() {
 .form__tier { font-size: var(--t-sm); color: var(--c-text-2); padding: var(--s-sm) var(--s-md); background: var(--c-brand-soft); border-radius: var(--r-md); }
 .form__tier strong { color: var(--c-brand); margin: 0 var(--s-xs); }
 .form__tier-hint { color: var(--c-text-3); font-size: var(--t-xs); }
+.form__estimate { font-size: var(--t-sm); color: var(--c-text-2); padding: var(--s-sm) var(--s-md); background: var(--c-brand-soft); border-radius: var(--r-md); }
+.form__estimate strong { color: var(--c-brand); margin: 0 var(--s-xs); }
+.form__estimate-penalty { color: var(--c-danger-fg) !important; }
 
 @media (max-width: 1024px) {
   .rf__body { grid-template-columns: 1fr; }

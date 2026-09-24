@@ -2,6 +2,9 @@
 // Refund 聚合 API（逆向交易：退款 + 退卡，共用双签状态机）
 // 对齐 business-flows §2.7：kind = ORDER(退款) | CARD(退卡)，共用 /txn 端点。
 // 后端实体直接序列化（Jackson camelCase）；金额单位「分」，时间为 ISO 字符串。
+// B95：双 Cmd 尾增 contractNo（可空，空＝旧链手动口径）；挂合同后 RF 侧 refundAmt
+//   必须等于后端合同口径（已付−违约金，不符 400），CC 侧 fee 由后端自动计算覆写；
+//   双 DTO 增 contractNo/contractSnapshot（penaltyAmt 仅 RF），旧单为空回落「—」。
 // ============================================================
 import client from './client'
 
@@ -27,6 +30,8 @@ export interface RefundCmd {
   feeManualOverride?: boolean
   feeCents?: number
   feeOverrideReason?: string
+  /** B95：关联生效中合同号；挂合同后 refundAmt 须等于后端口径（已付−违约金） */
+  contractNo?: string
 }
 
 export interface CardCancelCmd {
@@ -42,6 +47,8 @@ export interface CardCancelCmd {
   feeManualOverride?: boolean
   feeCents?: number
   feeOverrideReason?: string
+  /** B95：关联生效中合同号；挂合同后违约金（fee）由后端按合同口径自动计算 */
+  contractNo?: string
 }
 
 export interface SignCmd {
@@ -79,6 +86,12 @@ export interface RefundDTO {
   signedAt1: string | null
   signedAt2: string | null
   createdAt: string | null
+  /** B95：关联合同号（未挂合同为 null） */
+  contractNo: string | null
+  /** B95：合同口径违约金（分；未挂合同为 null，CC 侧违约金即 fee 无此列） */
+  penaltyAmt: number | null
+  /** B95：判定时点合同快照 JSON（contractNo/title/effectiveAt/coolingDays/penaltyRate/inCooling/baseCents/penaltyAmt/judgedAt） */
+  contractSnapshot: string | null
 }
 
 /** 退卡单实体 DTO（txn_card_cancel 表行）。金额单位「分」。 */
@@ -111,6 +124,10 @@ export interface CardCancelDTO {
   signedAt1: string | null
   signedAt2: string | null
   createdAt: string | null
+  /** B95：关联合同号（未挂合同为 null） */
+  contractNo: string | null
+  /** B95：判定时点合同快照 JSON（字段同 RefundDTO.contractSnapshot；违约金即 fee 列） */
+  contractSnapshot: string | null
 }
 
 export const createRefund = (cmd: RefundCmd) =>

@@ -3,8 +3,11 @@
  * 合同管理 /contract（Desktop 优先 · 平板堆叠）
  * 一个合同可对应多订单/多资产，承载退款条款（冷静期、违约金）。
  * 状态：草稿 → 生效中 → 已履行 / 已终止。
+ * B95：生效中合同详情增「发起退款」入口（带 contractNo 跳转退款页预选，
+ *   退款页按后端同款口径自动估算并锁定实退金额）。
  * ============================================================ */
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
@@ -26,6 +29,7 @@ import { useAuthStore } from '@/stores/auth'
 const contract = useContractStore()
 const customer = useCustomerStore()
 const auth = useAuthStore()
+const router = useRouter()
 
 onMounted(async () => { await contract.load() })
 
@@ -338,6 +342,9 @@ async function submitForm() {
             </CButton>
           </template>
           <template v-else-if="selected.status === 'EFFECTIVE'">
+            <CButton variant="ghost" v-perm.disable="'refund:create'" @click="router.push({ name: 'refund', query: { contractNo: selected.contractNo } })">
+              <CIcon name="refund" :size="16" />发起退款
+            </CButton>
             <CButton variant="ghost" v-perm.disable="'contract:edit'" @click="showTerminate = true">终止合同</CButton>
             <CButton variant="primary" v-perm.disable="'contract:edit'" @click="doComplete">
               <CIcon name="check-square" :size="16" />履行完成
