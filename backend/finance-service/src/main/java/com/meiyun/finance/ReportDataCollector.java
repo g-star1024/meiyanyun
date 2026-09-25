@@ -32,6 +32,14 @@ public class ReportDataCollector {
     private static final List<String> CH_ORDER =
             List.of("cash", "card", "wxpay", "alipay", "balance", "transfer", "other");
 
+    /** 品类中文映射（与 txn ScreenService CATEGORY_LABEL 同源口径，空串/未知归「其他」）。 */
+    private static final Map<String, String> CATEGORY_CN = Map.of(
+            "INJECTION", "注射美容",
+            "LASER", "光电美肤",
+            "SKINCARE", "皮肤护理",
+            "BODY", "形体管理",
+            "EXAM", "检测咨询");
+
     private final FinanceAggregationService aggregation;
     private final RevenueMonthlyRepository revRepo;
     private final CommissionRecordRepository commissionRepo;
@@ -47,6 +55,7 @@ public class ReportDataCollector {
         return switch (templateId) {
             case "R01" -> collectR01(period);
             case "R02" -> collectR02(period);
+            case "R02C" -> collectR02C(period);
             case "R03" -> collectR03(period);
             case "R04" -> collectR04(period);
             case "R05" -> collectR05(period);
@@ -392,6 +401,40 @@ public class ReportDataCollector {
                     fen(bucket61_90), fen(overdueFen), overdueRate));
         }
         return new ReportData(headers, data);
+    }
+
+    /**
+     * R02C 项目品类营收月报（P5-B96 卡1）：txn 已收款订单子项经别名两级命中归桶，
+     * 品类行按营收降序；入参月份 yyyy-MM → from/to 闭区间；门店域过滤同 R02 口径。
+     */
+    private ReportData collectR02C(String month) {
+        LocalDate first = LocalDate.parse(month + "-01");
+        LocalDate last = first.plusMonths(1).minusDays(1);
+        List<Map<String, Object>> items = aggregation.fetchOrderItems(first.toString(), last.toString());
+
+        Map<String, long[]> byCat = new LinkedHashMap<>();
+        long total = 0L;
+        for (Map<String, Object> r : items) {
+            String sc = r.get("storeCode") == null ? "" : r.get("storeCode").toString();
+            if (!sc.isBlank() && !DataScope.canReadStore(sc)) continue;
+            String cat = r.get("serviceCategory") == null ? "" : r.get("serviceCategory").toString();
+            long amt = r.get("amount") instanceof Number n ? n.longValue() : 0L;
+            long[] acc = byCat.computeIfAbsent(CATEGORY_CN.getOrDefault(cat, "其他"), k -> new long[2]);
+            acc[0]++;
+            acc[1] += amt;
+            total += amt;
+        }
+
+        List<String> headers = List.of("品类", "项目数", "营收(元)", "占比(%)");
+        List<Map.Entry<String, long[]>> sorted = new ArrayList<>(byCat.entrySet());
+        sorted.sort((a, b) -> Long.compare(b.getValue()[1], a.getValue()[1]));
+        List<List<String>> rows = new ArrayList<>();
+        for (Map.Entry<String, long[]> e : sorted) {
+            long[] acc = e.getValue();
+            rows.add(List.of(e.getKey(), String.valueOf(acc[0]), fen(acc[1]),
+                    total == 0L ? "—" : String.format(Locale.ROOT, "%.1f", acc[1] * 100.0 / total)));
+        }
+        return new ReportData(headers, rows);
     }
 
     private String fen(long v) {

@@ -62,12 +62,15 @@ public class InternalFinanceController {
     private final AuditRecorder audit;
     private final ApprovalService approvalService;
     private final RfmCalculator rfmCalculator;
+    private final OrderItemRepository orderItemRepo;
+    private final StoreProjectClient projectClient;
 
     public InternalFinanceController(TxnOrderRepository orderRepo, TxnRefundRepository refundRepo,
                                      WriteoffRepository writeoffRepo, TxnCardCancelRepository cardCancelRepo,
                                      PaymentService paymentService, CustomerCardClient customerCardClient,
                                      DualSignTicketRepository ticketRepo, AuditRecorder audit,
-                                     ApprovalService approvalService, RfmCalculator rfmCalculator) {
+                                     ApprovalService approvalService, RfmCalculator rfmCalculator,
+                                     OrderItemRepository orderItemRepo, StoreProjectClient projectClient) {
         this.orderRepo = orderRepo;
         this.refundRepo = refundRepo;
         this.writeoffRepo = writeoffRepo;
@@ -78,6 +81,8 @@ public class InternalFinanceController {
         this.audit = audit;
         this.approvalService = approvalService;
         this.rfmCalculator = rfmCalculator;
+        this.orderItemRepo = orderItemRepo;
+        this.projectClient = projectClient;
     }
 
     /**
@@ -128,6 +133,46 @@ public class InternalFinanceController {
                 .toList();
 
         return new FinanceFlowDTO.Bundle(orders, refunds, writeoffs, cardCancels);
+    }
+
+    /**
+     * 订单子项批量投影（P5-B96 卡1，finance R02C 品类×月报表数据源）：
+     * GET /api/txn/internal/order-items?from=2026-08-01&to=2026-08-31（from/to 必填，按 created_at 闭区间）。
+     *
+     * <p>投影区间内「已收款」订单的子项行：storeCode/itemName/qty/amount(分)/createdAt/serviceCategory。
+     * serviceCategory＝{@link StoreProjectClient#categoryOf} 两级命中（SKU 精确名→门店级别名→全局别名），
+     * 未命中带空串（finance 侧归「其他」）。批量 findByOrderNoIn 防 N+1；不做 DataScope 收敛——
+     * 由 finance-service 按登录人门店域二次过滤（与 finance-flows 同边界）。
+     */
+    @GetMapping("/order-items")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> orderItems(@RequestParam("from") String from, @RequestParam("to") String to) {
+        OffsetDateTime fromTime = LocalDate.parse(from).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime toTime = LocalDate.parse(to).plusDays(1).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        List<TxnOrder> paidOrders = orderRepo.findAll(orderSpec(null, fromTime, toTime));
+        if (paidOrders.isEmpty()) {
+            return Map.of("rows", List.of());
+        }
+        Map<String, TxnOrder> byNo = new LinkedHashMap<>();
+        for (TxnOrder o : paidOrders) {
+            byNo.put(o.getOrderNo(), o);
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (OrderItem it : orderItemRepo.findByOrderNoIn(List.copyOf(byNo.keySet()))) {
+            TxnOrder o = byNo.get(it.getOrderNo());
+            if (o == null) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", o.getStoreCode());
+            row.put("itemName", it.getItemName());
+            row.put("qty", it.getQty());
+            row.put("amount", it.getAmount());
+            row.put("createdAt", o.getCreatedAt() == null ? null : o.getCreatedAt().toString());
+            row.put("serviceCategory", projectClient.categoryOf(it.getItemName(), o.getStoreCode()));
+            rows.add(row);
+        }
+        return Map.of("rows", rows);
     }
 
     /**

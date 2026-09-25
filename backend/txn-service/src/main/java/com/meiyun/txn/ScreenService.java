@@ -118,26 +118,29 @@ public class ScreenService {
         List<String> notes = List.of(
                 "口径：Asia/Shanghai 自然日；营收/成交单/客单价 = status「已收款」订单按创建时刻落日（非支付完成时点）",
                 "较昨日 = 与昨日同口径对比；昨日为 0 时显示「—」（null，不伪造箭头）",
-                "品类占比 = 当日已收款订单子项金额按 SKU 服务大类归桶；子项名未命中 SKU 目录（含售卡单卡项名）归「其他」",
+                "品类占比 = 当日已收款订单子项金额按 SKU 服务大类两级命中归桶（精确名→门店/全局别名）；未命中子项（含售卡单卡项名）归「其他」",
                 "门店排行 = 当日已收款金额 top5；门店名由前端经 /api/stores 映射",
                 "在院治疗 = 当日到店登记中状态 TRIAGED/CALLED 行数");
 
         return new ScreenOverviewView(kpis, hourly, categoryShare, storeRanks, notes);
     }
 
-    /** 品类占比：已收款订单子项金额按服务大类归桶，占比整数四舍五入（总和可能 ≠100，如实）。 */
+    /** 品类占比：已收款订单子项金额按服务大类两级命中归桶（P5-B96 卡1：精确名→门店/全局别名），占比整数四舍五入（总和可能 ≠100，如实）。 */
     private List<CategoryShareView> categoryShare(List<TxnOrder> paidToday) {
         if (paidToday.isEmpty()) {
             return List.of();
         }
         List<String> orderNos = paidToday.stream().map(TxnOrder::getOrderNo).toList();
-        Map<String, String> skuCat = projectClient.skuCategoryMap();
+        Map<String, String> storeByOrderNo = new HashMap<>();
+        for (TxnOrder o : paidToday) {
+            storeByOrderNo.put(o.getOrderNo(), o.getStoreCode());
+        }
         Map<String, Long> byCat = new LinkedHashMap<>();
         long total = 0L;
         for (OrderItem it : itemRepo.findByOrderNoIn(orderNos)) {
             long amt = it.getAmount() == null ? 0L : it.getAmount();
             total += amt;
-            String cat = skuCat.getOrDefault(it.getItemName(), "");
+            String cat = projectClient.categoryOf(it.getItemName(), storeByOrderNo.get(it.getOrderNo()));
             byCat.merge(CATEGORY_LABEL.getOrDefault(cat, CATEGORY_OTHER), amt, Long::sum);
         }
         if (total <= 0L) {

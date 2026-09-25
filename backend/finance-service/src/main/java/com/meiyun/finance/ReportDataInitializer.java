@@ -53,6 +53,7 @@ public class ReportDataInitializer implements ApplicationRunner {
         }
         if (tplRepo.count() > 0 || jobRepo.count() > 0) {
             log.info("报表模板/任务已存在（{} / {} 条），跳过报表播种", tplRepo.count(), jobRepo.count());
+            ensureR02C();
             return;
         }
 
@@ -91,6 +92,18 @@ public class ReportDataInitializer implements ApplicationRunner {
         jobRepo.saveAll(jobs);
         log.info("报表中心播种完成：模板 {} 条、历史任务 {} 条（content 全部 NULL 不伪造）",
                 templates.size(), jobs.size());
+        ensureR02C();
+    }
+
+    /** R02C 品类营收月报模板幂等补播（P5-B96 卡1 新增——既有库全量播种早退后也能补齐）。 */
+    private void ensureR02C() {
+        if (tplRepo.existsById("R02C")) {
+            return;
+        }
+        tplRepo.save(tpl("R02C", "项目品类营收月报", "REVENUE",
+                "已收款订单子项经别名两级命中归桶，品类×月项目数/营收/占比",
+                "MONTH", "项目品类", "项目数,营收,占比", null, false));
+        log.info("R02C 项目品类营收月报模板补播完成");
     }
 
     private ReportTemplate tpl(String id, String name, String category, String description,

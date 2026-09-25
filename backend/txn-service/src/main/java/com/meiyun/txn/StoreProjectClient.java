@@ -43,6 +43,9 @@ public class StoreProjectClient {
     /** ACTIVE SKU → durationMin 缓存（P5-B51 卡6，与上方 name→category 缓存同源分立，免动 B49 已验证链路）。 */
     private volatile Map<String, Integer> durationCache = Map.of();
     private volatile long durationCacheAt = 0L;
+    /** 别名（alias|storeCode 键，全局别名 storeCode 段为空串）→ serviceCategory 缓存（P5-B96 卡1）。 */
+    private volatile Map<String, String> aliasCache = Map.of();
+    private volatile long aliasCacheAt = 0L;
 
     public StoreProjectClient(RestTemplate restTemplate) {
         this.restTemplate = restTemplate;
@@ -82,6 +85,70 @@ public class StoreProjectClient {
             log.warn("大屏品类映射刷新失败（沿用缓存/空映射，子项归「其他」）: {}", e.getMessage());
             cacheAt = now;
             return cache;
+        }
+    }
+
+    /**
+     * 两级命中归桶（P5-B96 卡1）：子项名 → ①SKU 精确名（目录项以目录为准，含品类空串）
+     * → ②门店级别名 → ③全局别名 → 均未命中返回 ""。空串由调用方归「其他」
+     * （ScreenService CATEGORY_LABEL / finance R02C 同口径）；别名层 60s 缓存，刷新失败
+     * 沿用旧缓存（首次为空 Map → 仅精确名生效，不阻塞主链路）。
+     */
+    public String categoryOf(String itemName, String storeCode) {
+        if (itemName == null || itemName.isBlank()) {
+            return "";
+        }
+        String direct = skuCategoryMap().get(itemName);
+        if (direct != null) {
+            return direct;
+        }
+        Map<String, String> aliasMap = aliasCategoryMap();
+        if (storeCode != null && !storeCode.isBlank()) {
+            String hit = aliasMap.get(itemName + "|" + storeCode);
+            if (hit != null) {
+                return hit;
+            }
+        }
+        String hit = aliasMap.get(itemName + "|");
+        return hit == null ? "" : hit;
+    }
+
+    /**
+     * 别名映射缓存：数据源＝store 域 internal 端点 ACTIVE 全量（sku 被删行 serviceCategory 空串，跳过）。
+     * 同名门店级与全局键位分立（|SST01 vs |），门店级优先由 {@link #categoryOf} 查询顺序保证。
+     */
+    private Map<String, String> aliasCategoryMap() {
+        long now = System.currentTimeMillis();
+        if (now - aliasCacheAt < CACHE_MS) {
+            return aliasCache;
+        }
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+            List<Map<String, Object>> rows = restTemplate.exchange(
+                    storeBaseUrl + "/api/stores/internal/project-aliases", HttpMethod.GET, new HttpEntity<>(headers),
+                    new ParameterizedTypeReference<List<Map<String, Object>>>() {
+                    }).getBody();
+            Map<String, String> fresh = new HashMap<>();
+            if (rows != null) {
+                for (Map<String, Object> row : rows) {
+                    Object alias = row.get("alias");
+                    Object cat = row.get("serviceCategory");
+                    if (alias == null || cat == null || String.valueOf(cat).isBlank()) {
+                        continue;
+                    }
+                    Object sc = row.get("storeCode");
+                    fresh.putIfAbsent(String.valueOf(alias) + "|" + (sc == null ? "" : String.valueOf(sc)),
+                            String.valueOf(cat));
+                }
+            }
+            aliasCache = fresh;
+            aliasCacheAt = now;
+            return fresh;
+        } catch (Exception e) {
+            log.warn("项目别名映射刷新失败（沿用缓存/空映射，未命中子项归「其他」）: {}", e.getMessage());
+            aliasCacheAt = now;
+            return aliasCache;
         }
     }
 
