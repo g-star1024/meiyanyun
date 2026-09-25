@@ -53,6 +53,7 @@ public class PushService {
     private final DomainEventPublisher events;
     private final AuditRecorder audit;
     private final CustomerConsentClient consentClient;
+    private final TouchEventRecorder touchRecorder;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PushService(PushRecordRepository pushRepo,
@@ -61,7 +62,8 @@ public class PushService {
                        RateLimiter rateLimiter,
                        DomainEventPublisher events,
                        AuditRecorder audit,
-                       CustomerConsentClient consentClient) {
+                       CustomerConsentClient consentClient,
+                       TouchEventRecorder touchRecorder) {
         this.pushRepo = pushRepo;
         this.forbiddenWordService = forbiddenWordService;
         this.cfgService = cfgService;
@@ -69,6 +71,7 @@ public class PushService {
         this.events = events;
         this.audit = audit;
         this.consentClient = consentClient;
+        this.touchRecorder = touchRecorder;
     }
 
     @Transactional
@@ -137,6 +140,12 @@ public class PushService {
         p.setDedupKey(dedupKey);
         p.setSentAt(OffsetDateTime.now());
         PushRecord saved = pushRepo.save(p);
+
+        // P5-B98 触点旁路（DESIGN-T2 §3-D4 仅存不算）：push_record 落库即落 PUSH_SEND 触点快照，
+        // 同事务随主链路同滚；60s dedup 命中早返回路径不落（上方 return recent.get(0)）。
+        touchRecorder.record(cmd.pushType(), TouchEventRecorder.TYPE_PUSH_SEND,
+                "PUSH_RECORD", String.valueOf(saved.getPushId()), customerId, null,
+                "{\"pushType\":\"" + cmd.pushType() + "\"}");
 
         // 发布领域事件（默认日志实现；生产切 MQ，由 Outbox 兜底补偿）
         events.publish(TOPIC, String.valueOf(saved.getPushId()),

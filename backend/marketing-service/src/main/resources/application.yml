@@ -64,11 +64,13 @@ meiyun:
     internal-token: ${MEIYUN_INTERNAL_TOKEN:meiyun-dev-internal-token-please-change-in-prod}
     dev-login: ${MEIYUN_DEV_LOGIN:false}
     # public-paths 整体覆盖默认列表，须显式带全默认公共路径
+    # P5-B98：/api/public/landing/** 落地页公开采集端点（visit|lead 免鉴权，限流+幂等见 PublicLandingController）
     public-paths:
       - /api/org/auth/login
       - /api/org/auth/dev-login
       - /actuator/health
       - /error
+      - /api/public/landing/**
 
 # org-service 地址（P5-B57 卡2：外部依赖配置窗口 60s 快照拉取——三渠道 HMAC 密钥/免签开关）
 org:

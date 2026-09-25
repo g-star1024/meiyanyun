@@ -66,6 +66,7 @@ public class ExternalChannelController {
     private final RateLimiter rateLimiter;
     private final CustomerDirectoryClient customerDirectory;
     private final IntegrationConfigClient integrationConfig;
+    private final TouchEventRecorder touchRecorder;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** dev 免签开关：默认 false（fail-closed），仅种子/联调环境显式置 true。 */
@@ -81,11 +82,13 @@ public class ExternalChannelController {
 
     public ExternalChannelController(ChannelReturnbackRepository repo, RateLimiter rateLimiter,
                                      CustomerDirectoryClient customerDirectory,
-                                     IntegrationConfigClient integrationConfig) {
+                                     IntegrationConfigClient integrationConfig,
+                                     TouchEventRecorder touchRecorder) {
         this.repo = repo;
         this.rateLimiter = rateLimiter;
         this.customerDirectory = customerDirectory;
         this.integrationConfig = integrationConfig;
+        this.touchRecorder = touchRecorder;
     }
 
     @PostConstruct
@@ -169,6 +172,13 @@ public class ExternalChannelController {
         }
 
         ChannelReturnback saved = saveIdempotent(r);
+
+        // P5-B98 触点旁路（DESIGN-T2 §3-D4 仅存不算）：回传落库即落 RETURNBACK 触点快照；
+        // bizRef dedup 早返回路径不落（上方 dup.isPresent() return）。
+        touchRecorder.record(saved.getChannelCode(), TouchEventRecorder.TYPE_RETURNBACK,
+                "CHANNEL_RETURNBACK", String.valueOf(saved.getId()), saved.getMatchedCustomerId(), null,
+                "{\"eventType\":\"" + saved.getEventType() + "\""
+                        + (saved.getBizRef() == null ? "" : ",\"bizRef\":\"" + saved.getBizRef() + "\"") + "}");
 
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("received", true);
