@@ -64,13 +64,16 @@ public class InternalFinanceController {
     private final RfmCalculator rfmCalculator;
     private final OrderItemRepository orderItemRepo;
     private final StoreProjectClient projectClient;
+    private final ArrivalRepository arrivalRepo;
+    private final PlanRepository planRepo;
 
     public InternalFinanceController(TxnOrderRepository orderRepo, TxnRefundRepository refundRepo,
                                      WriteoffRepository writeoffRepo, TxnCardCancelRepository cardCancelRepo,
                                      PaymentService paymentService, CustomerCardClient customerCardClient,
                                      DualSignTicketRepository ticketRepo, AuditRecorder audit,
                                      ApprovalService approvalService, RfmCalculator rfmCalculator,
-                                     OrderItemRepository orderItemRepo, StoreProjectClient projectClient) {
+                                     OrderItemRepository orderItemRepo, StoreProjectClient projectClient,
+                                     ArrivalRepository arrivalRepo, PlanRepository planRepo) {
         this.orderRepo = orderRepo;
         this.refundRepo = refundRepo;
         this.writeoffRepo = writeoffRepo;
@@ -83,6 +86,8 @@ public class InternalFinanceController {
         this.rfmCalculator = rfmCalculator;
         this.orderItemRepo = orderItemRepo;
         this.projectClient = projectClient;
+        this.arrivalRepo = arrivalRepo;
+        this.planRepo = planRepo;
     }
 
     /**
@@ -845,6 +850,160 @@ public class InternalFinanceController {
             if (to != null) ps.add(cb.lessThan(root.get("createdAt"), to));
             return cb.and(ps.toArray(new Predicate[0]));
         };
+    }
+
+    /**
+     * T2 事实表聚合①：GET /api/txn/internal/metric-customers?month=2026-09。
+     * 按门店输出客户口径——newCustomers（同店同客户首张已收款单落当月）/
+     * repurchaseCount（同店同客户累计已收款单当月首达 2 单）/
+     * activeCustomers（当月已收款客户 ∪ 到店客户去重）/paidOrders（当月已收款单数）。
+     * 历史单只拉到月末（createdAt &lt; to），首单/次单判定不受未来单影响。
+     */
+    @GetMapping("/metric-customers")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> metricCustomers(@RequestParam(value = "month", required = false) String month) {
+        String ym = resolveMonth(month);
+        OffsetDateTime from = LocalDate.parse(ym + "-01").atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime to = from.plusMonths(1);
+
+        Map<String, long[]> newReByStore = new java.util.TreeMap<>();
+        Map<String, java.util.Set<String>> activeByStore = new java.util.TreeMap<>();
+        Map<String, Long> paidOrdersByStore = new java.util.TreeMap<>();
+
+        Map<String, List<TxnOrder>> byStoreCustomer = new LinkedHashMap<>();
+        for (TxnOrder o : orderRepo.findAll(orderSpec(null, null, to))) {
+            if (o.getStoreCode() == null || o.getCustomerId() == null) continue;
+            byStoreCustomer.computeIfAbsent(o.getStoreCode() + "|" + o.getCustomerId(), k -> new ArrayList<>()).add(o);
+        }
+        for (Map.Entry<String, List<TxnOrder>> e : byStoreCustomer.entrySet()) {
+            int sep = e.getKey().indexOf('|');
+            String storeCode = e.getKey().substring(0, sep);
+            String customerId = e.getKey().substring(sep + 1);
+            List<TxnOrder> orders = e.getValue();
+            orders.sort(java.util.Comparator.comparing(TxnOrder::getCreatedAt,
+                    java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder())));
+            for (int i = 0; i < orders.size(); i++) {
+                OffsetDateTime at = orders.get(i).getCreatedAt();
+                if (at == null || at.isBefore(from) || !at.isBefore(to)) continue;
+                if (i == 0) newReByStore.computeIfAbsent(storeCode, k -> new long[2])[0]++;
+                if (i == 1) newReByStore.computeIfAbsent(storeCode, k -> new long[2])[1]++;
+                activeByStore.computeIfAbsent(storeCode, k -> new java.util.HashSet<>()).add(customerId);
+                paidOrdersByStore.merge(storeCode, 1L, Long::sum);
+            }
+        }
+        for (Object[] row : arrivalRepo.distinctArrivalCustomers(from, to)) {
+            String storeCode = (String) row[0];
+            String customerId = (String) row[1];
+            if (storeCode == null || customerId == null) continue;
+            activeByStore.computeIfAbsent(storeCode, k -> new java.util.HashSet<>()).add(customerId);
+        }
+
+        java.util.Set<String> stores = new java.util.TreeSet<>();
+        stores.addAll(newReByStore.keySet());
+        stores.addAll(activeByStore.keySet());
+        stores.addAll(paidOrdersByStore.keySet());
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (String storeCode : stores) {
+            long[] c = newReByStore.getOrDefault(storeCode, new long[2]);
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", storeCode);
+            row.put("newCustomers", c[0]);
+            row.put("repurchaseCount", c[1]);
+            row.put("activeCustomers", (long) activeByStore.getOrDefault(storeCode, java.util.Set.of()).size());
+            row.put("paidOrders", paidOrdersByStore.getOrDefault(storeCode, 0L));
+            rows.add(row);
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("month", ym);
+        resp.put("rows", rows);
+        return resp;
+    }
+
+    /**
+     * T2 事实表聚合②：GET /api/txn/internal/metric-funnel?month=2026-09。
+     * 按门店输出漏斗三档——arrivalCount（到店登记数）/consultCount（方案数，排除 ABANDONED）/
+     * dealCount（方案成交数，PAID/TREATING/DONE），与 funnel-stats 同源同口径。
+     */
+    @GetMapping("/metric-funnel")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> metricFunnel(@RequestParam(value = "month", required = false) String month) {
+        String ym = resolveMonth(month);
+        OffsetDateTime from = LocalDate.parse(ym + "-01").atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime to = from.plusMonths(1);
+
+        Map<String, long[]> byStore = new java.util.TreeMap<>();
+        for (Object[] row : arrivalRepo.funnelArrivals(from, to)) {
+            String storeCode = (String) row[0];
+            if (storeCode == null) continue;
+            byStore.computeIfAbsent(storeCode, k -> new long[3])[0] += ((Number) row[2]).longValue();
+        }
+        for (Object[] row : planRepo.funnelConsults(from, to)) {
+            String storeCode = (String) row[0];
+            if (storeCode == null) continue;
+            byStore.computeIfAbsent(storeCode, k -> new long[3])[1] += ((Number) row[1]).longValue();
+        }
+        for (Object[] row : planRepo.funnelDeals(from, to)) {
+            String storeCode = (String) row[0];
+            if (storeCode == null) continue;
+            byStore.computeIfAbsent(storeCode, k -> new long[3])[2] += ((Number) row[1]).longValue();
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map.Entry<String, long[]> e : byStore.entrySet()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", e.getKey());
+            row.put("arrivalCount", e.getValue()[0]);
+            row.put("consultCount", e.getValue()[1]);
+            row.put("dealCount", e.getValue()[2]);
+            rows.add(row);
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("month", ym);
+        resp.put("rows", rows);
+        return resp;
+    }
+
+    /**
+     * T2 事实表聚合③：GET /api/txn/internal/metric-treatments?month=2026-09。
+     * 按门店输出治疗人次（当月 DONE 划扣核销计数）。
+     */
+    @GetMapping("/metric-treatments")
+    @RequirePerm("internal:finance-flow")
+    public Map<String, Object> metricTreatments(@RequestParam(value = "month", required = false) String month) {
+        String ym = resolveMonth(month);
+        OffsetDateTime from = LocalDate.parse(ym + "-01").atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime to = from.plusMonths(1);
+
+        Map<String, Long> byStore = new java.util.TreeMap<>();
+        for (WriteoffRecord w : writeoffRepo.findAll(writeoffSpec(null, from, to))) {
+            if (w.getStoreCode() == null) continue;
+            byStore.merge(w.getStoreCode(), 1L, Long::sum);
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map.Entry<String, Long> e : byStore.entrySet()) {
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", e.getKey());
+            row.put("treatmentCount", e.getValue());
+            rows.add(row);
+        }
+        Map<String, Object> resp = new LinkedHashMap<>();
+        resp.put("month", ym);
+        resp.put("rows", rows);
+        return resp;
+    }
+
+    /** 月份参数归一：缺省取 Asia/Shanghai 当月；支持 yyyy-MM / yyyy-MM-01，非法即 400（与 commission-base 同口径）。 */
+    private String resolveMonth(String month) {
+        String ym;
+        if (month == null || month.isBlank()) {
+            ym = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai")).toString().substring(0, 7);
+        } else {
+            ym = month.trim().substring(0, Math.min(7, month.trim().length()));
+            if (!ym.matches("\\d{4}-\\d{2}")) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "月份参数 month 格式非法，需 yyyy-MM 或 yyyy-MM-01（如 2026-09）：" + month);
+            }
+        }
+        return ym;
     }
 
     /** 订单渠道口径解析结果：method 为主渠道码（入账额最大一笔），mixed 为一单多渠道标记。 */

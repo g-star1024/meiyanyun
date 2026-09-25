@@ -37,4 +37,9 @@ public interface ArrivalRepository
             "WHERE a.arrivedAt >= :from AND a.arrivedAt < :to " +
             "GROUP BY a.storeCode, a.channel")
     List<Object[]> funnelArrivals(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
+
+    /** T2 事实表：区间内到店去重客户（storeCode, customerId），活跃客户口径的 arrival 半边。 */
+    @Query("SELECT DISTINCT a.storeCode, a.customerId FROM Arrival a " +
+            "WHERE a.arrivedAt >= :from AND a.arrivedAt < :to AND a.customerId IS NOT NULL")
+    List<Object[]> distinctArrivalCustomers(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
 }

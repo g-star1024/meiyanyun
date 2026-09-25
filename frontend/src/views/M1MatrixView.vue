@@ -93,7 +93,7 @@
         </div>
       </CCard>
     </div>
-    <p class="mx-footnote">数据源：GET /api/finance/group-overview（revenue_monthly 月报）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。默认周期=已出月报门店数最多月份（并列取最新）；11 项指标仅「营收/毛利率」有月报数据源，其余暂无数据源显「—」；月报月份不相邻，环比/同比不可比不显；目标值为管理基准非真实统计；热力色按达成率渲染，无数据单元格不着色。</p>
+    <p class="mx-footnote">数据源：GET /api/finance/group-overview（monthly_store_metrics 月度事实表，MonthlyMetricJob 跑批聚合）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。默认周期=已出月报门店数最多月份（并列取最新）；11 项指标中「营收/毛利率/新客数/复购率/治疗人次」5 项已接事实表真源，其余 6 项暂无数据源显「—」；月份不相邻时环比/同比不可比不显；目标值为管理基准非真实统计；热力色按达成率渲染，无数据单元格不着色。</p>
   </div>
 </template>
 

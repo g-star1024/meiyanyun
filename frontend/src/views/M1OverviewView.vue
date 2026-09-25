@@ -56,7 +56,7 @@
     <CCard title="门店营收排行" padding="none">
       <CTable :columns="rankCols" :rows="rankRows" row-key="id" />
     </CCard>
-    <p class="ov-footnote">数据源：GET /api/finance/group-overview（revenue_monthly 月报，金额「分」→万元）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。顶部 hero=最新月报月集团合计；「各区域营收」「门店营收排行」=全期累计；新客/复购/满意度/治疗人次/活跃客户暂无月度数据源显「—」；月报仅 2026-07、2026-09 两期且不相邻，环比/同比不可比不显。</p>
+    <p class="ov-footnote">数据源：GET /api/finance/group-overview（monthly_store_metrics 月度事实表，MonthlyMetricJob 跑批聚合，金额「分」→万元）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。顶部 hero=最新月集团合计；「各区域营收」「门店营收排行」=全期累计；负毛利预警=事实表毛利率<0 门店；新客/复购/活跃/治疗人次数据已备于 monthTotals、本屏 KPI 暂未接入显「—」；满意度暂无数据源显「—」。</p>
   </div>
 </template>
 

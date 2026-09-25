@@ -75,7 +75,7 @@
         </CCard>
       </div>
     </div>
-    <p class="cmp-footnote">数据源：GET /api/finance/group-overview（revenue_monthly 月报）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。统一按「已出月报门店数最多月份」（并列取最新）对比；仅营收/毛利率有月报数据源，其余 4 项暂无数据源显「—」（雷达对应轴贴地）；综合得分按有源指标权重归一（营收 62.5%、毛利率 37.5%）；基准列为管理基准，非真实统计。</p>
+    <p class="cmp-footnote">数据源：GET /api/finance/group-overview（monthly_store_metrics 月度事实表，MonthlyMetricJob 跑批聚合）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。统一按「已出月报门店数最多月份」（并列取最新）对比；6 项指标中营收/毛利率/新客数/复购率 4 项已接事实表真源，其余 2 项暂无数据源显「—」（雷达对应轴贴地）；综合得分按有源指标权重归一；基准列为管理基准，非真实统计。</p>
   </div>
 </template>
 

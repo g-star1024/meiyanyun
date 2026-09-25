@@ -1,8 +1,9 @@
 // 门店对标（M1 集团屏 /m1-compare）——B49 卡4 接真（铁律 -1-D 跨店例外域，只读）。
-// 数据源：GET /api/finance/group-overview（revenue_monthly）+ GET /api/stores（门店名录）。
-// 口径：统一取「已出月报门店数最多的月份」（并列取最新，随数据域而定）；对标门店=当月已出月报门店；
-//   6 项指标仅「营收/毛利率」有月报数据源，其余 4 项 value null 显「—」（雷达贴地，已入 Backlog）；
-//   综合得分仅基于有源指标、权重归一（营收 25 + 毛利率 15 → 62.5% / 37.5%）；benchmark 为管理基准非 mock。
+// 数据源：GET /api/finance/group-overview（P5-B97 起 monthly_store_metrics 事实表）+ GET /api/stores（门店名录）。
+// 口径：统一取「有事实表行门店数最多的月份」（并列取最新，随数据域而定）；对标门店=当月有事实表行门店；
+//   6 项指标中「营收/毛利率/新客数/复购率」有事实表数据源（复购率=当月复购人数/活跃客户），
+//   满意度/资源利用率 2 项 value null 显「—」（雷达贴地，已入 Backlog）；
+//   综合得分仅基于有源指标、权重归一；benchmark 为管理基准非 mock。
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { listGroupOverview, type GroupOverviewView } from '@/api/finance'
@@ -42,7 +43,7 @@ export const useM1CompareStore = defineStore('m1Compare', () => {
   const error = ref('')
   const selectedIds = ref<string[]>([])
 
-  // 统一口径月份：已出月报门店数最多的月份（并列取最新）
+  // 统一口径月份：有事实表行门店数最多的月份（并列取最新）
   const period = computed(() => {
     let best = ''
     let bestN = -1
@@ -55,21 +56,24 @@ export const useM1CompareStore = defineStore('m1Compare', () => {
   const periodRows = computed(() =>
     (ov.value?.rows ?? []).filter((r) => r.periodMonth.slice(0, 7) === period.value))
 
-  // 对标门店 = 当月已出月报门店（真实编码/店名/大区）
+  // 对标门店 = 当月有事实表行门店（真实编码/店名/大区）
   const stores = computed<CompareStore[]>(() =>
     periodRows.value.map((r) => {
       const st = storeList.value.find((x) => x.storeCode === r.storeCode)
       return { id: r.storeCode, name: st?.storeName ?? r.storeCode, region: st?.region ?? '—' }
     }))
 
-  // 指标值：营收(万元)/毛利率(%) 填真，其余 null
+  // 指标值：营收(万元)/毛利率(%)/新客数(人)/复购率(%) 填真（P5-B97 事实表投影），满意度/资源利用率仍无源 null
   const data = computed<StoreMetricValue[]>(() => {
     const out: StoreMetricValue[] = []
     for (const r of periodRows.value) {
       for (const m of COMPARE_METRICS) {
         let v: number | null = null
-        if (m.key === 'revenue') v = Math.round((r.revenue / 1e6) * 10) / 10 // 分 → 万元
-        else if (m.key === 'grossMargin') v = Math.round(Number(r.grossRate) * 1000) / 10 // 小数 → %
+        if (m.key === 'revenue' && r.revenue != null) v = Math.round((r.revenue / 1e6) * 10) / 10 // 分 → 万元
+        else if (m.key === 'grossMargin' && r.grossRate != null) v = Math.round(Number(r.grossRate) * 1000) / 10 // 小数 → %
+        else if (m.key === 'newCust') v = r.newCustomers
+        else if (m.key === 'repurchase' && r.repurchaseCount != null && r.activeCustomers != null && r.activeCustomers > 0)
+          v = Math.round((r.repurchaseCount / r.activeCustomers) * 1000) / 10 // 复购人数/活跃客户 → %
         out.push({ storeId: r.storeCode, metricKey: m.key, value: v })
       }
     }

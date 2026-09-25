@@ -11,6 +11,8 @@ import org.springframework.web.bind.annotation.*;
 
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -50,6 +52,7 @@ public class FinanceController {
     private final SettlementService settlementService;
     private final FinanceExportService exportService;
     private final FinAbnormalBillService abnormalBillService;
+    private final MonthlyStoreMetricRepository metricRepo;
 
     public FinanceController(PrepayPoolRepository poolRepo, TaxRepository taxRepo,
                              AccountMirrorRepository acctRepo, RevenueMonthlyRepository revRepo,
@@ -59,7 +62,8 @@ public class FinanceController {
                              TripartiteReconcileService tripartiteService,
                              SettlementService settlementService,
                              FinanceExportService exportService,
-                             FinAbnormalBillService abnormalBillService) {
+                             FinAbnormalBillService abnormalBillService,
+                             MonthlyStoreMetricRepository metricRepo) {
         this.poolRepo = poolRepo;
         this.taxRepo = taxRepo;
         this.acctRepo = acctRepo;
@@ -72,6 +76,7 @@ public class FinanceController {
         this.settlementService = settlementService;
         this.exportService = exportService;
         this.abnormalBillService = abnormalBillService;
+        this.metricRepo = metricRepo;
     }
 
     /**
@@ -176,35 +181,85 @@ public class FinanceController {
     }
 
     /**
-     * 集团多店经营概览（B49 卡4，M1 集团屏跨店例外域，铁律 -1-D）：GET /api/finance/group-overview。
-     * 基于 revenue_monthly 全量行（数据域逐行收敛，区域域只见本区门店），返回三段：
-     * months（有月报的月份升序，yyyy-MM-dd 月初）、rows（门店×月明细，同 /revenue 口径，金额「分」）、
-     * monthTotals（按月合计 revenue/cost/grossProfit + storeCount 当月已出月报门店数）。
+     * 集团多店经营概览（B49 卡4 → P5-B97 改读 T2 事实表，M1 集团屏跨店例外域，铁律 -1-D）：GET /api/finance/group-overview。
+     * 基于 monthly_store_metrics 全量行（数据域逐行收敛，区域域只见本区门店），返回三段：
+     * months（有事实表行的月份升序，yyyy-MM-dd 月初）、rows（门店×月投影 11 指标——
+     * 3 财务快照 revenue/cost/grossProfit＋衍生 costRate/grossRate＋7 计数
+     * newCustomers/repurchaseCount/treatmentCount/activeCustomers/arrivalCount/consultCount/dealCount，
+     * 金额「分」，无源字段 null 前端显「—」）、
+     * monthTotals（按月合计 revenue/cost/grossProfit＋7 计数合计＋storeCount 当月有事实表行门店数）。
      * 门店名称/大区由前端 join /api/stores（org 域），本端点不跨域 join。
      */
     @GetMapping("/group-overview")
     public Map<String, Object> groupOverview() {
-        Specification<RevenueMonthly> spec = DataScope.storeSpec("storeCode");
-        List<RevenueMonthly> rows = revRepo.findAll(spec,
+        Specification<MonthlyStoreMetric> spec = DataScope.storeSpec("storeCode");
+        List<MonthlyStoreMetric> metrics = metricRepo.findAll(spec,
                 Sort.by(Sort.Order.asc("periodMonth"), Sort.Order.asc("storeCode")));
         Map<String, long[]> totals = new LinkedHashMap<>();
+        Map<String, long[]> countTotals = new LinkedHashMap<>();
         Map<String, Set<String>> storeSet = new LinkedHashMap<>();
-        for (RevenueMonthly r : rows) {
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (MonthlyStoreMetric r : metrics) {
             String pm = r.getPeriodMonth().toString();
             long[] t = totals.computeIfAbsent(pm, k -> new long[3]);
-            t[0] += r.getRevenue();
-            t[1] += r.getCost();
-            t[2] += r.getGrossProfit();
+            t[0] += r.getRevenue() == null ? 0L : r.getRevenue();
+            t[1] += r.getCost() == null ? 0L : r.getCost();
+            t[2] += r.getGrossProfit() == null ? 0L : r.getGrossProfit();
+            long[] ct = countTotals.computeIfAbsent(pm, k -> new long[7]);
+            ct[0] += r.getNewCustomers() == null ? 0L : r.getNewCustomers();
+            ct[1] += r.getRepurchaseCount() == null ? 0L : r.getRepurchaseCount();
+            ct[2] += r.getTreatmentCount() == null ? 0L : r.getTreatmentCount();
+            ct[3] += r.getActiveCustomers() == null ? 0L : r.getActiveCustomers();
+            ct[4] += r.getArrivalCount() == null ? 0L : r.getArrivalCount();
+            ct[5] += r.getConsultCount() == null ? 0L : r.getConsultCount();
+            ct[6] += r.getDealCount() == null ? 0L : r.getDealCount();
             storeSet.computeIfAbsent(pm, k -> new HashSet<>()).add(r.getStoreCode());
+
+            BigDecimal costRate = null;
+            BigDecimal grossRate = null;
+            if (r.getRevenue() != null && r.getRevenue() > 0) {
+                if (r.getCost() != null) {
+                    costRate = BigDecimal.valueOf(r.getCost())
+                            .divide(BigDecimal.valueOf(r.getRevenue()), 3, RoundingMode.HALF_UP);
+                }
+                if (r.getGrossProfit() != null) {
+                    grossRate = BigDecimal.valueOf(r.getGrossProfit())
+                            .divide(BigDecimal.valueOf(r.getRevenue()), 3, RoundingMode.HALF_UP);
+                }
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("storeCode", r.getStoreCode());
+            row.put("periodMonth", pm);
+            row.put("revenue", r.getRevenue());
+            row.put("cost", r.getCost());
+            row.put("grossProfit", r.getGrossProfit());
+            row.put("costRate", costRate);
+            row.put("grossRate", grossRate);
+            row.put("newCustomers", r.getNewCustomers());
+            row.put("repurchaseCount", r.getRepurchaseCount());
+            row.put("treatmentCount", r.getTreatmentCount());
+            row.put("activeCustomers", r.getActiveCustomers());
+            row.put("arrivalCount", r.getArrivalCount());
+            row.put("consultCount", r.getConsultCount());
+            row.put("dealCount", r.getDealCount());
+            rows.add(row);
         }
         List<Map<String, Object>> monthTotals = new ArrayList<>();
         for (Map.Entry<String, long[]> e : totals.entrySet()) {
+            long[] ct = countTotals.get(e.getKey());
             Map<String, Object> m = new LinkedHashMap<>();
             m.put("periodMonth", e.getKey());
             m.put("revenue", e.getValue()[0]);
             m.put("cost", e.getValue()[1]);
             m.put("grossProfit", e.getValue()[2]);
             m.put("storeCount", storeSet.get(e.getKey()).size());
+            m.put("newCustomers", ct[0]);
+            m.put("repurchaseCount", ct[1]);
+            m.put("treatmentCount", ct[2]);
+            m.put("activeCustomers", ct[3]);
+            m.put("arrivalCount", ct[4]);
+            m.put("consultCount", ct[5]);
+            m.put("dealCount", ct[6]);
             monthTotals.add(m);
         }
         Map<String, Object> resp = new LinkedHashMap<>();

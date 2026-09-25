@@ -857,6 +857,46 @@ public class FinanceAggregationService {
         }
     }
 
+    /** T2 事实表数据源（P5-B97）：txn 侧月度客户口径聚合（新客/复购/活跃/成交单数，失败降级空列表）。 */
+    List<Map<String, Object>> fetchMetricCustomers(String month) {
+        return fetchMetricRows("/api/txn/internal/metric-customers", month, "客户口径");
+    }
+
+    /** T2 事实表数据源（P5-B97）：txn 侧月度漏斗聚合（到店/方案/成交，失败降级空列表）。 */
+    List<Map<String, Object>> fetchMetricFunnel(String month) {
+        return fetchMetricRows("/api/txn/internal/metric-funnel", month, "漏斗");
+    }
+
+    /** T2 事实表数据源（P5-B97）：txn 侧月度治疗人次聚合（DONE 划扣计数，失败降级空列表）。 */
+    List<Map<String, Object>> fetchMetricTreatments(String month) {
+        return fetchMetricRows("/api/txn/internal/metric-treatments", month, "治疗人次");
+    }
+
+    private List<Map<String, Object>> fetchMetricRows(String path, String month, String label) {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(txnBaseUrl + path)
+                    .queryParam("month", month);
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            if (resp.getBody() != null && resp.getBody().get("rows") instanceof List<?> list) {
+                List<Map<String, Object>> out = new ArrayList<>();
+                for (Object item : list) {
+                    if (item instanceof Map<?, ?> m) {
+                        Map<String, Object> row = new LinkedHashMap<>();
+                        m.forEach((k, v) -> row.put(String.valueOf(k), v));
+                        out.add(row);
+                    }
+                }
+                return out;
+            }
+            return List.of();
+        } catch (Exception e) {
+            log.warn("拉取交易域月度" + label + "聚合失败（降级空列表）: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
     /** ISO OffsetDateTime → yyyy-MM-dd HH:mm:ss（业务本地时区 Asia/Shanghai，供卡流水时间线展示）。 */
     private static String dateTimeOf(Object iso) {
         if (iso == null) return "";

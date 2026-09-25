@@ -1,7 +1,7 @@
 // 指标矩阵（M1 集团屏 /m1-matrix）——B49 卡4 接真（铁律 -1-D 跨店例外域，只读）。
-// 数据源：GET /api/finance/group-overview（revenue_monthly）+ GET /api/stores（门店名录）。
-// 口径：11 项指标全保留（target 为管理基准值，非 mock）；仅「营收(万元)/毛利率(%)」有月报数据源，
-//   其余 9 项及全部 mom/yoy 暂无月度聚合数据源 → null 显「—」（已入 Backlog）；
+// 数据源：GET /api/finance/group-overview（P5-B97 起读 monthly_store_metrics 月度事实表）+ GET /api/stores（门店名录）。
+// 口径：11 项指标全保留（target 为管理基准值，非 mock）；有源 5 项：营收/毛利率/新客数/复购率(=当月复购人数/活跃客户)/治疗人次，
+//   其余 6 项及全部 mom/yoy 暂无月度聚合数据源 → null 显「—」；
 //   periods=有月报的真实月份，默认选中「已出月报门店数最多的月份」（并列取最新，随数据域而定）。
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
@@ -73,7 +73,7 @@ export const useM1MatrixStore = defineStore('m1Matrix', () => {
     return best
   })
 
-  // 当前期单元格：营收/毛利率填真，其余指标 null；mom/yoy 均 null
+  // 当前期单元格：有源 5 项填真（营收/毛利率/新客数/复购率/治疗人次），其余指标 null；mom/yoy 均 null
   const cells = computed<MetricCell[]>(() => {
     const rows = ov.value?.rows ?? []
     const p = period.value
@@ -83,8 +83,12 @@ export const useM1MatrixStore = defineStore('m1Matrix', () => {
         const r = rows.find((x) => x.storeCode === s.id && x.periodMonth.slice(0, 7) === p)
         let v: number | null = null
         if (r) {
-          if (m.key === 'revenue') v = Math.round((r.revenue / 1e6) * 10) / 10 // 分 → 万元
-          else if (m.key === 'grossMargin') v = Math.round(Number(r.grossRate) * 1000) / 10 // 小数 → %
+          if (m.key === 'revenue' && r.revenue != null) v = Math.round((r.revenue / 1e6) * 10) / 10 // 分 → 万元
+          else if (m.key === 'grossMargin' && r.grossRate != null) v = Math.round(Number(r.grossRate) * 1000) / 10 // 小数 → %
+          else if (m.key === 'newCust') v = r.newCustomers
+          else if (m.key === 'repurchase' && r.repurchaseCount != null && r.activeCustomers != null && r.activeCustomers > 0) {
+            v = Math.round((r.repurchaseCount / r.activeCustomers) * 1000) / 10 // 复购人数/活跃客户 → %
+          } else if (m.key === 'procedure') v = r.treatmentCount
         }
         out.push({ metricKey: m.key, storeId: s.id, value: v, mom: null, yoy: null })
       }

@@ -56,19 +56,44 @@ export interface RevenueMonthly {
   grossRate: number
 }
 
-/** 集团概览月合计（B49 卡4，金额「分」；storeCount=当月已出月报门店数） */
+/** 集团概览门店×月投影行（P5-B97 起改读 monthly_store_metrics 事实表；金额「分」，无源字段 null 显「—」） */
+export interface GroupMetricRow {
+  storeCode: string
+  periodMonth: string // yyyy-MM-01
+  revenue: number | null // 分
+  cost: number | null
+  grossProfit: number | null
+  costRate: number | null
+  grossRate: number | null
+  newCustomers: number | null
+  repurchaseCount: number | null
+  treatmentCount: number | null
+  activeCustomers: number | null
+  arrivalCount: number | null
+  consultCount: number | null
+  dealCount: number | null
+}
+
+/** 集团概览月合计（B49 卡4，金额「分」；storeCount=当月有事实表行门店数；P5-B97 追加 7 计数合计） */
 export interface GroupMonthTotal {
   periodMonth: string // yyyy-MM-01
   revenue: number // 分
   cost: number
   grossProfit: number
   storeCount: number
+  newCustomers: number
+  repurchaseCount: number
+  treatmentCount: number
+  activeCustomers: number
+  arrivalCount: number
+  consultCount: number
+  dealCount: number
 }
 
 /** 集团多店经营概览（B49 卡4 · M1 集团屏跨店例外域）：月份列表 + 门店×月明细 + 月合计 */
 export interface GroupOverviewView {
   months: string[] // yyyy-MM-01 升序
-  rows: RevenueMonthly[]
+  rows: GroupMetricRow[]
   monthTotals: GroupMonthTotal[]
 }
 

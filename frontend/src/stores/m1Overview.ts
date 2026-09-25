@@ -1,8 +1,8 @@
 // 集团经营概览（M1 集团屏 /m1）——B49 卡4 接真（铁律 -1-D 跨店例外域，只读）。
-// 数据源：GET /api/finance/group-overview（finance-service · revenue_monthly 月报，金额「分」）
+// 数据源：GET /api/finance/group-overview（finance-service · P5-B97 起读 monthly_store_metrics 月度事实表，金额「分」）
 //   + GET /api/stores（store-service 门店名录）；数据范围随登录人数据域（DataScope）逐行收敛。
 // 口径：hero=最新月合计营收（分→万元）；营收趋势=各月合计；区域对比/门店排行=月报全期累计；
-//   新客/复购/满意度/活跃客户/治疗人次暂无月度聚合数据源 → null 显「—」（已入 Backlog）；
+//   新客/复购/活跃客户/治疗人次已有源（monthTotals 合计）本屏 KPI 暂未接入；满意度仍无源 → null 显「—」（已入 Backlog）；
 //   环比 delta：月报月份不相邻（2026-07 种子 / 2026-09 真实）不可比 → null 不显示；
 //   客群双序列图（新客 vs 复购）无数据源 → 空序列（CBarChart 空安全已实证）。
 import { defineStore } from 'pinia'
@@ -64,7 +64,7 @@ export const useM1OverviewStore = defineStore('m1Overview', () => {
     const sum: Record<string, number> = {}
     for (const r of ov.value?.rows ?? []) {
       const rg = storeRegion(r.storeCode)
-      sum[rg] = (sum[rg] ?? 0) + r.revenue
+      sum[rg] = (sum[rg] ?? 0) + (r.revenue ?? 0)
     }
     const entries = Object.entries(sum).sort((a, b) => b[1] - a[1])
     return {
@@ -81,7 +81,7 @@ export const useM1OverviewStore = defineStore('m1Overview', () => {
   // 门店营收排行（月报全期累计 Top5）
   const storeRanks = computed<StoreRank[]>(() => {
     const sum = new Map<string, number>()
-    for (const r of ov.value?.rows ?? []) sum.set(r.storeCode, (sum.get(r.storeCode) ?? 0) + r.revenue)
+    for (const r of ov.value?.rows ?? []) sum.set(r.storeCode, (sum.get(r.storeCode) ?? 0) + (r.revenue ?? 0))
     return [...sum.entries()]
       .map(([code, rev]) => ({
         id: code,
@@ -100,7 +100,7 @@ export const useM1OverviewStore = defineStore('m1Overview', () => {
   const alerts = computed<OverviewAlert[]>(() => {
     const out: OverviewAlert[] = []
     for (const r of ov.value?.rows ?? []) {
-      if (Number(r.grossRate) < 0) {
+      if (r.grossRate != null && Number(r.grossRate) < 0) {
         out.push({
           level: 'HIGH',
           text: `${storeName(r.storeCode)} ${r.periodMonth.slice(0, 7)} 月毛利率 ${(Number(r.grossRate) * 100).toFixed(1)}%，当月成本高于营收`,
