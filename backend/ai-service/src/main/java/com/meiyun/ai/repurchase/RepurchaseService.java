@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.ai.audit.AuditRecorder;
 import com.meiyun.ai.client.CustomerProfileClient;
+import com.meiyun.ai.client.MarketingFollowTaskClient;
 import com.meiyun.ai.client.TxnRepurchaseClient;
 import com.meiyun.ai.domain.AiInvokeLogRepository;
 import com.meiyun.ai.domain.AiRepurchasePrediction;
@@ -37,8 +38,8 @@ import java.util.Map;
  *
  * <p>诚实口径：推荐项目为该客户最近一次真实成交项目（非模型编造）；预计转化为模型基于真实客单价与
  * 概率的估算（标注模型估算，非成交承诺）；「浏览/咨询行为活跃」暂无行为埋点数据源，推荐依据中如实标注
- * 不可得、不参与权重；无历史批次不编造「较上周 +N」趋势，前端据空态诚实引导；「建跟进/推送」为站内
- * 幂等登记，真实跟进任务 M3-08、营销推送 M5-03 下发为远期 Backlog。
+ * 不可得、不参与权重；无历史批次不编造「较上周 +N」趋势，前端据空态诚实引导；「建跟进」登记置位后旁路
+     * 下发真实跟进任务（M3-B2 经 marketing 内部端点，软降级不阻断登记，idemKey 防重），营销推送 M5-03 下发为远期 Backlog。
  */
 @Service
 public class RepurchaseService {
@@ -79,6 +80,7 @@ public class RepurchaseService {
     private final FeatureInvokeService featureInvokeService;
     private final TxnRepurchaseClient txnClient;
     private final CustomerProfileClient customerClient;
+    private final MarketingFollowTaskClient followTaskClient;
     private final AuditRecorder audit;
     private final ObjectMapper json = new ObjectMapper();
 
@@ -87,12 +89,14 @@ public class RepurchaseService {
                              FeatureInvokeService featureInvokeService,
                              TxnRepurchaseClient txnClient,
                              CustomerProfileClient customerClient,
+                             MarketingFollowTaskClient followTaskClient,
                              AuditRecorder audit) {
         this.repo = repo;
         this.invokeLogRepo = invokeLogRepo;
         this.featureInvokeService = featureInvokeService;
         this.txnClient = txnClient;
         this.customerClient = customerClient;
+        this.followTaskClient = followTaskClient;
         this.audit = audit;
     }
 
@@ -308,7 +312,7 @@ public class RepurchaseService {
         return registerAction(id, false);
     }
 
-    /** 当前批次批量登记建跟进（幂等：仅未登记行受影响）。 */
+    /** 当前批次批量登记建跟进（幂等：仅未登记行受影响）＋逐行旁路下发跟进任务（M3-B2，软降级不影响登记计数）。 */
     @Transactional
     public BatchFollowupResult batchFollowup(String period) {
         LoginUser user = requireUser();
@@ -319,12 +323,14 @@ public class RepurchaseService {
         List<AiRepurchasePrediction> rows = repo.findByBatchNoOrderByProbDescPredictionIdAsc(any.getBatchNo());
         int affected = 0;
         OffsetDateTime now = OffsetDateTime.now();
+        List<AiRepurchasePrediction> newlyRegistered = new ArrayList<>();
         for (AiRepurchasePrediction r : rows) {
             if (!Boolean.TRUE.equals(r.getFollowupRegistered())) {
                 r.setFollowupRegistered(true);
                 r.setFollowupAt(now);
                 r.setFollowupBy(user.staffId());
                 affected++;
+                newlyRegistered.add(r);
             }
         }
         if (affected > 0) {
@@ -332,6 +338,7 @@ public class RepurchaseService {
             audit.record("AI_REPURCHASE_PREDICTION", "BATCH-" + any.getBatchNo(),
                     DataScope.currentActor(), "BATCH_REGISTER_FOLLOWUP",
                     payload(Map.of("batchNo", any.getBatchNo(), "affected", affected)));
+            newlyRegistered.forEach(this::dispatchFollowTask);
         }
         return new BatchFollowupResult(any.getBatchNo(), affected, affected > 0);
     }
@@ -364,7 +371,25 @@ public class RepurchaseService {
                 DataScope.currentActor(), action,
                 payload(Map.of("customerId", r.getCustomerId(), "customerName", r.getCustomerName(),
                         "batchNo", r.getBatchNo())));
+        if (followup) {
+            dispatchFollowTask(r);
+        }
         return new ActionResult(true, id, followup ? "followup" : "push");
+    }
+
+    /** 旁路下发跟进任务（M3-B2 D3-2：type=WECHAT，content=项目+建议时机，idemKey=repurchase:predictionId:customerId:date）。 */
+    private void dispatchFollowTask(AiRepurchasePrediction r) {
+        int prob = r.getProb() == null ? 0 : r.getProb();
+        String priority = prob >= 80 ? "HIGH" : prob >= 50 ? "MEDIUM" : "LOW";
+        StringBuilder content = new StringBuilder("复购跟进：").append(r.getProjectName());
+        if (r.getTiming() != null && !r.getTiming().isBlank()) {
+            content.append("，建议时机 ").append(r.getTiming());
+        }
+        content.append("（复购概率 ").append(prob).append("%）");
+        followTaskClient.createFollowTask("REPURCHASE", String.valueOf(r.getPredictionId()),
+                r.getCustomerId(), r.getCustomerName(), null, "WECHAT",
+                content.length() > 480 ? content.substring(0, 480) : content.toString(), priority,
+                r.getStoreCode(), "repurchase:" + r.getPredictionId() + ":" + r.getCustomerId() + ":" + LocalDate.now(BJ));
     }
 
     private String nextBatchNo() {

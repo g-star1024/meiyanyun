@@ -1,12 +1,25 @@
 // ============================================================
-// FollowTask 跟进任务 store（M3-08）
-// 类型：电话/企微/到店/生日/术后/内容；状态：待跟进/已完成/已逾期。
-// KPI：我的待跟进 / 今日到期 / 已逾期 / 本月完成。
-// 权限：followuptask:view / followuptask:edit。
+// FollowTask 跟进任务 store（M3-08，M3-B2 适配层切真）
+// 数据源：/api/marketing/follow-tasks（marketing-service / follow_task，V55）。
+// 适配层铁律：导出签名全保留（tasks/filterTab/pending/overdue/done/dueToday/
+// doneThisMonth/filtered/get/create/complete/reassign/addLog/TYPE_LABEL/TYPE_ICON/
+// STATUS_LABEL/PRIORITY_LABEL），FollowTasksView template/style 零改动。
+// mock seed() 由 load() 替代（onMounted 挂载点同步改）；KPI 四键继续由 tasks
+// 本地聚合（与后端 kpi 同库同口径；OVERDUE 由后端查询侧推导随列表下发）；
+// create/complete/reassign/addLog 改 async：调 api 成功后才本地回写（响应行
+// 整行替换），失败 console.warn 返 null/false 不落地。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import {
+  appendFollowTaskLog,
+  completeFollowTask,
+  createFollowTask,
+  fetchFollowTasks,
+  reassignFollowTask,
+} from '@/api/followtask'
+import type { FollowTaskRow } from '@/api/followtask'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 
 export type FollowTaskType = 'PHONE' | 'WECHAT' | 'IN_STORE' | 'BIRTHDAY' | 'POST_OP' | 'CONTENT'
@@ -72,6 +85,23 @@ function isThisMonth(iso: string) {
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth()
 }
 
+function mapRow(row: FollowTaskRow): FollowTask {
+  return {
+    id: row.id,
+    customerName: row.customerName,
+    customerLevel: row.customerLevel ?? '普通',
+    type: row.type,
+    content: row.content ?? '',
+    deadline: row.deadline ?? '',
+    status: row.status,
+    priority: row.priority,
+    assignee: row.assignee ?? '系统派发',
+    createdAt: row.createdAt,
+    completedAt: row.completedAt ?? undefined,
+    logs: row.logs ?? [],
+  }
+}
+
 export const useFollowTaskStore = defineStore('followtask', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
@@ -99,7 +129,12 @@ export const useFollowTaskStore = defineStore('followtask', () => {
     return tasks.value.find((t) => t.id === id)
   }
 
-  function create(input: {
+  function replaceRow(row: FollowTask) {
+    const i = tasks.value.findIndex((x) => x.id === row.id)
+    if (i >= 0) tasks.value[i] = row
+  }
+
+  async function create(input: {
     customerName: string
     customerLevel?: string
     type: FollowTaskType
@@ -107,92 +142,94 @@ export const useFollowTaskStore = defineStore('followtask', () => {
     deadline: string
     priority?: FollowTaskPriority
     assignee?: string
-  }): FollowTask | null {
+  }): Promise<FollowTask | null> {
     if (!auth.can('followuptask:edit')) {
       console.warn('[followtask] 无 followuptask:edit 权限')
       return null
     }
-    const now = new Date()
-    const t: FollowTask = {
-      id: nextId('ft'),
-      customerName: input.customerName,
-      customerLevel: input.customerLevel || '普通',
-      type: input.type,
-      content: input.content,
-      deadline: new Date(input.deadline).toISOString(),
-      status: 'PENDING',
-      priority: input.priority || 'MEDIUM',
-      assignee: input.assignee || auth.user.name,
-      createdAt: now.toISOString(),
-      logs: [{ by: auth.user.name, text: '创建跟进任务', at: now.toISOString() }],
+    try {
+      const resp = await createFollowTask({
+        customerName: input.customerName,
+        customerLevel: input.customerLevel || '普通',
+        type: input.type,
+        content: input.content,
+        deadline: new Date(input.deadline).toISOString(),
+        priority: input.priority || 'MEDIUM',
+        ...(input.assignee ? { assignee: input.assignee } : {}),
+      })
+      const t = mapRow(resp.data)
+      tasks.value.unshift(t)
+      activity.log(auth.user.name, `创建跟进任务：${t.customerName} - ${TYPE_LABEL[t.type]}`, t.id)
+      return t
+    } catch (e) {
+      console.warn('[followtask] create failed', e)
+      return null
     }
-    tasks.value.unshift(t)
-    activity.log(auth.user.name, `创建跟进任务：${t.customerName} - ${TYPE_LABEL[t.type]}`, t.id)
-    return t
   }
 
-  function complete(id: string, note?: string): boolean {
+  async function complete(id: string, note?: string): Promise<boolean> {
     const t = tasks.value.find((x) => x.id === id)
     if (!t || t.status === 'DONE' || !auth.can('followuptask:edit')) return false
-    t.status = 'DONE'
-    t.completedAt = new Date().toISOString()
-    t.logs.unshift({ by: auth.user.name, text: note ? `完成：${note}` : '标记完成', at: t.completedAt })
-    activity.log(auth.user.name, `完成跟进任务：${t.customerName} - ${TYPE_LABEL[t.type]}`, t.id)
-    return true
+    try {
+      const resp = await completeFollowTask(id)
+      let row = mapRow(resp.data)
+      if (note) {
+        const logResp = await appendFollowTaskLog(id, `完成：${note}`)
+        row = mapRow(logResp.data)
+      }
+      replaceRow(row)
+      activity.log(auth.user.name, `完成跟进任务：${row.customerName} - ${TYPE_LABEL[row.type]}`, row.id)
+      return true
+    } catch (e) {
+      console.warn('[followtask] complete failed', e)
+      return false
+    }
   }
 
-  function reassign(id: string, assignee: string): boolean {
+  async function reassign(id: string, assignee: string): Promise<boolean> {
     const t = tasks.value.find((x) => x.id === id)
     if (!t || t.status === 'DONE' || !auth.can('followuptask:edit')) return false
-    t.assignee = assignee
-    t.logs.unshift({ by: auth.user.name, text: `转派给 ${assignee}`, at: new Date().toISOString() })
-    activity.log(auth.user.name, `转派跟进任务 ${t.customerName} → ${assignee}`, t.id)
-    return true
+    try {
+      const resp = await reassignFollowTask(id, assignee)
+      replaceRow(mapRow(resp.data))
+      activity.log(auth.user.name, `转派跟进任务 ${t.customerName} → ${assignee}`, t.id)
+      return true
+    } catch (e) {
+      console.warn('[followtask] reassign failed', e)
+      return false
+    }
   }
 
-  function addLog(id: string, text: string): boolean {
+  async function addLog(id: string, text: string): Promise<boolean> {
     const t = tasks.value.find((x) => x.id === id)
     if (!t || !auth.can('followuptask:edit')) return false
-    t.logs.unshift({ by: auth.user.name, text, at: new Date().toISOString() })
-    return true
+    try {
+      const resp = await appendFollowTaskLog(id, text)
+      replaceRow(mapRow(resp.data))
+      return true
+    } catch (e) {
+      console.warn('[followtask] addLog failed', e)
+      return false
+    }
   }
 
-  // ===== 种子 =====
-  let seeded = false
-  function seed() {
-    if (seeded) return
-    seeded = true
-    const now = new Date()
-    const daysAgo = (d: number) => new Date(now.getTime() - d * 86400_000).toISOString()
-    const hoursLater = (h: number) => new Date(now.getTime() + h * 3600_000).toISOString()
-    const hoursAgo = (h: number) => new Date(now.getTime() - h * 3600_000).toISOString()
-    type Seed = Omit<FollowTask, 'id' | 'logs' | 'createdAt'> & { createdAt: string }
-    const base: Seed[] = [
-      { customerName: '林晚', customerLevel: '钻石', type: 'POST_OP', content: '术后第3天回访，确认红肿消退情况，附护理提示', deadline: hoursLater(6), status: 'PENDING', priority: 'HIGH', assignee: '林微', createdAt: hoursAgo(4) },
-      { customerName: '苏晴', customerLevel: '黄金', type: 'BIRTHDAY', content: '生日关怀，发送祝福短信并推送生日礼遇券', deadline: hoursLater(28), status: 'PENDING', priority: 'MEDIUM', assignee: '林微', createdAt: hoursAgo(2) },
-      { customerName: '王蕊', customerLevel: '黄金', type: 'CONTENT', content: '沉睡唤醒，推送限时优惠到企微，引导回店', deadline: daysAgo(2), status: 'OVERDUE', priority: 'HIGH', assignee: '苏晴', createdAt: daysAgo(4) },
-      { customerName: '陈思', customerLevel: '白金', type: 'IN_STORE', content: '复诊提醒，热玛吉第2疗程，预约本周六到店', deadline: hoursLater(50), status: 'DONE', priority: 'LOW', assignee: '林微', completedAt: hoursAgo(20), createdAt: daysAgo(3) },
-      { customerName: '张敏', customerLevel: '金卡', type: 'PHONE', content: '术后回访，确认水光针后皮肤状态，提醒补水', deadline: hoursLater(30), status: 'PENDING', priority: 'MEDIUM', assignee: '苏晴', createdAt: hoursAgo(6) },
-      { customerName: '王芳', customerLevel: '银卡', type: 'WECHAT', content: '复购意向高，同步推送季度焕肤套餐', deadline: hoursAgo(3), status: 'OVERDUE', priority: 'HIGH', assignee: '林微', createdAt: daysAgo(5) },
-      { customerName: '周岚', customerLevel: '钻石', type: 'POST_OP', content: '术后7天回访，确认结痂脱落，预约复查', deadline: hoursLater(72), status: 'PENDING', priority: 'MEDIUM', assignee: '苏晴', createdAt: hoursAgo(12) },
-      { customerName: '李娜', customerLevel: '普通', type: 'BIRTHDAY', content: '生日祝福 + 到店礼券发放', deadline: hoursAgo(72), status: 'DONE', priority: 'LOW', assignee: '林微', completedAt: hoursAgo(80), createdAt: daysAgo(8) },
-    ]
-    base.forEach((s) => {
-      const logs: FollowTaskLog[] = [{ by: '系统', text: '自动创建', at: s.createdAt }]
-      if (s.status === 'DONE' && s.completedAt) {
-        logs.unshift({ by: s.assignee, text: '已按计划完成跟进', at: s.completedAt })
-      }
-      if (s.status === 'OVERDUE') {
-        logs.unshift({ by: '系统', text: '任务已逾期，请尽快处理', at: hoursAgo(2) })
-      }
-      tasks.value.push({ id: nextId('ft'), ...s, logs })
-    })
+  let loaded = false
+  async function load() {
+    if (loaded) return
+    loaded = true
+    try {
+      const resp = await fetchFollowTasks()
+      tasks.value = resp.data.tasks.map(mapRow)
+    } catch (e) {
+      loaded = false
+      console.warn('[followtask] load failed', e)
+    }
   }
 
   return {
     tasks, filterTab,
     pending, overdue, done, dueToday, doneThisMonth, filtered,
-    get, create, complete, reassign, addLog, seed,
+    get, create, complete, reassign, addLog, load,
     TYPE_LABEL, TYPE_ICON, STATUS_LABEL, PRIORITY_LABEL,
   }
 })

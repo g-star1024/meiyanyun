@@ -144,6 +144,8 @@ services:
     environment:
       <<: *seed-env
       AUDIT_SERVICE_URL: "http://meiyun-seed-audit-service:8084"
+      # M3-B2：AI 干预/复购建议下发随访任务（marketing 域不可用时软降级不落任务，不阻断 ai 侧登记）
+      MARKETING_SERVICE_URL: "http://meiyun-seed-marketing-service:8088"
       AI_CONFIG_SECRET: "${AI_CONFIG_SECRET:-meiyun-dev-ai-config-secret-change-in-prod-0123}"
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8089' && exit 0 || exit 1"]

@@ -9,7 +9,7 @@ import java.util.function.Function;
 /**
  * 业务单据号生成：前缀 + yyyyMMdd + '-' + 6 位当日序号。
  * 序号取 DB 当日最大号 +1（禁 AtomicLong 内存序列——重启/多实例会重号），synchronized 防并发同号。
- * 前缀：CP 活动 / CPN 券模板 / GR 发券记录。
+ * 前缀：CP 活动 / CPN 券模板 / GR 发券记录 / CARE 关怀任务 / FT 跟进任务。
  */
 @Component
 public class BizNoGenerator {

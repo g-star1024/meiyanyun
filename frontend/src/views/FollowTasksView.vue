@@ -24,7 +24,7 @@ import { useAuthStore } from '@/stores/auth'
 
 const store = useFollowTaskStore()
 const auth = useAuthStore()
-onMounted(() => store.seed())
+onMounted(() => store.load())
 
 const selectedId = ref<string | null>(null)
 const selected = computed<FollowTask | null>(() => {
@@ -78,9 +78,9 @@ function openForm() {
   form.value = { customerName: '', customerLevel: '普通', type: 'PHONE', content: '', deadline: local, priority: 'MEDIUM' }
   showForm.value = true
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
-  const t = store.create({ ...form.value })
+  const t = await store.create({ ...form.value })
   if (t) {
     showForm.value = false
     selectedId.value = t.id
@@ -94,10 +94,10 @@ function openNote() {
   noteText.value = ''
   showNote.value = true
 }
-function submitNote() {
+async function submitNote() {
   if (!selected.value || !noteText.value.trim()) return
-  store.addLog(selected.value.id, noteText.value.trim())
-  showNote.value = false
+  const ok = await store.addLog(selected.value.id, noteText.value.trim())
+  if (ok) showNote.value = false
 }
 
 // 转派弹层
@@ -107,14 +107,14 @@ function openAssign() {
   assignName.value = selected.value?.assignee ?? ''
   showAssign.value = true
 }
-function submitAssign() {
+async function submitAssign() {
   if (!selected.value || !assignName.value.trim()) return
-  store.reassign(selected.value.id, assignName.value.trim())
-  showAssign.value = false
+  const ok = await store.reassign(selected.value.id, assignName.value.trim())
+  if (ok) showAssign.value = false
 }
 
 function doComplete() {
-  if (selected.value) store.complete(selected.value.id)
+  if (selected.value) void store.complete(selected.value.id)
 }
 </script>
 

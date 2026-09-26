@@ -74,6 +74,11 @@ org:
     # 智能排班员工池跨服务取数（按角色枚举在职员工，X-Internal-Token 系统身份，组织域不可用时客户端全降级）
     url: ${ORG_SERVICE_URL:http://127.0.0.1:8086}
 
+marketing:
+  service:
+    # M3-B2 跟进任务下发（churn intervene / repurchase followup 旁路建真实任务，X-Internal-Token 系统身份，营销域故障软降级不阻断 ai 侧登记）
+    url: ${MARKETING_SERVICE_URL:http://127.0.0.1:8088}
+
 logging:
   level:
     com.meiyun: INFO

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.ai.audit.AuditRecorder;
 import com.meiyun.ai.client.CustomerProfileClient;
+import com.meiyun.ai.client.MarketingFollowTaskClient;
 import com.meiyun.ai.client.TxnChurnClient;
 import com.meiyun.ai.domain.AiChurnPrediction;
 import com.meiyun.ai.domain.AiChurnPredictionRepository;
@@ -37,8 +38,8 @@ import java.util.Map;
  * <p>诚实口径：关键因子必须由模型从入模真实信号中择一概括（不得编造客诉/差评/行为埋点等无数据源事实）；
  * 建议干预是给运营的建议而非已执行动作；模型 AUC/召回率暂无真实流失样本回流，不编造数值，KPI 中如实标注
  * 「v1 基线 · 待回流评估」；客诉差评、互动行为两因子暂无数据源，因子表 available=false 不参与评分；
- * 无历史批次不编造趋势，前端据空态诚实引导；干预为站内幂等登记，真实流失管理 M3-10、唤醒活动 M2-17、
- * 营销推送 M5-03 下发均为远期 Backlog。
+ * 无历史批次不编造趋势，前端据空态诚实引导；干预登记置位后旁路下发真实跟进任务（M3-B2 经 marketing
+     * 内部端点，软降级不阻断登记，idemKey 防重），真实流失管理 M3-10、唤醒活动 M2-17、营销推送 M5-03 下发为远期 Backlog。
  */
 @Service
 public class ChurnService {
@@ -86,6 +87,7 @@ public class ChurnService {
     private final FeatureInvokeService featureInvokeService;
     private final TxnChurnClient txnClient;
     private final CustomerProfileClient customerClient;
+    private final MarketingFollowTaskClient followTaskClient;
     private final AuditRecorder audit;
     private final ObjectMapper json = new ObjectMapper();
 
@@ -94,12 +96,14 @@ public class ChurnService {
                         FeatureInvokeService featureInvokeService,
                         TxnChurnClient txnClient,
                         CustomerProfileClient customerClient,
+                        MarketingFollowTaskClient followTaskClient,
                         AuditRecorder audit) {
         this.repo = repo;
         this.invokeLogRepo = invokeLogRepo;
         this.featureInvokeService = featureInvokeService;
         this.txnClient = txnClient;
         this.customerClient = customerClient;
+        this.followTaskClient = followTaskClient;
         this.audit = audit;
     }
 
@@ -286,7 +290,7 @@ public class ChurnService {
                 FACTOR_BASELINE);
     }
 
-    /** 登记干预（站内幂等）；真实流失管理 M3-10/唤醒 M2-17/推送 M5-03 下发为远期 Backlog。 */
+    /** 登记干预（站内幂等）＋旁路下发真实跟进任务（M3-B2，marketing 软降级不阻断登记）；唤醒 M2-17/推送 M5-03 下发为远期 Backlog。 */
     @Transactional
     public ActionResult registerIntervene(Long id) {
         LoginUser user = requireUser();
@@ -304,10 +308,26 @@ public class ChurnService {
                 DataScope.currentActor(), "REGISTER_INTERVENE",
                 payload(Map.of("customerId", r.getCustomerId(), "customerName", r.getCustomerName(),
                         "batchNo", r.getBatchNo(), "score", r.getScore(), "riskLevel", r.getRiskLevel())));
+        dispatchFollowTask(r);
         return new ActionResult(true, id, "intervene");
     }
 
-    /** 当前批次批量登记干预（幂等：仅未登记行受影响）。 */
+    /** 旁路下发跟进任务（M3-B2 D3-1：type=PHONE，content=suggestedAction，idemKey=churn:predictionId:customerId:date）。 */
+    private void dispatchFollowTask(AiChurnPrediction r) {
+        String priority = switch (r.getRiskLevel() == null ? "low" : r.getRiskLevel()) {
+            case "high" -> "HIGH";
+            case "mid" -> "MEDIUM";
+            default -> "LOW";
+        };
+        String content = r.getSuggestedAction() == null || r.getSuggestedAction().isBlank()
+                ? "流失预警干预跟进（风险分 " + r.getScore() + "）"
+                : "流失干预：" + r.getSuggestedAction();
+        followTaskClient.createFollowTask("CHURN", String.valueOf(r.getPredictionId()),
+                r.getCustomerId(), r.getCustomerName(), null, "PHONE", content, priority,
+                r.getStoreCode(), "churn:" + r.getPredictionId() + ":" + r.getCustomerId() + ":" + LocalDate.now(BJ));
+    }
+
+    /** 当前批次批量登记干预（幂等：仅未登记行受影响）＋逐行旁路下发跟进任务（M3-B2，软降级不影响登记计数）。 */
     @Transactional
     public BatchInterveneResult batchIntervene() {
         LoginUser user = requireUser();
@@ -317,12 +337,14 @@ public class ChurnService {
         List<AiChurnPrediction> rows = repo.findByBatchNoOrderByScoreDescPredictionIdAsc(any.getBatchNo());
         int affected = 0;
         OffsetDateTime now = OffsetDateTime.now();
+        List<AiChurnPrediction> newlyRegistered = new ArrayList<>();
         for (AiChurnPrediction r : rows) {
             if (!Boolean.TRUE.equals(r.getInterveneRegistered())) {
                 r.setInterveneRegistered(true);
                 r.setInterveneAt(now);
                 r.setInterveneBy(user.staffId());
                 affected++;
+                newlyRegistered.add(r);
             }
         }
         if (affected > 0) {
@@ -330,6 +352,7 @@ public class ChurnService {
             audit.record("AI_CHURN_PREDICTION", "BATCH-" + any.getBatchNo(),
                     DataScope.currentActor(), "BATCH_REGISTER_INTERVENE",
                     payload(Map.of("batchNo", any.getBatchNo(), "affected", affected)));
+            newlyRegistered.forEach(this::dispatchFollowTask);
         }
         return new BatchInterveneResult(any.getBatchNo(), affected, affected > 0);
     }
