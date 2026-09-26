@@ -166,6 +166,8 @@ const router = createRouter({
     { path: '/m5-assets', name: 'm5-assets', component: () => import('@/views/M5AssetsView.vue') },
     { path: '/m5-dashboard', name: 'm5-dashboard', component: () => import('@/views/M5DashboardView.vue') },
     { path: '/m5-settings', name: 'm5-settings', component: () => import('@/views/M5SettingsView.vue') },
+    // P6-B100 自动化规则管理（B90 遗留收口：Flow 五端点前端页）
+    { path: '/m5-automation', name: 'm5-automation', component: () => import('@/views/AutomationRuleView.vue') },
 
     // ===== Wave 5 · 四中台底座（PC only） =====
     // T1 权限中台（RBAC 真源）

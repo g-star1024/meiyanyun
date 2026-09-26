@@ -233,6 +233,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/m5-poster', label: '裂变海报', icon: 'scissors', permission: 'poster:view' },
       { to: '/m5-referral', label: '老带新', icon: 'customer', permission: 'referralCampaign:view' },
       { to: '/m5-calendar', label: '会员日/节日营销', icon: 'calendar', permission: 'calendar:view' },
+      { to: '/m5-automation', label: '自动化规则', icon: 'settings', permission: 'marketing:view' },
     ],
   },
   {
@@ -500,6 +501,7 @@ export const PAGE_TITLES: Record<string, PageTitle> = {
   '/m5-assets': { breadcrumb: '营销中心 / 素材库', title: '素材库' },
   '/m5-dashboard': { breadcrumb: '营销中心 / 营销数据看板', title: '营销数据看板' },
   '/m5-settings': { breadcrumb: '营销中心 / 营销设置', title: '营销设置' },
+  '/m5-automation': { breadcrumb: '营销中心 / 自动化规则', title: '自动化规则' },
 
   // M6 数据财务
   '/m6-ledger': { breadcrumb: '财务 / 收支流水', title: '收支流水' },
