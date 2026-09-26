@@ -19,6 +19,7 @@ import {
   type ProfileView, type ProfileCandidate, type ProfileStats,
   type ProfileWeightModel, type ProfileReview,
 } from '@/api/ai'
+import { syncProfileToSegment } from '@/api/segment'
 
 const toast = useToast()
 
@@ -173,7 +174,24 @@ async function applyToSegment() {
   try {
     const res = await applyProfileToSegment(profile.value.profileId)
     if (profile.value) profile.value = { ...profile.value, appliedToSegment: res.appliedToSegment }
-    toast.success('画像已登记应用到分群（跨域标签工厂/分群推送见远期规划）')
+    // D3-3 第三条（M3-B3）：apply 登记成功后前端中转到 customer 域 sync-profile，
+    // 画像 tags 回写 tag_pool + 打标，groups upsert 为 AI 分群（TAG_ANY 条件，RULE 引擎实时可算）。
+    // 中转失败不阻断 apply 主流程（软降级 toast 留痕，分群页可后续手工同步）。
+    try {
+      const sync = await syncProfileToSegment({
+        profileId: profile.value.profileId,
+        customerId: profile.value.customerId,
+        customerName: profile.value.customerName,
+        groups: profile.value.groups ?? [],
+        tags: (profile.value.tags ?? []).map((t) => t.label),
+      })
+      const parts = [`画像已登记应用到分群，回写标签 ${sync.tagsAssigned} 个`]
+      if (sync.groupsCreated.length > 0) parts.push(`新建 AI 分群「${sync.groupsCreated.join('」「')}」`)
+      if (sync.groupsExisted.length > 0) parts.push(`已关联分群「${sync.groupsExisted.join('」「')}」`)
+      toast.success(parts.join('；'))
+    } catch (e) {
+      toast.warning('画像已登记应用到分群；标签/AI 分群同步失败（可稍后重试）：' + errMsg(e))
+    }
     loadStats()
   } catch (e) {
     toast.error('应用到分群失败：' + errMsg(e))

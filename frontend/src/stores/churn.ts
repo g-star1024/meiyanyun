@@ -1,13 +1,26 @@
 // ============================================================
-// Churn 流失预警 store（M3-10）
-// 风险客户：等级/最后到店天数/风险等级/原因标签/建议动作/状态/归属人。
-// KPI：高风险 / 中风险 / 本月挽回 / 流失率。
+// Churn 流失预警 store（M3-10 / M3-B3 切真）
+// 数据源：ai-service /api/ai/churn（引擎评分结果直读，零新表）。
+// 映射口径（DESIGN-M3 §4 B3 + 04 登记）：
+//  - predictionId→id(String)；riskLevel high/mid/low→HIGH/MEDIUM/LOW；score→riskScore；
+//  - keyFactor→reasons 四值关键词映射；recencyDays→lastVisitDays；
+//  - interveneRegistered→status=INTERVENING；详情四格（totalSpent/lastSpent/visitCount）引擎无字段→0 兜底；
+//  - churnRate=highCount/scoredCustomers（ChurnStats 无流失率字段）；
+//  - 「本月挽回」KPI 映射 interveneTotal（引擎无挽回追踪字段）。
+// 写动作：intervene 乐观置位 + registerChurnIntervene 后台登记（失败回滚+toast）；
+// markRecovered/markLost 引擎无端点，本地状态标记保留。
 // 权限：churn:view / churn:edit。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from './m5Coupon'
+import {
+  listChurn, getChurnStats, registerChurnIntervene,
+  type ChurnRow, type ChurnStats,
+} from '@/api/ai'
 
 export type ChurnRisk = 'HIGH' | 'MEDIUM' | 'LOW'
 export type ChurnReason = 'PRICE' | 'SERVICE' | 'COMPETITION' | 'NATURAL'
@@ -63,12 +76,71 @@ function isThisMonth(iso: string) {
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth()
 }
 
+function mapRisk(riskLevel: string): ChurnRisk {
+  const r = (riskLevel || '').toLowerCase()
+  if (r === 'high') return 'HIGH'
+  if (r === 'mid' || r === 'medium') return 'MEDIUM'
+  return 'LOW'
+}
+
+function mapReasons(keyFactor: string): ChurnReason[] {
+  const k = keyFactor || ''
+  const out: ChurnReason[] = []
+  if (/价|券|折|费|贵/.test(k)) out.push('PRICE')
+  if (/服务|投诉|体验|态度/.test(k)) out.push('SERVICE')
+  if (/竞品|分流|同行|别家/.test(k)) out.push('COMPETITION')
+  if (/自然|到店|间隔|沉睡|久|活跃/.test(k)) out.push('NATURAL')
+  if (!out.length) out.push('NATURAL')
+  return out
+}
+
+function mapRow(row: ChurnRow): ChurnCustomer {
+  const risk = mapRisk(row.riskLevel)
+  const logs: ChurnLog[] = [
+    {
+      id: nextId('clog'),
+      by: '系统',
+      at: row.createdAt ?? new Date().toISOString(),
+      action: '模型识别为' + RISK_LABEL[risk],
+      note: row.keyFactor || undefined,
+    },
+  ]
+  const status: ChurnStatus = row.interveneRegistered ? 'INTERVENING' : 'PENDING'
+  if (row.interveneRegistered) {
+    logs.unshift({
+      id: nextId('clog'),
+      by: '系统',
+      at: row.createdAt ?? new Date().toISOString(),
+      action: '下发干预任务',
+      note: 'ai 引擎已登记干预',
+    })
+  }
+  return {
+    id: String(row.predictionId),
+    name: row.customerName,
+    level: row.level || '普通',
+    lastVisitDays: row.recencyDays ?? 0,
+    totalSpent: 0,
+    lastSpent: 0,
+    visitCount: 0,
+    risk,
+    riskScore: Math.round(row.score ?? 0),
+    reasons: mapReasons(row.keyFactor),
+    suggestedAction: row.suggestedAction || '',
+    status,
+    assignee: '—',
+    logs,
+  }
+}
+
 export const useChurnStore = defineStore('churn', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const toast = useToast()
 
   const customers = ref<ChurnCustomer[]>([])
   const filterRisk = ref<ChurnRisk | 'ALL'>('ALL')
+  const stats = ref<ChurnStats | null>(null)
 
   const high = computed(() => customers.value.filter((c) => c.risk === 'HIGH' && c.status !== 'RECOVERED' && c.status !== 'LOST'))
   const medium = computed(() => customers.value.filter((c) => c.risk === 'MEDIUM' && c.status !== 'RECOVERED' && c.status !== 'LOST'))
@@ -77,7 +149,11 @@ export const useChurnStore = defineStore('churn', () => {
     const last = c.logs.find((l) => l.action === '标记挽回')
     return last && isThisMonth(last.at)
   }))
+  // 「本月挽回」KPI 口径：引擎无挽回追踪字段，映射 ChurnStats.interveneTotal（04 登记）
+  const interveneTotal = computed(() => stats.value?.interveneTotal ?? recoveredThisMonth.value.length)
   const churnRate = computed(() => {
+    const s = stats.value
+    if (s && s.scoredCustomers > 0) return Math.round((s.highCount / s.scoredCustomers) * 100)
     if (!customers.value.length) return 0
     const lost = customers.value.filter((c) => c.status === 'LOST').length
     return Math.round((lost / customers.value.length) * 100)
@@ -99,6 +175,7 @@ export const useChurnStore = defineStore('churn', () => {
   function intervene(id: string, action: string, note?: string): boolean {
     const c = customers.value.find((x) => x.id === id)
     if (!c || !auth.can('churn:edit')) return false
+    const prevStatus = c.status
     c.status = 'INTERVENING'
     c.logs.unshift({
       id: nextId('clog'),
@@ -108,6 +185,15 @@ export const useChurnStore = defineStore('churn', () => {
       note,
     })
     activity.log(auth.user.name, `下发干预：${c.name} - ${action}`, c.id)
+    // 乐观置位后后台登记 ai 引擎（B2 已联动建跟进任务）；失败回滚本地态
+    registerChurnIntervene(Number(id))
+      .then(() => {
+        if (stats.value) stats.value = { ...stats.value, interveneTotal: stats.value.interveneTotal + 1 }
+      })
+      .catch((e) => {
+        c.status = prevStatus
+        toast.error(errMsg(e, '干预登记失败'))
+      })
     return true
   }
 
@@ -142,45 +228,24 @@ export const useChurnStore = defineStore('churn', () => {
     return true
   }
 
-  // ===== 种子 =====
+  // ===== 加载（切真：ai /api/ai/churn 直读；保留 seed 名兼容视图入口） =====
   let seeded = false
-  function seed() {
+  async function seed() {
     if (seeded) return
     seeded = true
-    const now = new Date()
-    const daysAgo = (d: number) => new Date(now.getTime() - d * 86400_000).toISOString()
-
-    type Seed = Omit<ChurnCustomer, 'id' | 'logs' | 'riskScore'>
-    const base: Seed[] = [
-      { name: '孙某某', level: '金卡', lastVisitDays: 60, totalSpent: 18600, lastSpent: 1200, visitCount: 8, risk: 'HIGH', reasons: ['COMPETITION'], suggestedAction: '发放限时8折优惠券 + 顾问电话回访', status: 'PENDING', assignee: '林微' },
-      { name: '周某某', level: '银卡', lastVisitDays: 45, totalSpent: 6400, lastSpent: 800, visitCount: 5, risk: 'MEDIUM', reasons: ['NATURAL'], suggestedAction: '到店间隔过长，企微发送新品体验邀约', status: 'INTERVENING', assignee: '苏晴' },
-      { name: '吴某某', level: '普通', lastVisitDays: 30, totalSpent: 2200, lastSpent: 500, visitCount: 3, risk: 'MEDIUM', reasons: ['SERVICE'], suggestedAction: '互动骤减，邀请到店免费皮肤检测', status: 'PENDING', assignee: '林微' },
-      { name: '赵某某', level: '钻石', lastVisitDays: 90, totalSpent: 42000, lastSpent: 3800, visitCount: 12, risk: 'HIGH', reasons: ['PRICE', 'COMPETITION'], suggestedAction: '高价值客户，店长亲自回访并提供专属套餐', status: 'INTERVENING', assignee: '林微' },
-      { name: '郑某某', level: '金卡', lastVisitDays: 25, totalSpent: 9800, lastSpent: 1500, visitCount: 6, risk: 'LOW', reasons: ['NATURAL'], suggestedAction: '发送月度活动海报，保持触达', status: 'RECOVERED', assignee: '苏晴' },
-      { name: '冯某某', level: '银卡', lastVisitDays: 75, totalSpent: 5200, lastSpent: 900, visitCount: 4, risk: 'HIGH', reasons: ['SERVICE', 'PRICE'], suggestedAction: '上次服务投诉未闭环，店长致歉+补偿券', status: 'PENDING', assignee: '林微' },
-      { name: '陈某某', level: '普通', lastVisitDays: 120, totalSpent: 1800, lastSpent: 600, visitCount: 2, risk: 'HIGH', reasons: ['NATURAL'], suggestedAction: '低价唤醒券 + 短信触达', status: 'LOST', assignee: '苏晴' },
-    ]
-    base.forEach((s, i) => {
-      const logs: ChurnLog[] = [
-        { id: nextId('clog'), by: '系统', at: daysAgo(s.lastVisitDays + 5), action: '模型识别为' + RISK_LABEL[s.risk] },
-      ]
-      if (s.status === 'INTERVENING') {
-        logs.unshift({ id: nextId('clog'), by: s.assignee, at: daysAgo(2), action: '下发干预任务', note: s.suggestedAction })
-      }
-      if (s.status === 'RECOVERED') {
-        logs.unshift({ id: nextId('clog'), by: s.assignee, at: daysAgo(3), action: '标记挽回', note: '客户已回店体验热玛吉，充值 6000' })
-      }
-      if (s.status === 'LOST') {
-        logs.unshift({ id: nextId('clog'), by: s.assignee, at: daysAgo(i + 1), action: '标记流失', note: '多次触达无回应' })
-      }
-      const score = s.risk === 'HIGH' ? 85 + (i % 3) * 3 : s.risk === 'MEDIUM' ? 60 + (i % 3) * 5 : 35
-      customers.value.push({ id: nextId('ch'), ...s, riskScore: score, logs })
-    })
+    try {
+      const [rows, s] = await Promise.all([listChurn(), getChurnStats()])
+      customers.value = rows.map(mapRow)
+      stats.value = s
+    } catch (e) {
+      seeded = false
+      toast.error(errMsg(e, '流失预警加载失败'))
+    }
   }
 
   return {
     customers, filterRisk,
-    high, medium, recoveredThisMonth, churnRate, filtered,
+    high, medium, recoveredThisMonth, interveneTotal, churnRate, filtered,
     get, intervene, markRecovered, markLost, seed,
     RISK_LABEL, REASON_LABEL, STATUS_LABEL,
   }

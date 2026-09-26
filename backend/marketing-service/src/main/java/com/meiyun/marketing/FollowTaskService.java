@@ -36,7 +36,7 @@ public class FollowTaskService {
     private static final ZoneOffset BIZ_TZ = ZoneOffset.of("+08:00");
     private static final List<String> TYPES = List.of("PHONE", "WECHAT", "IN_STORE", "BIRTHDAY", "POST_OP", "CONTENT");
     private static final List<String> PRIORITIES = List.of("HIGH", "MEDIUM", "LOW");
-    private static final List<String> AI_SOURCES = List.of("CHURN", "REPURCHASE");
+    private static final List<String> AI_SOURCES = List.of("CHURN", "REPURCHASE", "SEGMENT");
 
     private final FollowTaskRepository followRepo;
     private final BizNoGenerator bizNo;

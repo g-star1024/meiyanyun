@@ -32,7 +32,7 @@ const selected = computed<ChurnCustomer | null>(() => {
 const kpis = computed(() => [
   { label: '高风险', icon: 'alert', value: String(store.high.length), tone: 'danger' as const },
   { label: '中风险', icon: 'alert', value: String(store.medium.length), tone: 'warning' as const },
-  { label: '本月挽回', icon: 'customer', value: String(store.recoveredThisMonth.length), tone: 'success' as const },
+  { label: '本月挽回', icon: 'customer', value: String(store.interveneTotal), tone: 'success' as const },
   { label: '流失率', icon: 'trend-down', value: `${store.churnRate}%`, tone: 'text' as const },
 ])
 

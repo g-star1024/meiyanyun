@@ -12,6 +12,7 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import { useSegmentStore, type Segment, type SegmentType } from '@/stores/segment'
+import type { SegmentCond } from '@/api/segment'
 
 const store = useSegmentStore()
 onMounted(() => store.seed())
@@ -88,22 +89,34 @@ function openForm() {
   form.value = { name: '', type: 'HIGH_POTENTIAL', rules: defaultRules() }
   showForm.value = true
 }
-function buildConditions(rules: RuleState[]): string[] {
-  const out: string[] = []
+function buildConditions(rules: RuleState[]): SegmentCond[] {
+  const out: SegmentCond[] = []
   for (const r of rules) {
     if (!r.on) continue
-    if (r.key === 'dormant') out.push(`${Number(r.days) || 60} 天未到店`)
-    else if (r.key === 'visit') out.push(`近 ${Number(r.days) || 30} 天到店 ≥ ${Number(r.times) || 1} 次`)
-    else if (r.key === 'spend') out.push(`累计消费 ${Number(r.spendMin) || 0}-${Number(r.spendMax) || 0} 元`)
-    else if (r.key === 'level') out.push(`等级 ≥ ${r.level}`)
-    else if (r.key === 'tag') out.push(`带「${r.tag?.trim() || '未命名'}」标签`)
+    if (r.key === 'dormant') {
+      const days = Number(r.days) || 60
+      out.push({ kind: 'DORMANT_DAYS', days, label: `${days} 天未到店` })
+    } else if (r.key === 'visit') {
+      const days = Number(r.days) || 30
+      const times = Number(r.times) || 1
+      out.push({ kind: 'VISIT_IN_DAYS', days, times, label: `近 ${days} 天到店 ≥ ${times} 次` })
+    } else if (r.key === 'spend') {
+      const min = Number(r.spendMin) || 0
+      const max = Number(r.spendMax) || 0
+      out.push({ kind: 'SPEND_RANGE', min, max, label: `累计消费 ${min}-${max} 元` })
+    } else if (r.key === 'level') {
+      out.push({ kind: 'LEVEL_GTE', level: r.level, label: `等级 ≥ ${r.level}` })
+    } else if (r.key === 'tag') {
+      const tag = r.tag?.trim() || '未命名'
+      out.push({ kind: 'TAG_ANY', tags: [tag], label: `带「${tag}」标签` })
+    }
   }
   return out
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
   const conds = buildConditions(form.value.rules)
-  const seg = store.createSegment({ name: form.value.name, type: form.value.type, conditions: conds })
+  const seg = await store.createSegment({ name: form.value.name, type: form.value.type, conds })
   if (seg) {
     showForm.value = false
     selectedId.value = seg.id
