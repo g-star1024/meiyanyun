@@ -17,6 +17,7 @@ import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
 import CSelect from '@/components/CSelect.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
+import CDrawer from '@/components/CDrawer.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import CKpi from '@/components/CKpi.vue'
 import CIcon from '@/components/CIcon.vue'
@@ -38,6 +39,7 @@ const tab = ref<Tab>('batches')
 onMounted(() => {
   followup.refreshSop(auth.user.storeId)
   followup.loadSopTemplate()
+  followup.loadSopTemplateList()
 })
 
 const methodOptions = [
@@ -111,6 +113,33 @@ async function addNode() {
 }
 async function doResetTemplate() {
   await followup.resetSopTemplate()
+}
+
+// ---------------- P6-B101 多模板（选择器 / 新建门店模板 / 节点排序） ----------------
+/** 模板选择器选项：集团模板标注「集团」，本店模板标注店码。 */
+const templateOptions = computed(() =>
+  followup.sopTemplateList.map((t) => ({
+    value: t.templateNo,
+    label: `${t.name}（${t.storeCode ?? '集团'} · ${t.nodeCount} 节点）`,
+  })),
+)
+function onSelectTemplate(v: string) {
+  followup.selectSopTemplate(v)
+}
+const createOpen = ref(false)
+const newTemplateName = ref('')
+const canCreateTemplate = computed(() => !!newTemplateName.value.trim())
+async function doCreateTemplate() {
+  if (!canCreateTemplate.value) return
+  const no = await followup.createStoreTemplate(newTemplateName.value)
+  if (no) {
+    createOpen.value = false
+    newTemplateName.value = ''
+  }
+}
+/** 节点上移/下移（行号交换，天数不变，仅影响此后新批次的生成顺序）。 */
+function moveNode(id: string, dir: -1 | 1) {
+  followup.moveSopNode(id, dir)
 }
 </script>
 
@@ -240,6 +269,16 @@ async function doResetTemplate() {
       <template #header>
         <div class="tpl__head">
           <h3 class="tpl__title">术后随访 SOP 模板</h3>
+          <CSelect
+            :model-value="followup.currentSopTemplateNo"
+            width="240px"
+            :options="templateOptions"
+            placeholder="选择模板"
+            @update:model-value="(v) => onSelectTemplate(v as string)"
+          />
+          <CButton variant="ghost" size="sm" v-perm.disable="'followup:edit'" @click="createOpen = true">
+            <CIcon name="plus" :size="13" />新建门店模板
+          </CButton>
           <CButton variant="ghost" size="sm" v-perm.disable="'followup:edit'" @click="doResetTemplate">
             <CIcon name="refresh" :size="13" />恢复默认
           </CButton>
@@ -253,7 +292,7 @@ async function doResetTemplate() {
 
       <div class="tpl__list">
         <div
-          v-for="n in followup.sopTemplate"
+          v-for="(n, idx) in followup.sopTemplate"
           :key="n.id"
           class="tpl-row"
           :class="{ 'tpl-row--off': n.enabled === false }"
@@ -267,6 +306,16 @@ async function doResetTemplate() {
             <span class="tpl-row__stage">术后第 {{ n.dayOffset }} 天 · {{ FOLLOWUP_METHOD[n.method]?.label }}</span>
           </div>
           <div class="tpl-row__ops">
+            <CButton
+              variant="ghost" size="sm" class="tpl-row__move"
+              :disabled="idx === 0 || !auth.can('followup:edit')"
+              @click="moveNode(n.id, -1)"
+            >上移</CButton>
+            <CButton
+              variant="ghost" size="sm" class="tpl-row__move"
+              :disabled="idx === followup.sopTemplate.length - 1 || !auth.can('followup:edit')"
+              @click="moveNode(n.id, 1)"
+            >下移</CButton>
             <div class="tpl-field">
               <label>术后第</label>
               <input
@@ -315,11 +364,30 @@ async function doResetTemplate() {
         </div>
       </div>
     </CCard>
+
+    <!-- P6-B101：新建门店模板抽屉（名称必填，创建后自动切换为编排目标） -->
+    <CDrawer :show="createOpen" title="新建门店模板" size="sm" @update:show="createOpen = $event">
+      <div class="tpl-create">
+        <p class="tpl-create__hint">
+          门店模板仅本店可用，排程时优先于集团模板；初始复制内置 4 节点（1/3/7/30 天），创建后可自由编排。
+        </p>
+        <CInput v-model="newTemplateName" placeholder="模板名称，如：旗舰店光电术后 SOP" />
+        <div class="tpl-create__ops">
+          <CButton variant="primary" size="sm" :disabled="!canCreateTemplate" @click="doCreateTemplate">创建并切换</CButton>
+          <CButton variant="ghost" size="sm" @click="createOpen = false">取消</CButton>
+        </div>
+      </div>
+    </CDrawer>
   </div>
 </template>
 
 <style scoped>
 .sop { display: flex; flex-direction: column; gap: var(--s-lg); }
+
+.tpl-create { display: flex; flex-direction: column; gap: var(--s-md); }
+.tpl-create__hint { font-size: var(--t-sm); color: var(--c-text-3); line-height: 1.6; margin: 0; }
+.tpl-create__ops { display: flex; gap: var(--s-sm); }
+.tpl-row__move { flex-shrink: 0; }
 
 .warnbar {
   display: flex; align-items: center; gap: var(--s-sm);

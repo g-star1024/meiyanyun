@@ -106,6 +106,22 @@ public class Followup {
     @Column(name = "adverse_note", length = 500)
     private String adverseNote;
 
+    /** 不良反应处置状态（P6-B101 处置台）：OPEN（待处置）/PROCESSING（处置中）/RESOLVED（已闭环）；无不良反应为空。 */
+    @Column(name = "adverse_status", length = 16)
+    private String adverseStatus;
+
+    /** 不良反应处置备注（RESOLVED 闭环必填留痕）。 */
+    @Column(name = "adverse_handle_note", length = 500)
+    private String adverseHandleNote;
+
+    /** 不良反应最近处置人姓名（组织解析失败回退工号）。 */
+    @Column(name = "adverse_handle_by", length = 64)
+    private String adverseHandleBy;
+
+    /** 不良反应最近处置时间。 */
+    @Column(name = "adverse_handle_at")
+    private OffsetDateTime adverseHandleAt;
+
     @Column(name = "need_revisit", nullable = false, columnDefinition = "boolean default false")
     private boolean needRevisit = false;
 

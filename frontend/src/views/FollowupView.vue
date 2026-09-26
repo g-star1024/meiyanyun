@@ -18,6 +18,7 @@ import CSelect from '@/components/CSelect.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CPagination from '@/components/CPagination.vue'
+import CLineChart from '@/components/CLineChart.vue'
 import {
   useFollowupStore,
   type Followup,
@@ -76,6 +77,8 @@ watch(keyword, () => {
 
 onMounted(() => {
   void reloadList({ page: 1 })
+  reloadTrend()
+  void followup.loadAdverseList()
 })
 
 const tabs = computed(() => [
@@ -102,6 +105,72 @@ const kpis = computed(() => [
   { label: '平均满意度', value: followup.stats.avgSatisfaction ? followup.stats.avgSatisfaction.toFixed(1) + '★' : '—', tone: 'brand' as const, icon: 'trend-up' as const },
   { label: '不良反应跟进', value: String(followup.stats.adverseCount), tone: 'danger' as const, icon: 'alert' as const },
 ])
+
+// ---------------- P6-B101 结构化分析：满意度趋势 ----------------
+const trendRange = ref('30')
+const trendGranularity = ref('day')
+const trendRangeOptions = [
+  { value: '7', label: '近 7 天' },
+  { value: '30', label: '近 30 天' },
+  { value: '90', label: '近 90 天' },
+]
+const trendGranularityOptions = [
+  { value: 'day', label: '按日' },
+  { value: 'week', label: '按周' },
+]
+/** +8 业务时区日期串（与后端分桶口径一致）。 */
+function trendDayStr(backDays: number) {
+  const d = new Date(Date.now() + 8 * 3600_000)
+  d.setUTCDate(d.getUTCDate() - backDays)
+  return d.toISOString().slice(0, 10)
+}
+function reloadTrend() {
+  void followup.loadTrend({
+    from: trendDayStr(Number(trendRange.value) - 1),
+    to: trendDayStr(0),
+    granularity: trendGranularity.value,
+  })
+}
+watch([trendRange, trendGranularity], reloadTrend)
+/** x 轴标签抽样（稠密桶过多时防重叠），长度与数据点对齐。 */
+const trendCategories = computed(() => {
+  const pts = followup.trendPoints
+  const step = Math.max(1, Math.ceil(pts.length / 10))
+  return pts.map((p, i) => (i % step === 0 || i === pts.length - 1 ? p.bucket.slice(5) : ''))
+})
+const trendSeries = computed(() => [
+  { name: '平均满意度', values: followup.trendPoints.map((p) => Number(p.avgSatisfaction)) },
+])
+const trendSummary = computed(() => ({
+  done: followup.trendPoints.reduce((s, p) => s + p.doneCount, 0),
+  adverse: followup.trendPoints.reduce((s, p) => s + p.adverseCount, 0),
+}))
+
+// ---------------- P6-B101 结构化分析：不良反应处置台 ----------------
+const adverseStatusOptions = [
+  { value: 'OPEN', label: '待处置' },
+  { value: 'PROCESSING', label: '处置中' },
+  { value: 'RESOLVED', label: '已闭环' },
+]
+function adversePill(s?: string): { status: 'warning' | 'info' | 'success'; text: string } {
+  if (s === 'RESOLVED') return { status: 'success', text: '已闭环' }
+  if (s === 'PROCESSING') return { status: 'info', text: '处置中' }
+  return { status: 'warning', text: '待处置' }
+}
+const handleTarget = ref<Followup | null>(null)
+const handleForm = ref({ status: 'PROCESSING', note: '' })
+function openHandle(f: Followup) {
+  handleTarget.value = f
+  handleForm.value = { status: f.adverseStatus === 'PROCESSING' ? 'RESOLVED' : 'PROCESSING', note: '' }
+}
+const canSubmitHandle = computed(() =>
+  !!handleTarget.value && (handleForm.value.status !== 'RESOLVED' || !!handleForm.value.note.trim()),
+)
+async function submitHandle() {
+  if (!handleTarget.value || !canSubmitHandle.value) return
+  const ok = await followup.handleAdverse(handleTarget.value.id, handleForm.value.status, handleForm.value.note)
+  if (ok) handleTarget.value = null
+}
 
 // 超期预警条：计数取 stats；最早超期文案取待回访首页首条（planDate 升序）
 const earliestOverdueLabel = computed(() => {
@@ -473,6 +542,51 @@ async function submitPlan() {
       </template>
     </CWorkbenchShell>
 
+    <!-- P6-B101 结构化分析：满意度趋势（稠密补零序列，仅计已核销随访） -->
+    <CCard class="trend" padding="md">
+      <template #header>
+        <div class="ana__head">
+          <h3 class="ana__title">满意度趋势</h3>
+          <CSelect :model-value="trendRange" width="110px" :options="trendRangeOptions" @update:model-value="(v) => trendRange = String(v)" />
+          <CSelect :model-value="trendGranularity" width="90px" :options="trendGranularityOptions" @update:model-value="(v) => trendGranularity = String(v)" />
+        </div>
+      </template>
+      <CLineChart :categories="trendCategories" :series="trendSeries" :height="200" :max="5" />
+      <div class="trend__foot">
+        区间回访完成 <strong>{{ trendSummary.done }}</strong> 单 · 不良反应 <strong>{{ trendSummary.adverse }}</strong> 起（无回访日期补零，满意度仅计已评分）
+      </div>
+    </CCard>
+
+    <!-- P6-B101 结构化分析：不良反应处置台 -->
+    <CCard class="adverse" padding="md">
+      <template #header>
+        <div class="ana__head">
+          <h3 class="ana__title">不良反应处置台</h3>
+          <CSelect
+            :model-value="followup.adverseStatusFilter" width="130px" :options="adverseStatusOptions"
+            @update:model-value="(v) => followup.loadAdverseList(String(v))"
+          />
+        </div>
+      </template>
+      <div v-if="followup.adverseList.length === 0" class="adverse__empty">
+        {{ followup.adverseStatusFilter === 'OPEN' ? '暂无待处置的不良反应，保持关注。' : '该状态下暂无记录。' }}
+      </div>
+      <div v-else class="adverse__list">
+        <div v-for="f in followup.adverseList" :key="f.id" class="adverse-row">
+          <div class="adverse-row__main">
+            <div class="adverse-row__top">
+              <span class="adverse-row__name">{{ f.customerName }}</span>
+              <CStatusPill :status="adversePill(f.adverseStatus).status" dot>{{ adversePill(f.adverseStatus).text }}</CStatusPill>
+            </div>
+            <div class="adverse-row__sub">{{ f.project }} · {{ f.followupNo }}<template v-if="f.doneAt"> · 回访于 {{ f.doneAt.slice(0, 10) }}</template></div>
+            <div v-if="f.adverseNote" class="adverse-row__note">反应：{{ f.adverseNote }}</div>
+            <div v-if="f.adverseHandleNote" class="adverse-row__handle">处置：{{ f.adverseHandleNote }}<template v-if="f.adverseHandleBy">（{{ f.adverseHandleBy }}）</template></div>
+          </div>
+          <CButton variant="ghost" size="sm" v-perm.disable="'followup:edit'" @click="openHandle(f)">处置</CButton>
+        </div>
+      </div>
+    </CCard>
+
     <!-- 新建回访计划弹层 -->
     <div v-if="showForm" class="modal-mask" @click.self="closeForm">
       <CCard class="modal" title="新建回访计划" padding="lg">
@@ -531,11 +645,56 @@ async function submitPlan() {
         </template>
       </CCard>
     </div>
+
+    <!-- P6-B101 不良反应处置弹层（RESOLVED 闭环必填处置说明） -->
+    <div v-if="handleTarget" class="modal-mask" @click.self="handleTarget = null">
+      <CCard class="modal" title="不良反应处置" padding="lg">
+        <div class="form">
+          <div class="form__row">
+            <label class="form__label">随访单</label>
+            <div class="handle__target">{{ handleTarget.customerName }} · {{ handleTarget.project }}（{{ handleTarget.followupNo }}）</div>
+          </div>
+          <div v-if="handleTarget.adverseNote" class="form__row">
+            <label class="form__label">不良反应描述</label>
+            <div class="handle__note">{{ handleTarget.adverseNote }}</div>
+          </div>
+          <div class="form__row">
+            <label class="form__label">处置状态</label>
+            <CSelect v-model="handleForm.status" width="200px" :options="adverseStatusOptions" />
+          </div>
+          <div class="form__row">
+            <label class="form__label">处置说明{{ handleForm.status === 'RESOLVED' ? '（闭环必填）' : '（选填）' }}</label>
+            <CTextarea v-model="handleForm.note" placeholder="如：已电话跟进，红肿消退，嘱冷敷并约复诊。" />
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="handleTarget = null">取消</CButton>
+          <CButton variant="primary" :disabled="!canSubmitHandle" @click="submitHandle">确认处置</CButton>
+        </template>
+      </CCard>
+    </div>
   </div>
 </template>
 
 <style scoped>
 .fu { display: flex; flex-direction: column; gap: var(--s-lg); }
+
+.ana__head { display: flex; align-items: center; gap: var(--s-sm); }
+.ana__title { font-size: var(--t-md); font-weight: 700; color: var(--c-text); margin: 0 auto 0 0; }
+.trend__foot { margin-top: var(--s-sm); font-size: var(--t-xs); color: var(--c-text-3); }
+.trend__foot strong { margin: 0 2px; color: var(--c-text); }
+.adverse__empty { padding: var(--s-lg); text-align: center; color: var(--c-text-3); font-size: var(--t-sm); }
+.adverse__list { display: flex; flex-direction: column; }
+.adverse-row { display: flex; align-items: flex-start; gap: var(--s-md); padding: var(--s-md) 0; border-bottom: 1px solid var(--c-border-light); }
+.adverse-row:last-child { border-bottom: none; }
+.adverse-row__main { flex: 1; min-width: 0; }
+.adverse-row__top { display: flex; align-items: center; gap: var(--s-xs); }
+.adverse-row__name { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); }
+.adverse-row__sub { font-size: var(--t-xs); color: var(--c-text-3); margin-top: 2px; }
+.adverse-row__note { font-size: var(--t-xs); color: var(--c-danger-fg); margin-top: var(--s-xs); }
+.adverse-row__handle { font-size: var(--t-xs); color: var(--c-text-2); margin-top: 2px; }
+.handle__target { font-size: var(--t-sm); color: var(--c-text); }
+.handle__note { font-size: var(--t-sm); color: var(--c-danger-fg); }
 
 .warnbar {
   display: flex; align-items: center; gap: var(--s-sm);

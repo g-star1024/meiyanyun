@@ -28,8 +28,11 @@ import {
   toggleSopNode as apiToggleSopNode, deleteSopNode as apiDeleteSopNode,
   resetSopTemplate as apiResetSopTemplate, listSopBatches, getSopSummary,
   escalateSopOverdue,
+  listSopTemplates, createStoreSopTemplate, reorderSopNodes,
+  trendFollowup, adverseHandleFollowup,
   type FollowupViewDTO, type FollowupStats,
   type SopNodeDTO, type SopBatchDTO, type SopSummaryDTO,
+  type SopTemplateRowDTO, type FollowupTrendPointDTO,
 } from '@/api/followup'
 import { shDateStr } from '@/utils/datetime'
 
@@ -68,6 +71,11 @@ export interface Followup {
   recovery?: RecoveryStatus
   adverseReaction: boolean
   adverseNote?: string
+  /** 不良反应处置状态（P6-B101 处置台）：OPEN/PROCESSING/RESOLVED；无不良反应为空 */
+  adverseStatus?: string
+  adverseHandleNote?: string
+  adverseHandleBy?: string
+  adverseHandleAt?: string
   needRevisit: boolean
   note?: string
   followupByName?: string
@@ -148,9 +156,11 @@ export const useFollowupStore = defineStore('followup', () => {
 
   // ==================== SOP 模板编排（真：/txn/followup/sop/template） ====================
 
-  /** 集团通用模板全量节点（含停用，后端行号升序）；未加载前为空，避免闪现默认假数据。 */
+  /** 当前编排模板全量节点（含停用，后端行号升序）；未加载前为空，避免闪现默认假数据。 */
   const sopTemplate = ref<SopNodeDef[]>([])
   const sopTemplateLoading = ref(false)
+  /** 当前编排目标模板号（写动作透传；缺省默认模板时为空串）。 */
+  const currentSopTemplateNo = ref('')
   /** 当前启用的节点（按术后天数升序），Tab 角标「x/y 节点启用」使用 */
   const enabledSopNodes = computed(() =>
     sopTemplate.value
@@ -173,10 +183,11 @@ export const useFollowupStore = defineStore('followup', () => {
   }
 
   /** 写动作统一入口：成功后整体替换模板，失败保留原态并由后端中文错误外露。 */
-  async function applyTemplate(p: Promise<{ data: { nodes: SopNodeDTO[] } }>): Promise<boolean> {
+  async function applyTemplate(p: Promise<{ data: { templateNo?: string; nodes: SopNodeDTO[] } }>): Promise<boolean> {
     try {
       const res = await p
       sopTemplate.value = res.data.nodes.map(adaptSopNode)
+      currentSopTemplateNo.value = res.data.templateNo || currentSopTemplateNo.value
       return true
     } catch (e) {
       toast.error(errMsg(e, 'SOP 模板操作失败'))
@@ -184,12 +195,13 @@ export const useFollowupStore = defineStore('followup', () => {
     }
   }
 
-  /** 拉取模板全量节点（进入编排页 / 写动作后兜底重拉）。 */
-  async function loadSopTemplate(): Promise<void> {
+  /** 拉取模板全量节点（进入编排页 / 写动作后兜底重拉）；templateNo 缺省为集团默认模板。 */
+  async function loadSopTemplate(templateNo?: string): Promise<void> {
     sopTemplateLoading.value = true
     try {
-      const res = await getSopTemplate()
+      const res = await getSopTemplate(templateNo)
       sopTemplate.value = res.data.nodes.map(adaptSopNode)
+      currentSopTemplateNo.value = res.data.templateNo
     } catch (e) {
       toast.error(errMsg(e, 'SOP 模板加载失败'))
     } finally {
@@ -219,6 +231,7 @@ export const useFollowupStore = defineStore('followup', () => {
       label: patch.label?.trim() || undefined,
       dayOffset: typeof patch.dayOffset === 'number' ? Math.round(patch.dayOffset) : undefined,
       method: patch.method || undefined,
+      templateNo: currentSopTemplateNo.value || undefined,
     }))
   }
 
@@ -227,7 +240,7 @@ export const useFollowupStore = defineStore('followup', () => {
     const label = input.label.trim()
     const dayOffset = Math.round(input.dayOffset)
     if (!label || dayOffset < 0) return false
-    const ok = await applyTemplate(apiAddSopNode({ label, dayOffset, method: input.method }))
+    const ok = await applyTemplate(apiAddSopNode({ label, dayOffset, method: input.method, templateNo: currentSopTemplateNo.value || undefined }))
     if (ok) activity.log(auth.user.name, `术后 SOP 新增节点「${label}」（术后第 ${dayOffset} 天）`, 'sop-template')
     return ok
   }
@@ -247,6 +260,115 @@ export const useFollowupStore = defineStore('followup', () => {
     const ok = await applyTemplate(apiResetSopTemplate())
     if (ok) activity.log(auth.user.name, '术后 SOP 模板已恢复默认（24h关怀/3天回访/7天评估/30天复诊）', 'sop-template')
     return ok
+  }
+
+  // ==================== P6-B101：SOP 多模板（门店级模板 / 节点排序） ====================
+
+  /** 当前门店可见模板清单（集团模板＋本店模板），编排页选择器数据源。 */
+  const sopTemplateList = ref<SopTemplateRowDTO[]>([])
+  const sopTemplateListLoading = ref(false)
+
+  /** 拉取当前门店可见模板清单。 */
+  async function loadSopTemplateList(): Promise<void> {
+    sopTemplateListLoading.value = true
+    try {
+      sopTemplateList.value = (await listSopTemplates()).data ?? []
+    } catch (e) {
+      toast.error(errMsg(e, '模板清单加载失败'))
+    } finally {
+      sopTemplateListLoading.value = false
+    }
+  }
+
+  /** 切换编排目标模板（整体替换节点区，写动作随后作用于该模板）。 */
+  async function selectSopTemplate(templateNo: string): Promise<boolean> {
+    if (!templateNo || templateNo === currentSopTemplateNo.value) return true
+    return applyTemplate(getSopTemplate(templateNo))
+  }
+
+  /** 新建本店专属模板并切换为当前编排目标，返回模板号（失败返回 null）。 */
+  async function createStoreTemplate(name: string): Promise<string | null> {
+    const trimmed = name.trim()
+    if (!trimmed) return null
+    try {
+      const res = await createStoreSopTemplate(trimmed)
+      const templateNo = res.data.templateNo
+      activity.log(auth.user.name, `术后 SOP 新建门店模板「${trimmed}」（${templateNo}）`, 'sop-template')
+      await loadSopTemplateList()
+      await selectSopTemplate(templateNo)
+      return templateNo
+    } catch (e) {
+      toast.error(errMsg(e, '门店模板创建失败'))
+      return null
+    }
+  }
+
+  /** 节点上移/下移（交换相邻行号，后端按数组序重排 1..N；dayOffset 不变）。 */
+  async function moveSopNode(id: string, dir: -1 | 1): Promise<boolean> {
+    const nodes = sopTemplate.value
+    const idx = nodes.findIndex((x) => x.id === id)
+    const swap = idx + dir
+    if (idx < 0 || swap < 0 || swap >= nodes.length) return false
+    if (!currentSopTemplateNo.value) return false
+    const ids = nodes.map((x) => x.id)
+    ;[ids[idx], ids[swap]] = [ids[swap], ids[idx]]
+    return applyTemplate(reorderSopNodes(currentSopTemplateNo.value, ids))
+  }
+
+  // ==================== P6-B101：随访结构化分析（满意度趋势 / 不良反应处置台） ====================
+
+  /** 满意度趋势稠密序列（无数据桶补零；默认近 30 天按日）。 */
+  const trendPoints = ref<FollowupTrendPointDTO[]>([])
+  const trendLoading = ref(false)
+
+  /** 拉取满意度趋势（granularity=day|week；from/to yyyy-MM-dd，缺省近 30 天）。 */
+  async function loadTrend(params?: { from?: string; to?: string; granularity?: string }): Promise<void> {
+    trendLoading.value = true
+    try {
+      trendPoints.value = (await trendFollowup(params)).data ?? []
+    } catch (e) {
+      toast.error(errMsg(e, '满意度趋势加载失败'))
+    } finally {
+      trendLoading.value = false
+    }
+  }
+
+  /** 不良反应处置台当前状态筛选（OPEN 待处置/PROCESSING 处置中/RESOLVED 已闭环）。 */
+  const adverseStatusFilter = ref('OPEN')
+  /** 不良反应处置台独立列表（不占用主列表分页；最多 50 条）。 */
+  const adverseList = ref<Followup[]>([])
+  const adverseListLoading = ref(false)
+
+  /** 拉取不良反应专项列表（status 缺省保持当前筛选；OPEN 兼容历史未处置记录）。 */
+  async function loadAdverseList(status?: string): Promise<void> {
+    if (status) adverseStatusFilter.value = status
+    adverseListLoading.value = true
+    try {
+      const res = await listFollowup({ adverseOnly: true, adverseStatus: adverseStatusFilter.value, page: 0, size: 50 })
+      adverseList.value = (res.data.content ?? []).map(adaptFollowup)
+    } catch (e) {
+      toast.error(errMsg(e, '不良反应列表加载失败'))
+    } finally {
+      adverseListLoading.value = false
+    }
+  }
+
+  /** 不良反应处置（OPEN→PROCESSING→RESOLVED；RESOLVED 必填处置说明；成功后同步主列表与处置台）。 */
+  async function handleAdverse(id: string, status: string, note?: string): Promise<boolean> {
+    try {
+      const res = await adverseHandleFollowup(id, { status, note: note?.trim() || undefined })
+      const updated = adaptFollowup(res.data)
+      cacheRecord(updated)
+      const idx = records.value.findIndex((x) => x.id === id)
+      if (idx >= 0) records.value[idx] = updated
+      activity.log(auth.user.name, `随访 ${updated.followupNo} 不良反应处置为 ${status}`, updated.id)
+      await loadAdverseList()
+      loadStats()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '不良反应处置失败'))
+      return false
+    }
   }
 
   // ---- C 端普通随访演示种子的本地计数（仅 /m/followup 使用） ----
@@ -321,6 +443,10 @@ export const useFollowupStore = defineStore('followup', () => {
       recovery: (d.recovery as RecoveryStatus | null) ?? undefined,
       adverseReaction: d.adverseReaction,
       adverseNote: d.adverseNote ?? undefined,
+      adverseStatus: d.adverseStatus ?? undefined,
+      adverseHandleNote: d.adverseHandleNote ?? undefined,
+      adverseHandleBy: d.adverseHandleBy ?? undefined,
+      adverseHandleAt: d.adverseHandleAt ?? undefined,
       needRevisit: d.needRevisit,
       note: d.note ?? undefined,
       followupByName: d.followupByName ?? undefined,
@@ -701,8 +827,13 @@ export const useFollowupStore = defineStore('followup', () => {
     records, page, pageSize, total, totalPages, loading, stats, sopTodos,
     get, fetchDetail, load, loadStats, refresh, loadSopTodos, create, complete, skip,
     // SOP 模板编排（真：/txn/followup/sop/template）
-    sopTemplate, sopTemplateLoading, enabledSopNodes,
+    sopTemplate, sopTemplateLoading, enabledSopNodes, currentSopTemplateNo,
     loadSopTemplate, toggleSopNode, updateSopNode, addSopNode, removeSopNode, resetSopTemplate,
+    // P6-B101 多模板（门店级模板 / 节点排序）+ 结构化分析（趋势 / 处置台）
+    sopTemplateList, sopTemplateListLoading,
+    loadSopTemplateList, selectSopTemplate, createStoreTemplate, moveSopNode,
+    trendPoints, trendLoading, loadTrend,
+    adverseList, adverseListLoading, adverseStatusFilter, loadAdverseList, handleAdverse,
     // SOP 批次看板（真：/txn/followup/sop/batches|summary|escalate）
     sopBatches, sopBatchesTotal, sopBatchesLoading, sopSummary, sopOverdue,
     loadSopBatches, loadSopSummary, refreshSop, escalateAllOverdue,

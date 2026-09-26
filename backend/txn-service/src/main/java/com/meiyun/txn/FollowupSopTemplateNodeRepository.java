@@ -17,4 +17,7 @@ public interface FollowupSopTemplateNodeRepository extends JpaRepository<Followu
 
     /** 删除某模板的全部节点（恢复默认前清空）。 */
     void deleteByTemplateNo(String templateNo);
+
+    /** 模板节点数（模板列表行展示用）。 */
+    long countByTemplateNo(String templateNo);
 }

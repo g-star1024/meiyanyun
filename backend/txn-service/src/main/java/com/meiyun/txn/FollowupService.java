@@ -20,12 +20,16 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.time.temporal.TemporalAdjusters;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -35,6 +39,10 @@ import java.util.Set;
  * 铁律：数据域一律 storeSpec 门店全见（显式他店码 404，对齐工作台/随访台账本店全见口径）；
  * 状态机非法流转中文 400（仅 PENDING 可核销）；全写动作审计（bizType=FOLLOWUP）。
  * 满意度/恢复情况枚举做白名单校验，不良反应必须填写说明。</p>
+ *
+ * <p>P6-B101 随访结构化分析：trend 按 done_at（+8）分桶聚合满意度/不良反应趋势；
+ * 不良反应处置台——核销勾选不良反应自动置 adverseStatus=OPEN，POST /{id}/adverse-handle
+ * 白名单 OPEN/PROCESSING/RESOLVED 流转（RESOLVED 必填处置说明，同状态同备注幂等不重复审计）。</p>
  */
 @Service
 public class FollowupService {
@@ -45,6 +53,10 @@ public class FollowupService {
 
     private static final Set<String> METHODS = Set.of("PHONE", "WECHAT", "IN_STORE");
     private static final Set<String> RECOVERY = Set.of("GOOD", "NORMAL", "POOR");
+    /** 不良反应处置状态白名单（处置台）：待处置/处置中/已闭环。 */
+    private static final Set<String> ADVERSE_STATUSES = Set.of("OPEN", "PROCESSING", "RESOLVED");
+    /** 趋势统计区间上限（天）。 */
+    private static final long TREND_MAX_DAYS = 366;
     private static final ZoneOffset BIZ_TZ = ZoneOffset.ofHours(8);
 
     private final FollowupRepository followupRepo;
@@ -73,6 +85,9 @@ public class FollowupService {
      */
     public record CreateCmd(String customerId, String project, String relatedOrderNo,
                             LocalDate serviceDate, LocalDate planDate, String method) {}
+
+    /** 趋势点（P6-B101）：分桶起始日（按天=当日；按周=周一）+ 已回访数/平均满意度（一位小数）/不良反应数。 */
+    public record TrendPoint(LocalDate bucket, long doneCount, BigDecimal avgSatisfaction, long adverseCount) {}
 
     // ==================== 计数（工作台两卡 / 随访台账角标） ====================
 
@@ -124,14 +139,76 @@ public class FollowupService {
         return BigDecimal.valueOf(avg).setScale(1, RoundingMode.HALF_UP);
     }
 
+    // ==================== 满意度趋势（P6-B101 随访结构化分析） ====================
+
+    /**
+     * 满意度趋势：数据域内 DONE 随访按 done_at（+8）分桶聚合，返回稠密序列（区间内无数据的桶补零，
+     * 前端折线图直用）。from/to 缺省近 30 天；区间最长 366 天；granularity=day|week（周以周一为桶首）。
+     */
+    @Transactional(readOnly = true)
+    public List<TrendPoint> trend(String storeCode, LocalDate from, LocalDate to, String granularity) {
+        LocalDate end = to == null ? LocalDate.now(BIZ_TZ) : to;
+        LocalDate start = from == null ? end.minusDays(29) : from;
+        if (start.isAfter(end)) {
+            throw badRequest("统计起始日期不能晚于结束日期");
+        }
+        if (ChronoUnit.DAYS.between(start, end) + 1 > TREND_MAX_DAYS) {
+            throw badRequest("统计区间最长 " + TREND_MAX_DAYS + " 天，请缩小日期范围");
+        }
+        String gran = blank(granularity) ? "day" : granularity.trim().toLowerCase();
+        if (!gran.equals("day") && !gran.equals("week")) {
+            throw badRequest("非法统计粒度: " + granularity + "（取值 day/week）");
+        }
+        boolean weekly = gran.equals("week");
+
+        OffsetDateTime fromTs = start.atStartOfDay().atOffset(BIZ_TZ);
+        OffsetDateTime toTs = end.plusDays(1).atStartOfDay().atOffset(BIZ_TZ);
+        Specification<Followup> spec = scoped(storeCode)
+                .and(eqStatus(ST_DONE))
+                .and((root, q, cb) -> cb.greaterThanOrEqualTo(root.get("doneAt"), fromTs))
+                .and((root, q, cb) -> cb.lessThan(root.get("doneAt"), toTs));
+
+        Map<LocalDate, long[]> agg = new LinkedHashMap<>();
+        Map<LocalDate, double[]> sat = new LinkedHashMap<>();
+        LocalDate first = weekly ? start.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)) : start;
+        for (LocalDate d = first; !d.isAfter(end); d = weekly ? d.plusWeeks(1) : d.plusDays(1)) {
+            agg.put(d, new long[2]);
+            sat.put(d, new double[2]);
+        }
+        for (Followup f : followupRepo.findAll(spec)) {
+            if (f.getDoneAt() == null) continue;
+            LocalDate day = f.getDoneAt().atZoneSameInstant(BIZ_TZ).toLocalDate();
+            LocalDate bucket = weekly ? day.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)) : day;
+            long[] counts = agg.get(bucket);
+            if (counts == null) continue;
+            counts[0]++;
+            if (f.isAdverseReaction()) counts[1]++;
+            if (f.getSatisfaction() != null) {
+                double[] s = sat.get(bucket);
+                s[0] += f.getSatisfaction();
+                s[1]++;
+            }
+        }
+        return agg.entrySet().stream()
+                .map(e -> {
+                    double[] s = sat.get(e.getKey());
+                    BigDecimal avg = s[1] == 0 ? BigDecimal.ZERO
+                            : BigDecimal.valueOf(s[0] / s[1]).setScale(1, RoundingMode.HALF_UP);
+                    return new TrendPoint(e.getKey(), e.getValue()[0], avg, e.getValue()[1]);
+                })
+                .toList();
+    }
+
     /**
      * 随访分页列表：storeSpec 门店全见；可按状态/客户/批次/只看 SOP 节点叠加过滤；
-     * keyword 对客户名/项目/关联订单号做小写包含模糊（OR LIKE，排序后端固定防任意字段排序）。
-     * 排序固定 planDate 升序、id 升序（最早待回访在前）。
+     * P6-B101 处置台：adverseOnly=true 只看不良反应，adverseStatus 按处置状态过滤
+     * （OPEN 兼容历史空值=已勾选不良反应但尚未处置）；keyword 对客户名/项目/关联订单号做小写包含模糊
+     * （OR LIKE，排序后端固定防任意字段排序）。排序固定 planDate 升序、id 升序（最早待回访在前）。
      */
     @Transactional(readOnly = true)
     public Page<Followup> page(String storeCode, String status, String customerId,
-                               String sopBatchId, Boolean sopOnly, String keyword, Pageable pageable) {
+                               String sopBatchId, Boolean sopOnly, Boolean adverseOnly, String adverseStatus,
+                               String keyword, Pageable pageable) {
         Specification<Followup> spec = scoped(storeCode);
         if (!blank(status)) {
             spec = spec.and(eqStatus(status.trim()));
@@ -144,6 +221,23 @@ public class FollowupService {
         }
         if (Boolean.TRUE.equals(sopOnly)) {
             spec = spec.and((root, q, cb) -> cb.isNotNull(root.get("sopBatchId")));
+        }
+        if (Boolean.TRUE.equals(adverseOnly)) {
+            spec = spec.and((root, q, cb) -> cb.isTrue(root.get("adverseReaction")));
+        }
+        String advStatus = trimToNull(adverseStatus);
+        if (advStatus != null) {
+            if (!ADVERSE_STATUSES.contains(advStatus)) {
+                throw badRequest("非法处置状态: " + adverseStatus + "（取值 OPEN/PROCESSING/RESOLVED）");
+            }
+            spec = spec.and((root, q, cb) -> {
+                Predicate adverse = cb.isTrue(root.get("adverseReaction"));
+                if ("OPEN".equals(advStatus)) {
+                    return cb.and(adverse, cb.or(cb.isNull(root.get("adverseStatus")),
+                            cb.equal(root.get("adverseStatus"), "OPEN")));
+                }
+                return cb.and(adverse, cb.equal(root.get("adverseStatus"), advStatus));
+            });
         }
         String kw = trimToNull(keyword);
         if (kw != null) {
@@ -262,6 +356,9 @@ public class FollowupService {
         f.setRecovery(recovery);
         f.setAdverseReaction(adverse);
         f.setAdverseNote(adverse ? truncate(cmd.adverseNote().trim(), 500) : null);
+        if (adverse) {
+            f.setAdverseStatus("OPEN");
+        }
         f.setNeedRevisit(Boolean.TRUE.equals(cmd.needRevisit()));
         f.setNote(truncate(trimToNull(cmd.note()), 65535));
         if (!blank(cmd.method())) {
@@ -300,6 +397,44 @@ public class FollowupService {
         Followup saved = followupRepo.save(f);
         audit.record("FOLLOWUP", f.getFollowupNo(), actor, "SKIP",
                 "{\"reason\":\"" + esc(why) + "\"}");
+        return saved;
+    }
+
+    // ==================== 不良反应处置台（P6-B101） ====================
+
+    /**
+     * 不良反应处置：仅已登记不良反应（adverseReaction=true）的随访可处置，否则 400；
+     * status 白名单 OPEN/PROCESSING/RESOLVED，RESOLVED 必填处置结果说明（医疗风险留痕）；
+     * 同状态同备注重复提交幂等直接返回（不重复审计、不刷新处置时间）；处置审计 ADVERSE_HANDLE。
+     */
+    @Transactional
+    public Followup adverseHandle(Long id, String status, String note) {
+        Followup f = requireFollowup(id);
+        if (!f.isAdverseReaction()) {
+            throw badRequest("该随访未登记不良反应，无需处置");
+        }
+        String st = status == null ? "" : status.trim();
+        if (!ADVERSE_STATUSES.contains(st)) {
+            throw badRequest("非法处置状态: " + status + "（取值 OPEN/PROCESSING/RESOLVED）");
+        }
+        String handleNote = trimToNull(note);
+        if ("RESOLVED".equals(st) && handleNote == null) {
+            throw badRequest("闭环处置请填写处置结果说明（便于医疗风险跟进留痕）");
+        }
+        if (st.equals(f.getAdverseStatus()) && Objects.equals(handleNote, f.getAdverseHandleNote())) {
+            return f;
+        }
+        String actor = DataScope.currentActor();
+        String actorName = names.staffNames(List.of(actor)).getOrDefault(actor, actor);
+
+        f.setAdverseStatus(st);
+        f.setAdverseHandleNote(truncate(handleNote, 500));
+        f.setAdverseHandleBy(actorName);
+        f.setAdverseHandleAt(OffsetDateTime.now());
+        Followup saved = followupRepo.save(f);
+        audit.record("FOLLOWUP", f.getFollowupNo(), actor, "ADVERSE_HANDLE",
+                "{\"status\":\"" + st + "\""
+                        + (handleNote == null ? "" : ",\"note\":\"" + esc(handleNote) + "\"") + "}");
         return saved;
     }
 

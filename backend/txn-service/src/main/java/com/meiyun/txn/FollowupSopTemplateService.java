@@ -1,6 +1,7 @@
 package com.meiyun.txn;
 
 import com.meiyun.security.DataScope;
+import com.meiyun.security.LoginUser;
 import com.meiyun.txn.audit.AuditRecorder;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -23,6 +24,7 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,6 +37,11 @@ import java.util.Set;
  * （显式他店码 404）；全部写动作落审计（模板 SOP_TEMPLATE / 升级 FOLLOWUP）；
  * 参数白名单 + 中文错误；内置四阶段可停用/改天数改方式但不可删除，仅 MANUAL 自定义节点可删。
  * 模板调整只影响此后新批次（历史随访节点只冗余 stage/label）。</p>
+ *
+ * <p>P6-B101 多模板纵深：集团通用模板（store_code 为 NULL）与门店自建模板并存；
+ * 行号（lineNo）与术后天数（dayOffset）解耦——行号即编排顺序（新增追加行尾、删除保序补齐、
+ * reorder 按入参数组序整体重排），天数仅作排程语义，增改节点不再按天数自动重排；
+ * 模板可见性＝集团通用全门店可见 + 门店模板仅本店及上级角色可见（他店 404）。</p>
  */
 @Service
 public class FollowupSopTemplateService {
@@ -71,49 +78,150 @@ public class FollowupSopTemplateService {
     public record BatchAgg(FollowupSopBatch batch, List<Followup> nodes,
                            int total, int done, int overdue, boolean finished) {}
 
-    public record NodeCmd(String label, Integer dayOffset, String method) {}
+    public record NodeCmd(String templateNo, String label, Integer dayOffset, String method) {}
+
+    /** 模板列表行（编排页模板选择器）：模板号/名称/归属门店（null=集团通用）/启用/节点数。 */
+    public record TemplateRow(String templateNo, String name, String storeCode, boolean enabled, int nodeCount) {}
+
+    /** 模板详情：模板头 + 全部节点（含停用，行号升序）。 */
+    public record TemplateDetail(FollowupSopTemplate template, List<FollowupSopTemplateNode> nodes) {}
 
     // ==================== 模板编排 ====================
 
     /**
-     * 取集团通用模板的全部节点（含停用，按行号升序）。
+     * 取模板详情（全部节点含停用，按行号升序）；templateNo 缺省为集团默认模板。
      * 未播种环境（如 prod 首次打开）幂等懒初始化模板 + 内置四节点（system 动作，不落业务审计）。
+     * 显式模板号须对当前用户可见（集团通用或本店自建），他店模板 404。
      */
     @Transactional
-    public List<FollowupSopTemplateNode> getTemplate() {
+    public TemplateDetail getTemplate(String templateNo) {
         ensureDefaultTemplate();
-        return nodeRepo.findByTemplateNoOrderByLineNoAsc(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
+        return detailOf(requireVisibleTemplate(templateNo).getTemplateNo());
     }
 
-    /** 新增自定义节点（stage=MANUAL）：名称必填、天数 0-365、方式白名单；插入后按天数重排行号。 */
+    /** 模板列表（编排页选择器）：集团通用 + 本店自建，创建时间正序（默认模板在最前）。 */
     @Transactional
-    public List<FollowupSopTemplateNode> addNode(NodeCmd cmd) {
+    public List<TemplateRow> listTemplates() {
         ensureDefaultTemplate();
+        return templateRepo.findAll(Sort.by(Sort.Order.asc("createdAt"))).stream()
+                .filter(t -> t.getStoreCode() == null || DataScope.canReadStore(t.getStoreCode()))
+                .map(t -> new TemplateRow(t.getTemplateNo(), t.getName(), t.getStoreCode(),
+                        Boolean.TRUE.equals(t.getEnabled()),
+                        (int) nodeRepo.countByTemplateNo(t.getTemplateNo())))
+                .toList();
+    }
+
+    /**
+     * 建门店模板（P6-B101）：名称必填 64 截断；门店码取 JWT（未绑定门店 400 中文）；
+     * 模板号 SPT + yyyyMMdd + - + 当日 6 位序号（号池仿批次号）；节点自集团默认模板当前节点
+     * 复制并全部启用，生成后在编排页自由增改删（门店模板节点不受内置节点删除保护）。
+     */
+    @Transactional
+    public TemplateDetail createStoreTemplate(String name) {
+        ensureDefaultTemplate();
+        String tplName = requireName(name);
+        LoginUser u = DataScope.current();
+        String storeCode = u == null ? null : u.storeCode();
+        if (blank(storeCode)) {
+            throw badRequest("当前账号未绑定门店，无法创建门店模板");
+        }
+        String actor = DataScope.currentActor();
+        FollowupSopTemplate t = new FollowupSopTemplate();
+        t.setTemplateNo(nextTemplateNo());
+        t.setName(tplName);
+        t.setStoreCode(storeCode);
+        t.setEnabled(true);
+        t.setCreatedBy(actor);
+        templateRepo.save(t);
+
+        int lineNo = 1;
+        List<FollowupSopTemplateNode> nodes = new ArrayList<>();
+        for (FollowupSopTemplateNode d : nodeRepo
+                .findByTemplateNoOrderByLineNoAsc(FollowupSopDefaults.DEFAULT_TEMPLATE_NO)) {
+            FollowupSopTemplateNode n = new FollowupSopTemplateNode();
+            n.setTemplateNo(t.getTemplateNo());
+            n.setLineNo(lineNo++);
+            n.setStage(d.getStage());
+            n.setLabel(d.getLabel());
+            n.setDayOffset(d.getDayOffset());
+            n.setMethod(d.getMethod());
+            n.setEnabled(true);
+            nodes.add(n);
+        }
+        nodeRepo.saveAll(nodes);
+        audit.record("SOP_TEMPLATE", t.getTemplateNo(), actor, "TEMPLATE_CREATE",
+                "{\"name\":\"" + esc(tplName) + "\",\"storeCode\":\"" + esc(storeCode)
+                        + "\",\"nodes\":" + nodes.size() + "}");
+        return detailOf(t.getTemplateNo());
+    }
+
+    /**
+     * 节点重排（P6-B101）：按入参 nodeIds 数组序重写行号 1..N（编排页上移/下移落盘）。
+     * nodeIds 须与模板节点全集一致（缺漏/越集/重复 400 中文）；仅改行号，dayOffset 不动。
+     */
+    @Transactional
+    public TemplateDetail reorder(String templateNo, List<Long> nodeIds) {
+        FollowupSopTemplate t = requireVisibleTemplate(templateNo);
+        if (nodeIds == null) {
+            throw badRequest("请提供节点排序");
+        }
+        List<FollowupSopTemplateNode> all = nodeRepo.findByTemplateNoOrderByLineNoAsc(t.getTemplateNo());
+        Map<Long, FollowupSopTemplateNode> byId = new LinkedHashMap<>();
+        for (FollowupSopTemplateNode n : all) {
+            byId.put(n.getId(), n);
+        }
+        if (nodeIds.size() != byId.size() || !byId.keySet().containsAll(nodeIds)
+                || new LinkedHashSet<>(nodeIds).size() != nodeIds.size()) {
+            throw badRequest("节点排序与模板节点不一致，请刷新后重试");
+        }
+        int lineNo = 1;
+        List<FollowupSopTemplateNode> ordered = new ArrayList<>();
+        for (Long id : nodeIds) {
+            FollowupSopTemplateNode n = byId.get(id);
+            n.setLineNo(lineNo++);
+            ordered.add(n);
+        }
+        nodeRepo.saveAll(ordered);
+        audit.record("SOP_TEMPLATE", t.getTemplateNo(), DataScope.currentActor(),
+                "TEMPLATE_REORDER", "{\"nodes\":" + ordered.size() + "}");
+        return detailOf(t.getTemplateNo());
+    }
+
+    /**
+     * 新增自定义节点（stage=MANUAL）：名称必填、天数 0-365、方式白名单；templateNo 缺省为集团默认模板；
+     * 追加行尾（lineNo=max+1，不按天数重排，编排顺序由 reorder 调整）。
+     */
+    @Transactional
+    public TemplateDetail addNode(NodeCmd cmd) {
+        ensureDefaultTemplate();
+        FollowupSopTemplate t = requireVisibleTemplate(cmd.templateNo());
         String label = requireLabel(cmd.label());
         int dayOffset = requireDayOffset(cmd.dayOffset());
         String method = requireMethod(cmd.method());
         String actor = DataScope.currentActor();
 
+        List<FollowupSopTemplateNode> existing = nodeRepo.findByTemplateNoOrderByLineNoAsc(t.getTemplateNo());
+        int nextLine = existing.isEmpty() ? 1 : existing.get(existing.size() - 1).getLineNo() + 1;
+
         FollowupSopTemplateNode n = new FollowupSopTemplateNode();
-        n.setTemplateNo(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
-        n.setLineNo(Integer.MAX_VALUE);
+        n.setTemplateNo(t.getTemplateNo());
+        n.setLineNo(nextLine);
         n.setStage("MANUAL");
         n.setLabel(label);
         n.setDayOffset(dayOffset);
         n.setMethod(method);
         n.setEnabled(true);
         FollowupSopTemplateNode saved = nodeRepo.save(n);
-        renumber();
-        audit.record("SOP_TEMPLATE", FollowupSopDefaults.DEFAULT_TEMPLATE_NO, actor, "NODE_ADD",
+        audit.record("SOP_TEMPLATE", t.getTemplateNo(), actor, "NODE_ADD",
                 "{\"nodeId\":" + saved.getId()
                         + ",\"label\":\"" + esc(label) + "\",\"dayOffset\":" + dayOffset
                         + ",\"method\":\"" + method + "\"}");
-        return nodeRepo.findByTemplateNoOrderByLineNoAsc(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
+        return detailOf(t.getTemplateNo());
     }
 
-    /** 改节点：名称/天数/方式（内置与自定义均可改）；不存在 404，参数白名单。 */
+    /** 改节点：名称/天数/方式（内置与自定义均可改）；不存在/他店模板 404，参数白名单；改天数不再触发重排。 */
     @Transactional
-    public List<FollowupSopTemplateNode> updateNode(Long nodeId, NodeCmd cmd) {
+    public TemplateDetail updateNode(Long nodeId, NodeCmd cmd) {
         FollowupSopTemplateNode n = requireNode(nodeId);
         String actor = DataScope.currentActor();
         StringBuilder payload = new StringBuilder("{\"nodeId\":" + nodeId);
@@ -133,36 +241,40 @@ public class FollowupSopTemplateService {
             payload.append(",\"method\":\"").append(method).append('"');
         }
         nodeRepo.save(n);
-        renumber();
         payload.append('}');
-        audit.record("SOP_TEMPLATE", FollowupSopDefaults.DEFAULT_TEMPLATE_NO, actor, "NODE_UPDATE",
+        audit.record("SOP_TEMPLATE", n.getTemplateNo(), actor, "NODE_UPDATE",
                 payload.toString());
-        return nodeRepo.findByTemplateNoOrderByLineNoAsc(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
+        return detailOf(n.getTemplateNo());
     }
 
     /** 启停节点：停用后不参与新批次排程，历史批次不变。 */
     @Transactional
-    public List<FollowupSopTemplateNode> toggleNode(Long nodeId, boolean enabled) {
+    public TemplateDetail toggleNode(Long nodeId, boolean enabled) {
         FollowupSopTemplateNode n = requireNode(nodeId);
         n.setEnabled(enabled);
         nodeRepo.save(n);
-        audit.record("SOP_TEMPLATE", FollowupSopDefaults.DEFAULT_TEMPLATE_NO, DataScope.currentActor(),
+        audit.record("SOP_TEMPLATE", n.getTemplateNo(), DataScope.currentActor(),
                 "NODE_TOGGLE", "{\"nodeId\":" + nodeId + ",\"enabled\":" + enabled + "}");
-        return nodeRepo.findByTemplateNoOrderByLineNoAsc(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
+        return detailOf(n.getTemplateNo());
     }
 
-    /** 删除节点：仅 MANUAL 自定义节点可删；内置四阶段不可删（引导停用），中文 400。 */
+    /**
+     * 删除节点：集团默认模板仅 MANUAL 自定义节点可删（内置四阶段引导停用，中文 400）；
+     * 门店自建模板节点均可删；删除后保序补齐行号 1..N（相对顺序不变）。
+     */
     @Transactional
-    public List<FollowupSopTemplateNode> deleteNode(Long nodeId) {
+    public TemplateDetail deleteNode(Long nodeId) {
         FollowupSopTemplateNode n = requireNode(nodeId);
-        if (!"MANUAL".equals(n.getStage())) {
+        if (FollowupSopDefaults.DEFAULT_TEMPLATE_NO.equals(n.getTemplateNo())
+                && !"MANUAL".equals(n.getStage())) {
             throw badRequest("内置节点不可删除，可停用该节点（停用后不再生成新批次）");
         }
+        String tplNo = n.getTemplateNo();
         nodeRepo.delete(n);
-        renumber();
-        audit.record("SOP_TEMPLATE", FollowupSopDefaults.DEFAULT_TEMPLATE_NO, DataScope.currentActor(),
+        compactLineNo(tplNo);
+        audit.record("SOP_TEMPLATE", tplNo, DataScope.currentActor(),
                 "NODE_DELETE", "{\"nodeId\":" + nodeId + ",\"label\":\"" + esc(n.getLabel()) + "\"}");
-        return nodeRepo.findByTemplateNoOrderByLineNoAsc(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
+        return detailOf(tplNo);
     }
 
     /**
@@ -170,7 +282,7 @@ public class FollowupSopTemplateService {
      * 模板头保留（含模板号），不重建。
      */
     @Transactional
-    public List<FollowupSopTemplateNode> resetTemplate() {
+    public TemplateDetail resetTemplate() {
         ensureDefaultTemplate();
         String tplNo = FollowupSopDefaults.DEFAULT_TEMPLATE_NO;
         List<FollowupSopTemplateNode> existing = nodeRepo.findByTemplateNoOrderByLineNoAsc(tplNo);
@@ -188,7 +300,7 @@ public class FollowupSopTemplateService {
             }
         }
         if (sameAsDefault) {
-            return existing;
+            return detailOf(tplNo);
         }
         nodeRepo.deleteByTemplateNo(tplNo);
         nodeRepo.flush();
@@ -208,7 +320,7 @@ public class FollowupSopTemplateService {
         nodeRepo.saveAll(rebuilt);
         audit.record("SOP_TEMPLATE", tplNo, DataScope.currentActor(), "RESET",
                 "{\"nodes\":" + FollowupSopDefaults.NODES.size() + "}");
-        return nodeRepo.findByTemplateNoOrderByLineNoAsc(tplNo);
+        return detailOf(tplNo);
     }
 
     // ==================== 批次执行看板 ====================
@@ -361,26 +473,63 @@ public class FollowupSopTemplateService {
         }
     }
 
-    /** 全部节点按（天数升序、id 升序）重排行号 1..N。 */
-    private void renumber() {
-        List<FollowupSopTemplateNode> all = nodeRepo
-                .findByTemplateNoOrderByLineNoAsc(FollowupSopDefaults.DEFAULT_TEMPLATE_NO);
-        all.sort(Comparator.comparingInt(FollowupSopTemplateNode::getDayOffset)
-                .thenComparing(FollowupSopTemplateNode::getId));
+    /** 删除节点后保序补齐行号 1..N（相对顺序不变，仅消除空洞）。 */
+    private void compactLineNo(String templateNo) {
+        List<FollowupSopTemplateNode> all = nodeRepo.findByTemplateNoOrderByLineNoAsc(templateNo);
         int lineNo = 1;
+        boolean changed = false;
         for (FollowupSopTemplateNode n : all) {
-            n.setLineNo(lineNo++);
+            if (n.getLineNo() != lineNo) {
+                n.setLineNo(lineNo);
+                changed = true;
+            }
+            lineNo++;
         }
-        nodeRepo.saveAll(all);
+        if (changed) {
+            nodeRepo.saveAll(all);
+        }
     }
 
+    /** 模板解析：缺省=集团默认模板；显式模板号须存在且可见（集团通用或本店自建，他店 404）。 */
+    private FollowupSopTemplate requireVisibleTemplate(String templateNo) {
+        String tplNo = blank(templateNo) ? FollowupSopDefaults.DEFAULT_TEMPLATE_NO : templateNo.trim();
+        FollowupSopTemplate t = templateRepo.findById(tplNo)
+                .orElseThrow(() -> notFound("SOP 模板不存在"));
+        if (t.getStoreCode() != null && !DataScope.canReadStore(t.getStoreCode())) {
+            throw notFound("SOP 模板不存在");
+        }
+        return t;
+    }
+
+    /** 模板详情装配：模板头 + 全部节点（含停用，行号升序）。 */
+    private TemplateDetail detailOf(String templateNo) {
+        FollowupSopTemplate t = templateRepo.findById(templateNo)
+                .orElseThrow(() -> notFound("SOP 模板不存在"));
+        return new TemplateDetail(t, nodeRepo.findByTemplateNoOrderByLineNoAsc(templateNo));
+    }
+
+    /** 门店模板号：SPT + yyyyMMdd + - + 6 位查库序号（号池与批次号同范式，异常回落 0 起）。 */
+    private synchronized String nextTemplateNo() {
+        String day = LocalDate.now(BIZ_TZ).toString().replace("-", "");
+        long max;
+        try {
+            max = templateRepo.maxSeqOfDay("SPT" + day + "-%");
+        } catch (Exception e) {
+            max = 0L;
+        }
+        return "SPT" + day + "-" + String.format("%06d", max + 1);
+    }
+
+    /** 节点解析：按 id 查节点；其模板须对当前用户可见（集团通用或本店自建），他店模板节点 404。 */
     private FollowupSopTemplateNode requireNode(Long nodeId) {
         if (nodeId == null) {
             throw badRequest("缺少节点 id");
         }
         FollowupSopTemplateNode n = nodeRepo.findById(nodeId)
                 .orElseThrow(() -> notFound("SOP 模板节点不存在"));
-        if (!FollowupSopDefaults.DEFAULT_TEMPLATE_NO.equals(n.getTemplateNo())) {
+        FollowupSopTemplate t = templateRepo.findById(n.getTemplateNo())
+                .orElseThrow(() -> notFound("SOP 模板节点不存在"));
+        if (t.getStoreCode() != null && !DataScope.canReadStore(t.getStoreCode())) {
             throw notFound("SOP 模板节点不存在");
         }
         return n;
@@ -413,6 +562,14 @@ public class FollowupSopTemplateService {
         String t = trimToNull(label);
         if (t == null) {
             throw badRequest("请填写节点名称");
+        }
+        return truncate(t, 64);
+    }
+
+    private static String requireName(String name) {
+        String t = trimToNull(name);
+        if (t == null) {
+            throw badRequest("请填写模板名称");
         }
         return truncate(t, 64);
     }

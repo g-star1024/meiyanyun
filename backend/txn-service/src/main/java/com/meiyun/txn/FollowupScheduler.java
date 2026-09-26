@@ -14,7 +14,6 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Set;
 
 /**
  * 术后随访 SOP 自动排程（P5-B30）。
@@ -27,6 +26,9 @@ import java.util.Set;
  * 一张方案单只排一次（重复触发/回调重试直接跳过）。模板表无启用节点时回退内置默认四节点，
  * 保证术后随访在任何环境（含未播种的 prod 库）都不漏排。客户名经 customer-service 解析，
  * 解析失败（客户已删/服务暂不可用）降级为客户号，不阻断排程。</p>
+ *
+ * <p>P6-B101 多模板：节点解析按方案单门店取模板——本店启用模板最新创建优先，
+ * 无则回落集团通用模板（store_code NULL，最早创建先命中），仍无启用节点回退内置默认四节点。</p>
  */
 @Service
 public class FollowupScheduler {
@@ -98,7 +100,7 @@ public class FollowupScheduler {
             log.warn("术后 SOP 排程方案单无治疗完成时间，跳过 planId={}", planId);
             return null;
         }
-        List<NodeDef> nodes = resolveNodes();
+        List<NodeDef> nodes = resolveNodes(p.getStoreCode());
         if (nodes.isEmpty()) {
             log.warn("术后 SOP 无启用节点且默认回退为空，跳过 planId={}", planId);
             return null;
@@ -147,23 +149,38 @@ public class FollowupScheduler {
 
     private record ScheduleOutcome(String batchNo, String customerId, int nodeCount) {}
 
-    /** 取启用模板的启用节点（按行号升序）；无则回退内置默认四节点。 */
-    private List<NodeDef> resolveNodes() {
+    /**
+     * 取排程节点（P6-B101 按店解析）：本店启用模板最新创建优先 → 集团通用模板回落
+     * → 内置默认四节点兜底。storeCode 为空（历史单据）直接走集团回落段。
+     */
+    private List<NodeDef> resolveNodes(String storeCode) {
         try {
-            List<FollowupSopTemplate> templates = templateRepo.findByEnabledTrue();
-            Set<NodeDef> defs = new LinkedHashSet<>();
-            for (FollowupSopTemplate t : templates) {
-                nodeRepo.findByTemplateNoAndEnabledTrueOrderByLineNoAsc(t.getTemplateNo())
-                        .forEach(n -> defs.add(new NodeDef(n.getStage(), n.getLabel(),
-                                n.getDayOffset(), n.getMethod())));
+            if (storeCode != null && !storeCode.isBlank()) {
+                List<NodeDef> storeNodes = firstEnabledNodes(
+                        templateRepo.findByStoreCodeAndEnabledTrueOrderByCreatedAtDesc(storeCode));
+                if (!storeNodes.isEmpty()) return storeNodes;
             }
-            if (!defs.isEmpty()) return new ArrayList<>(defs);
+            List<NodeDef> groupNodes = firstEnabledNodes(
+                    templateRepo.findByStoreCodeIsNullAndEnabledTrueOrderByCreatedAtAsc());
+            if (!groupNodes.isEmpty()) return groupNodes;
         } catch (Exception e) {
             log.warn("术后 SOP 读取模板节点异常，回退默认节点: {}", e.getMessage());
         }
         return FollowupSopDefaults.NODES.stream()
                 .map(d -> new NodeDef(d.stage(), d.label(), d.dayOffset(), d.method()))
                 .toList();
+    }
+
+    /** 依次取各模板的启用节点（行号升序），首个非空模板的节点即返回；全部为空返回空表。 */
+    private List<NodeDef> firstEnabledNodes(List<FollowupSopTemplate> templates) {
+        for (FollowupSopTemplate t : templates) {
+            List<NodeDef> defs = nodeRepo.findByTemplateNoAndEnabledTrueOrderByLineNoAsc(t.getTemplateNo())
+                    .stream()
+                    .map(n -> new NodeDef(n.getStage(), n.getLabel(), n.getDayOffset(), n.getMethod()))
+                    .toList();
+            if (!defs.isEmpty()) return defs;
+        }
+        return List.of();
     }
 
     /** 项目名：方案单子项 itemName 去重拼接（/ 分隔），超长截断到 128。 */

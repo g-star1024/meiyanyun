@@ -34,6 +34,10 @@ export interface FollowupViewDTO {
   recovery: string | null
   adverseReaction: boolean
   adverseNote: string | null
+  adverseStatus: string | null
+  adverseHandleNote: string | null
+  adverseHandleBy: string | null
+  adverseHandleAt: string | null
   needRevisit: boolean
   note: string | null
   followupByName: string | null
@@ -90,6 +94,8 @@ export interface ListFollowupParams {
   customerId?: string
   sopBatchId?: string
   sopOnly?: boolean
+  adverseOnly?: boolean
+  adverseStatus?: string
   keyword?: string
   page?: number
   size?: number
@@ -167,11 +173,21 @@ export interface SopSummaryDTO {
   needEscalation: number
 }
 
-/** 节点新增/局部更新请求：新增三字段必填，更新时仅非空字段生效（后端中文校验）。 */
+/** 节点新增/局部更新请求：新增三字段必填，更新时仅非空字段生效（后端中文校验）。templateNo 指定目标模板（缺省默认模板）。 */
 export interface SopNodeCmd {
   label?: string
   dayOffset?: number
   method?: string
+  templateNo?: string
+}
+
+/** SOP 模板行（P6-B101 多模板列表）：门店模板仅本店可见，集团模板全店可见。 */
+export interface SopTemplateRowDTO {
+  templateNo: string
+  name: string
+  storeCode: string | null
+  enabled: boolean
+  nodeCount: number
 }
 
 export interface SopBatchParams {
@@ -190,9 +206,9 @@ export interface SopBatchPage {
   size: number
 }
 
-/** 读取集团通用 SOP 模板（含停用节点，行号升序；未播种环境后端幂等懒初始化）。 */
-export const getSopTemplate = () =>
-  client.get<SopTemplateDTO>('/txn/followup/sop/template')
+/** 读取 SOP 模板（含停用节点，行号升序；未播种环境后端幂等懒初始化）。templateNo 缺省为集团默认模板。 */
+export const getSopTemplate = (templateNo?: string) =>
+  client.get<SopTemplateDTO>('/txn/followup/sop/template', { params: { templateNo } })
 
 /** 新增自定义节点（stage=MANUAL），返回最新全量模板。 */
 export const addSopNode = (cmd: SopNodeCmd) =>
@@ -225,3 +241,31 @@ export const getSopSummary = (storeCode?: string) =>
 /** 一键升级本店超期未升级 SOP 节点（FIFO 50，与 60s 巡检共享通知幂等），返回实际升级条数。 */
 export const escalateSopOverdue = (storeCode?: string) =>
   client.post<{ escalated: number }>('/txn/followup/sop/escalate', null, { params: { storeCode } })
+
+/** P6-B101 多模板：当前门店可见模板列表（集团模板＋本店模板，他店模板不可见）。 */
+export const listSopTemplates = () =>
+  client.get<SopTemplateRowDTO[]>('/txn/followup/sop/templates')
+
+/** P6-B101 多模板：新建本店专属模板（店码取登录态，名称必填），返回模板号。 */
+export const createStoreSopTemplate = (name: string) =>
+  client.post<{ templateNo: string }>('/txn/followup/sop/templates', { name })
+
+/** P6-B101 节点排序：按数组顺序重排行号（1..N），返回最新全量模板。 */
+export const reorderSopNodes = (templateNo: string, nodeIds: string[]) =>
+  client.post<SopTemplateDTO>('/txn/followup/sop/template/nodes/reorder', { templateNo, nodeIds })
+
+/** 满意度趋势点（P6-B101 结构化分析）：bucket 为日/周首（周一），无数据桶补零。 */
+export interface FollowupTrendPointDTO {
+  bucket: string
+  doneCount: number
+  avgSatisfaction: number
+  adverseCount: number
+}
+
+/** 满意度趋势（按核销时间分桶，默认近 30 天，区间上限 366 天；granularity=day|week）。 */
+export const trendFollowup = (params?: { storeCode?: string; from?: string; to?: string; granularity?: string }) =>
+  client.get<FollowupTrendPointDTO[]>('/txn/followup/stats/trend', { params })
+
+/** 不良反应处置（P6-B101 处置台）：仅已登记不良反应的随访可处置，RESOLVED 必填处置说明。 */
+export const adverseHandleFollowup = (id: string, body: { status: string; note?: string }) =>
+  client.post<FollowupViewDTO>(`/txn/followup/${id}/adverse-handle`, body)
