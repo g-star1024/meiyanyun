@@ -5,6 +5,7 @@ export interface RequisitionItemDto {
   spec: string | null
   qty: number
   unit: string
+  skuCode?: string | null
 }
 
 export interface RequisitionNoteDto {
@@ -36,6 +37,7 @@ export interface RequisitionLinePayload {
   spec?: string | null
   qty: number
   unit: string
+  skuCode?: string | null
 }
 
 export function listRequisitions(params: { storeCode?: string; status?: string }) {
@@ -51,6 +53,8 @@ export function createRequisition(body: {
   applicant?: string
   purpose: string
   remark?: string | null
+  sourceType?: string
+  sourceRef?: string
   items: RequisitionLinePayload[]
 }) {
   return client.post<RequisitionDto>('/stores/requisitions', body)

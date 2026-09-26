@@ -12,6 +12,8 @@ public interface RequisitionRepository extends JpaRepository<Requisition, Long>,
 
     Optional<Requisition> findByRqNo(String rqNo);
 
+    Optional<Requisition> findFirstByStoreCodeAndSourceTypeAndSourceRef(String storeCode, String sourceType, String sourceRef);
+
     @Query(value = "select coalesce(max(cast(substring(rq_no from 13) as bigint)), 0) "
             + "from requisition where rq_no like :prefix", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);

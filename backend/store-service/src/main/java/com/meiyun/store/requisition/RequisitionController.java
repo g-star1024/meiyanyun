@@ -26,6 +26,7 @@ public class RequisitionController {
     }
 
     public record CreateRqCmd(String storeCode, String applicant, String purpose, String remark,
+                              String sourceType, String sourceRef,
                               List<RequisitionService.RqLineCmd> items) {}
 
     public record RejectCmd(String reason) {}
@@ -54,7 +55,8 @@ public class RequisitionController {
         String sc = resolveWriteStoreCode(cmd.storeCode());
         String applicant = (cmd.applicant() == null || cmd.applicant().isBlank())
                 ? actor() : cmd.applicant();
-        return service.create(sc, applicant, cmd.purpose(), cmd.remark(), actor(), cmd.items());
+        return service.create(sc, applicant, cmd.purpose(), cmd.remark(),
+                cmd.sourceType(), cmd.sourceRef(), actor(), cmd.items());
     }
 
     @PostMapping("/{id}/submit")

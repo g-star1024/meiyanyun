@@ -40,4 +40,7 @@ public class RequisitionItem {
 
     @Column(name = "unit", nullable = false, length = 8)
     private String unit;
+
+    @Column(name = "sku_code", length = 32)
+    private String skuCode;
 }

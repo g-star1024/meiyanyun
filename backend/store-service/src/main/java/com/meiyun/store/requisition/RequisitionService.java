@@ -3,7 +3,9 @@ package com.meiyun.store.requisition;
 import com.meiyun.security.DataScope;
 import com.meiyun.store.Store;
 import com.meiyun.store.StoreRepository;
+import com.meiyun.store.consumable.Consumable;
 import com.meiyun.store.consumable.ConsumableAuditRecorder;
+import com.meiyun.store.consumable.ConsumableRepository;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpStatus;
@@ -16,6 +18,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 public class RequisitionService {
@@ -31,6 +34,7 @@ public class RequisitionService {
     private final RequisitionNoteRepository noteRepo;
     private final RqNoGenerator noGen;
     private final StoreRepository storeRepo;
+    private final ConsumableRepository consumableRepo;
     private final ConsumableAuditRecorder audit;
 
     public RequisitionService(RequisitionRepository rqRepo,
@@ -38,16 +42,18 @@ public class RequisitionService {
                               RequisitionNoteRepository noteRepo,
                               RqNoGenerator noGen,
                               StoreRepository storeRepo,
+                              ConsumableRepository consumableRepo,
                               ConsumableAuditRecorder audit) {
         this.rqRepo = rqRepo;
         this.itemRepo = itemRepo;
         this.noteRepo = noteRepo;
         this.noGen = noGen;
         this.storeRepo = storeRepo;
+        this.consumableRepo = consumableRepo;
         this.audit = audit;
     }
 
-    public record RqLineCmd(String name, String spec, Integer qty, String unit) {}
+    public record RqLineCmd(String name, String spec, Integer qty, String unit, String skuCode) {}
 
     static ResponseStatusException badReq(String msg) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, msg);
@@ -94,13 +100,21 @@ public class RequisitionService {
 
     @Transactional
     public Map<String, Object> create(String storeCode, String applicant, String purpose, String remark,
+                                      String sourceType, String sourceRef,
                                       String actor, List<RqLineCmd> lines) {
         if (storeCode == null || storeCode.isBlank()) throw badReq("请指定申领门店");
         Store st = storeRepo.findById(storeCode.trim())
                 .orElseThrow(() -> badReq("申领门店不存在：" + storeCode));
         if (applicant == null || applicant.isBlank()) throw badReq("请填写申请人");
         if (purpose == null || purpose.isBlank()) throw badReq("请填写申领用途");
-        List<RqLineCmd> safe = normalizeLines(lines);
+        String srcType = blankToNull(sourceType);
+        String srcRef = blankToNull(sourceRef);
+        if (srcType != null && srcRef != null) {
+            Optional<Requisition> dup = rqRepo.findFirstByStoreCodeAndSourceTypeAndSourceRef(
+                    st.getStoreCode(), srcType, srcRef);
+            if (dup.isPresent()) return detail(dup.get().getId());
+        }
+        List<RqLineCmd> safe = normalizeLines(st.getStoreCode(), lines);
 
         Requisition r = new Requisition();
         r.setRqNo(noGen.nextRqNo());
@@ -109,6 +123,8 @@ public class RequisitionService {
         r.setApplicant(applicant.trim());
         r.setPurpose(purpose.trim());
         r.setRemark(blankToNull(remark));
+        r.setSourceType(srcType);
+        r.setSourceRef(srcRef);
         rqRepo.save(r);
         saveLines(r.getId(), safe);
         addNote(r.getId(), actor, "创建申领单（草稿）");
@@ -117,6 +133,8 @@ public class RequisitionService {
                 "{\"storeCode\":" + jsonStr(r.getStoreCode())
                         + ",\"applicant\":" + jsonStr(r.getApplicant())
                         + ",\"purpose\":" + jsonStr(r.getPurpose())
+                        + ",\"sourceType\":" + jsonStr(r.getSourceType())
+                        + ",\"sourceRef\":" + jsonStr(r.getSourceRef())
                         + ",\"lineCount\":" + safe.size() + "}");
         return detail(r.getId());
     }
@@ -239,15 +257,24 @@ public class RequisitionService {
         return rqRepo.findById(id).orElseThrow(RequisitionService::notFound);
     }
 
-    private List<RqLineCmd> normalizeLines(List<RqLineCmd> lines) {
+    private List<RqLineCmd> normalizeLines(String storeCode, List<RqLineCmd> lines) {
         if (lines == null || lines.isEmpty()) throw badReq("请至少添加一条申领物料");
         List<RqLineCmd> safe = new ArrayList<>();
         for (RqLineCmd l : lines) {
-            if (l == null || l.name() == null || l.name().isBlank())
+            String sku = l == null ? null : blankToNull(l.skuCode());
+            String name = l == null ? null : l.name();
+            String unit = l == null ? null : l.unit();
+            if (sku != null) {
+                Consumable c = consumableRepo.findByStoreCodeAndSkuCode(storeCode, sku)
+                        .orElseThrow(() -> badReq("耗材档案不存在：" + sku));
+                name = c.getName();
+                unit = c.getUnit();
+            }
+            if (name == null || name.isBlank())
                 throw badReq("物料名称不能为空");
-            if (l.qty() == null || l.qty() <= 0) throw badReq("申领数量必须大于 0");
-            if (l.unit() == null || l.unit().isBlank()) throw badReq("物料单位不能为空");
-            safe.add(new RqLineCmd(l.name().trim(), blankToNull(l.spec()), l.qty(), l.unit().trim()));
+            if (l == null || l.qty() == null || l.qty() <= 0) throw badReq("申领数量必须大于 0");
+            if (unit == null || unit.isBlank()) throw badReq("物料单位不能为空");
+            safe.add(new RqLineCmd(name.trim(), blankToNull(l.spec()), l.qty(), unit.trim(), sku));
         }
         return safe;
     }
@@ -262,6 +289,7 @@ public class RequisitionService {
             it.setSpec(l.spec());
             it.setQty(l.qty());
             it.setUnit(l.unit());
+            it.setSkuCode(l.skuCode());
             itemRepo.save(it);
         }
     }
@@ -281,6 +309,8 @@ public class RequisitionService {
         row.put("approvedAt", r.getApprovedAt());
         row.put("receivedAt", r.getReceivedAt());
         row.put("createdAt", r.getCreatedAt());
+        row.put("sourceType", r.getSourceType());
+        row.put("sourceRef", r.getSourceRef());
 
         List<Map<String, Object>> items = new ArrayList<>();
         for (RequisitionItem it : itemRepo.findByRqIdOrderByLineNoAsc(r.getId())) {
@@ -289,6 +319,7 @@ public class RequisitionService {
             m.put("spec", it.getSpec());
             m.put("qty", it.getQty());
             m.put("unit", it.getUnit());
+            m.put("skuCode", it.getSkuCode());
             items.add(m);
         }
         row.put("items", items);

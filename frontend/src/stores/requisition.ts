@@ -13,6 +13,7 @@ export interface RequisitionItem {
   spec?: string
   qty: number
   unit: string
+  skuCode?: string
 }
 
 export interface RequisitionNote {
@@ -24,6 +25,7 @@ export interface RequisitionNote {
 export interface Requisition {
   id: string
   rqNo: string
+  storeCode: string
   applicant: string
   purpose: string
   remark?: string
@@ -66,6 +68,7 @@ function adapt(d: rqApi.RequisitionDto): Requisition {
   return {
     id: String(d.id),
     rqNo: shortRqNo(d.rqNo),
+    storeCode: d.storeCode,
     applicant: d.applicant,
     purpose: d.purpose,
     remark: d.remark ?? undefined,
@@ -73,7 +76,8 @@ function adapt(d: rqApi.RequisitionDto): Requisition {
       name: i.name,
       spec: i.spec ?? undefined,
       qty: i.qty,
-      unit: i.unit
+      unit: i.unit,
+      skuCode: i.skuCode ?? undefined
     })),
     status: d.status as RequisitionStatus,
     approver: d.approver ?? undefined,
@@ -142,9 +146,12 @@ export const useRequisitionStore = defineStore('requisition', () => {
   }
 
   async function create(input: {
+    storeCode?: string
     applicant?: string
     purpose: string
     remark?: string
+    sourceType?: string
+    sourceRef?: string
     items: RequisitionItem[]
   }): Promise<Requisition | null> {
     if (!auth.can('requisition:create')) {
@@ -152,7 +159,7 @@ export const useRequisitionStore = defineStore('requisition', () => {
       return null
     }
     try {
-      const sc = ctx.currentStoreCode
+      const sc = input.storeCode ?? ctx.currentStoreCode
       if (!sc) {
         toast.error('未获取到当前门店，请稍后重试')
         return null
@@ -162,11 +169,14 @@ export const useRequisitionStore = defineStore('requisition', () => {
         applicant: input.applicant ?? auth.user.name,
         purpose: input.purpose,
         remark: input.remark ?? null,
+        sourceType: input.sourceType,
+        sourceRef: input.sourceRef,
         items: input.items.map((i) => ({
           name: i.name,
           spec: i.spec ?? null,
           qty: i.qty,
-          unit: i.unit
+          unit: i.unit,
+          skuCode: i.skuCode ?? null
         }))
       })
       await load()

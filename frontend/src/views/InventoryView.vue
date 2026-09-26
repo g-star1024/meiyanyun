@@ -4,8 +4,9 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useInventoryStore, type InvCategory } from '@/stores/inventory'
 import { useBomStore } from '@/stores/bom'
+import { useRequisitionStore } from '@/stores/requisition'
 import { useStoreContext } from '@/stores/storeContext'
-import type { ProjectBomDTO } from '@/api/bom'
+import type { BomExceptionDTO, ProjectBomDTO } from '@/api/bom'
 import { useAuthStore } from '@/stores/auth'
 import CKpi from '@/components/CKpi.vue'
 import CCard from '@/components/CCard.vue'
@@ -151,6 +152,7 @@ async function doCreate() {
 
 // ============ B10 项目配方 BOM ============
 const bom = useBomStore()
+const rq = useRequisitionStore()
 onMounted(() => {
   bom.loadBoms().catch((e) => console.error('[bom] 配方加载失败', e))
   bom.loadExceptions().catch((e) => console.error('[bom] 扣料异常加载失败', e))
@@ -245,6 +247,33 @@ async function doResolve(excId: string) {
     toast.success('已标记为手工处理')
   } catch (e) {
     toast.error('标记失败：' + errMsg(e))
+  } finally {
+    excBusy.value = null
+  }
+}
+
+async function doCreateRequisition(e: BomExceptionDTO) {
+  const items = (e.shortages || [])
+    .map((s) => ({ name: s.skuName, qty: s.needQty - s.stockQty, unit: s.unit, skuCode: s.skuCode }))
+    .filter((i) => i.qty > 0)
+  if (items.length === 0) {
+    toast.error('缺料明细无可申购数量')
+    return
+  }
+  excBusy.value = e.excId
+  try {
+    const created = await rq.create({
+      storeCode: e.storeCode,
+      purpose: `BOM 缺料补货（划扣单 ${e.writeoffId}）`,
+      remark: `扣料异常 ${e.excId} 一键生成`,
+      items,
+      sourceType: 'BOM_SHORTAGE',
+      sourceRef: String(e.excId)
+    })
+    if (created) {
+      toast.success('已生成申购单 ' + created.rqNo)
+      await bom.loadExceptions(true)
+    }
   } finally {
     excBusy.value = null
   }
@@ -491,6 +520,9 @@ async function doResolve(excId: string) {
                   <CButton variant="primary" size="sm" :disabled="excBusy === e.excId"
                           v-perm.disable="'inventory:consumable:edit'"
                           @click="doRetry(e.excId)">补货后重试</CButton>
+                  <CButton v-if="(e.shortages || []).length > 0" variant="ghost" size="sm" :disabled="excBusy === e.excId"
+                          v-perm.disable="'requisition:create'"
+                          @click="doCreateRequisition(e)">一键生成申购单</CButton>
                   <CButton variant="ghost" size="sm" :disabled="excBusy === e.excId"
                           v-perm.disable="'inventory:consumable:edit'"
                           @click="doResolve(e.excId)">标记已处理</CButton>

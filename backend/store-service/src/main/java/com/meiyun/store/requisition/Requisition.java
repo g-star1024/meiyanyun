@@ -67,6 +67,12 @@ public class Requisition {
     @Column(name = "created_at")
     private OffsetDateTime createdAt;
 
+    @Column(name = "source_type", length = 16)
+    private String sourceType;
+
+    @Column(name = "source_ref", length = 32)
+    private String sourceRef;
+
     @jakarta.persistence.PrePersist
     void prePersist() {
         if (createdAt == null) createdAt = OffsetDateTime.now();
