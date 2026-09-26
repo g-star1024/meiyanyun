@@ -2,6 +2,7 @@ package com.meiyun.finance;
 
 import com.meiyun.security.AuthInterceptor;
 import com.meiyun.security.DataScope;
+import com.meiyun.security.LoginUser;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -15,6 +16,7 @@ import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import java.net.URI;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -22,6 +24,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -80,11 +83,17 @@ public class FinanceAggregationService {
     @Value("${audit.service.url:http://127.0.0.1:8084}")
     private String auditBaseUrl;
 
+    @Value("${marketing.service.url:http://127.0.0.1:8088}")
+    private String marketingBaseUrl;
+
     @Value("${meiyun.security.internal-token:meiyun-dev-internal-token-please-change-in-prod}")
     private String internalToken;
 
-    public FinanceAggregationService(RestTemplate restTemplate) {
+    private final FundEntryRepository fundEntryRepo;
+
+    public FinanceAggregationService(RestTemplate restTemplate, FundEntryRepository fundEntryRepo) {
         this.restTemplate = restTemplate;
+        this.fundEntryRepo = fundEntryRepo;
     }
 
     // ==================== 台账流水 ====================
@@ -907,5 +916,194 @@ public class FinanceAggregationService {
         } catch (Exception e) {
             return iso.toString();
         }
+    }
+
+    // ==================== B99 转化漏斗 / 项目毛利 ====================
+
+    /** B99 转化漏斗数据源：txn 侧客户级漏斗全量响应（stages/stagesByStore/consultants/rows），失败降级空 Map。 */
+    private Map<String, Object> fetchFunnelBundle(String from, String to) {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(txnBaseUrl + "/api/txn/internal/funnel-stats")
+                    .queryParam("from", from)
+                    .queryParam("to", to);
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            return resp.getBody() != null ? resp.getBody() : new LinkedHashMap<>();
+        } catch (Exception e) {
+            log.warn("拉取交易域转化漏斗失败（降级空）: {}", e.getMessage());
+            return new LinkedHashMap<>();
+        }
+    }
+
+    /** B99 转化漏斗线索级：marketing 落地页留资（LANDING_LEAD）区间计数（无门店维度），失败降级 0。 */
+    private long fetchLandingLeads(String from, String to) {
+        try {
+            UriComponentsBuilder b = UriComponentsBuilder
+                    .fromHttpUrl(marketingBaseUrl + "/api/marketing/internal/touch-events/lead-count")
+                    .queryParam("from", from)
+                    .queryParam("to", to);
+            ResponseEntity<Map<String, Object>> resp =
+                    restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
+            Map<String, Object> body = resp.getBody();
+            return body != null ? longOf(body.get("leadCount")) : 0L;
+        } catch (Exception e) {
+            log.warn("拉取营销域落地页留资计数失败（lead 不含留资，降级 0）: {}", e.getMessage());
+            return 0L;
+        }
+    }
+
+    /**
+     * B99 转化漏斗（客户级）：集团域返回 txn 全局五级 stages 并将落地页留资并入 lead（留资无门店维度，
+     * 仅集团域合并）；门店域按 stagesByStore 以门店域过滤重算 stages（lead=域内有效预约，不含留资）。
+     * rows/stagesByStore 逐行 canReadStore 收敛；consultants 咨询师排行透传。
+     */
+    public Map<String, Object> funnelBundle(String from, String to) {
+        Map<String, Object> raw = fetchFunnelBundle(from, to);
+        Map<String, Object> out = new LinkedHashMap<>(raw);
+        LoginUser u = DataScope.current();
+        boolean groupScope = u == null || u.isSuper()
+                || DataScope.SCOPE_GROUP.equals(u.scope()) || DataScope.SCOPE_BRAND.equals(u.scope())
+                || (DataScope.SCOPE_REGION.equals(u.scope()) && (u.stores() == null || u.stores().isEmpty()));
+        List<Map<String, Object>> stagesByStore = new ArrayList<>();
+        for (Map<String, Object> row : mapListOf(raw.get("stagesByStore"))) {
+            if (DataScope.canReadStore(str(row.get("storeCode")))) {
+                stagesByStore.add(row);
+            }
+        }
+        out.put("stagesByStore", stagesByStore);
+        if (groupScope) {
+            Map<String, Object> stages = mapOf(raw.get("stages"));
+            stages.put("lead", longOf(stages.get("lead")) + fetchLandingLeads(from, to));
+            out.put("stages", stages);
+        } else {
+            long lead = 0, arrive = 0, consult = 0, deal = 0, repurchase = 0;
+            for (Map<String, Object> row : stagesByStore) {
+                lead += longOf(row.get("lead"));
+                arrive += longOf(row.get("arrive"));
+                consult += longOf(row.get("consult"));
+                deal += longOf(row.get("deal"));
+                repurchase += longOf(row.get("repurchase"));
+            }
+            Map<String, Object> stages = new LinkedHashMap<>();
+            stages.put("lead", lead);
+            stages.put("arrive", arrive);
+            stages.put("consult", consult);
+            stages.put("deal", deal);
+            stages.put("repurchase", repurchase);
+            out.put("stages", stages);
+        }
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map<String, Object> row : mapListOf(raw.get("rows"))) {
+            if (DataScope.canReadStore(str(row.get("storeCode")))) {
+                rows.add(row);
+            }
+        }
+        out.put("rows", rows);
+        return out;
+    }
+
+    /**
+     * B99 经营毛利-项目级：收入=txn order_item 成交侧（已收款/已核销）按 门店×品类×项目 归桶
+     * （serviceCategory 空归「其他」）；耗材成本=fund_entry BOM 直接耗材（idem_key 'CONSUMABLE-COST:%'
+     * 前缀实证，门店级）按项目收入占门店总收入比分摊，无落账则 0 如实展示（DESIGN-T2 §6 不伪造）；
+     * 人力成本无项目级数据源投影 0。金额分→元两位小数；门店域逐行 canReadStore 收敛。
+     */
+    public List<Map<String, Object>> projectMargin(String from, String to) {
+        List<Map<String, Object>> items = fetchOrderItems(from, to);
+        OffsetDateTime fromTime = LocalDate.parse(from).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        OffsetDateTime toTime = LocalDate.parse(to).plusDays(1).atStartOfDay(ZoneOffset.UTC).toOffsetDateTime();
+        Map<String, Long> consumableByStore = new HashMap<>();
+        for (FundEntryRepository.ConsumableCostRow row : fundEntryRepo.consumableCostByStore(fromTime, toTime)) {
+            if (row.getStoreCode() != null) {
+                consumableByStore.merge(row.getStoreCode(),
+                        row.getCostFen() == null ? 0L : row.getCostFen(), Long::sum);
+            }
+        }
+        Map<String, Map<String, Object>> buckets = new LinkedHashMap<>();
+        Map<String, Long> revenueByStore = new HashMap<>();
+        Set<String> storeCodes = new HashSet<>();
+        for (Map<String, Object> it : items) {
+            String storeCode = str(it.get("storeCode"));
+            if (storeCode == null || !DataScope.canReadStore(storeCode)) {
+                continue;
+            }
+            String category = nz(str(it.get("serviceCategory")), "其他");
+            String itemName = nz(str(it.get("itemName")), "未命名项目");
+            long amount = longOf(it.get("amount"));
+            storeCodes.add(storeCode);
+            revenueByStore.merge(storeCode, amount, Long::sum);
+            String key = storeCode + "|" + category + "|" + itemName;
+            Map<String, Object> bucket = buckets.computeIfAbsent(key, k -> {
+                Map<String, Object> b = new LinkedHashMap<>();
+                b.put("category", category);
+                b.put("itemName", itemName);
+                b.put("storeCode", storeCode);
+                b.put("revenueFen", 0L);
+                b.put("orderNos", new HashSet<String>());
+                return b;
+            });
+            bucket.put("revenueFen", (Long) bucket.get("revenueFen") + amount);
+            String orderNo = str(it.get("orderNo"));
+            if (orderNo != null && !orderNo.isBlank()) {
+                orderNosOf(bucket).add(orderNo);
+            }
+        }
+        Map<String, String> storeNames = resolveStoreNames(new ArrayList<>(storeCodes));
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (Map<String, Object> bucket : buckets.values()) {
+            String storeCode = (String) bucket.get("storeCode");
+            long revenueFen = (Long) bucket.get("revenueFen");
+            long storeRevenue = revenueByStore.getOrDefault(storeCode, 0L);
+            long storeConsumable = consumableByStore.getOrDefault(storeCode, 0L);
+            long materialFen = storeRevenue > 0
+                    ? Math.round(storeConsumable * (revenueFen / (double) storeRevenue)) : 0L;
+            long grossFen = revenueFen - materialFen;
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("category", bucket.get("category"));
+            row.put("itemName", bucket.get("itemName"));
+            row.put("storeCode", storeCode);
+            row.put("store", storeNames.getOrDefault(storeCode, storeCode));
+            row.put("revenue", yuan(revenueFen));
+            row.put("materialCost", yuan(materialFen));
+            row.put("laborCost", 0.0);
+            row.put("gross", yuan(grossFen));
+            row.put("grossRate", round2(revenueFen > 0 ? grossFen * 100.0 / revenueFen : 0.0));
+            row.put("orderCount", orderNosOf(bucket).size());
+            rows.add(row);
+        }
+        rows.sort((a, b) -> Double.compare(((Number) b.get("revenue")).doubleValue(),
+                ((Number) a.get("revenue")).doubleValue()));
+        return rows;
+    }
+
+    /** Object → Map&lt;String,Object&gt; 浅拷贝（非 Map 返回空 LinkedHashMap）。 */
+    private static Map<String, Object> mapOf(Object o) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (o instanceof Map<?, ?> m) {
+            m.forEach((k, v) -> out.put(String.valueOf(k), v));
+        }
+        return out;
+    }
+
+    /** Object → List&lt;Map&lt;String,Object&gt;&gt;（非 List 返回空 List，元素非 Map 跳过）。 */
+    private static List<Map<String, Object>> mapListOf(Object o) {
+        if (!(o instanceof List<?> list)) {
+            return List.of();
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Map<?, ?> m) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                m.forEach((k, v) -> row.put(String.valueOf(k), v));
+                out.add(row);
+            }
+        }
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Set<String> orderNosOf(Map<String, Object> bucket) {
+        return (Set<String>) bucket.get("orderNos");
     }
 }

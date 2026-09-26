@@ -337,6 +337,27 @@ public class FinanceController {
                 SecurityContext.currentStaffId());
     }
 
+    /**
+     * 转化漏斗（B99）：GET /api/finance/funnel?from=yyyy-MM-dd&to=yyyy-MM-dd（区间 [from,to) 双闭）。
+     * txn 客户级五级（有效预约→到院→咨询→成交→复购）＋ marketing LANDING_LEAD 留资合并 lead；
+     * 门店域 stages 自 stagesByStore 域内重算（留资无门店维度不并入），rows 渠道明细逐行收敛。
+     */
+    @GetMapping("/funnel")
+    public Map<String, Object> funnel(@RequestParam("from") String from, @RequestParam("to") String to) {
+        return aggregation.funnelBundle(from, to);
+    }
+
+    /**
+     * 项目级毛利（B99）：GET /api/finance/margin/project?from=yyyy-MM-dd&to=yyyy-MM-dd（含两端）。
+     * 收入=txn 已收款订单子项×品类归桶（未命中归「其他」）；耗材=BOM 出库落账（CONSUMABLE-COST:%）
+     * 门店级按项目收入占比分摊（无落账 0 如实展示，§6 不伪造）；laborCost 无项目级源投影 0。金额元。
+     */
+    @GetMapping("/margin/project")
+    @RequirePerm("finance:margin:view")
+    public List<Map<String, Object>> marginProject(@RequestParam("from") String from, @RequestParam("to") String to) {
+        return aggregation.projectMargin(from, to);
+    }
+
     /** Outbox 对账台账（可按状态过滤：PENDING 待对账 / RECONCILED 已对账 / DIFF 差异 / ADJUSTED 已调平）。 */
     @GetMapping("/outbox")
     public List<OutboxRecord> outbox(@RequestParam(required = false) String status) {

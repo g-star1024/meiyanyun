@@ -42,4 +42,9 @@ public interface ArrivalRepository
     @Query("SELECT DISTINCT a.storeCode, a.customerId FROM Arrival a " +
             "WHERE a.arrivedAt >= :from AND a.arrivedAt < :to AND a.customerId IS NOT NULL")
     List<Object[]> distinctArrivalCustomers(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
+
+    /** B99 转化漏斗客户级重写：区间到店登记行（ahNo, storeCode, channel），供方案 arrival_id 直链渠道归属内存 join。 */
+    @Query("SELECT a.ahNo, a.storeCode, a.channel FROM Arrival a " +
+            "WHERE a.arrivedAt >= :from AND a.arrivedAt < :to")
+    List<Object[]> funnelArrivalLinks(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
 }

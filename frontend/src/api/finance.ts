@@ -1132,3 +1132,68 @@ export const fileTaxPeriod = (id: number, remark?: string) =>
 /** 更正申报：FILED/LATE_FILED/AMENDED → AMENDED（finance:input:confirm；note 必填） */
 export const amendTaxPeriod = (id: number, note: string) =>
   client.post<TaxPeriodDTO>(`/finance/tax-periods/${id}/amend`, { note })
+
+// ============================================================
+// P5-B99 转化漏斗 / 项目毛利（T2 数据分析专项末批）
+// 漏斗：finance 聚合 txn 客户级五级 + marketing 落地页留资（集团域 lead 并入），门店域后端收敛
+// 毛利：order_item 成交侧 × fund_entry BOM 直接耗材（门店级按项目收入占比分摊），金额「元」
+// ============================================================
+
+/** 漏斗五级计数（lead 线索 / arrive 到院 / consult 咨询 / deal 成交 / repurchase 复购） */
+export interface FunnelStages {
+  lead: number
+  arrive: number
+  consult: number
+  deal: number
+  repurchase: number
+}
+
+/** 门店级五级行（finance 已按登录人门店域过滤） */
+export interface FunnelStoreStage extends FunnelStages {
+  storeCode: string
+}
+
+/** 渠道×门店明细行 */
+export interface FunnelChannelRow {
+  storeCode: string
+  channel: string
+  arrivalCount: number
+  consultCount: number
+  dealCount: number
+}
+
+/** 咨询师转化行（amountFen 成交方案额「分」） */
+export interface FunnelConsultantRow {
+  consultantId: string
+  consult: number
+  deal: number
+  amountFen: number
+}
+
+/** 转化漏斗响应（stages 已按数据域收敛；集团域 lead 含落地页留资） */
+export interface FunnelBundle {
+  stages: FunnelStages
+  stagesByStore: FunnelStoreStage[]
+  rows: FunnelChannelRow[]
+  consultants: FunnelConsultantRow[]
+}
+
+export const getFunnelBundle = (params: { from: string; to: string }) =>
+  client.get<FunnelBundle>('/finance/funnel', { params })
+
+/** 项目毛利行（金额「元」两位小数；materialCost=BOM 直接耗材门店级分摊，laborCost 无项目级源投影 0） */
+export interface ProjectMarginRow {
+  category: string
+  itemName: string
+  storeCode: string
+  store: string
+  revenue: number // 元
+  materialCost: number // 元
+  laborCost: number // 元
+  gross: number // 元
+  grossRate: number // %
+  orderCount: number
+}
+
+export const getProjectMargin = (params: { from: string; to: string }) =>
+  client.get<ProjectMarginRow[]>('/finance/margin/project', { params })

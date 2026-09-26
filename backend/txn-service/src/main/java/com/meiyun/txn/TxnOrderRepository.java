@@ -34,4 +34,17 @@ public interface TxnOrderRepository extends JpaRepository<TxnOrder, String>, Jpa
     @Query(value = "select coalesce(max(cast(substring(order_no from 12) as bigint)), 0) " +
            "from txn_order where order_no like :prefix", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);
+
+    /** B99 转化漏斗成交级：区间已收款/已核销订单的成交客户数（客户级去重，按门店）。 */
+    @Query("SELECT o.storeCode, COUNT(DISTINCT o.customerId) FROM TxnOrder o " +
+           "WHERE o.createdAt >= :from AND o.createdAt < :to AND o.status IN ('已收款','已核销') " +
+           "GROUP BY o.storeCode")
+    List<Object[]> funnelDealCustomers(@Param("from") java.time.OffsetDateTime from,
+                                       @Param("to") java.time.OffsetDateTime to);
+
+    /** B99 转化漏斗成交/复购级：区间已收款/已核销订单行（customerId, storeCode）（成交去重/复购≥2 由调用方内存聚合——JPQL 不支持 FROM 子查询）。 */
+    @Query("SELECT o.customerId, o.storeCode FROM TxnOrder o " +
+           "WHERE o.createdAt >= :from AND o.createdAt < :to AND o.status IN ('已收款','已核销')")
+    List<Object[]> funnelPaidOrderRows(@Param("from") java.time.OffsetDateTime from,
+                                       @Param("to") java.time.OffsetDateTime to);
 }

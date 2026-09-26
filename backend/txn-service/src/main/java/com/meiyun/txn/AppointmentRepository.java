@@ -35,4 +35,10 @@ public interface AppointmentRepository extends JpaRepository<Appointment, String
     @Query(value = "select coalesce(max(cast(substring(appt_no from 12) as bigint)), 0) " +
            "from appointment where appt_no like :prefix and substring(appt_no from 12) ~ '^[0-9]+$'", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);
+
+    /** B99 转化漏斗线索级：区间有效预约计数按门店（半闭 [from,to)；已取消/未到诊不计），供 finance 按门店域收敛重算。 */
+    @Query("SELECT a.storeCode, COUNT(a) FROM Appointment a " +
+           "WHERE a.apptDate >= :from AND a.apptDate < :to AND a.status NOT IN ('已取消','未到诊') " +
+           "GROUP BY a.storeCode")
+    List<Object[]> funnelLeadAppts(@Param("from") LocalDate from, @Param("to") LocalDate to);
 }

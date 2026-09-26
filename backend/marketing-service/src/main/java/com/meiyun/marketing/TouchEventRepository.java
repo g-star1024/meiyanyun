@@ -23,6 +23,11 @@ public interface TouchEventRepository extends JpaRepository<TouchEvent, Long> {
             + "FROM TouchEvent t GROUP BY t.touchType")
     List<TouchTypeSummary> summarizeByType(@Param("todayStart") OffsetDateTime todayStart);
 
+    /** B99 转化漏斗线索级：区间 LANDING_LEAD 留资计数（半闭 [from,to)），供 finance 聚合层合并 lead。 */
+    @Query("SELECT COUNT(t) FROM TouchEvent t WHERE t.touchType = 'LANDING_LEAD' "
+            + "AND t.at >= :from AND t.at < :to")
+    long countLeads(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
+
     /** 分组聚合投影（JPQL 接口投影）。 */
     interface TouchTypeSummary {
         String getTouchType();

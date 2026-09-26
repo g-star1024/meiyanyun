@@ -60,4 +60,23 @@ public interface FundEntryRepository extends JpaRepository<FundEntry, Long> {
         Long getNetFen();
         java.time.OffsetDateTime getOldestInAt();
     }
+
+    /**
+     * B99 毛利耗材回溯：BOM 出库落账按门店聚合（分）。
+     * 实证口径：idem_key = 'CONSUMABLE-COST:' + todoNo、biz_ref = todoNo（FinanceEventPublisher.emitConsumableCost），
+     * USE→TK-MATERIAL / SCRAP→TK-LOSS、direction=OUT；区间 [from,to) 半闭。
+     */
+    @Query(value = "select store_code as storeCode, sum(amount) as costFen " +
+            "from fund_entry where idem_key like 'CONSUMABLE-COST:%' and direction = 'OUT' " +
+            "and subject in ('TK-MATERIAL','TK-LOSS') and store_code is not null " +
+            "and occurred_at >= :from and occurred_at < :to " +
+            "group by store_code", nativeQuery = true)
+    List<ConsumableCostRow> consumableCostByStore(@Param("from") OffsetDateTime from,
+                                                  @Param("to") OffsetDateTime to);
+
+    /** 耗材回溯行投影：门店码 / BOM 出库耗材成本（分）。 */
+    interface ConsumableCostRow {
+        String getStoreCode();
+        Long getCostFen();
+    }
 }

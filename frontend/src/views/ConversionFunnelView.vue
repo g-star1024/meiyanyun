@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /* ============================================================
- * 转化漏斗分析（/conversion-funnel）· 跨业务域全链路
- * 线索(预约/建档) → 到院(到店/分诊) → 咨询(面诊开单) → 成交(缴费单收款) → 复购(二次消费)
- * 数据实时聚合 appointment / arrival / consultation / order / customer store，
+ * 转化漏斗分析（/conversion-funnel）· 跨业务域全链路（P5-B99 切真）
+ * 线索(有效预约+落地页留资) → 到院(到店登记) → 咨询(面诊开单) → 成交(收款客户级) → 复购(≥2 次消费)
+ * 数据源 /finance/funnel：finance 聚合 txn 客户级五级 + marketing 落地页留资（门店域后端收敛），
  * 与营销域漏斗（/m5-dashboard，仅营销活动）互补：本页看门店服务动线转化。
  * ============================================================ */
 import { computed, onMounted } from 'vue'
@@ -12,81 +12,15 @@ import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
-import { useAppointmentStore } from '@/stores/appointment'
-import { useArrivalStore } from '@/stores/arrival'
-import { useConsultationStore } from '@/stores/consultation'
-import { useOrderStore } from '@/stores/order'
-import { useCustomerStore } from '@/stores/customer'
-import { staffName } from '@/config/staff'
+import { useConversionFunnelStore } from '@/stores/conversionFunnel'
 
 const router = useRouter()
-const appointment = useAppointmentStore()
-const arrival = useArrivalStore()
-const consultation = useConsultationStore()
-const order = useOrderStore()
-const customer = useCustomerStore()
+const funnelStore = useConversionFunnelStore()
 
-onMounted(() => {
-  appointment.seed()
-  arrival.seed()
-  consultation.seed()
-  order.seed()
-  customer.seedProfile()
-})
+onMounted(() => funnelStore.seed())
 
-// —— 漏斗五级（跨域聚合真实数据）——
-const funnel = computed(() => {
-  // ① 线索：有效预约（未取消/未爽约）+ 待咨询单
-  const apptLeads = appointment.appointments.filter(
-    (a) => a.status !== 'CANCELLED' && a.status !== 'NO_SHOW',
-  ).length
-  const leadCount = apptLeads + consultation.pending.length
-
-  // ② 到院：到店登记 + 已到店/完成预约
-  const arrivedCount =
-    arrival.arrivals.length +
-    appointment.appointments.filter((a) => a.status === 'ARRIVED' || a.status === 'COMPLETED').length
-
-  // ③ 咨询：已进入咨询动线（ACTIVE 之后的全部咨询单）
-  const consultedCount = consultation.consultations.filter(
-    (c) => c.status !== 'PENDING' && c.status !== 'ABANDONED',
-  ).length
-
-  // ④ 成交：已收款（PAID 及之后履约态）+ 已支付订单
-  const dealConsult = consultation.consultations.filter(
-    (c) => ['PAID', 'TREATING', 'DONE'].includes(c.status),
-  ).length
-  const paidOrders = order.orders.filter((o) => o.status === 'PAID').length
-  const dealCount = Math.max(dealConsult, paidOrders)
-
-  // ⑤ 复购：同一客户 ≥2 笔已支付订单（二次及以上消费）
-  const paidByCust = new Map<string, number>()
-  order.orders.filter((o) => o.status === 'PAID').forEach((o) => {
-    paidByCust.set(o.customerId, (paidByCust.get(o.customerId) ?? 0) + 1)
-  })
-  const repurchaseRaw = [...paidByCust.values()].filter((n) => n >= 2).length
-
-  // 漏斗须逐级单调递减（同一动线：线索→到院→咨询→成交→复购），跨 store 口径逐级取交集钳制，
-  // 每一级都与「上一级钳制后的结果」比较（而非原始值），避免各 store 独立 seed 数量不一致导致转化率 >100%。
-  const raw = [leadCount, arrivedCount, consultedCount, dealCount, repurchaseRaw]
-  const values: number[] = []
-  raw.forEach((v, i) => { values.push(i === 0 ? v : Math.min(v, values[i - 1])) })
-
-  const stages = [
-    { key: 'lead', label: '线索', sub: '有效预约 + 待咨询', value: values[0], tone: 'var(--c-blue)', icon: 'bell' },
-    { key: 'arrive', label: '到院', sub: '到店登记 / 已到店', value: values[1], tone: 'var(--c-purple)', icon: 'customer' },
-    { key: 'consult', label: '咨询', sub: '面诊开单', value: values[2], tone: 'var(--c-brand)', icon: 'chat' },
-    { key: 'deal', label: '成交', sub: '缴费单收款', value: values[3], tone: 'var(--c-orange-dark)', icon: 'pos' },
-    { key: 'repurchase', label: '复购', sub: '二次及以上消费', value: values[4], tone: 'var(--c-teal)', icon: 'trend-up' },
-  ]
-  const max = Math.max(...stages.map((s) => s.value), 1)
-  return stages.map((s, i) => {
-    const prev = i === 0 ? s.value : stages[i - 1].value
-    const stepRate = prev > 0 ? Math.round((s.value / prev) * 100) : 0
-    const overallRate = stages[0].value > 0 ? Math.round((s.value / stages[0].value) * 100) : 0
-    return { ...s, width: Math.max(8, Math.round((s.value / max) * 100)), stepRate, overallRate }
-  })
-})
+const funnel = computed(() => funnelStore.funnel)
+const consultantRank = computed(() => funnelStore.consultantRank)
 
 const kpis = computed(() => {
   const f = funnel.value
@@ -97,24 +31,6 @@ const kpis = computed(() => {
     { label: '成交率（咨询→成交）', value: `${get('deal')?.stepRate ?? 0}%`, tone: 'teal' as const, icon: 'pos' },
     { label: '复购率', value: `${get('repurchase')?.stepRate ?? 0}%`, tone: 'warning' as const, icon: 'trend-up' },
   ]
-})
-
-// —— 咨询师转化排行（按咨询单聚合）——
-const consultantRank = computed(() => {
-  const map = new Map<string, { id: string; consult: number; deal: number; amount: number }>()
-  consultation.consultations.forEach((c) => {
-    if (c.status === 'PENDING' || c.status === 'ABANDONED') return
-    const row = map.get(c.consultantId) ?? { id: c.consultantId, consult: 0, deal: 0, amount: 0 }
-    row.consult += 1
-    if (['PAID', 'TREATING', 'DONE'].includes(c.status)) {
-      row.deal += 1
-      row.amount += c.planAmount ?? 0
-    }
-    map.set(c.consultantId, row)
-  })
-  return [...map.values()]
-    .map((r) => ({ ...r, name: staffName(r.id), rate: r.consult > 0 ? Math.round((r.deal / r.consult) * 100) : 0 }))
-    .sort((a, b) => b.rate - a.rate)
 })
 
 // —— 流失环节诊断 ——
@@ -132,7 +48,7 @@ const leaks = computed(() => {
     const a = get(from)
     const b = get(to)
     const lost = a.value - b.value
-    out.push({ stage: `${a.label}→${b.label}`, lost: Math.max(0, lost), rate: a.value > 0 ? Math.round((lost / a.value) * 100) : 0, tip, tone })
+    out.push({ stage: `${a.label}→${b.label}`, lost: Math.max(0, lost), rate: a.value > 0 ? Math.round((Math.max(0, lost) / a.value) * 100) : 0, tip, tone })
   })
   return out.sort((a, b) => b.lost - a.lost)
 })

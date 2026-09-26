@@ -49,4 +49,17 @@ public interface PlanRepository extends JpaRepository<ConsultPlan, String>, JpaS
             "AND p.status IN ('PAID','TREATING','DONE') " +
             "GROUP BY p.storeCode")
     List<Object[]> funnelDeals(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
+
+    /** B99 转化漏斗客户级重写：区间方案行（customerId, arrivalId, storeCode），供 arrival_id 直链渠道归属内存 join。 */
+    @Query("SELECT p.customerId, p.arrivalId, p.storeCode FROM ConsultPlan p " +
+            "WHERE p.createdAt >= :from AND p.createdAt < :to AND p.status <> 'ABANDONED'")
+    List<Object[]> funnelConsultRows(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
+
+    /** B99 咨询师排行：区间方案聚合（consultantId, 方案数, 成交数, 成交方案额合计-单位分）。 */
+    @Query("SELECT p.consultantId, COUNT(p), " +
+            "SUM(CASE WHEN p.status IN ('PAID','TREATING','DONE') THEN 1 ELSE 0 END), " +
+            "SUM(CASE WHEN p.status IN ('PAID','TREATING','DONE') THEN COALESCE(p.planAmount, 0) ELSE 0 END) " +
+            "FROM ConsultPlan p WHERE p.createdAt >= :from AND p.createdAt < :to " +
+            "AND p.consultantId IS NOT NULL GROUP BY p.consultantId")
+    List<Object[]> funnelConsultantRank(@Param("from") OffsetDateTime from, @Param("to") OffsetDateTime to);
 }

@@ -169,6 +169,7 @@ public class InternalFinanceController {
                 continue;
             }
             Map<String, Object> row = new LinkedHashMap<>();
+            row.put("orderNo", it.getOrderNo());
             row.put("storeCode", o.getStoreCode());
             row.put("itemName", it.getItemName());
             row.put("qty", it.getQty());
