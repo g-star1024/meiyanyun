@@ -16,10 +16,10 @@ const store = useJourneyStore()
 onMounted(() => store.seed())
 
 const kpis = computed(() => [
-  { label: '在途客户', icon: 'customer', value: String(store.inProgress.length), tone: 'brand' as const },
-  { label: '本周转化', icon: 'trend-up', value: String(store.convertedThisWeek.length), tone: 'success' as const },
-  { label: '平均旅程天数', icon: 'clock', value: String(store.avgDays), tone: 'teal' as const },
-  { label: '流失风险', icon: 'alert', value: String(store.churnRisk.length), tone: 'danger' as const },
+  { label: '在途客户', icon: 'customer', value: String(store.kpi.inProgress), tone: 'brand' as const },
+  { label: '本周转化', icon: 'trend-up', value: String(store.kpi.convertedThisWeek), tone: 'success' as const },
+  { label: '平均旅程天数', icon: 'clock', value: String(store.kpi.avgDays), tone: 'teal' as const },
+  { label: '流失风险', icon: 'alert', value: String(store.kpi.churnRisk), tone: 'danger' as const },
 ])
 
 
