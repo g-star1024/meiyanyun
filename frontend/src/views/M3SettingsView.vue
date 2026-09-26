@@ -13,7 +13,7 @@ import CIcon from '@/components/CIcon.vue'
 import { useM3SettingsStore } from '@/stores/m3settings'
 
 const store = useM3SettingsStore()
-onMounted(() => {})
+onMounted(() => { void store.seed() })
 
 const saved = ref(false)
 function doSave() {

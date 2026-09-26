@@ -28,13 +28,13 @@ const kpis = computed(() => [
   { label: '回收率', icon: 'trend-up', value: `${store.responseRate}%`, tone: 'teal' as const },
 ])
 
-const tabs: Array<{ key: NpsCategory | 'ALL' | 'PENDING'; label: string }> = [
+const tabs = computed<Array<{ key: NpsCategory | 'ALL' | 'PENDING'; label: string }>>(() => [
   { key: 'ALL', label: `全部 ${store.total}` },
   { key: 'PROMOTER', label: `推荐者 ${store.promoters.length}` },
   { key: 'PASSIVE', label: `被动者 ${store.passives.length}` },
   { key: 'DETRACTOR', label: `贬损者 ${store.detractors.length}` },
   { key: 'PENDING', label: `待跟进 ${store.pending.length}` },
-]
+])
 
 const donutData = computed(() => [
   { label: '推荐者', value: store.promoters.length, color: 'var(--c-success-fg)' },

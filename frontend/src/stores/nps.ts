@@ -1,11 +1,20 @@
 // ============================================================
-// NPS 满意度/NPS store（M3-12）
-// 客户 NPS 评分记录（推荐者 9-10 / 被动者 7-8 / 贬损者 0-6），
-// 周期 NPS 趋势、回收率、跟进状态。
+// NPS 满意度/NPS store（M3-12，适配层切真）
+// 数据源：/api/customer/m3/nps/records|summary|trends（customer-service / nps_record）。
+// 适配层铁律：导出签名全保留（records/trends/filterCategory/reachCount/total/promoters/
+// passives/detractors/pending/npsScore/promoterPct/passivePct/detractorPct/responseRate/
+// distribution/filtered/get/markFollowed/createFollowTask/seed/CATEGORY_LABEL/CATEGORY_COLOR），
+// NpsView template/style 零改动。
+// KPI（total/npsScore/pct/pending）继续由 records 本地聚合（与 /summary 同库同口径）；
+// reachCount 由 /summary 下发（m3_settings.npsReachCount）；趋势由 /trends 后端真实聚合。
+// markFollowed 保持同步 boolean 签名：乐观更新 + fire-and-forget POST，失败回滚。
+// createFollowTask 维持本地动态（M3-B2 任务 API 接线前移交项）。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { fetchNpsRecords, fetchNpsSummary, fetchNpsTrends, followNpsRecord } from '@/api/nps'
+import type { NpsRecordRow } from '@/api/nps'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 
 export type NpsCategory = 'PROMOTER' | 'PASSIVE' | 'DETRACTOR'
@@ -51,6 +60,21 @@ const CATEGORY_COLOR: Record<NpsCategory, string> = {
   DETRACTOR: 'var(--c-danger-fg)',
 }
 
+function mapRow(row: NpsRecordRow): NpsRecord {
+  return {
+    id: row.recordNo,
+    customer: row.customerName,
+    score: row.score,
+    category: row.category,
+    service: row.service ?? '',
+    tags: row.tags ?? [],
+    comment: row.comment ?? '',
+    createdAt: row.createdAt,
+    followStatus: row.followStatus,
+    followNote: row.followNote ?? undefined,
+  }
+}
+
 export const useNpsStore = defineStore('nps', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
@@ -75,7 +99,7 @@ export const useNpsStore = defineStore('nps', () => {
   const promoterPct = computed(() => (total.value ? Math.round((promoters.value.length / total.value) * 100) : 0))
   const passivePct = computed(() => (total.value ? Math.round((passives.value.length / total.value) * 100) : 0))
   const detractorPct = computed(() => (total.value ? Math.round((detractors.value.length / total.value) * 100) : 0))
-  // 回收率 = 评价数 / 假定触达数（种子里触达 = 评价数 * 系数）
+  // 回收率 = 评价数 / 触达数（触达数由 m3_settings.npsReachCount 下发）
   const reachCount = ref(0)
   const responseRate = computed(() => (reachCount.value ? Math.round((total.value / reachCount.value) * 100) : 0))
 
@@ -101,7 +125,21 @@ export const useNpsStore = defineStore('nps', () => {
     r.followStatus = 'FOLLOWED'
     r.followNote = note
     activity.log(auth.user.name, `标记 NPS 评价已跟进：${r.customer} ${r.score}分`, r.id)
+    void pushFollow(id, note)
     return true
+  }
+
+  async function pushFollow(id: string, note: string) {
+    try {
+      await followNpsRecord(id, note)
+    } catch (e) {
+      console.warn('[nps] follow failed', e)
+      const r = records.value.find((x) => x.id === id)
+      if (r) {
+        r.followStatus = 'PENDING'
+        delete r.followNote
+      }
+    }
   }
 
   function createFollowTask(id: string): boolean {
@@ -112,47 +150,29 @@ export const useNpsStore = defineStore('nps', () => {
   }
 
   let seeded = false
-  function seed() {
+  async function seed() {
     if (seeded) return
     seeded = true
-    const now = Date.now()
-    const daysAgo = (d: number) => new Date(now - d * 86400_000).toISOString()
-    const base: Array<Omit<NpsRecord, 'id' | 'category'>> = [
-      { customer: '陈美玲', score: 10, service: '热玛吉紧致', tags: ['效果显著', '服务贴心', '环境舒适'], comment: '王医生手法专业，做完半侧脸明显提升，下次还来！', createdAt: daysAgo(1), followStatus: 'FOLLOWED', followNote: '已电话回访' },
-      { customer: '赵雨晴', score: 9, service: '水光补水', tags: ['皮肤变好', '不疼'], comment: '护士很温柔，补水效果不错，推荐闺蜜一起来。', createdAt: daysAgo(2), followStatus: 'FOLLOWED' },
-      { customer: '孙佳宁', score: 8, service: '光子嫩肤', tags: ['流程顺畅'], comment: '整体还行，就是等了一会儿，希望下次能更快。', createdAt: daysAgo(2), followStatus: 'PENDING' },
-      { customer: '林婉清', score: 7, service: '小气泡清洁', tags: ['一般'], comment: '清洁力度一般，和想象有差距，价格略贵。', createdAt: daysAgo(3), followStatus: 'PENDING' },
-      { customer: '周雅琴', score: 6, service: '射频紧肤', tags: ['效果不明显', '等待久'], comment: '做完一次没感觉有变化，等了快 40 分钟才轮到。', createdAt: daysAgo(4), followStatus: 'PENDING' },
-      { customer: '吴思涵', score: 3, service: '玻尿酸填充', tags: ['疼痛', '态度差', '退款'], comment: '注射时非常疼，咨询师一直推销加项目，体验很差，要求退款！', createdAt: daysAgo(5), followStatus: 'PENDING' },
-      { customer: '郑晓彤', score: 10, service: '超声刀', tags: ['专业', '效果好'], comment: '李医生耐心讲解，做完轮廓清晰很多，值得。', createdAt: daysAgo(6), followStatus: 'FOLLOWED' },
-      { customer: '黄丽萍', score: 5, service: '皮秒祛斑', tags: ['反黑', '恢复慢'], comment: '做完两周还有红印，担心反黑，希望尽快联系我。', createdAt: daysAgo(7), followStatus: 'PENDING' },
-    ]
-    base.forEach((r) => {
-      records.value.push({
-        ...r,
-        id: nextId('nps'),
-        category: categoryOf(r.score),
-      })
-    })
-    reachCount.value = 42
-
-    // 近 6 周趋势
-    const trendRaw = [
-      { nps: 42, p: 58, pa: 26, d: 16, t: 88 },
-      { nps: 45, p: 60, pa: 25, d: 15, t: 92 },
-      { nps: 40, p: 55, pa: 30, d: 15, t: 90 },
-      { nps: 48, p: 62, pa: 24, d: 14, t: 95 },
-      { nps: 52, p: 64, pa: 24, d: 12, t: 98 },
-      { nps: 55, p: 66, pa: 23, d: 11, t: 100 },
-    ]
-    trends.value = trendRaw.map((t, i) => ({
-      period: `W${26 + i}`,
-      nps: t.nps,
-      promoters: t.p,
-      passives: t.pa,
-      detractors: t.d,
-      total: t.t,
-    }))
+    try {
+      const [recordsResp, summaryResp, trendsResp] = await Promise.all([
+        fetchNpsRecords(),
+        fetchNpsSummary(),
+        fetchNpsTrends(),
+      ])
+      records.value = recordsResp.data.map(mapRow)
+      reachCount.value = summaryResp.data.reachCount
+      trends.value = trendsResp.data.map((t) => ({
+        period: t.period,
+        nps: t.nps,
+        promoters: t.promoters,
+        passives: t.passives,
+        detractors: t.detractors,
+        total: t.total,
+      }))
+    } catch (e) {
+      seeded = false
+      console.warn('[nps] seed failed', e)
+    }
   }
 
   return {

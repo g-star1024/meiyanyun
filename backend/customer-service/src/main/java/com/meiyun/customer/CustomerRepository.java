@@ -91,4 +91,7 @@ public interface CustomerRepository extends JpaRepository<Customer, String>, Jpa
      */
     @Query("select c from Customer c where month(c.birthDate) = :month and day(c.birthDate) = :day and c.mergedInto is null and c.anonymizedAt is null")
     List<Customer> findBirthdayOn(@Param("month") int month, @Param("day") int day);
+
+    /** NPS 回执富化（M3-B1）：按姓名匹配活跃客户带出 customer_id；重名取最近建档；已合并档案不参与命中。 */
+    Optional<Customer> findFirstByNameAndMergedIntoIsNullOrderByCreatedAtDesc(String name);
 }
