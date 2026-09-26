@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>美研云 HIS · 开发交付看板</title>
+<style>
+  :root {
+    --bg: #f4f5f8;
+    --surface: #ffffff;
+    --border: #eceef2;
+    --border-strong: #e2e5ea;
+    --text: #1a1d24;
+    --text-soft: #8a92a3;
+    --accent: #ff6b9e;
+    --accent-soft: #fff0f6;
+    --danger: #f5455c;
+    --danger-soft: #fff0f2;
+    --radius: 14px;
+    --radius-sm: 9px;
+    --shadow: 0 1px 2px rgba(20, 24, 40, .04), 0 4px 16px rgba(20, 24, 40, .04);
+    --shadow-lift: 0 6px 24px rgba(20, 24, 40, .10);
+    --font: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(1200px 480px at 15% -10%, #fff0f6 0%, transparent 55%),
+      radial-gradient(1000px 420px at 100% 0%, #eef1ff 0%, transparent 50%),
+      var(--bg);
+    color: var(--text); font-family: var(--font); font-size: 14px; padding: 32px 28px; min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1440px; margin: 0 auto; }
+
+  .page-head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+  .page-head .logo { width: 40px; height: 40px; border-radius: 11px; background: linear-gradient(135deg, var(--accent), #6b8aff); display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 18px; box-shadow: 0 6px 16px rgba(255, 107, 158, .35); }
+  .page-head h1 { font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+  .page-head p { color: var(--text-soft); font-size: 13px; margin-top: 2px; }
+
+  .tabs { display: inline-flex; gap: 4px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px; margin-bottom: 22px; box-shadow: var(--shadow); }
+  .tab { padding: 8px 18px; cursor: pointer; color: var(--text-soft); font-weight: 500; border-radius: 9px; transition: all .18s ease; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); background: var(--accent-soft); }
+
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 24px; }
+  .stat { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 18px 12px 20px; box-shadow: var(--shadow); overflow: hidden; transition: transform .18s ease, box-shadow .18s ease; }
+  .stat:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+  .stat::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--accent); opacity: .85; }
+  .stat:nth-child(2)::before { background: #0fbf8f; }
+  .stat:nth-child(3)::before { background: #f7a234; }
+  .stat:nth-child(4)::before { background: #7a5af5; }
+  .stat:nth-child(5)::before { background: #8a92a3; }
+  .stat .label { color: var(--text-soft); font-size: 12px; margin-bottom: 4px; }
+  .stat .value { font-size: 22px; font-weight: 700; letter-spacing: -.02em; line-height: 1.1; }
+
+  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .btn { background: var(--accent); color: #fff; border: none; border-radius: 10px; padding: 9px 18px; font-size: 14px; cursor: pointer; font-weight: 600; box-shadow: 0 4px 12px rgba(255, 107, 158, .28); transition: transform .12s ease, box-shadow .18s ease, filter .18s ease; }
+  .btn:hover { filter: brightness(1.05); box-shadow: 0 6px 18px rgba(255, 107, 158, .36); }
+  .btn:active { transform: translateY(1px); }
+  .btn.ghost { background: var(--surface); color: var(--text-soft); border: 1px solid var(--border-strong); box-shadow: none; font-weight: 500; }
+  .btn.ghost:hover { color: var(--text); filter: none; }
+  .spacer { flex: 1; }
+  .search-box { position: relative; }
+  .search-box svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--text-soft); pointer-events: none; }
+  .search-box input { padding-left: 32px; }
+  input, select { font-family: var(--font); font-size: 14px; border: 1px solid var(--border-strong); border-radius: 10px; padding: 8px 11px; background: var(--surface); color: var(--text); outline: none; transition: border-color .15s ease, box-shadow .15s ease; }
+  input:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 14px 18px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  thead th { background: #fafbfd; color: var(--text-soft); font-weight: 600; font-size: 12px; letter-spacing: .03em; }
+  tbody tr { transition: background .12s ease; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--accent-soft); }
+  td.name { font-weight: 600; cursor: pointer; white-space: normal; min-width: 280px; }
+  td.name:hover { color: var(--accent); }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .9; }
+  .col-actions { width: 56px; text-align: center; }
+  .icon-btn { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; border: none; background: transparent; color: var(--text-soft); cursor: pointer; opacity: 0; transition: all .15s ease; }
+  tbody tr:hover .icon-btn { opacity: 1; }
+  .icon-btn:hover { background: var(--danger-soft); color: var(--danger); }
+
+  .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(270px, 1fr); gap: 16px; overflow-x: auto; padding-bottom: 8px; }
+  .col { background: rgba(255,255,255,.7); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; backdrop-filter: blur(4px); }
+  .col h3 { font-size: 14px; font-weight: 600; margin-bottom: 14px; display: flex; justify-content: space-between; align-items: center; }
+  .col h3 .count { color: var(--text-soft); font-weight: 500; background: var(--bg); border-radius: 999px; padding: 1px 9px; font-size: 12px; }
+  .col-body { min-height: 40px; display: flex; flex-direction: column; gap: 10px; }
+  .ticket { position: relative; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 13px 14px; cursor: grab; background: var(--surface); box-shadow: var(--shadow); transition: transform .12s ease, box-shadow .18s ease; }
+  .ticket:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift); }
+  .ticket.dragging { opacity: .4; }
+  .ticket .t-name { font-weight: 600; margin-bottom: 10px; padding-right: 22px; font-size: 13px; line-height: 1.5; }
+  .ticket .t-meta { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; color: var(--text-soft); font-size: 12px; }
+  .ticket .t-del { position: absolute; top: 8px; right: 8px; }
+  .ticket:hover .t-del { opacity: 1; }
+  .col.drop-hover { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+
+  .hidden { display: none; }
+
+  .overlay { position: fixed; inset: 0; background: rgba(20, 24, 40, .34); backdrop-filter: blur(3px); display: flex; align-items: center; justify-content: center; animation: fade .16s ease; }
+  @keyframes fade { from { opacity: 0; } }
+  .modal { background: var(--surface); border-radius: 18px; padding: 26px; width: 460px; max-width: 90vw; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(20, 24, 40, .28); animation: pop .18s cubic-bezier(.2,.8,.3,1); }
+  @keyframes pop { from { transform: translateY(8px) scale(.98); opacity: 0; } }
+  .modal h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+  .modal .sub { color: var(--text-soft); font-size: 13px; margin-bottom: 20px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; color: var(--text-soft); font-size: 13px; margin-bottom: 6px; }
+  .field input, .field select { width: 100%; }
+  .modal-actions { display: flex; align-items: center; gap: 8px; margin-top: 22px; }
+  .btn.danger { background: var(--danger); box-shadow: 0 4px 12px rgba(245, 69, 92, .28); }
+  .link-danger { color: var(--danger); cursor: pointer; background: none; border: none; font-size: 14px; font-weight: 500; padding: 8px 10px; border-radius: 8px; }
+  .link-danger:hover { background: var(--danger-soft); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="page-head">
+    <div class="logo">美</div>
+    <div>
+      <h1>美研云门店中台（HIS）· 开发交付看板</h1>
+      <p>医美连锁 SaaS · Vue3 + Spring Boot 7 微服务 + Go 国密网关 · 数据存于本地浏览器（换电脑/清浏览记录会丢失）</p>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-view="table">工作项列表</div>
+    <div class="tab" data-view="board">看板视图</div>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="toolbar">
+    <select id="filter-status"><option value="">全部状态</option></select>
+    <select id="filter-priority"><option value="">全部优先级</option></select>
+    <select id="filter-line"><option value="">全部业务域</option></select>
+    <div class="search-box">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
+      <input id="search" placeholder="搜索工作项名称…" />
+    </div>
+    <div class="spacer"></div>
+    <button class="btn" id="btn-new">+ 新建工作项</button>
+  </div>
+
+  <div class="card" id="view-table">
+    <table>
+      <thead><tr id="thead-row"></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+  </div>
+
+  <div class="board hidden" id="view-board"></div>
+</div>
+
+<script>
+const CONFIG = {
+  storageKey: "meiyun-his-delivery-v1",
+
+  statuses: [
+    { key: "todo",    label: "待开始", color: "#fef0f0", text: "#f56c6c" },
+    { key: "doing",   label: "开发中", color: "#e8f8f2", text: "#0fbf8f" },
+    { key: "verify",  label: "待验证", color: "#fff7e8", text: "#f7a234" },
+    { key: "done",    label: "已完成", color: "#eef0f5", text: "#86909c" },
+    { key: "hold",    label: "暂缓",   color: "#f2f3f5", text: "#a0a6b3" },
+  ],
+
+  priorities: [
+    { key: "P0", color: "#fde2e2", text: "#f53f3f" },
+    { key: "P1", color: "#fff1e0", text: "#f77234" },
+    { key: "P2", color: "#f0eafe", text: "#7a5af5" },
+    { key: "P3", color: "#e8f0fe", text: "#4b63ff" },
+  ],
+
+  columns: [
+    { key: "name",      label: "工作项" },
+    { key: "status",    label: "状态",   type: "status" },
+    { key: "priority",  label: "优先级", type: "priority" },
+    { key: "line",      label: "业务域" },
+    { key: "owner",     label: "负责层" },
+    { key: "milestone", label: "里程碑" },
+  ],
+
+  seed: [
+    { id: 1,  name: "基础设施 Docker 化：PG15/Redis7/ES/RocketMQ/MinIO + 7 微服务 + Go 国密网关一键起，健康检查", status: "done", priority: "P0", line: "基础设施", owner: "DevOps", milestone: "M1", created: "2026-08-20" },
+    { id: 2,  name: "多栈隔离四要素：项目名/容器名/端口/独立 Docker 网络，正式栈(8443/core) 与 seed 栈(18443/seed) 数据不串", status: "done", priority: "P0", line: "基础设施", owner: "DevOps", milestone: "M1", created: "2026-08-31" },
+    { id: 3,  name: "数据库：单库 meiyun_core，20+ JPA 业务表 + 物理外键，sys_dictionary 209 项，Flyway 管系统表 / ddl-auto:update 管业务表", status: "done", priority: "P0", line: "数据层", owner: "后端", milestone: "M1", created: "2026-08-25" },
+    { id: 4,  name: "seed 富画像联调库：确定性生成器，100 客户/607 订单/1108 子项/110 卡/RFM 九形态，外键与金额对账 0 不一致", status: "done", priority: "P1", line: "基础设施", owner: "DevOps", milestone: "M3", created: "2026-08-31" },
+    { id: 5,  name: "客户列表 API：Page<T> 分页 + Specification 动态过滤（门店/等级/状态/来源/关键字）+ 批量标签防 N+1", status: "done", priority: "P0", line: "客户域", owner: "后端", milestone: "M2", created: "2026-08-31" },
+    { id: 6,  name: "客户 360 详情 API：卡/积分/标签/档案 + txn 域订单/面诊/预约三端点，手机按权限脱敏", status: "done", priority: "P0", line: "客户域", owner: "全栈", milestone: "M2", created: "2026-09-01" },
+    { id: 7,  name: "RFM 五维价值模型：R/F/M+忠诚+活跃读时实时计算不建表，八象限中文分层，规则文档 RFM-RULES.md", status: "done", priority: "P1", line: "客户域", owner: "全栈", milestone: "M3", created: "2026-09-01" },
+    { id: 8,  name: "订单子项模型：order_item 表（订单 1:N 收费项目），批量带子项防 N+1，订单额=子项合计（单位分）账实一致", status: "done", priority: "P0", line: "交易域", owner: "后端", milestone: "M4", created: "2026-09-01" },
+    { id: 9,  name: "服务间调用 RestTemplate 化：org/store 批量名解析端点，Resolver 签名不变+降级容错，顺修审计 URL 静默降级", status: "done", priority: "P1", line: "平台底座", owner: "后端", milestone: "M2", created: "2026-09-01" },
+    { id: 10, name: "预约写链路：创建/改期/取消/签到/未到诊全状态机 + 写链路四件套（校验/幂等409/全动作审计/中文错误），看板+新建页去 mock", status: "done", priority: "P0", line: "交易域", owner: "全栈", milestone: "M4", created: "2026-09-01" },
+    { id: 11, name: "订单写链路：多子项开单同事务、外键服务校验、禁忌 RED 硬阻断+双签、收款幂等、取消、收银台 API 化", status: "done", priority: "P0", line: "交易域", owner: "全栈", milestone: "M4", created: "2026-09-01" },
+    { id: 12, name: "字典动态管理：sys_dictionary CRUD 加固 + manage 端点（停用可见可复活）+ RestAuditRecorder 四动作审计 + @EnableCaching 落地 + 管理页", status: "done", priority: "P1", line: "字典域", owner: "全栈", milestone: "M4", created: "2026-09-01" },
+    { id: 13, name: "前端客户列表/360 详情去 mock：axios 实例 + TS 类型对齐真实响应，中文真实渲染，vue-tsc 0 error", status: "done", priority: "P0", line: "客户域", owner: "前端", milestone: "M3", created: "2026-09-01" },
+
+    { id: 14, name: "RBAC 细粒度权限收口（2026-09-04 P1 验收）：①退款/退卡终审 /confirm 由错误的 *:approve 改为 *:sign，店长不再可终审、仅财务可终审；②权限矩阵 STORE_MGR 移除 cardcancel:sign，RbacDataInitializer 改为矩阵对账（补插+回收旧授权），修复只增不删导致收权永不生效；③前端路由守卫补洞（/doctor 需 consult:review、/appointment/:id 动态门控 appointment:view）；④三个 name-map 端点收口 internal:name-map + 四个服务间调用方带 X-Internal-Token；⑤/auth/permissions 改「登录即可」（一线角色不持 permission:view）；⑥积分商城 /rule 补 points:view、/exchanges 收口 points:approve、/exchanges/my 加 IDOR 数据权限断言。curl 经网关全矩阵绿、三角色浏览器像素回归无破版。遗留 P2：dev-login 生产关闭、M1Rbac/T1 权限管理页接真实 API 去 mock、死权限码清理", status: "done", priority: "P1", line: "权限域", owner: "全栈", milestone: "M7", created: "2026-09-01" },
+    { id: 32, name: "M7 后端权限与安全里程碑闭环：RBAC 模型+鉴权拦截器+数据权限+JWT 登录态+审计哈希链（微秒截断修复）+actor 全链路收敛 JWT（约30处）+手机号按权限脱敏+全站中文错误零英文外露（ChineseValidationAdvice 公共落点）+种子三套工号体系统一幂等播种，DoD 八条全过、双栈 14 容器 healthy", status: "done", priority: "P0", line: "权限域", owner: "后端", milestone: "M7", created: "2026-09-02" },
+    { id: 33, name: "线上登录界面可见性修复：seed 前端容器部署的是 15 小时前旧 dist（无 LoginView chunk，路由守卫重定向到不存在的登录页）；重新 vue-tsc 构建最新 dist 同步到双栈前端容器并 docker commit 固化 meiyun/frontend:latest；浏览器无痕实测 18080：工号密码 SE001/meiyun123 登录进工作台（许店长·上海徐汇店）、快捷角色登录（蒋IT·集团管理员）、退出回 /login 全通过，控制台零报错，/api 经 nginx 代理网关密码登录 200、错误密码返回中文「工号或密码错误」", status: "done", priority: "P0", line: "权限域", owner: "全栈", milestone: "M7", created: "2026-09-02" },
+    { id: 15, name: "核销/退款/退卡页接真实 API：/txn/writeoff 整单核销、/txn/refund、/txn/card-cancel 审批闭环，核销/退款/退卡/审批/工作台五页去 mock，DoD 八条全过（2026-09-02 M4 验收）", status: "done", priority: "P2", line: "交易域", owner: "全栈", milestone: "M4", created: "2026-09-01" },
+    { id: 16, name: "面诊/医师工作台/业务闭环页去 mock：consultation 端点现成，闭环三视角（店长/医生/财务）接真实数据", status: "todo", priority: "P2", line: "交易域", owner: "全栈", milestone: "M3", created: "2026-09-01" },
+    { id: 17, name: "审批中心 T3-01 双签真引擎 + 消息通知中心 T3-03：替换页内模拟双签，统一触达通道（M5/M3/A1 依赖）", status: "todo", priority: "P1", line: "中台", owner: "全栈", milestone: "M7", created: "2026-08-25" },
+    { id: 18, name: "财务域联调：结算/对账/金蝶用友镜像 + Outbox 事件，财务页面（FinSettlement/FinReconcile 等）接真实 API", status: "todo", priority: "P2", line: "财务域", owner: "全栈", milestone: "M6", created: "2026-09-01" },
+    { id: 19, name: "营销域联调：券/活动/积分商城/转介绍，marketing-service 业务页面接真实 API", status: "todo", priority: "P2", line: "营销域", owner: "全栈", milestone: "M5", created: "2026-09-01" },
+    { id: 20, name: "门店运营域联调：库存耗材（申领/报损上游）、排班考勤、空间设备，M2 系列页面接真实 API", status: "todo", priority: "P2", line: "门店域", owner: "全栈", milestone: "M5", created: "2026-08-25" },
+    { id: 21, name: "字典动态消费：业务页面运行时改读字典 API（替换前端静态 config/dictionary.ts），管理页增删实时生效", status: "todo", priority: "P2", line: "字典域", owner: "全栈", milestone: "M4", created: "2026-08-31" },
+    { id: 22, name: "/api/settings 后端 controller 补齐：前端 api/settings.ts 已调用，后端无对应端点（设置页仍 mock）", status: "todo", priority: "P2", line: "平台底座", owner: "后端", milestone: "M2", created: "2026-08-31" },
+    { id: 23, name: "其余 Pinia store 去 mock：转化漏斗/工作台/营销/财务等演示页逐个 API 化（预约两页+收银台+客户域已完成）", status: "todo", priority: "P2", line: "平台底座", owner: "前端", milestone: "M3", created: "2026-09-01" },
+    { id: 24, name: "安全加固收口：手机号脱敏已落地（2026-09-02 M7）；全站扫描确认无身份证/银行卡字段（支付方式为枚举无卡号），脱敏扩面无剩余标的；审计 actor JWT 收敛+哈希链防篡改已完成；遗留：操作日志/登录日志查询页（M1AuditLogView）接 audit-service 查询 API 去 mock，列 M5 前端批次", status: "doing", priority: "P1", line: "安全", owner: "全栈", milestone: "M7", created: "2026-08-25" },
+    { id: 25, name: "测试体系：后端 JUnit5+Mockito 单测、接口自动化（pytest/Newman）、Playwright E2E 核心流程回归", status: "todo", priority: "P2", line: "质量保障", owner: "测试", milestone: "M5", created: "2026-08-25" },
+    { id: 26, name: "CI/CD 流水线补强：现有 ci.yml 仅编译/类型检查，补镜像构建推送、一键部署、回滚脚本", status: "todo", priority: "P2", line: "基础设施", owner: "DevOps", milestone: "M6", created: "2026-08-25" },
+    { id: 27, name: "监控告警：Prometheus + Grafana 指标、ELK 日志收集、钉钉/企微告警", status: "todo", priority: "P2", line: "基础设施", owner: "DevOps", milestone: "M6", created: "2026-08-25" },
+    { id: 28, name: "生产部署编排：K8s YAML / docker-compose 生产配置、PG 备份策略、零停机滚动发布", status: "todo", priority: "P2", line: "基础设施", owner: "DevOps", milestone: "M6", created: "2026-08-25" },
+    { id: 29, name: "性能优化：慢查询/索引、Redis 热点缓存、HikariCP 调优、前端路由级分包/懒加载/首屏骨架屏", status: "todo", priority: "P3", line: "平台底座", owner: "全栈", milestone: "M8", created: "2026-08-25" },
+    { id: 30, name: "EMR 电子病历 / 对比照：涉医疗文书合规（不可篡改+全程审计）、双签 RBAC、MinIO 图床，本阶段暂缓，详情页保留中文占位", status: "hold", priority: "P3", line: "交易域", owner: "全栈", milestone: "M7", created: "2026-09-01" },
+    { id: 31, name: "审批中心 T3-01（M4 部分）：统一 approval_todo 表 + 退款/退卡审批闭环，L1/L2/L3 三级阈值 ¥1,000/5,000/20,000，approve/reject/transfer/addSigner 四动作 + history 链，审批中心页去 mock（2026-09-02 M4 验收）", status: "done", priority: "P1", line: "交易域", owner: "全栈", milestone: "M4", created: "2026-09-02" },
+  ],
+
+  stats: [
+    { label: "工作项总数",   calc: items => items.length },
+    { label: "已完成",       calc: items => items.filter(i => i.status === "done").length },
+    { label: "待开始",       calc: items => items.filter(i => i.status === "todo").length },
+    { label: "P0/P1 待办",   calc: items => items.filter(i => i.status !== "done" && i.status !== "hold" && (i.priority === "P0" || i.priority === "P1")).length },
+    { label: "暂缓",         calc: items => items.filter(i => i.status === "hold").length },
+  ],
+};
+
+const store = {
+  load() {
+    const raw = localStorage.getItem(CONFIG.storageKey);
+    if (raw) { try { return JSON.parse(raw); } catch (e) {} }
+    return structuredClone(CONFIG.seed);
+  },
+  save(items) { localStorage.setItem(CONFIG.storageKey, JSON.stringify(items)); },
+};
+
+let items = store.load();
+let currentView = "table";
+
+const $ = sel => document.querySelector(sel);
+const statusOf = k => CONFIG.statuses.find(s => s.key === k) || { label: k, color: "#eee", text: "#333" };
+const prioOf = k => CONFIG.priorities.find(p => p.key === k) || { key: k, color: "#eee", text: "#333" };
+
+function filtered() {
+  const s = $("#filter-status").value, p = $("#filter-priority").value, l = $("#filter-line").value, q = $("#search").value.trim().toLowerCase();
+  return items.filter(i =>
+    (!s || i.status === s) && (!p || i.priority === p) && (!l || i.line === l) &&
+    (!q || (i.name || "").toLowerCase().includes(q) || (i.line || "").toLowerCase().includes(q))
+  );
+}
+
+function renderStats() {
+  $("#stats").innerHTML = CONFIG.stats.map(s =>
+    `<div class="stat"><div class="label">${s.label}</div><div class="value">${s.calc(items)}</div></div>`
+  ).join("");
+}
+
+function cell(item, col) {
+  const v = item[col.key] ?? "";
+  if (col.type === "status") { const s = statusOf(v); return `<span class="badge" style="background:${s.color};color:${s.text}"><span class="dot"></span>${s.label}</span>`; }
+  if (col.type === "priority") { const p = prioOf(v); return `<span class="badge" style="background:${p.color};color:${p.text}">${p.key}</span>`; }
+  return v;
+}
+
+const TRASH_SVG = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/><line x1="10" y1="10" x2="10" y2="17"/><line x1="14" y1="10" x2="14" y2="17"/></svg>`;
+
+function renderTable() {
+  $("#thead-row").innerHTML = CONFIG.columns.map(c => `<th>${c.label}</th>`).join("") + `<th class="col-actions">操作</th>`;
+  $("#tbody").innerHTML = filtered().map(item =>
+    `<tr data-id="${item.id}">` +
+    CONFIG.columns.map(c => `<td class="${c.key === "name" ? "name" : ""}">${cell(item, c)}</td>`).join("") +
+    `<td class="col-actions"><button class="icon-btn js-del" title="删除">${TRASH_SVG}</button></td>` +
+    `</tr>`
+  ).join("");
+  $("#tbody").querySelectorAll("td.name").forEach(td =>
+    td.onclick = () => openModal(items.find(i => i.id == td.parentElement.dataset.id)));
+  $("#tbody").querySelectorAll(".js-del").forEach(btn =>
+    btn.onclick = e => { e.stopPropagation(); confirmDelete(items.find(i => i.id == btn.closest("tr").dataset.id)); });
+}
+
+function renderBoard() {
+  const data = filtered();
+  $("#view-board").innerHTML = CONFIG.statuses.map(s => {
+    const list = data.filter(i => i.status === s.key);
+    return `<div class="col" data-status="${s.key}">
+      <h3>${s.label}<span class="count">${list.length}</span></h3>
+      <div class="col-body">${list.map(ticketHTML).join("")}</div>
+    </div>`;
+  }).join("");
+  wireDnD();
+}
+
+function ticketHTML(item) {
+  const p = prioOf(item.priority);
+  return `<div class="ticket" draggable="true" data-id="${item.id}">
+    <button class="icon-btn js-del t-del" title="删除">${TRASH_SVG}</button>
+    <div class="t-name">${item.name}</div>
+    <div class="t-meta">
+      <span class="badge" style="background:${p.color};color:${p.text}">${p.key}</span>
+      <span>${item.line || "未分域"}</span>
+      <span>· ${item.owner || "未定"}</span>
+    </div></div>`;
+}
+
+function wireDnD() {
+  let dragId = null;
+  $("#view-board").querySelectorAll(".ticket").forEach(t => {
+    t.ondragstart = () => { dragId = t.dataset.id; t.classList.add("dragging"); };
+    t.ondragend = () => t.classList.remove("dragging");
+    t.onclick = () => openModal(items.find(i => i.id == t.dataset.id));
+  });
+  $("#view-board").querySelectorAll(".js-del").forEach(btn =>
+    btn.onclick = e => { e.stopPropagation(); confirmDelete(items.find(i => i.id == btn.closest(".ticket").dataset.id)); });
+  $("#view-board").querySelectorAll(".col").forEach(col => {
+    col.ondragover = e => { e.preventDefault(); col.classList.add("drop-hover"); };
+    col.ondragleave = () => col.classList.remove("drop-hover");
+    col.ondrop = () => {
+      col.classList.remove("drop-hover");
+      const item = items.find(i => i.id == dragId);
+      if (item) { item.status = col.dataset.status; persist(); }
+    };
+  });
+}
+
+function render() {
+  renderStats();
+  $("#view-table").classList.toggle("hidden", currentView !== "table");
+  $("#view-board").classList.toggle("hidden", currentView !== "board");
+  currentView === "table" ? renderTable() : renderBoard();
+}
+function persist() { store.save(items); render(); }
+
+function openModal(item) {
+  const editing = !!item;
+  const d = item || { id: Date.now(), name: "", status: CONFIG.statuses[0].key, owner: "", priority: CONFIG.priorities.at(-1).key, line: "", milestone: "", created: new Date().toISOString().slice(0, 10) };
+  const opts = (arr, sel, lab = x => x.label || x.key, val = x => x.key) =>
+    arr.map(x => `<option value="${val(x)}" ${val(x) === sel ? "selected" : ""}>${lab(x)}</option>`).join("");
+  const lines = [...new Set(CONFIG.seed.map(i => i.line))];
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  overlay.innerHTML = `<div class="modal">
+    <h2>${editing ? "编辑工作项" : "新建工作项"}</h2>
+    <div class="sub">${editing ? "修改后点击保存生效" : "填写信息创建一条新的工作项"}</div>
+    <div class="field"><label>工作项名称</label><input id="m-name" value="${d.name.replace(/"/g, "&quot;")}" placeholder="输入工作项名称" /></div>
+    <div class="field"><label>业务域</label><input id="m-line" list="line-opts" value="${d.line || ""}" placeholder="如 客户域/交易域/基础设施" /><datalist id="line-opts">${lines.map(l => `<option value="${l}">`).join("")}</datalist></div>
+    <div class="field"><label>负责层</label><input id="m-owner" value="${d.owner || ""}" placeholder="前端/后端/全栈/DevOps/测试" /></div>
+    <div class="field"><label>里程碑</label><input id="m-milestone" value="${d.milestone || ""}" placeholder="如 M4 / M7" /></div>
+    <div class="field"><label>状态</label><select id="m-status">${opts(CONFIG.statuses, d.status)}</select></div>
+    <div class="field"><label>优先级</label><select id="m-priority">${opts(CONFIG.priorities, d.priority)}</select></div>
+    <div class="modal-actions">
+      ${editing ? '<button class="link-danger" id="m-del">删除</button>' : ""}
+      <div class="spacer"></div>
+      <button class="btn ghost" id="m-cancel">取消</button>
+      <button class="btn" id="m-save">保存</button>
+    </div></div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  overlay.querySelector("#m-cancel").onclick = close;
+  overlay.querySelector("#m-save").onclick = () => {
+    d.name = overlay.querySelector("#m-name").value.trim() || "未命名";
+    d.owner = overlay.querySelector("#m-owner").value.trim();
+    d.line = overlay.querySelector("#m-line").value.trim();
+    d.milestone = overlay.querySelector("#m-milestone").value.trim();
+    d.status = overlay.querySelector("#m-status").value;
+    d.priority = overlay.querySelector("#m-priority").value;
+    if (!editing) items.unshift(d);
+    persist(); close();
+  };
+  if (editing) overlay.querySelector("#m-del").onclick = () => { close(); confirmDelete(d); };
+}
+
+function confirmDelete(item) {
+  if (!item) return;
+  const overlay = document.createElement("div");
+  overlay.className = "overlay";
+  overlay.innerHTML = `<div class="modal" style="width:380px">
+    <h2>删除工作项</h2>
+    <div class="sub">确定删除「${item.name}」？此操作不可撤销。</div>
+    <div class="modal-actions">
+      <div class="spacer"></div>
+      <button class="btn ghost" id="c-cancel">取消</button>
+      <button class="btn danger" id="c-ok">删除</button>
+    </div></div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.onclick = e => { if (e.target === overlay) close(); };
+  overlay.querySelector("#c-cancel").onclick = close;
+  overlay.querySelector("#c-ok").onclick = () => { items = items.filter(i => i.id !== item.id); persist(); close(); };
+}
+
+function initFilters() {
+  $("#filter-status").insertAdjacentHTML("beforeend", CONFIG.statuses.map(s => `<option value="${s.key}">${s.label}</option>`).join(""));
+  $("#filter-priority").insertAdjacentHTML("beforeend", CONFIG.priorities.map(p => `<option value="${p.key}">${p.key}</option>`).join(""));
+  $("#filter-line").insertAdjacentHTML("beforeend", [...new Set(CONFIG.seed.map(i => i.line))].map(l => `<option value="${l}">${l}</option>`).join(""));
+}
+document.querySelectorAll(".tab").forEach(tab =>
+  tab.onclick = () => {
+    document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+    tab.classList.add("active");
+    currentView = tab.dataset.view;
+    render();
+  });
+["#filter-status", "#filter-priority", "#filter-line", "#search"].forEach(sel => $(sel).oninput = render);
+$("#btn-new").onclick = () => openModal(null);
+
+initFilters();
+render();
+</script>
+</body>
+</html>
