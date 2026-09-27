@@ -17,9 +17,9 @@ import { useAuthStore } from '@/stores/auth'
 
 const store = useRiskStore()
 const auth = useAuthStore()
-onMounted(() => {})
+onMounted(() => { void store.load() })
 
-const selectedId = ref<string | null>(null)
+const selectedId = ref<number | null>(null)
 const selected = computed<RiskRecord | null>(() => {
   if (selectedId.value) return store.get(selectedId.value) ?? null
   return store.filtered[0] ?? null
@@ -55,9 +55,10 @@ function fmtDate(iso: string) {
 const showForm = ref(false)
 const form = ref({ customerName: '', phoneMask: '', level: 'HIGH' as RiskLevel, reason: 'FRAUD' as RiskReason, detail: '' })
 const canSubmit = computed(() => form.value.customerName.trim() && form.value.detail.trim())
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
-  store.addToBlacklist(form.value.customerName, form.value.phoneMask || '138****0000', form.value.level, form.value.reason, form.value.detail)
+  const r = await store.addToBlacklist(form.value.customerName, form.value.phoneMask || '138****0000', form.value.level, form.value.reason, form.value.detail)
+  if (!r) return
   showForm.value = false
   form.value = { customerName: '', phoneMask: '', level: 'HIGH', reason: 'FRAUD', detail: '' }
 }
@@ -68,9 +69,9 @@ const releaseOpen = ref(false)
 const reasonText = ref('')
 function openReject() { reasonText.value = ''; rejectOpen.value = true }
 function openRelease() { reasonText.value = ''; releaseOpen.value = true }
-function doApprove() { if (selected.value) store.approve(selected.value.id) }
-function doReject() { if (selected.value && reasonText.value.trim()) { store.reject(selected.value.id, reasonText.value); rejectOpen.value = false } }
-function doRelease() { if (selected.value && reasonText.value.trim()) { store.release(selected.value.id, reasonText.value); releaseOpen.value = false } }
+async function doApprove() { if (selected.value) await store.approve(selected.value.id) }
+async function doReject() { if (selected.value && reasonText.value.trim()) { if (await store.reject(selected.value.id, reasonText.value)) rejectOpen.value = false } }
+async function doRelease() { if (selected.value && reasonText.value.trim()) { if (await store.release(selected.value.id, reasonText.value)) releaseOpen.value = false } }
 
 const canApprove = computed(() => auth.can('risk:approve'))
 const canEdit = computed(() => auth.can('risk:edit'))
