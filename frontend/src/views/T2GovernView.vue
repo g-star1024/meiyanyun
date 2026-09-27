@@ -51,7 +51,8 @@ function fmtTime(iso: string | null | undefined) {
 
 // ---- 新建规则 ----
 const showCreate = ref(false)
-const editingId = ref<string | null>(null)
+const editingId = ref<number | null>(null)
+const saving = ref(false)
 const form = reactive({
   name: '', table: '', column: '', type: 'NOT_NULL' as RuleType,
   severity: 'MEDIUM' as RuleSeverity, expression: '', enabled: true,
@@ -74,17 +75,22 @@ function openCreate() {
   editingId.value = null
   showCreate.value = true
 }
-function submitRule() {
-  if (!canSubmit.value) return
-  if (editingId.value) {
-    store.updateRule(editingId.value, { ...form })
-  } else {
-    store.createRule({ ...form })
+async function submitRule() {
+  if (!canSubmit.value || saving.value) return
+  saving.value = true
+  try {
+    const ok = editingId.value
+      ? await store.updateRule(editingId.value, { ...form })
+      : !!(await store.createRule({ ...form }))
+    if (ok) {
+      showCreate.value = false
+      editingId.value = null
+    }
+  } finally {
+    saving.value = false
   }
-  showCreate.value = false
-  editingId.value = null
 }
-function editRule(id: string) {
+function editRule(id: number) {
   const r = store.getRule(id)
   if (!r) return
   Object.assign(form, {
@@ -130,6 +136,7 @@ function nodeFg(t: LineageNode['type']) {
     : 'var(--c-disabled-fg)'
 }
 const lineageViewBox = computed(() => {
+  if (!store.lineageNodes.length) return '0 0 1120 480'
   const w = Math.max(...store.lineageNodes.map((n) => n.x)) + NODE_W + 40
   const h = Math.max(...store.lineageNodes.map((n) => n.y)) + NODE_H + 40
   return `0 0 ${w} ${h}`
@@ -160,6 +167,12 @@ const lineageGroups = computed(() => {
     <CCard class="gov__main" padding="none">
       <div class="gov__toolbar">
         <CSegmented v-model="tab" :options="tabOpts" size="sm" />
+        <div class="gov__toolbar-right">
+          <span v-if="store.loadError" class="load-err"><CIcon name="alert" :size="14" />{{ store.loadError }}</span>
+          <CButton variant="secondary" size="sm" :disabled="store.loading" @click="store.load()">
+            <CIcon name="refresh" :size="16" />{{ store.loading ? '加载中…' : '刷新' }}
+          </CButton>
+        </div>
       </div>
 
       <!-- 质量规则 -->
@@ -243,7 +256,8 @@ const lineageGroups = computed(() => {
             {{ g.title }}
           </span>
         </div>
-        <svg :viewBox="lineageViewBox" class="lineage__svg" preserveAspectRatio="xMinYMin meet">
+        <div v-if="!store.lineageNodes.length && !store.loading" class="lineage__empty muted">暂无血缘数据</div>
+        <svg v-else :viewBox="lineageViewBox" class="lineage__svg" preserveAspectRatio="xMinYMin meet">
           <defs>
             <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
               <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--c-border-strong, #C4C4CF)" />
@@ -301,7 +315,7 @@ const lineageGroups = computed(() => {
       </div>
       <template #footer>
         <CButton variant="ghost" @click="showCreate = false">取消</CButton>
-        <CButton variant="primary" :disabled="!canSubmit" @click="submitRule">{{ editingId ? '保存' : '创建' }}</CButton>
+        <CButton variant="primary" :disabled="!canSubmit || saving" @click="submitRule">{{ saving ? '提交中…' : editingId ? '保存' : '创建' }}</CButton>
       </template>
     </CDrawer>
   </div>
@@ -312,7 +326,12 @@ const lineageGroups = computed(() => {
 .gov__head { display: flex; align-items: stretch; gap: var(--s-md); }
 .gov__kpis { flex: 1; display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--s-md); }
 .gov__main :deep(.card__body) { display: flex; flex-direction: column; gap: var(--s-md); padding: 0; }
-.gov__toolbar { padding: var(--s-md) var(--s-lg) 0; }
+.gov__toolbar { display: flex; align-items: center; gap: var(--s-sm); padding: var(--s-md) var(--s-lg) 0; }
+.gov__toolbar-right { display: flex; align-items: center; gap: var(--s-sm); margin-left: auto; flex-shrink: 0; }
+.load-err {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: var(--t-xs); color: var(--c-danger-fg);
+}
 
 .ctable { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
 .ctable thead th { padding: 12px var(--s-lg); background: var(--c-bg-page); color: var(--c-text); font-weight: 600; font-size: var(--t-xs); text-align: left; border-bottom: 1px solid var(--c-border); white-space: nowrap; }
@@ -350,6 +369,7 @@ const lineageGroups = computed(() => {
 .lineage__legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: var(--t-xs); color: var(--c-text-2); }
 .lineage__legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .lineage__svg { width: 100%; min-width: 1120px; height: auto; }
+.lineage__empty { padding: var(--s-lg); text-align: center; color: var(--c-text-3); font-size: var(--t-sm); }
 .lineage__node-type { font-size: 10px; font-weight: 600; }
 .lineage__node-name { font-size: 12px; font-weight: 600; }
 
