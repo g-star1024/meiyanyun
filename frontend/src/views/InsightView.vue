@@ -3,6 +3,7 @@
  * 客户洞察报告 /m3-insight（M3-19）
  * 客户结构/复购/流失多维报告，纯 CSS 图表。
  * ============================================================ */
+import { computed, onMounted } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CIcon from '@/components/CIcon.vue'
@@ -10,14 +11,16 @@ import CKpi from '@/components/CKpi.vue'
 import { useInsightStore } from '@/stores/insight'
 
 const store = useInsightStore()
-const maxTrend = Math.max(...store.trend.map(t => t.activeCustomers))
+const maxTrend = computed(() => Math.max(1, ...store.trend.map(t => t.activeCustomers)))
 
-const kpis = [
+const kpis = computed(() => [
   { label: '总会员数', icon: 'customer', value: store.summary.totalCustomers.toLocaleString(), tone: 'brand' as const },
   { label: '期内新增', icon: 'customer', value: `+${store.summary.newThisPeriod.toLocaleString()}`, tone: 'success' as const },
   { label: '复购率', icon: 'trend-up', value: `${store.summary.repurchaseRate}%`, tone: 'teal' as const },
   { label: '流失率', icon: 'trend-down', value: `${store.summary.churnRate}%`, tone: 'warning' as const },
-]
+])
+
+onMounted(() => { void store.load() })
 
 function pct(n: number, max: number) { return Math.round((n / max) * 100) }
 </script>
