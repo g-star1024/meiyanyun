@@ -29,7 +29,7 @@ onMounted(() => complaint.seed())
 
 type Tab = 'pending_accept' | 'processing' | 'pending_review' | 'closed' | 'rejected'
 const tab = ref<Tab>('pending_accept')
-const selectedId = ref<string | null>(null)
+const selectedId = ref<number | null>(null)
 const keyword = ref('')
 
 const tabs = computed(() => [
@@ -96,29 +96,33 @@ watch(
   },
   { immediate: true },
 )
-function doSubmitResolution() {
+async function doSubmitResolution() {
   if (!selected.value || !resolution.value.trim()) return
-  complaint.submitResolution(selected.value.id, resolution.value.trim(), compNum.value)
+  await complaint.submitResolution(selected.value.id, resolution.value.trim(), compNum.value)
 }
-function doAccept() { if (selected.value) complaint.accept(selected.value.id) }
-function doApproveClose() { if (selected.value) complaint.approveClose(selected.value.id) }
+async function doAccept() { if (selected.value) await complaint.accept(selected.value.id) }
+async function doApproveClose() { if (selected.value) await complaint.approveClose(selected.value.id) }
 
 const sendBackNote = ref('')
 const showSendBack = ref(false)
-function doSendBack() {
+async function doSendBack() {
   if (!selected.value || !sendBackNote.value.trim()) return
-  complaint.sendBack(selected.value.id, sendBackNote.value.trim())
-  showSendBack.value = false
-  sendBackNote.value = ''
+  const ok = await complaint.sendBack(selected.value.id, sendBackNote.value.trim())
+  if (ok) {
+    showSendBack.value = false
+    sendBackNote.value = ''
+  }
 }
 
 const rejectReason = ref('')
 const showReject = ref(false)
-function doReject() {
+async function doReject() {
   if (!selected.value || !rejectReason.value.trim()) return
-  complaint.reject(selected.value.id, rejectReason.value.trim())
-  showReject.value = false
-  rejectReason.value = ''
+  const ok = await complaint.reject(selected.value.id, rejectReason.value.trim())
+  if (ok) {
+    showReject.value = false
+    rejectReason.value = ''
+  }
 }
 
 // 发起投诉
@@ -138,9 +142,9 @@ const formTier = computed(() => settings.tierFor(formCompNum.value))
 const canSubmit = computed(
   () => form.value.customerName.trim() && form.value.description.trim(),
 )
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
-  const c = complaint.create({
+  const c = await complaint.create({
     customerId: 'C-NEW',
     customerName: form.value.customerName.trim(),
     source: form.value.source,

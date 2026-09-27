@@ -31,6 +31,8 @@ public interface CustomerRepository extends JpaRepository<Customer, String>, Jpa
     /** 撞单识别：无门店（公海）场景按手机号全局查重；已合并档案不参与命中。 */
     Optional<Customer> findFirstByStoreCodeIsNullAndPhoneAndMergedIntoIsNull(String phone);
 
+    List<Customer> findByStoreCodeIsNullAndMergedIntoIsNull();
+
     /** 等级人数实时统计：按 customer.level 分组计数（派生统计不入库，不读 member_level.cnt 历史聚合假数据）；已合并档案不计。 */
     @Query("select c.level, count(c) from Customer c where c.mergedInto is null group by c.level")
     List<Object[]> countGroupByLevel();

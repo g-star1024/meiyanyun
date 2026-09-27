@@ -679,3 +679,22 @@ export interface DismissMergeCmd {
 /** 标记非重复（须 customer:merge；成功返回 NOT_DUPLICATE 单据，不进留痕区） */
 export const dismissMergePair = (data: DismissMergeCmd) =>
   client.post<{ mergeId: string; status: string }>('/customer/merge-dismiss', data)
+
+/** 公海池条目（手机掩码；store_code IS NULL 且未合并） */
+export interface PoolItemDTO {
+  id: string
+  name: string
+  phone: string
+  level: string
+}
+
+/** 公海池列表（须 customer:view） */
+export const listPool = () => client.get<PoolItemDTO[]>('/customer/m3/pool').then((r) => r.data)
+
+/** 公海认领（须 customer:edit；已被认领 409「客户已被认领」） */
+export const claimPoolCustomer = (id: string) =>
+  client.post<PoolItemDTO>(`/customer/m3/pool/${id}/claim`).then((r) => r.data)
+
+/** 公海分配（须 customer:edit；storeCode/ownerStaffId 双必填） */
+export const assignPoolCustomer = (id: string, storeCode: string, ownerStaffId: string) =>
+  client.post<PoolItemDTO>(`/customer/m3/pool/${id}/assign`, { storeCode, ownerStaffId }).then((r) => r.data)

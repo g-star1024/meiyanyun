@@ -1,15 +1,23 @@
 // ============================================================
-// Complaint 聚合 store（投诉与医疗风险处理）
-// 状态机：待受理 → 处理中 → 待结案审批 → 已结案 / 已驳回（受理或审批环节均可驳回/退回）。
-// - 赔付金额 → 签署层级由 settings.tierFor() 推导，页面不硬编码。
+// Complaint 聚合 store（投诉与医疗风险处理，M3-18 / M3-B8 切真）
+// 数据源：customer-service /api/customer/m3/complaint（complaint 状态机
+// 待受理 → 处理中 → 待结案审批 → 已结案 / 已驳回，受理或审批环节均可驳回/退回）。
+// - 赔付金额 → 签署层级服务端统算（tierFor 5000/20000），页面展示后端返回值。
 // - medicalRisk=true 的医疗风险单在列表高亮，并强制留痕处理方案。
-// 权限：complaint:create 登记 / complaint:edit 受理与处理 / complaint:approve 结案审批。
+// 权限：complaint:view / complaint:create 登记 / complaint:edit 受理与处理 /
+// complaint:approve 结案审批；actor 服务端取。
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
-import { useSettingsStore } from './settings'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from './m5Coupon'
+import {
+  listComplaints, createComplaint, acceptComplaint, submitComplaintResolution,
+  approveComplaintClose, sendBackComplaint, rejectComplaint,
+  type ComplaintView,
+} from '@/api/complaint'
 
 export type ComplaintSource = 'STORE' | 'PHONE' | 'ONLINE' | 'THIRD_PARTY'
 export type ComplaintSeverity = 'LOW' | 'MEDIUM' | 'HIGH'
@@ -29,7 +37,7 @@ export interface ComplaintTimelineEntry {
 }
 
 export interface Complaint {
-  id: string
+  id: number
   complaintNo: string
   customerId: string
   customerName: string
@@ -64,13 +72,47 @@ const TRANSITIONS: Record<ComplaintStatus, ComplaintStatus[]> = {
   REJECTED: [],
 }
 
+function mapComplaint(v: ComplaintView): Complaint {
+  return {
+    id: v.id,
+    complaintNo: v.complaintNo,
+    customerId: v.customerId,
+    customerName: v.customerName,
+    source: v.source as ComplaintSource,
+    severity: v.severity as ComplaintSeverity,
+    category: v.category as ComplaintCategory,
+    medicalRisk: v.medicalRisk,
+    description: v.description,
+    relatedOrderNo: v.relatedOrderNo ?? undefined,
+    storeId: v.storeId ?? '',
+    storeName: v.storeName ?? '',
+    status: v.status as ComplaintStatus,
+    compensationAmount: v.compensationAmount ?? 0,
+    signTier: (v.signTier ?? 'L1') as Complaint['signTier'],
+    resolution: v.resolution ?? undefined,
+    createdAt: v.createdAt,
+    acceptedByName: v.acceptedByName ?? undefined,
+    acceptedAt: v.acceptedAt ?? undefined,
+    submittedByName: v.submittedByName ?? undefined,
+    submittedAt: v.submittedAt ?? undefined,
+    closedByName: v.closedByName ?? undefined,
+    closedAt: v.closedAt ?? undefined,
+    rejectionReason: v.rejectionReason ?? undefined,
+    timeline: (v.timeline ?? []).map((t) => ({
+      at: t.at,
+      by: t.by,
+      action: t.action,
+      note: t.note ?? undefined,
+    })),
+  }
+}
+
 export const useComplaintStore = defineStore('complaint', () => {
   const auth = useAuthStore()
-  const settings = useSettingsStore()
   const activity = useActivityStore()
+  const toast = useToast()
 
   const complaints = ref<Complaint[]>([])
-  let seq = 0
 
   const pendingAccept = computed(() => complaints.value.filter((c) => c.status === 'PENDING_ACCEPT'))
   const processing = computed(() => complaints.value.filter((c) => c.status === 'PROCESSING'))
@@ -83,16 +125,23 @@ export const useComplaintStore = defineStore('complaint', () => {
     complaints.value.filter((c) => c.medicalRisk && c.status !== 'CLOSED' && c.status !== 'REJECTED'),
   )
 
-  function get(id: string) {
+  function replaceComplaint(next: Complaint) {
+    const idx = complaints.value.findIndex((c) => c.id === next.id)
+    if (idx >= 0) complaints.value.splice(idx, 1, next)
+    else complaints.value.unshift(next)
+  }
+
+  function get(id: number) {
     return complaints.value.find((c) => c.id === id)
   }
 
+  /** 状态迁移查表（仅用于按钮显隐预显；迁移合法性由后端裁定） */
   function canTransit(from: ComplaintStatus, to: ComplaintStatus) {
     return TRANSITIONS[from]?.includes(to) ?? false
   }
 
   /** 登记投诉 */
-  function create(input: {
+  async function create(input: {
     customerId: string
     customerName: string
     source: ComplaintSource
@@ -102,248 +151,148 @@ export const useComplaintStore = defineStore('complaint', () => {
     description: string
     relatedOrderNo?: string
     compensationAmount?: number
-  }): Complaint | null {
+  }): Promise<Complaint | null> {
     if (!auth.can('complaint:create')) {
-      console.warn('[complaint] 无 complaint:create 权限')
+      toast.error('无登记投诉权限')
       return null
     }
     if (!input.description.trim()) {
-      console.warn('[complaint] 投诉描述必填')
+      toast.error('投诉描述必填')
       return null
     }
-    seq += 1
-    const compensation = input.compensationAmount ?? 0
-    const tier = settings.tierFor(compensation)
-    const now = new Date().toISOString()
-    const c: Complaint = {
-      id: nextId('cp'),
-      complaintNo: `TS${Date.now().toString().slice(-8)}${seq}`,
-      customerId: input.customerId,
-      customerName: input.customerName,
-      source: input.source,
-      severity: input.severity,
-      category: input.category,
-      medicalRisk: input.medicalRisk,
-      description: input.description.trim(),
-      relatedOrderNo: input.relatedOrderNo?.trim() || undefined,
-      storeId: auth.storeId,
-      storeName: auth.user.name,
-      status: 'PENDING_ACCEPT',
-      compensationAmount: compensation,
-      signTier: tier,
-      createdAt: now,
-      timeline: [
-        { at: now, by: auth.user.name, action: '登记投诉', note: input.medicalRisk ? '标记为医疗风险' : undefined },
-      ],
+    try {
+      const c = mapComplaint(await createComplaint({
+        ...input,
+        description: input.description.trim(),
+        relatedOrderNo: input.relatedOrderNo?.trim() || undefined,
+      }))
+      replaceComplaint(c)
+      activity.log(
+        auth.user.name,
+        `登记投诉 ${c.complaintNo}（${input.medicalRisk ? '医疗风险·' : ''}${input.severity}）`,
+        c.complaintNo,
+      )
+      toast.success(`投诉 ${c.complaintNo} 已登记`)
+      return c
+    } catch (e) {
+      toast.error(errMsg(e, '登记失败'))
+      return null
     }
-    complaints.value.unshift(c)
-    activity.log(
-      auth.user.name,
-      `登记投诉 ${c.complaintNo}（${input.medicalRisk ? '医疗风险·' : ''}${input.severity}）`,
-      c.id,
-    )
-    return c
   }
 
   /** 受理：待受理 → 处理中 */
-  function accept(id: string): boolean {
-    const c = complaints.value.find((x) => x.id === id)
-    if (!c || !canTransit(c.status, 'PROCESSING')) return false
+  async function accept(id: number): Promise<boolean> {
     if (!auth.can('complaint:edit')) {
-      console.warn('[complaint] 无 complaint:edit 权限')
+      toast.error('无受理权限')
       return false
     }
-    const now = new Date().toISOString()
-    c.status = 'PROCESSING'
-    c.acceptedByName = auth.user.name
-    c.acceptedAt = now
-    c.timeline.push({ at: now, by: auth.user.name, action: '受理投诉' })
-    activity.log(auth.user.name, `受理投诉 ${c.complaintNo}`, c.id)
-    return true
+    try {
+      const c = mapComplaint(await acceptComplaint(id))
+      replaceComplaint(c)
+      activity.log(auth.user.name, `受理投诉 ${c.complaintNo}`, c.complaintNo)
+      toast.success(`投诉 ${c.complaintNo} 已受理`)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '受理失败'))
+      return false
+    }
   }
 
-  /** 提交处理方案：处理中 → 待结案审批；赔付金额变更时重算签署层级 */
-  function submitResolution(id: string, resolution: string, compensation?: number): boolean {
-    const c = complaints.value.find((x) => x.id === id)
-    if (!c || !canTransit(c.status, 'PENDING_REVIEW')) return false
+  /** 提交处理方案：处理中 → 待结案审批；赔付金额变更时服务端重算签署层级 */
+  async function submitResolution(id: number, resolution: string, compensation?: number): Promise<boolean> {
     if (!auth.can('complaint:edit')) {
-      console.warn('[complaint] 无 complaint:edit 权限')
+      toast.error('无处理权限')
       return false
     }
     if (!resolution.trim()) {
-      console.warn('[complaint] 处理方案必填')
+      toast.error('处理方案必填')
       return false
     }
-    if (typeof compensation === 'number' && compensation >= 0) {
-      c.compensationAmount = compensation
-      c.signTier = settings.tierFor(compensation)
+    try {
+      const c = mapComplaint(await submitComplaintResolution(id, resolution.trim(), compensation))
+      replaceComplaint(c)
+      activity.log(auth.user.name, `投诉 ${c.complaintNo} 提交处理方案，待结案审批`, c.complaintNo)
+      toast.success('处理方案已提交，待结案审批')
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '提交失败'))
+      return false
     }
-    const now = new Date().toISOString()
-    c.status = 'PENDING_REVIEW'
-    c.resolution = resolution.trim()
-    c.submittedByName = auth.user.name
-    c.submittedAt = now
-    c.timeline.push({
-      at: now,
-      by: auth.user.name,
-      action: '提交处理方案',
-      note: `赔付 ¥${c.compensationAmount}（${c.signTier}）`,
-    })
-    activity.log(auth.user.name, `投诉 ${c.complaintNo} 提交处理方案，待结案审批`, c.id)
-    return true
   }
 
   /** 结案审批通过：待审批 → 已结案 */
-  function approveClose(id: string): boolean {
-    const c = complaints.value.find((x) => x.id === id)
-    if (!c || !canTransit(c.status, 'CLOSED')) return false
+  async function approveClose(id: number): Promise<boolean> {
     if (!auth.can('complaint:approve')) {
-      console.warn('[complaint] 无 complaint:approve 权限')
+      toast.error('无结案审批权限')
       return false
     }
-    const now = new Date().toISOString()
-    c.status = 'CLOSED'
-    c.closedByName = auth.user.name
-    c.closedAt = now
-    c.timeline.push({ at: now, by: auth.user.name, action: '审批结案' })
-    activity.log(auth.user.name, `投诉 ${c.complaintNo} 已结案`, c.id)
-    return true
+    try {
+      const c = mapComplaint(await approveComplaintClose(id))
+      replaceComplaint(c)
+      activity.log(auth.user.name, `投诉 ${c.complaintNo} 已结案`, c.complaintNo)
+      toast.success(`投诉 ${c.complaintNo} 已结案`)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '结案失败'))
+      return false
+    }
   }
 
   /** 退回补充处理：待审批 → 处理中 */
-  function sendBack(id: string, note: string): boolean {
-    const c = complaints.value.find((x) => x.id === id)
-    if (!c || !canTransit(c.status, 'PROCESSING')) return false
+  async function sendBack(id: number, note: string): Promise<boolean> {
     if (!auth.can('complaint:approve')) {
-      console.warn('[complaint] 无 complaint:approve 权限')
+      toast.error('无审批权限')
       return false
     }
-    const now = new Date().toISOString()
-    c.status = 'PROCESSING'
-    c.timeline.push({ at: now, by: auth.user.name, action: '退回补充处理', note })
-    activity.log(auth.user.name, `投诉 ${c.complaintNo} 退回补充：${note}`, c.id)
-    return true
+    if (!note.trim()) {
+      toast.error('退回说明必填')
+      return false
+    }
+    try {
+      const c = mapComplaint(await sendBackComplaint(id, note.trim()))
+      replaceComplaint(c)
+      activity.log(auth.user.name, `投诉 ${c.complaintNo} 退回补充：${note.trim()}`, c.complaintNo)
+      toast.success('已退回补充处理')
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '退回失败'))
+      return false
+    }
   }
 
   /** 驳回（受理/审批环节判为无效投诉） */
-  function reject(id: string, reason: string): boolean {
-    const c = complaints.value.find((x) => x.id === id)
-    if (!c || !canTransit(c.status, 'REJECTED')) return false
+  async function reject(id: number, reason: string): Promise<boolean> {
     if (!auth.can('complaint:approve')) {
-      console.warn('[complaint] 无 complaint:approve 权限')
+      toast.error('无审批权限')
       return false
     }
-    const now = new Date().toISOString()
-    c.status = 'REJECTED'
-    c.rejectionReason = reason.trim()
-    c.timeline.push({ at: now, by: auth.user.name, action: '驳回投诉', note: reason.trim() })
-    activity.log(auth.user.name, `投诉 ${c.complaintNo} 已驳回：${reason}`, c.id)
-    return true
+    if (!reason.trim()) {
+      toast.error('驳回原因必填')
+      return false
+    }
+    try {
+      const c = mapComplaint(await rejectComplaint(id, reason.trim()))
+      replaceComplaint(c)
+      activity.log(auth.user.name, `投诉 ${c.complaintNo} 已驳回：${reason.trim()}`, c.complaintNo)
+      toast.success(`投诉 ${c.complaintNo} 已驳回`)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '驳回失败'))
+      return false
+    }
   }
 
-  /** 开发期种子 */
+  /** 首屏加载（名保留 seed，内部幂等门闩） */
   let seeded = false
-  function seed() {
+  async function seed() {
     if (seeded) return
     seeded = true
-    const now = Date.now()
-    const seedData: Array<Partial<Complaint> & {
-      customerName: string
-      status: ComplaintStatus
-      severity: ComplaintSeverity
-      category: ComplaintCategory
-      source: ComplaintSource
-      description: string
-    }> = [
-      {
-        customerName: '王美丽', status: 'PENDING_ACCEPT', severity: 'HIGH', category: 'MEDICAL', source: 'STORE',
-        medicalRisk: true, compensationAmount: 3000, signTier: 'L1', relatedOrderNo: 'SO20260824001',
-        description: '光子嫩肤术后面部出现明显红肿，客户质疑能量参数设置过高，要求复诊与赔付。',
-      },
-      {
-        customerName: '陈思', status: 'PROCESSING', severity: 'MEDIUM', category: 'SERVICE', source: 'PHONE',
-        medicalRisk: false, compensationAmount: 0, signTier: 'L1',
-        description: '预约到店等候超 40 分钟，前台未主动告知进度，客户体验不满。',
-      },
-      {
-        customerName: '赵敏', status: 'PENDING_REVIEW', severity: 'MEDIUM', category: 'BILLING', source: 'ONLINE',
-        medicalRisk: false, compensationAmount: 1280, signTier: 'L1', relatedOrderNo: 'SO20260820007',
-        description: '结算时被加收未告知的耗材费 ¥380，要求退还争议费用并补偿一次护理。',
-        resolution: '核实为前台未提前说明耗材费，退还 ¥380 耗材费并补偿一次价值 ¥1280 水光护理，已电话致歉。',
-      },
-      {
-        customerName: '林晚', status: 'PENDING_REVIEW', severity: 'HIGH', category: 'OUTCOME', source: 'THIRD_PARTY',
-        medicalRisk: true, compensationAmount: 8600, signTier: 'L2', relatedOrderNo: 'SO20260815003',
-        description: '热玛吉治疗后效果未达预期，客户通过平台投诉要求退一赔三，持续在社交平台发声。',
-        resolution: '经主诊医生复评效果在合理范围内，出于客情维护退还疗程余款 ¥8600，安排院长面谈，签署和解协议。',
-      },
-      {
-        customerName: '周婷', status: 'CLOSED', severity: 'LOW', category: 'OTHER', source: 'STORE',
-        medicalRisk: false, compensationAmount: 200, signTier: 'L1',
-        description: '会员积分未及时到账，客户来电反映。',
-        resolution: '系统延迟导致，手动补录积分并赠送 ¥200 护理券。',
-      },
-      {
-        customerName: '吴桐', status: 'REJECTED', severity: 'LOW', category: 'BILLING', source: 'PHONE',
-        medicalRisk: false, compensationAmount: 0, signTier: 'L1',
-        description: '客户声称重复扣费，经查为两笔不同项目消费。',
-        rejectionReason: '调取签购单与消费记录核实为两个独立项目，非重复扣费，已向客户解释并提供凭证。',
-      },
-    ]
-
-    seedData.forEach((s, i) => {
-      seq += 1
-      const createdIso = new Date(now - i * 7200_000).toISOString()
-      const c: Complaint = {
-        id: nextId('cp'),
-        complaintNo: `TS2026082${5 - i}00${i + 1}`,
-        customerId: `C-40${i}`,
-        customerName: s.customerName!,
-        source: s.source!,
-        severity: s.severity!,
-        category: s.category!,
-        medicalRisk: !!s.medicalRisk,
-        description: s.description!,
-        relatedOrderNo: s.relatedOrderNo,
-        storeId: 'store-jingan',
-        storeName: '静安旗舰店',
-        status: s.status,
-        compensationAmount: s.compensationAmount ?? 0,
-        signTier: s.signTier ?? 'L1',
-        resolution: s.resolution,
-        rejectionReason: s.rejectionReason,
-        createdAt: createdIso,
-        timeline: [{ at: createdIso, by: '夏沫（前台）', action: '登记投诉' }],
-      }
-      if (s.status !== 'PENDING_ACCEPT') {
-        c.acceptedByName = '苏晴（店长）'
-        c.acceptedAt = createdIso
-        c.timeline.push({ at: createdIso, by: '苏晴（店长）', action: '受理投诉' })
-      }
-      if (s.status === 'PENDING_REVIEW' || s.status === 'CLOSED' || s.status === 'REJECTED') {
-        if (c.resolution) {
-          c.submittedByName = '苏晴（店长）'
-          c.submittedAt = createdIso
-          c.timeline.push({
-            at: createdIso,
-            by: '苏晴（店长）',
-            action: '提交处理方案',
-            note: `赔付 ¥${c.compensationAmount}（${c.signTier}）`,
-          })
-        }
-      }
-      if (s.status === 'CLOSED') {
-        c.closedByName = '陈野（区域经理）'
-        c.closedAt = createdIso
-        c.timeline.push({ at: createdIso, by: '陈野（区域经理）', action: '审批结案' })
-      }
-      if (s.status === 'REJECTED') {
-        c.closedByName = '苏晴（店长）'
-        c.closedAt = createdIso
-        c.timeline.push({ at: createdIso, by: '苏晴（店长）', action: '驳回投诉', note: c.rejectionReason })
-      }
-      complaints.value.push(c)
-    })
+    try {
+      complaints.value = (await listComplaints()).map(mapComplaint)
+    } catch (e) {
+      seeded = false
+      toast.error(errMsg(e, '投诉数据加载失败'))
+    }
   }
 
   return {
