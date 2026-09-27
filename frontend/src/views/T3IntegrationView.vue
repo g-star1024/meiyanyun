@@ -2,7 +2,7 @@
 /* ============================================================
  * T3 集成中心 /integrations
  * 红线：单向镜像 + Outbox + T+1 对账，绝不触碰资金池。
- * 4 KPI + 红线提示 + 5 tab：接入配置（真实）/ 连接器 / Outbox / 对账批次 / 调用日志（后 4 个为 T3-04 mock 演示）。
+ * 4 KPI + 红线提示 + 5 tab 全部真实：接入配置（B57）/ 连接器 / Outbox / 对账批次 / 调用日志（后 4 个 T3-B3 切真 /api/org/integration）。
  * ============================================================ */
 import { computed, onMounted, ref, watch } from 'vue'
 import CCard from '@/components/CCard.vue'
@@ -102,38 +102,49 @@ function openEdit(c: Connector) {
   }
   editOpen.value = true
 }
-function saveConnector() {
+async function saveConnector() {
   if (!editing.value) return
   const e = editing.value
   if (!e.name.trim() || !e.endpoint.trim()) return
   if (e.mode === 'create') {
-    store.createConnector({
+    const c = await store.createConnector({
       name: e.name.trim(), type: e.type, endpoint: e.endpoint.trim(),
-      credentialKey: e.credentialKey.trim() || '****', syncMode: 'UNIDIRECTIONAL',
+      credentialKey: e.credentialKey.trim(), syncMode: 'UNIDIRECTIONAL',
     })
-    setFlash('ok', '连接器已创建')
+    if (!c) return
+    setFlash('ok', `连接器「${c.name}」已创建`)
   } else if (e.id) {
-    store.updateConnector(e.id, {
+    const ok = await store.updateConnector(e.id, {
       name: e.name.trim(), endpoint: e.endpoint.trim(),
       credentialKey: e.credentialKey.trim(),
     })
+    if (!ok) return
     setFlash('ok', '连接器配置已更新')
   }
   editOpen.value = false
   editing.value = null
 }
 
-function doTest(c: Connector) {
-  store.testConnection(c.id)
-  setFlash('ok', `正在测试「${c.name}」连接…`)
+async function doTest(c: Connector) {
+  const r = await store.testConnection(c.id)
+  if (!r) return
+  setFlash(r.reachable ? 'ok' : 'err', `「${c.name}」${r.message}（HTTP ${r.statusCode}，${r.latencyMs}ms）`)
 }
-function doSync(c: Connector) {
-  const n = store.triggerSync(c.id)
-  setFlash('ok', `已触发单向镜像同步，生成 ${n} 条 Outbox 消息`)
+async function doSync(c: Connector) {
+  const r = await store.triggerSync(c.id)
+  if (!r) return
+  setFlash(
+    r.failed > 0 ? 'warn' : 'ok',
+    `「${c.name}」单向镜像同步完成：拉取 ${r.pulled}，新建 Outbox ${r.created}，幂等跳过 ${r.skipped}，ACK ${r.ack}，失败 ${r.failed}${r.truncated ? '（已达单次上限截断）' : ''}`,
+  )
 }
-function doReconcileAll() {
-  const b = store.runReconcile()
-  setFlash('ok', `T+1 对账完成：轧平 ${b.matchedCount} 笔，长款 ${b.longCount}，短款 ${b.shortCount}，失败 ${b.failedCount}`)
+async function doReconcileAll() {
+  const b = await store.runReconcile()
+  if (!b) return
+  setFlash(
+    'ok',
+    `T+1 对账完成：${b.connectorName}（${b.date}）轧平 ${b.matchedCount} 笔，待处理 ${b.pendingCount}，长款 ${b.longCount}，短款 ${b.shortCount}，失败 ${b.failedCount}${b.alreadyExisted ? '（幂等重放，未重复记账）' : ''}`,
+  )
 }
 
 // ---------- Outbox ----------
@@ -143,6 +154,7 @@ const OUTBOX_PILL: Record<OutboxMessage['status'], { text: string; status: 'succ
   LONG:    { text: '长款', status: 'info' },
   SHORT:   { text: '短款', status: 'danger' },
   FAILED:  { text: '失败', status: 'danger' },
+  ACK:     { text: '已确认', status: 'info' },
 }
 const BIZ_LABEL: Record<OutboxMessage['bizType'], string> = {
   ORDER_PAY: '订单支付',
@@ -152,9 +164,10 @@ const BIZ_LABEL: Record<OutboxMessage['bizType'], string> = {
   CONTACT: '通讯录',
   AD_CLICK: '广告点击',
 }
-function retry(o: OutboxMessage) {
-  store.retryMessage(o.outboxId)
-  setFlash('ok', `已重发消息 ${o.txnNo}（幂等 transaction_id）`)
+async function retry(o: OutboxMessage) {
+  const ok = await store.retryMessage(o.outboxId)
+  if (!ok) return
+  setFlash('ok', `已重发消息 ${o.txnNo}（幂等复用原 transaction_id）`)
 }
 const outboxList = computed(() =>
   [...store.outbox].sort((a, b) => b.occurredAt.localeCompare(a.occurredAt)),

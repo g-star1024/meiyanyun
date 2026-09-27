@@ -1,15 +1,31 @@
 // ============================================================
-// T3-04 集成中心 store（红线：单向镜像 + Outbox + T+1 对账，绝不碰资金池）
+// T3-04 集成中心 store（T3-B3 切真 org-service）
 // 连接器（支付/医保/企微/税控/广告/金蝶/用友）
-// 凭证加密存储（前端演示用 mask）+ 单向镜像 + transaction_id 幂等
+// 凭证后端加密存储（仅回显掩码）+ 单向镜像 + transaction_id 幂等
 // 调用日志 + Outbox 出站消息 + T+1 三方对账
 // 对齐 T-G-中台与通用.md T3-04 详设
+// 数据源：/api/org/integration（V70~V73 落库；类级 integration:view，
+// 创建=integration:create，编辑/测试=integration:edit，同步/重发=integration:sync，
+// 对账=integration:reconcile）。
+// 红线：①单向镜像绝不反向写资金池 ②绝不假装已连通（状态仅真实探测驱动）
+// ③只建链路本体不伪造三方对接
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
-import { shDateStr } from '@/utils/datetime'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from './m5Coupon'
+import * as api from '@/api/t3Integration'
+import type {
+  BatchView,
+  CallLogView,
+  ConnectorView,
+  OutboxView,
+  SyncResult,
+  TestConnectorResult,
+  UpdateConnectorReq,
+} from '@/api/t3Integration'
 
 // ---- 类型 ----
 export type ConnectorType =
@@ -21,14 +37,16 @@ export type ConnectorType =
   | 'KINGDEE'    // 金蝶 ERP
   | 'YONYOU'     // 用友 ERP
 
+/** SYNCING 为运行瞬时态（不落库），仅本地在测试/同步进行中呈现 */
 export type ConnectorStatus = 'CONNECTED' | 'DISCONNECTED' | 'ERROR' | 'SYNCING'
 
 export interface Connector {
+  /** String(后端 Long id)；回传后端时直接作路径/参数段，零精度损失 */
   id: string
   type: ConnectorType
   name: string
   endpoint: string
-  /** 凭证（演示 mask，真实环境加密存储） */
+  /** 凭证掩码（后端加密存储，仅回显；空串=未配置） */
   credentialKey: string
   status: ConnectorStatus
   /** 同步方向：UNIDIRECTIONAL = 单向镜像（红线） */
@@ -60,38 +78,45 @@ export interface CallLog {
 
 /** Outbox 出站消息（复用 financeCore 模式） */
 export interface OutboxMessage {
+  /** 显示锚 = 后端 outbox_no（OB-yyyyMMdd-seq，UK）；后端主键 id 由适配层映射表保管 */
   outboxId: string
   connectorId: string
   connectorName: string
   bizType: 'ORDER_PAY' | 'REFUND' | 'INVOICE' | 'VOUCHER' | 'CONTACT' | 'AD_CLICK'
   txnNo: string
+  /** 金额（元；后端 txn 侧分换算 movePointLeft(2) 后即元，前端零换算） */
   amount?: number
   /** 本地已记录 / 三方已确认 / 对账完成 */
   localSent: boolean
   remoteAck: boolean
   reconciled: boolean
-  status: 'MATCHED' | 'PENDING' | 'LONG' | 'SHORT' | 'FAILED'
+  /** 后端 chk 六值：MATCHED/PENDING/LONG/SHORT/FAILED + ACK（三方已确认待对账） */
+  status: 'MATCHED' | 'PENDING' | 'LONG' | 'SHORT' | 'FAILED' | 'ACK'
   occurredAt: string
   reconciledAt?: string
 }
 
 /** T+1 对账批次 */
 export interface ReconcileBatch {
+  /** 显示锚 = 后端 batch_no（REC-yyyyMMdd-seq，UK） */
   id: string
   connectorId: string
   connectorName: string
-  date: string // yyyy-MM-dd
+  date: string // yyyy-MM-dd（后端 biz_date）
   totalCount: number
   matchedCount: number
   pendingCount: number
   longCount: number
   shortCount: number
   failedCount: number
+  /** 金额（元，后端即元，零换算） */
   totalAmount: number
   diffAmount: number
   status: 'RUNNING' | 'DONE' | 'FAILED'
   startedAt: string
   finishedAt?: string
+  /** uk(connector_id,biz_date) 幂等重放命中（后端如实返回，未重复记账） */
+  alreadyExisted: boolean
 }
 
 const CONNECTOR_TYPE_LABEL: Record<ConnectorType, string> = {
@@ -114,12 +139,92 @@ const CONNECTOR_STATUS_LABEL: Record<ConnectorStatus, string> = {
 export const useT3IntegrationStore = defineStore('t3Integration', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const toast = useToast()
 
   const connectors = ref<Connector[]>([])
   const callLogs = ref<CallLog[]>([])
   const outbox = ref<OutboxMessage[]>([])
   const batches = ref<ReconcileBatch[]>([])
   const loaded = ref(false)
+  const loading = ref(false)
+  const loadError = ref('')
+
+  /** outboxNo（前端显示锚）→ 后端主键 id（重发写操作寻址用） */
+  const outboxNumId = new Map<string, number>()
+
+  // ---- 适配层：后端 View → 前端类型（铁律 -1-B：前后端差异只在此消化） ----
+  function mapConnector(v: ConnectorView): Connector {
+    return {
+      id: String(v.id),
+      type: v.type as ConnectorType,
+      name: v.name,
+      endpoint: v.endpoint,
+      credentialKey: v.credentialKey ?? '',
+      status: v.status as ConnectorStatus,
+      syncMode: 'UNIDIRECTIONAL',
+      lastSyncAt: v.lastSyncAt,
+      lastError: v.lastError,
+      callCount24h: v.callCount24h,
+      errorCount24h: v.errorCount24h,
+      createdAt: v.createdAt,
+    }
+  }
+
+  function mapLog(v: CallLogView): CallLog {
+    return {
+      id: String(v.id),
+      connectorId: String(v.connectorId),
+      connectorName: v.connectorName,
+      transactionId: v.transactionId,
+      direction: v.direction === 'IN' ? 'IN' : 'OUT',
+      method: v.method ?? '—',
+      endpoint: v.endpoint ?? '—',
+      statusCode: v.statusCode ?? 0,
+      latencyMs: v.latencyMs ?? 0,
+      status: v.status as CallLog['status'],
+      requestAt: v.requestAt,
+      errorMsg: v.errorMsg ?? undefined,
+    }
+  }
+
+  function mapOutbox(v: OutboxView): OutboxMessage {
+    outboxNumId.set(v.outboxNo, v.id)
+    return {
+      outboxId: v.outboxNo,
+      connectorId: String(v.connectorId),
+      connectorName: v.connectorName,
+      bizType: v.bizType as OutboxMessage['bizType'],
+      txnNo: v.txnNo,
+      amount: v.amount ?? undefined,
+      localSent: v.localSent,
+      remoteAck: v.remoteAck,
+      reconciled: v.reconciled,
+      status: v.status as OutboxMessage['status'],
+      occurredAt: v.occurredAt,
+      reconciledAt: v.reconciledAt ?? undefined,
+    }
+  }
+
+  function mapBatch(v: BatchView): ReconcileBatch {
+    return {
+      id: v.batchNo,
+      connectorId: v.connectorId === 0 ? 'ALL' : String(v.connectorId),
+      connectorName: v.connectorName,
+      date: v.bizDate,
+      totalCount: v.totalCount,
+      matchedCount: v.matchedCount,
+      pendingCount: v.pendingCount,
+      longCount: v.longCount,
+      shortCount: v.shortCount,
+      failedCount: v.failedCount,
+      totalAmount: v.totalAmount,
+      diffAmount: v.diffAmount,
+      status: v.status as ReconcileBatch['status'],
+      startedAt: v.startedAt ?? '',
+      finishedAt: v.finishedAt ?? undefined,
+      alreadyExisted: v.alreadyExisted,
+    }
+  }
 
   // ---- 查询 ----
   function getConnector(id: string) {
@@ -143,291 +248,224 @@ export const useT3IntegrationStore = defineStore('t3Integration', () => {
 
   function canEdit() { return auth.can('integration:edit') }
 
-  // ---- 命令 ----
-  function createConnector(input: Omit<Connector, 'id' | 'status' | 'lastSyncAt' | 'lastError' | 'callCount24h' | 'errorCount24h' | 'createdAt'>): Connector {
-    if (!auth.can('integration:create')) throw new Error('无连接器创建权限')
-    const c: Connector = {
-      ...input,
-      id: nextId('conn'),
-      status: 'DISCONNECTED',
-      lastSyncAt: null,
-      lastError: null,
-      callCount24h: 0,
-      errorCount24h: 0,
-      createdAt: new Date().toISOString(),
+  function replaceConnector(next: Connector) {
+    const idx = connectors.value.findIndex((c) => c.id === next.id)
+    if (idx >= 0) connectors.value.splice(idx, 1, next)
+    else connectors.value.unshift(next)
+  }
+
+  function replaceOutbox(next: OutboxMessage) {
+    const idx = outbox.value.findIndex((o) => o.outboxId === next.outboxId)
+    if (idx >= 0) outbox.value.splice(idx, 1, next)
+    else outbox.value.unshift(next)
+  }
+
+  // ---- 装载 ----
+  async function refreshConnectors() {
+    connectors.value = (await api.listConnectors()).map(mapConnector)
+  }
+
+  async function refreshCallLogs() {
+    callLogs.value = (await api.listCallLogs({ limit: 200 })).map(mapLog)
+  }
+
+  async function refreshOutbox() {
+    outbox.value = (await api.listOutbox({ limit: 200 })).map(mapOutbox)
+  }
+
+  async function refreshBatches() {
+    batches.value = (await api.listReconcileBatches(50)).map(mapBatch)
+  }
+
+  async function load() {
+    loading.value = true
+    loadError.value = ''
+    try {
+      const [cs, ls, os, bs] = await Promise.all([
+        api.listConnectors(),
+        api.listCallLogs({ limit: 200 }),
+        api.listOutbox({ limit: 200 }),
+        api.listReconcileBatches(50),
+      ])
+      connectors.value = cs.map(mapConnector)
+      callLogs.value = ls.map(mapLog)
+      outbox.value = os.map(mapOutbox)
+      batches.value = bs.map(mapBatch)
+      loaded.value = true
+    } catch (e) {
+      loadError.value = errMsg(e)
+      console.warn('[t3Integration] 集成中心数据加载失败', e)
+    } finally {
+      loading.value = false
     }
-    connectors.value.push(c)
-    activity.log(auth.user.name, `创建连接器「${c.name}」（${CONNECTOR_TYPE_LABEL[c.type]}）`, c.id)
-    return c
   }
 
-  function updateConnector(id: string, patch: Partial<Pick<Connector, 'name' | 'endpoint' | 'credentialKey'>>) {
-    if (!auth.can('integration:edit')) throw new Error('无连接器编辑权限')
-    const c = getConnector(id)
-    if (!c) return
-    Object.assign(c, patch)
-    activity.log(auth.user.name, `更新连接器「${c.name}」配置`, id)
+  /** 进页装载（B86 范式：每次进页重拉真实数据） */
+  async function seed() {
+    await load()
   }
 
-  /** 测试连接（不改数据，只改状态） */
-  function testConnection(id: string): boolean {
-    if (!auth.can('integration:edit')) throw new Error('无连接器编辑权限')
+  // ---- 命令 ----
+  async function createConnector(input: {
+    name: string
+    type: ConnectorType
+    endpoint: string
+    credentialKey: string
+    syncMode: 'UNIDIRECTIONAL'
+  }): Promise<Connector | null> {
+    if (!auth.can('integration:create')) {
+      toast.error('无连接器创建权限')
+      return null
+    }
+    try {
+      // 抽屉无 code 输入框：适配层自生成业务编码（后端 code UK）
+      const v = await api.createConnector({
+        code: `CONN-CUSTOM-${Date.now()}`,
+        type: input.type,
+        name: input.name,
+        endpoint: input.endpoint,
+        credentialKey: input.credentialKey || undefined,
+      })
+      const c = mapConnector(v)
+      connectors.value.push(c)
+      activity.log(auth.user.name, `创建连接器「${c.name}」（${CONNECTOR_TYPE_LABEL[c.type]}）`, c.id)
+      toast.success(`连接器「${c.name}」已创建`)
+      return c
+    } catch (e) {
+      toast.error(errMsg(e, '创建连接器失败'))
+      return null
+    }
+  }
+
+  async function updateConnector(id: string, patch: Partial<Pick<Connector, 'name' | 'endpoint' | 'credentialKey'>>): Promise<boolean> {
+    if (!canEdit()) {
+      toast.error('无连接器编辑权限')
+      return false
+    }
     const c = getConnector(id)
     if (!c) return false
-    c.status = 'SYNCING'
-    // 模拟：80% 成功
-    const ok = Math.random() > 0.2
-    setTimeout(() => {
-      c.status = ok ? 'CONNECTED' : 'ERROR'
-      c.lastSyncAt = new Date().toISOString()
-      c.lastError = ok ? null : '连接超时：三方接口无响应（模拟）'
-    }, 500)
-    return ok
+    try {
+      const req: UpdateConnectorReq = {}
+      if (patch.name) req.name = patch.name
+      if (patch.endpoint) req.endpoint = patch.endpoint
+      // 凭证保护：空值/掩码回填（含 * 或与当前掩码一致）视为未修改，绝不明文覆盖真实凭证
+      if (patch.credentialKey && patch.credentialKey !== c.credentialKey && !patch.credentialKey.includes('*')) {
+        req.credentialKey = patch.credentialKey
+      }
+      const v = await api.updateConnector(id, req)
+      replaceConnector(mapConnector(v))
+      activity.log(auth.user.name, `更新连接器「${v.name}」配置`, id)
+      toast.success(`连接器「${v.name}」配置已更新`)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '更新连接器失败'))
+      return false
+    }
   }
 
-  /** 触发单向镜像同步（红线：只从三方拉取/推送，不反向写资金池） */
-  function triggerSync(id: string): number {
-    if (!auth.can('integration:sync')) throw new Error('无同步权限')
+  /** 测试连接（真实探测 3s/3s 如实返回；SYNCING 仅本地瞬时呈现） */
+  async function testConnection(id: string): Promise<TestConnectorResult | null> {
+    if (!canEdit()) {
+      toast.error('无连接器编辑权限')
+      return null
+    }
     const c = getConnector(id)
-    if (!c) return 0
+    if (!c) return null
     c.status = 'SYNCING'
-    // 模拟生成 3~8 条 Outbox 消息
-    const count = 3 + Math.floor(Math.random() * 6)
-    for (let i = 0; i < count; i++) {
-      const isFail = Math.random() < 0.1
-      const ob: OutboxMessage = {
-        outboxId: nextId('ob'),
-        connectorId: c.id,
-        connectorName: c.name,
-        bizType: c.type === 'KINGDEE' || c.type === 'YONYOU' ? 'VOUCHER'
-          : c.type === 'TAX' ? 'INVOICE'
-          : c.type === 'PAYMENT' ? (Math.random() > 0.3 ? 'ORDER_PAY' : 'REFUND')
-          : c.type === 'WECOM' ? 'CONTACT'
-          : c.type === 'ADS' ? 'AD_CLICK'
-          : 'ORDER_PAY',
-        txnNo: `TX${Date.now()}${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
-        amount: Math.round(Math.random() * 50000) / 100,
-        localSent: true,
-        remoteAck: !isFail,
-        reconciled: false,
-        status: isFail ? 'FAILED' : 'PENDING',
-        occurredAt: new Date().toISOString(),
-      }
-      outbox.value.unshift(ob)
-      // 记录调用日志
-      callLogs.value.unshift({
-        id: nextId('log'),
-        connectorId: c.id,
-        connectorName: c.name,
-        transactionId: ob.txnNo,
-        direction: 'OUT',
-        method: 'POST',
-        endpoint: c.endpoint,
-        statusCode: isFail ? 504 : 200,
-        latencyMs: 50 + Math.floor(Math.random() * 300),
-        status: isFail ? 'FAIL' : 'SENT',
-        requestAt: new Date().toISOString(),
-        errorMsg: isFail ? '连接超时' : undefined,
-      })
+    try {
+      const r = await api.testConnector(id)
+      await refreshConnectors()
+      activity.log(auth.user.name, `测试连接器「${c.name}」连接：${r.message}`, id)
+      if (r.reachable) toast.success(`「${c.name}」${r.message}（${r.latencyMs}ms）`)
+      else toast.error(`「${c.name}」${r.message}`)
+      return r
+    } catch (e) {
+      await refreshConnectors().catch(() => undefined)
+      toast.error(errMsg(e, '测试连接失败'))
+      return null
     }
-    setTimeout(() => {
-      c.status = 'CONNECTED'
-      c.lastSyncAt = new Date().toISOString()
-      c.callCount24h += count
-      c.errorCount24h += outbox.value.filter((o) => o.connectorId === c.id && o.status === 'FAILED').length
-    }, 800)
-    activity.log(auth.user.name, `触发连接器「${c.name}」单向镜像同步，生成 ${count} 条消息`, id)
-    return count
   }
 
-  /** T+1 对账：把 PENDING 且 localSent+remoteAck 的标记为 MATCHED；模拟长短款 */
-  function runReconcile(connectorId?: string): ReconcileBatch {
-    if (!auth.can('integration:reconcile')) throw new Error('无对账权限')
-    const targetConnectors = connectorId
-      ? connectors.value.filter((c) => c.id === connectorId)
-      : connectors.value.filter((c) => c.status === 'CONNECTED')
-
-    let total = 0, matched = 0, pending = 0, long = 0, short = 0, failed = 0
-    let totalAmt = 0, diffAmt = 0
-
-    for (const c of targetConnectors) {
-      for (const o of outbox.value) {
-        if (o.connectorId !== c.id || o.reconciled) continue
-        total++
-        totalAmt += o.amount ?? 0
-        if (o.status === 'FAILED') { failed++; continue }
-        if (!o.localSent || !o.remoteAck) { pending++; continue }
-        // 模拟 5% 长款、5% 短款
-        const r = Math.random()
-        if (r < 0.05) {
-          o.status = 'LONG'
-          long++
-          diffAmt += 100 // 固定长款 100
-        } else if (r < 0.10) {
-          o.status = 'SHORT'
-          short++
-          diffAmt -= 6  // 手续费差异
-        } else {
-          o.status = 'MATCHED'
-          matched++
-        }
-        o.reconciled = true
-        o.reconciledAt = new Date().toISOString()
-      }
+  /** 触发单向镜像同步（红线：只从业务侧拉取已支付单，不反向写资金池；结果七字段如实） */
+  async function triggerSync(id: string): Promise<SyncResult | null> {
+    if (!auth.can('integration:sync')) {
+      toast.error('无同步权限')
+      return null
     }
-
-    const batch: ReconcileBatch = {
-      id: nextId('rec'),
-      connectorId: connectorId || 'ALL',
-      connectorName: connectorId ? (getConnector(connectorId)?.name ?? '未知') : '全部连接器',
-      date: shDateStr(),
-      totalCount: total,
-      matchedCount: matched,
-      pendingCount: pending,
-      longCount: long,
-      shortCount: short,
-      failedCount: failed,
-      totalAmount: Math.round(totalAmt * 100) / 100,
-      diffAmount: Math.round(diffAmt * 100) / 100,
-      status: 'DONE',
-      startedAt: new Date().toISOString(),
-      finishedAt: new Date().toISOString(),
-    }
-    batches.value.unshift(batch)
-    activity.log(auth.user.name, `T+1 对账完成：${batch.connectorName}，轧平 ${matched} 笔，长款 ${long}，短款 ${short}，失败 ${failed}`)
-    return batch
-  }
-
-  /** 重发失败消息（幂等：用 transaction_id 去重） */
-  function retryMessage(outboxId: string) {
-    if (!auth.can('integration:sync')) throw new Error('无同步权限')
-    const o = outbox.value.find((x) => x.outboxId === outboxId)
-    if (!o || o.status !== 'FAILED') return
-    o.status = 'PENDING'
-    o.remoteAck = true
-    o.reconciled = false
-    activity.log(auth.user.name, `重发消息 ${o.txnNo}（幂等 transaction_id）`, o.outboxId)
-  }
-
-  // ---- 种子 ----
-  function seed() {
-    if (loaded.value) return
-    loaded.value = true
-    const now = Date.now()
-    const hoursAgo = (h: number) => new Date(now - h * 3600_000).toISOString()
-
-    const seedConnectors: Array<Partial<Connector> & Pick<Connector, 'type' | 'name' | 'endpoint' | 'credentialKey'>> = [
-      { type: 'PAYMENT', name: '微信支付', endpoint: 'https://api.mch.weixin.qq.com/v3', credentialKey: 'wx_mch_****a3f2', status: 'CONNECTED', callCount24h: 1286, errorCount24h: 3 },
-      { type: 'PAYMENT', name: '支付宝', endpoint: 'https://openapi.alipay.com/gateway', credentialKey: 'ali_pid_****b8c1', status: 'CONNECTED', callCount24h: 842, errorCount24h: 1 },
-      { type: 'PAYMENT', name: '银联刷卡', endpoint: 'https://api.chinaums.com', credentialKey: 'ums_mer_****d4e5', status: 'ERROR', lastError: '证书过期，请更新商户证书', callCount24h: 156, errorCount24h: 12 },
-      { type: 'INSURANCE', name: '上海医保接口', endpoint: 'https://ybj.sh.gov.cn/api', credentialKey: 'sh_yb_****f6a7', status: 'CONNECTED', callCount24h: 320, errorCount24h: 0 },
-      { type: 'WECOM', name: '企业微信', endpoint: 'https://qyapi.weixin.qq.com/cgi-bin', credentialKey: 'ww_corp_****g9b3', status: 'CONNECTED', callCount24h: 2150, errorCount24h: 5 },
-      { type: 'TAX', name: '百望税控', endpoint: 'https://api.baiwang.com/invoice', credentialKey: 'bw_tax_****h2c4', status: 'CONNECTED', callCount24h: 186, errorCount24h: 2 },
-      { type: 'ADS', name: '巨量引擎', endpoint: 'https://ad.oceanengine.com/open_api', credentialKey: 'ocean_****j5d6', status: 'DISCONNECTED', callCount24h: 0, errorCount24h: 0 },
-      { type: 'KINGDEE', name: '金蝶云星空 ERP', endpoint: 'https://api.kingdee.com/koas', credentialKey: 'kd_app_****k7e8', status: 'CONNECTED', callCount24h: 45, errorCount24h: 0 },
-      { type: 'YONYOU', name: '用友 U8 ERP', endpoint: 'https://api.yonyoucloud.com/u8', credentialKey: 'yy_app_****l9f0', status: 'CONNECTED', callCount24h: 38, errorCount24h: 1 },
-    ]
-
-    seedConnectors.forEach((c, i) => {
-      const id = nextId('conn')
-      connectors.value.push({
+    const c = getConnector(id)
+    if (!c) return null
+    c.status = 'SYNCING'
+    try {
+      const r = await api.syncConnector(id)
+      // 同步真实写入 outbox / call_log / 连接器统计：三路全部重拉
+      await Promise.all([refreshConnectors(), refreshOutbox(), refreshCallLogs()])
+      activity.log(
+        auth.user.name,
+        `触发连接器「${c.name}」单向镜像同步：拉取 ${r.pulled}，新建 ${r.created}，幂等跳过 ${r.skipped}，ACK ${r.ack}，失败 ${r.failed}`,
         id,
-        type: c.type!,
-        name: c.name!,
-        endpoint: c.endpoint!,
-        credentialKey: c.credentialKey!,
-        syncMode: 'UNIDIRECTIONAL',
-        status: c.status ?? 'DISCONNECTED',
-        lastSyncAt: c.status === 'CONNECTED' ? hoursAgo(i + 1) : null,
-        lastError: c.lastError ?? null,
-        callCount24h: c.callCount24h ?? 0,
-        errorCount24h: c.errorCount24h ?? 0,
-        createdAt: hoursAgo(24 * 30 - i * 24),
-      })
-    })
-
-    // 种子 Outbox（金蝶/用友/支付 单向镜像）
-    const kd = connectors.value.find((c) => c.type === 'KINGDEE')!
-    const yy = connectors.value.find((c) => c.type === 'YONYOU')!
-    const wx = connectors.value.find((c) => c.name === '微信支付')!
-    const ali = connectors.value.find((c) => c.name === '支付宝')!
-
-    const seedOutbox: Array<Partial<OutboxMessage> & Pick<OutboxMessage, 'connectorId' | 'connectorName' | 'bizType' | 'txnNo' | 'status' | 'occurredAt'>> = [
-      { connectorId: kd.id, connectorName: kd.name, bizType: 'VOUCHER', txnNo: 'KD-V-20260825-001', amount: 12800, status: 'MATCHED', localSent: true, remoteAck: true, reconciled: true, reconciledAt: hoursAgo(20), occurredAt: hoursAgo(21) },
-      { connectorId: kd.id, connectorName: kd.name, bizType: 'VOUCHER', txnNo: 'KD-V-20260825-002', amount: 6800, status: 'MATCHED', localSent: true, remoteAck: true, reconciled: true, reconciledAt: hoursAgo(19), occurredAt: hoursAgo(20) },
-      { connectorId: kd.id, connectorName: kd.name, bizType: 'VOUCHER', txnNo: 'KD-V-20260825-003', amount: 3600, status: 'PENDING', localSent: true, remoteAck: false, reconciled: false, occurredAt: hoursAgo(18) },
-      { connectorId: yy.id, connectorName: yy.name, bizType: 'VOUCHER', txnNo: 'YY-V-20260825-001', amount: 29800, status: 'MATCHED', localSent: true, remoteAck: true, reconciled: true, reconciledAt: hoursAgo(18), occurredAt: hoursAgo(19) },
-      { connectorId: yy.id, connectorName: yy.name, bizType: 'VOUCHER', txnNo: 'YY-V-20260825-002', amount: 5900, status: 'SHORT', localSent: true, remoteAck: true, reconciled: true, reconciledAt: hoursAgo(17), occurredAt: hoursAgo(18) },
-      { connectorId: wx.id, connectorName: wx.name, bizType: 'ORDER_PAY', txnNo: 'TX20260825001', amount: 12800, status: 'MATCHED', localSent: true, remoteAck: true, reconciled: true, reconciledAt: hoursAgo(16), occurredAt: hoursAgo(17) },
-      { connectorId: wx.id, connectorName: wx.name, bizType: 'ORDER_PAY', txnNo: 'TX20260825002', amount: 6800, status: 'MATCHED', localSent: true, remoteAck: true, reconciled: true, reconciledAt: hoursAgo(15), occurredAt: hoursAgo(16) },
-      { connectorId: wx.id, connectorName: wx.name, bizType: 'REFUND', txnNo: 'TX20260825003', amount: 2800, status: 'PENDING', localSent: true, remoteAck: false, reconciled: false, occurredAt: hoursAgo(14) },
-      { connectorId: wx.id, connectorName: wx.name, bizType: 'ORDER_PAY', txnNo: 'TX20260825004', amount: 5400, status: 'LONG', localSent: true, remoteAck: true, reconciled: true, reconciledAt: hoursAgo(14), occurredAt: hoursAgo(15) },
-      { connectorId: ali.id, connectorName: ali.name, bizType: 'ORDER_PAY', txnNo: 'TX20260825005', amount: 3000, status: 'SHORT', localSent: true, remoteAck: true, reconciled: true, reconciledAt: hoursAgo(13), occurredAt: hoursAgo(14) },
-      { connectorId: ali.id, connectorName: ali.name, bizType: 'ORDER_PAY', txnNo: 'TX20260825006', amount: 8900, status: 'FAILED', localSent: true, remoteAck: false, reconciled: false, occurredAt: hoursAgo(12) },
-    ]
-    seedOutbox.forEach((o) => {
-      outbox.value.push({
-        outboxId: nextId('ob'),
-        connectorId: o.connectorId!,
-        connectorName: o.connectorName!,
-        bizType: o.bizType!,
-        txnNo: o.txnNo!,
-        amount: o.amount,
-        localSent: o.localSent ?? true,
-        remoteAck: o.remoteAck ?? false,
-        reconciled: o.reconciled ?? false,
-        status: o.status!,
-        occurredAt: o.occurredAt!,
-        reconciledAt: o.reconciledAt,
-      })
-    })
-
-    // 种子调用日志（最近 20 条）
-    const logTemplates = [
-      { conn: wx, method: 'POST', endpoint: '/v3/pay/transactions/jsapi', code: 200, latency: 120, status: 'ACK' as const },
-      { conn: wx, method: 'POST', endpoint: '/v3/refund/domestic/refunds', code: 202, latency: 280, status: 'SENT' as const },
-      { conn: ali, method: 'POST', endpoint: '/gateway.do?service=alipay.trade.page.pay', code: 200, latency: 95, status: 'ACK' as const },
-      { conn: kd, method: 'POST', endpoint: '/koas/voucher/save', code: 200, latency: 340, status: 'ACK' as const },
-      { conn: yy, method: 'POST', endpoint: '/u8/voucher/import', code: 200, latency: 420, status: 'ACK' as const },
-      { conn: connectors.value[2], method: 'POST', endpoint: '/api/pay', code: 504, latency: 5000, status: 'FAIL' as const, error: '证书过期' },
-    ]
-    for (let i = 0; i < 20; i++) {
-      const t = logTemplates[i % logTemplates.length]
-      callLogs.value.push({
-        id: nextId('log'),
-        connectorId: t.conn.id,
-        connectorName: t.conn.name,
-        transactionId: `TX20260825${String(1000 + i).padStart(4, '0')}`,
-        direction: 'OUT',
-        method: t.method,
-        endpoint: t.endpoint,
-        statusCode: t.code,
-        latencyMs: t.latency + Math.floor(Math.random() * 100),
-        status: t.status,
-        requestAt: hoursAgo(i * 0.5),
-        errorMsg: t.error,
-      })
+      )
+      if (r.failed > 0) toast.error(`「${c.name}」同步完成：新建 ${r.created}，失败 ${r.failed}（如实）`)
+      else toast.success(`「${c.name}」同步完成：新建 ${r.created}，幂等跳过 ${r.skipped}，ACK ${r.ack}`)
+      return r
+    } catch (e) {
+      await Promise.all([refreshConnectors().catch(() => undefined), refreshCallLogs().catch(() => undefined)])
+      toast.error(errMsg(e, '同步失败'))
+      return null
     }
+  }
 
-    // 种子对账批次
-    batches.value = [
-      {
-        id: nextId('rec'), connectorId: 'ALL', connectorName: '全部连接器',
-        date: '2026-08-24', totalCount: 48, matchedCount: 45, pendingCount: 1, longCount: 1, shortCount: 1, failedCount: 0,
-        totalAmount: 286400, diffAmount: 94, status: 'DONE',
-        startedAt: hoursAgo(24), finishedAt: hoursAgo(23.8),
-      },
-      {
-        id: nextId('rec'), connectorId: 'ALL', connectorName: '全部连接器',
-        date: '2026-08-23', totalCount: 52, matchedCount: 52, pendingCount: 0, longCount: 0, shortCount: 0, failedCount: 0,
-        totalAmount: 312800, diffAmount: 0, status: 'DONE',
-        startedAt: hoursAgo(48), finishedAt: hoursAgo(47.8),
-      },
-    ]
+  /** T+1 对账（本地口径：remote_ack 置 MATCHED；uk(connector_id,biz_date) 幂等重放返 alreadyExisted） */
+  async function runReconcile(connectorId?: string): Promise<ReconcileBatch | null> {
+    if (!auth.can('integration:reconcile')) {
+      toast.error('无对账权限')
+      return null
+    }
+    try {
+      const v = await api.runReconcile(connectorId ? { connectorId } : undefined)
+      const b = mapBatch(v)
+      // 对账回写 outbox 状态并落批次：两路重拉
+      await Promise.all([refreshOutbox(), refreshBatches()])
+      activity.log(
+        auth.user.name,
+        `T+1 对账${b.alreadyExisted ? '（幂等重放）' : ''}完成：${b.connectorName}（${b.date}），轧平 ${b.matchedCount} 笔，长款 ${b.longCount}，短款 ${b.shortCount}，失败 ${b.failedCount}`,
+      )
+      toast.success(
+        `T+1 对账完成：${b.connectorName} 轧平 ${b.matchedCount} 笔`
+        + `${b.alreadyExisted ? '（幂等重放，未重复记账）' : ''}`,
+      )
+      return b
+    } catch (e) {
+      toast.error(errMsg(e, '对账失败'))
+      return null
+    }
+  }
+
+  /** 重发失败消息（幂等复用原 transaction_id；仅 FAILED 可重发，后端 409 中文透出当前态） */
+  async function retryMessage(outboxId: string): Promise<boolean> {
+    if (!auth.can('integration:sync')) {
+      toast.error('无同步权限')
+      return false
+    }
+    const numId = outboxNumId.get(outboxId)
+    if (numId == null) {
+      toast.error('消息未加载，请刷新后重试')
+      return false
+    }
+    try {
+      const v = await api.retryOutbox(numId)
+      replaceOutbox(mapOutbox(v))
+      activity.log(auth.user.name, `重发消息 ${v.txnNo}（幂等复用原 transaction_id）`, outboxId)
+      toast.success(`已重发消息 ${v.txnNo}，等待三方确认`)
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '重发失败'))
+      return false
+    }
   }
 
   return {
     connectors, callLogs, outbox, batches,
+    loaded, loading, loadError,
     CONNECTOR_TYPE_LABEL, CONNECTOR_STATUS_LABEL,
     connectedCount, errorCount, pendingOutbox, totalCalls24h, totalErrors24h, errorRate,
     outboxMatched, outboxLong, outboxShort, recentLogs,
