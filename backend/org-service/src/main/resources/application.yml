@@ -41,6 +41,11 @@ audit:
   service:
     url: ${AUDIT_SERVICE_URL:http://127.0.0.1:8084}
 
+# 交易服务（T3-B2 Outbox 单向镜像拉已支付单 /api/txn/internal/paid-orders）：本地默认直连 :8083，容器内经环境变量指向 txn-service
+txn:
+  service:
+    url: ${TXN_SERVICE_URL:http://127.0.0.1:8083}
+
 meiyun:
   security:
     # JWT 签名密钥 / 内部服务令牌 / dev-login 开关：生产经环境变量注入，dev-login 生产必须置 false
