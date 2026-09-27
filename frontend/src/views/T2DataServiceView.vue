@@ -22,10 +22,10 @@ const auth = useAuthStore()
 onMounted(() => store.seed())
 
 const tab = ref<'services' | 'permissions'>('services')
-const tabOpts = [
+const tabOpts = computed(() => [
   { value: 'services', label: `服务目录（${store.services.length}）` },
   { value: 'permissions', label: `权限审批（${store.pendingPerms.length}）` },
-]
+])
 
 const kpis = computed(() => [
   { label: '服务总数', icon: 'package', value: String(store.services.length), tone: 'brand' as const },
@@ -74,10 +74,10 @@ function openApply(s: DataService) {
   applyForm.reason = ''
   applyOpen.value = true
 }
-function submitApply() {
+async function submitApply() {
   if (!applyTarget.value || !applyForm.reason.trim()) return
-  store.applyPermission(applyTarget.value.id, applyForm.reason)
-  applyOpen.value = false
+  const ok = await store.applyPermission(applyTarget.value.id, applyForm.reason.trim())
+  if (ok) applyOpen.value = false
 }
 
 // ---- 新建服务 ----
@@ -99,24 +99,24 @@ function openCreate() {
   Object.assign(form, { name: '', type: 'API', endpoint: '', method: 'GET', description: '', fieldsText: '', tagsText: '' })
   createOpen.value = true
 }
-function submitCreate() {
+async function submitCreate() {
   if (!canSubmit.value) return
-  store.createService({
-    name: form.name,
+  const created = await store.createService({
+    name: form.name.trim(),
     type: form.type,
-    endpoint: form.endpoint || undefined,
+    endpoint: form.endpoint.trim() || undefined,
     method: form.type === 'API' ? form.method : undefined,
-    description: form.description,
+    description: form.description.trim(),
     fields: form.fieldsText.split('\n').map((s) => s.trim()).filter(Boolean),
     tags: form.tagsText.split(',').map((s) => s.trim()).filter(Boolean),
   })
-  createOpen.value = false
+  if (created) createOpen.value = false
 }
 
 // 发布/下线
-function togglePublish(s: DataService) {
-  if (s.status === 'PUBLISHED') store.deprecateService(s.id)
-  else store.publishService(s.id)
+async function togglePublish(s: DataService) {
+  if (s.status === 'PUBLISHED') await store.deprecateService(s.id)
+  else await store.publishService(s.id)
 }
 function viewDoc(s: DataService) {
   window.alert(`【${s.name}】接口文档\n\n${s.description}\n\n版本：${s.version}\n负责人：${s.owner}\nEndpoint：${s.endpoint || '（数据集，无 HTTP 端点）'}`)
