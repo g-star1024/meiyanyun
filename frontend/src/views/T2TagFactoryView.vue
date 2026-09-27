@@ -66,12 +66,12 @@ const typeOptions = [
 ]
 
 // ---- 展开详情 ----
-const expandedId = ref<string | null>(null)
-function toggleExpand(id: string) { expandedId.value = expandedId.value === id ? null : id }
+const expandedId = ref<number | null>(null)
+function toggleExpand(id: number) { expandedId.value = expandedId.value === id ? null : id }
 
 // ---- 新建/编辑 ----
 const showForm = ref(false)
-const editingId = ref<string | null>(null)
+const editingId = ref<number | null>(null)
 const form = reactive({
   code: '', name: '', category: '', type: 'SQL' as TagFactoryType,
   sensitivity: 'PUBLIC' as TagSensitivity, valueType: 'ENUM' as ValueType,
@@ -113,7 +113,7 @@ function openEdit(t: FactoryTag) {
   editingId.value = t.id
   showForm.value = true
 }
-function submitForm() {
+async function submitForm() {
   if (!canSubmit.value) return
   const payload = {
     code: form.code, name: form.name, category: form.category || '未分类',
@@ -122,32 +122,35 @@ function submitForm() {
     tags: form.tagsText.split(',').map((s) => s.trim()).filter(Boolean),
   }
   if (editingId.value) {
-    store.updateTag(editingId.value, {
+    const ok = await store.updateTag(editingId.value, {
       name: payload.name, description: payload.description, sql: payload.sql,
       sensitivity: payload.sensitivity, refreshCron: payload.refreshCron,
       category: payload.category, tags: payload.tags,
     })
+    if (!ok) return
   } else {
-    store.createTag(payload)
+    const created = await store.createTag(payload)
+    if (!created) return
   }
   showForm.value = false
   resetForm()
 }
 
 // ---- 操作反馈 ----
-const previewMsg = ref<Record<string, string>>({})
-function doPreview(t: FactoryTag) {
-  const n = store.previewCompute(t.id)
+const previewMsg = ref<Record<number, string>>({})
+async function doPreview(t: FactoryTag) {
+  const n = await store.previewCompute(t.id)
+  if (n < 0) return
   previewMsg.value[t.id] = `试算完成，预估覆盖 ${n.toLocaleString()} 人`
   setTimeout(() => delete previewMsg.value[t.id], 3000)
 }
-function doPublish(t: FactoryTag) {
-  store.publishTag(t.id)
+async function doPublish(t: FactoryTag) {
+  await store.publishTag(t.id)
 }
-function doApprove(t: FactoryTag) { store.approvePublish(t.id) }
-function doOffline(t: FactoryTag) { store.offlineTag(t.id) }
-function doDelete(t: FactoryTag) {
-  if (confirm(`确认删除标签「${t.name}」？`)) store.deleteTag(t.id)
+async function doApprove(t: FactoryTag) { await store.approvePublish(t.id) }
+async function doOffline(t: FactoryTag) { await store.offlineTag(t.id) }
+async function doDelete(t: FactoryTag) {
+  if (confirm(`确认删除标签「${t.name}」？`)) await store.deleteTag(t.id)
 }
 </script>
 
