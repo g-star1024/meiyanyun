@@ -4,6 +4,11 @@ server:
 spring:
   application:
     name: customer-service
+  servlet:
+    multipart:
+      # M3 导入导出：单次 ≤5000 行 xlsx，默认 1MB 文件上限不足，放宽到 10MB
+      max-file-size: 10MB
+      max-request-size: 10MB
   datasource:
     # 宿主机映射端口 5433；stringtype=unspecified 规避 jsonb/varchar 绑定问题
     url: jdbc:postgresql://localhost:5433/meiyun_core?stringtype=unspecified

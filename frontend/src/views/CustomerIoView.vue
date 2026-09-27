@@ -12,7 +12,6 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import { useCustomerIoStore, type ImportStatus, type ExportScope } from '@/stores/customerio'
-import { shDateStr } from '@/utils/datetime'
 
 const store = useCustomerIoStore()
 onMounted(() => store.seed())
@@ -20,7 +19,7 @@ onMounted(() => store.seed())
 const kpis = computed(() => [
   { label: '本月导入', icon: 'upload', value: String(store.monthImportTotal), tone: 'brand' as const },
   { label: '本月导出', icon: 'export', value: String(store.monthExportTotal), tone: 'teal' as const },
-  { label: '待校验', icon: 'alert', value: String(store.pending.length), tone: 'warning' as const },
+  { label: '待校验', icon: 'alert', value: String(store.pending), tone: 'warning' as const },
   { label: '导入成功率', icon: 'upload', value: `${store.importSuccessRate}%`, tone: 'success' as const },
 ])
 
@@ -43,13 +42,19 @@ function fmtTime(iso: string) {
 const uploadName = ref('')
 const uploadTotal = ref(0)
 function handleUpload() {
-  // 模拟用户选了一个文件
-  const total = 100 + Math.floor(Math.random() * 200)
-  const failed = Math.random() < 0.3 ? Math.floor(Math.random() * 8) + 1 : 0
-  store.createImport(`客户名单_${shDateStr().replace(/-/g, '')}.xlsx`, total, failed)
-  uploadName.value = `客户名单_${shDateStr().replace(/-/g, '')}.xlsx`
-  uploadTotal.value = total
-  setTimeout(() => { uploadName.value = ''; uploadTotal.value = 0 }, 2500)
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.xlsx,.xls,.csv'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    uploadName.value = file.name
+    uploadTotal.value = 0
+    const t = await store.createImport(file)
+    if (t) uploadTotal.value = t.total
+    setTimeout(() => { uploadName.value = ''; uploadTotal.value = 0 }, 2500)
+  }
+  input.click()
 }
 function downloadTpl() {
   // 占位
