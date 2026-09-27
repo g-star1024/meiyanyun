@@ -221,13 +221,14 @@ public class ChurnService {
         return toBatch(saved, storeCode);
     }
 
-    /** 当前风险榜：读最近批次，支持风险等级筛选；无批次 → 404 中文引导先运行。 */
+    /** 当前风险榜：读最近批次，支持风险等级筛选；无批次 → 空榜 200（未运行属正常空态，前端凭 stats 区分引导）。 */
     @Transactional(readOnly = true)
     public List<ChurnView> list(String riskLevel) {
         requireUser();
-        AiChurnPrediction any = repo.findFirstByOrderByPredictionIdDesc()
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
-                        "尚未运行流失评分，请先点击「运行评分」"));
+        AiChurnPrediction any = repo.findFirstByOrderByPredictionIdDesc().orElse(null);
+        if (any == null) {
+            return List.of();
+        }
         boolean filter = riskLevel != null && !riskLevel.isBlank() && !"all".equals(riskLevel);
         List<AiChurnPrediction> rows = filter
                 ? repo.findByBatchNoAndRiskLevelOrderByScoreDescPredictionIdAsc(any.getBatchNo(), riskLevel.trim())
