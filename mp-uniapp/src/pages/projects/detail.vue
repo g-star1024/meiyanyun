@@ -11,6 +11,9 @@ const navH = (uni.getSystemInfoSync().statusBarHeight || 20) + 44
 const id = ref('')
 onLoad((options) => {
   id.value = options?.id || ''
+  if (id.value && !pricelist.get(id.value)) {
+    pricelist.fetchOne(id.value)
+  }
 })
 onShow(() => pricelist.seed())
 

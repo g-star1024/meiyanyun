@@ -60,7 +60,7 @@ function go(to: string) {
         <view class="profile__info">
           <view class="profile__name">
             <text>{{ member.name }}</text>
-            <text class="profile__badge">黑金会员</text>
+            <text class="profile__badge">{{ member.level || '会员' }}</text>
           </view>
           <view class="profile__phone">{{ member.phone }}</view>
         </view>

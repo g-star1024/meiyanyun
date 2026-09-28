@@ -75,7 +75,7 @@ function goProject(id: string) {
         <view class="memberbar__info">
           <view class="memberbar__name">
             <text>{{ member.name }}</text>
-            <text class="memberbar__level">黑金会员</text>
+            <text class="memberbar__level">{{ member.level || '会员' }}</text>
           </view>
           <view class="memberbar__sub">愿你今天也美丽</view>
         </view>

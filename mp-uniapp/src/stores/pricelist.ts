@@ -1,10 +1,12 @@
 /**
  * 价目表/项目 store（C 端只读）
  * 数据与 B 端 M2-14 价目表对齐：在售项目名称/分类/原价/会员价/促销价/时长。
- * 后端就绪后 seed() 替换为 GET /c/pricelist?status=ACTIVE。
+ * C-B2 切真：seed() 拉取 GET /c/pricelist（store_price ACTIVE × product_sku 只读投影，
+ * id=code=sku，金额元）；fetchOne(id) 拉取 GET /c/projects/{id} 供直进详情页（导出签名保留，铁律-1-B）。
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { http } from '@/utils/request'
 
 export type PriceCategory = 'INJECTION' | 'LASER' | 'SKINCARE' | 'BODY' | 'EXAM'
 export interface PriceItem {
@@ -28,12 +30,6 @@ export const CATEGORY_LABEL: Record<PriceCategory | 'ALL', string> = {
   EXAM: '检测咨询',
 }
 
-let seq = 0
-function nextId() {
-  seq += 1
-  return `pl-${seq}`
-}
-
 export const usePricelistStore = defineStore('mp-pricelist', () => {
   const items = ref<PriceItem[]>([])
   const active = computed(() => items.value)
@@ -46,22 +42,34 @@ export const usePricelistStore = defineStore('mp-pricelist', () => {
   }
 
   let seeded = false
-  function seed() {
+  async function seed() {
     if (seeded) return
     seeded = true
-    const data: Array<Omit<PriceItem, 'id'>> = [
-      { code: 'IJ-001', name: '玻尿酸填充（瑞蓝2号）', category: 'INJECTION', originalPrice: 6800, memberPrice: 5800, promoPrice: 5280, unit: '支', duration: 30 },
-      { code: 'IJ-002', name: '肉毒素（保妥适）', category: 'INJECTION', originalPrice: 4800, memberPrice: 4200, promoPrice: null, unit: '次', duration: 20 },
-      { code: 'LS-001', name: '热玛吉FLX 面部', category: 'LASER', originalPrice: 28800, memberPrice: 25800, promoPrice: 23800, unit: '次', duration: 90 },
-      { code: 'LS-002', name: '超声炮（半岛）', category: 'LASER', originalPrice: 19800, memberPrice: 17800, promoPrice: 16800, unit: '次', duration: 70 },
-      { code: 'LS-003', name: '光子嫩肤（M22）', category: 'LASER', originalPrice: 1980, memberPrice: 1680, promoPrice: 1280, unit: '次', duration: 30 },
-      { code: 'SK-001', name: '水光针（基础）', category: 'SKINCARE', originalPrice: 980, memberPrice: 780, promoPrice: 580, unit: '次', duration: 30 },
-      { code: 'BD-001', name: '冷冻溶脂（单部位）', category: 'BODY', originalPrice: 8800, memberPrice: 7800, promoPrice: null, unit: '部位', duration: 60 },
-      { code: 'BD-002', name: 'BTL 美体塑形', category: 'BODY', originalPrice: 1280, memberPrice: 980, promoPrice: 780, unit: '次', duration: 40 },
-      { code: 'EX-001', name: 'VISIA 皮肤检测', category: 'EXAM', originalPrice: 200, memberPrice: 0, promoPrice: null, unit: '次', duration: 15 },
-    ]
-    data.forEach((d) => items.value.push({ id: nextId(), ...d }))
+    try {
+      const list = await http.get<PriceItem[]>('/c/pricelist', { silent: true })
+      if (Array.isArray(list)) {
+        items.value = list.filter((x) => x && x.id && x.category)
+      }
+    } catch {
+      /* 未登录/后端未就绪：如实空列表，页面以空态呈现 */
+    }
   }
 
-  return { items, active, get, priceOf, seed, CATEGORY_LABEL }
+  /** 直进详情页兜底：store 未命中时按 id(sku) 拉取单项并入库 */
+  async function fetchOne(id: string): Promise<PriceItem | null> {
+    const hit = get(id)
+    if (hit) return hit
+    try {
+      const d = await http.get<PriceItem>(`/c/projects/${encodeURIComponent(id)}`, { silent: true })
+      if (d && d.id) {
+        items.value.push(d)
+        return d
+      }
+    } catch {
+      /* 404/未登录：如实落空态，页面自显「项目不存在或已下架」 */
+    }
+    return null
+  }
+
+  return { items, active, get, priceOf, seed, fetchOne, CATEGORY_LABEL }
 })

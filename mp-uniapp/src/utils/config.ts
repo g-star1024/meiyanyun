@@ -11,7 +11,9 @@
  */
 
 // 接口网关地址（对接美研云 gateway :8443 的线上域名；末尾不要带斜杠）
-export const API_BASE = 'https://api.meiyun.example.com'
+// H5 本地联调：VITE_API_BASE= npm run dev:h5（空值→相对路径，由 vite proxy 转 seed 栈 18090）
+export const API_BASE =
+  (import.meta.env.VITE_API_BASE as string | undefined) ?? 'https://api.meiyun.example.com'
 
 // 租户/品牌标识（多租户时由后台按门店下发）
 export const TENANT_ID = 'meiyun-demo'

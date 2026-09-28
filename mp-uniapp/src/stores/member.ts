@@ -2,10 +2,12 @@
  * 会员 store（C 端）
  * 合并 B 端 points store 中 C 端所需部分：会员信息、卡余额/积分/券、
  * 积分商城商品、兑换记录、积分兑换动作。
- * 后端就绪后把 seed() 替换为 GET /c/member、/c/points/products 等接口。
+ * C-B2 切真：seed() 拉取 GET /c/member/profile 覆盖会员字段（导出签名不变，铁律-1-B）；
+ * 积分商城商品/兑换记录仍本地种子，C-B5 营销随访域接通。
  */
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { http } from '@/utils/request'
 
 export interface Member {
   memberId: string
@@ -89,9 +91,29 @@ export const useMemberStore = defineStore('mp-member', () => {
   }
 
   let seeded = false
-  function seed() {
+  async function seed() {
     if (seeded) return
     seeded = true
+    seedProducts()
+    try {
+      const p = await http.get<Member>('/c/member/profile', { silent: true })
+      if (p) {
+        member.value = {
+          memberId: p.memberId || '',
+          name: p.name || '新会员',
+          phone: p.phone || '',
+          points: Number(p.points) || 0,
+          cardBalance: Number(p.cardBalance) || 0,
+          couponCount: Number(p.couponCount) || 0,
+          level: p.level || '',
+        }
+      }
+    } catch {
+      /* 未登录/后端未就绪：保留本地默认档案，登录链路（C-B6）接通后消除 */
+    }
+  }
+
+  function seedProducts() {
     const base: Array<Omit<PointsProduct, 'id'>> = [
       { name: '水光体验次卡', category: 'PROJECT', pointsCost: 2000, stock: 156, status: 'ON_SALE', imageText: '项目' },
       { name: '医用面膜 1 片装', category: 'PHYSICAL', pointsCost: 800, stock: 320, status: 'ON_SALE', imageText: '实物' },

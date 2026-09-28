@@ -11,4 +11,13 @@ export default defineConfig({
     },
   },
   plugins: [uni()],
+  server: {
+    proxy: {
+      '/c': {
+        target: 'http://localhost:18090',
+        changeOrigin: true,
+        rewrite: (p) => p.replace(/^\/c/, '/api/c'),
+      },
+    },
+  },
 })
