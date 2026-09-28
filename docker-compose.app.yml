@@ -225,6 +225,8 @@ services:
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: "2"
       # 审计追加通道（C_AUTH LOGIN；audit 域不可用时落 audit_outbox 补偿，不阻断登录）
       MEIYUN_AUDIT_SERVICE_URL: "http://audit-service:8084"
+      # txn 预约域 internal 落库通道（C-B3：/api/txn/internal/c-appointments）
+      MEIYUN_TXN_SERVICE_URL: "http://txn-service:8083"
       # 服务间内部令牌（与 meiyun-security internal-token 同值，审计系统身份通道）
       MEIYUN_INTERNAL_TOKEN: "${MEIYUN_INTERNAL_TOKEN:-meiyun-dev-internal-token-please-change-in-prod}"
       # C 端独立 JWT 密钥（B/C 隔离红线：绝不与 B 端 MEIYUN_JWT_SECRET 同值；生产经宿主环境注入）

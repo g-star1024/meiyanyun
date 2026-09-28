@@ -6,6 +6,7 @@ import { useAppointmentStore } from '@/stores/appointment'
 import { useMemberStore } from '@/stores/member'
 import { usePricelistStore } from '@/stores/pricelist'
 import { redirectTo, toast } from '@/utils/nav'
+import { http } from '@/utils/request'
 
 const appt = useAppointmentStore()
 const points = useMemberStore()
@@ -13,12 +14,13 @@ const pricelist = usePricelistStore()
 
 // 项目选项取自价目表在售项目
 const projectOptions = computed(() => pricelist.active.map((p) => p.name))
-const stores = ['上海静安旗舰店', '上海徐汇万象城店', '上海浦东陆家嘴店']
+/* C-B3 切真：门店选项 GET /c/stores（营业中真实门店），默选首项；拉取失败保留默认店名 */
+const stores = ref<string[]>(['上海徐汇店'])
 const timeSlots = ['10:00', '11:00', '13:00', '14:00', '15:00', '16:00', '17:00', '18:00']
 
 const form = ref({
   project: '',
-  store: stores[0],
+  store: stores.value[0],
   date: new Date().toISOString().slice(0, 10),
   slot: '',
   note: '',
@@ -33,7 +35,20 @@ onShow(() => {
   appt.seed()
   points.seed()
   pricelist.seed()
+  loadStores()
 })
+
+async function loadStores() {
+  try {
+    const list = await http.get<Array<{ code: string; name: string }>>('/c/stores', { silent: true })
+    if (Array.isArray(list) && list.length) {
+      stores.value = list.map((s) => s.name)
+      if (!stores.value.includes(form.value.store)) form.value.store = stores.value[0]
+    }
+  } catch {
+    /* 后端未就绪：保留默认店名 */
+  }
+}
 
 function onProjectPick(e: any) {
   form.value.project = projectOptions.value[e.detail.value]
@@ -42,7 +57,7 @@ function onDatePick(e: any) {
   form.value.date = e.detail.value
 }
 
-function submit() {
+async function submit() {
   if (!form.value.project) {
     toast('请选择预约项目')
     return
@@ -51,8 +66,9 @@ function submit() {
     toast('请选择预约时段')
     return
   }
-  const r = appt.create({
+  const r = await appt.create({
     customerId: points.member.memberId,
+    storeName: form.value.store,
     timeSlot: `${form.value.date}T${form.value.slot}:00`,
     project: form.value.project,
     source: 'C_MINIAPP',
@@ -61,9 +77,8 @@ function submit() {
   if (r) {
     newId.value = r.id
     done.value = true
-  } else {
-    toast('预约提交失败，请稍后重试')
   }
+  /* 失败时 http 层已 toast 后端中文错误原话（幂等 409/校验 400 透传），不重复弹 */
 }
 </script>
 

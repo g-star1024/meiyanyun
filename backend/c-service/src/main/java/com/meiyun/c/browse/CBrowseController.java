@@ -26,6 +26,8 @@ import java.util.Map;
  * GET /api/c/pricelist —— 在售价目：store_price(ACTIVE) JOIN product_sku 富化名称/分类/单位/时长，
  *   金额分→元，照 B 端 PricelistService 口径；分类缺失行防御性剔除。
  * GET /api/c/projects/{id} —— 价目详情（id=sku），非在售/不存在 404 中文。
+ * GET /api/c/stores —— 可预约门店（status='营业中'；自端点 #9 提前至 C-B3：预约新建页
+ *   门店选择链路必需真实数据源，否则写死三店名与库内 SST01-06 不符验收不可达，DESIGN-C 随拍回填订正）。
  * 既有表零改动契约：全部 JdbcTemplate 只读 SELECT（照 C-B1 auth/me L187 先例），不落实体不触发 ddl。
  * 行级隔离：profile 只取 token 自有 customer_id，天然无越权面。
  */
@@ -119,6 +121,21 @@ public class CBrowseController {
             }
         }
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err(404, "项目不存在或已下架"));
+    }
+
+    @GetMapping("/stores")
+    public Map<String, Object> stores() {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT store_code AS code, store_name AS name FROM store "
+                + "WHERE status = '营业中' ORDER BY store_code");
+        List<Map<String, Object>> items = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("code", row.get("code"));
+            item.put("name", row.get("name"));
+            items.add(item);
+        }
+        return ok(items);
     }
 
     private static Map<String, Object> toPriceItem(Map<String, Object> row) {

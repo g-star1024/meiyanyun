@@ -62,7 +62,7 @@ function statusCls(s: string) {
           <text class="acard__status" :class="statusCls(a.status)">{{ statusLabel(a.status) }}</text>
         </view>
         <view class="acard__row"><uni-icons type="calendar" size="13" color="#888" /> <text>{{ a.timeSlot?.replace('T', ' ').slice(5, 16) || '时间待定' }}</text></view>
-        <view class="acard__row"><uni-icons type="shop" size="13" color="#888" /> <text>上海静安旗舰店</text></view>
+        <view class="acard__row"><uni-icons type="shop" size="13" color="#888" /> <text>{{ a.storeName || '到店门店' }}</text></view>
         <view class="acard__foot">
           <text class="acard__no">预约号 {{ a.id }}</text>
           <text v-if="a.status === 'NEW' || a.status === 'CONFIRMED'" class="acard__src">来源：{{ a.source }}</text>

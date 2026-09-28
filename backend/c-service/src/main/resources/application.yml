@@ -38,6 +38,9 @@ spring:
 meiyun:
   audit:
     service-url: ${MEIYUN_AUDIT_SERVICE_URL:http://127.0.0.1:8084}
+  txn:
+    # txn-service 寻址（C-B3 预约域 internal 端点 /api/txn/internal/c-appointments 落库通道；照 audit 先例环境变量可覆盖）
+    service-url: ${MEIYUN_TXN_SERVICE_URL:http://127.0.0.1:8083}
   c:
     # C 端 JWT 独立密钥（HS256 ≥32 字节；生产经 MEIYUN_C_JWT_SECRET 注入，绝不与 B 端 MEIYUN_JWT_SECRET 同值）
     jwt-secret: ${MEIYUN_C_JWT_SECRET:meiyun-dev-c-jwt-secret-please-change-in-prod-01}
