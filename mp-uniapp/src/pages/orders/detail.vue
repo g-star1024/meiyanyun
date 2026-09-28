@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/* 订单详情 pages/orders/detail — 商品 + 核销码 + 金额明细 */
+/* 订单详情 pages/orders/detail — 商品 + 核销凭证（订单号）+ 金额明细（C-B4 切真：无单如实空态，无假数据兜底） */
 import { computed, ref } from 'vue'
 import { onShow, onLoad } from '@dcloudio/uni-app'
 import { useOrderStore, type OrderItem } from '@/stores/order'
@@ -14,11 +14,11 @@ onLoad((options) => {
 })
 
 const statusMap: Record<string, string> = {
-  PENDING_PAY: '待付款',
   PENDING_SIGN: '待确认',
-  PENDING_WRITE: '待核销',
+  PENDING_PAY: '待付款',
   PAID: '待核销',
   COMPLETED: '已完成',
+  CANCELLED: '已取消',
 }
 
 interface DetailOrder {
@@ -31,33 +31,43 @@ interface DetailOrder {
   store: string
 }
 
-// store 无此单时用示例兜底（mock 历史单）
-const detail = computed<DetailOrder>(() => {
+// store 无此单（不存在/越权/未登录）如实空态，不兜底假数据
+const detail = computed<DetailOrder | null>(() => {
   const o = order.get(id.value)
-  if (o) {
-    return {
-      orderNo: o.orderNo,
-      status: o.status,
-      items: o.items,
-      amount: o.amount,
-      payMethod: o.payMethod || '微信支付',
-      createdAt: o.createdAt.slice(0, 16).replace('T', ' '),
-      store: o.store,
-    }
-  }
+  if (!o) return null
   return {
-    orderNo: 'SO20260818002',
-    status: 'COMPLETED',
-    items: [{ name: '闺蜜分享次卡', spec: '10 次水光', qty: 1, price: 3980 }],
-    amount: 3980,
-    payMethod: '微信支付',
-    createdAt: '2026-08-18 14:02',
-    store: '上海静安旗舰店',
+    orderNo: o.orderNo,
+    status: o.status,
+    items: o.items,
+    amount: o.amount,
+    payMethod: o.payMethod || '—',
+    createdAt: o.createdAt.slice(0, 16).replace('T', ' '),
+    store: o.store || o.storeName || '—',
   }
 })
 
-const isCompleted = computed(() => detail.value.status === 'COMPLETED')
+const isCompleted = computed(() => detail.value?.status === 'COMPLETED')
 const statusIcon = computed(() => (isCompleted.value ? 'checkmarkempty' : 'medal'))
+const statusSub = computed(() => {
+  switch (detail.value?.status) {
+    case 'COMPLETED':
+      return '服务已完成，感谢您的信任'
+    case 'PAID':
+      return '到店出示订单号即可核销服务'
+    case 'PENDING_PAY':
+      return '订单待收款，请到店收银台完成支付'
+    case 'PENDING_SIGN':
+      return '订单已提交，待门店确认'
+    case 'CANCELLED':
+      return '订单已取消'
+    default:
+      return ''
+  }
+})
+const showActionBar = computed(() => {
+  const s = detail.value?.status
+  return s === 'PENDING_SIGN' || s === 'PENDING_PAY' || s === 'PAID'
+})
 function goAdvisor() {
   navTo('/pages/advisor/index')
 }
@@ -69,28 +79,22 @@ function goBooking() {
 <template>
   <view class="od">
     <MNavbar title="订单详情" />
+    <template v-if="detail">
     <!-- 状态条 -->
     <view class="status">
       <view class="status__icon" :class="{ done: isCompleted }">
         <uni-icons :type="statusIcon" size="36" :color="isCompleted ? '#52c41a' : '#ff6b9e'" />
       </view>
-      <view class="status__text">{{ statusMap[detail.status] || '待核销' }}</view>
-      <view class="status__sub">{{ isCompleted ? '服务已完成，感谢您的信任' : '到店出示核销码即可服务' }}</view>
+      <view class="status__text">{{ statusMap[detail.status] || detail.status }}</view>
+      <view class="status__sub">{{ statusSub }}</view>
     </view>
 
-    <!-- 核销码 -->
-    <view v-if="!isCompleted" class="qr card">
+    <!-- 核销凭证（订单号核销；假二维码已按红线移除） -->
+    <view v-if="detail.status === 'PAID'" class="qr card">
       <view class="qr__code">
-        <view class="qr__grid">
-          <view
-            v-for="n in 49"
-            :key="n"
-            class="qr__cell"
-            :style="{ background: (n * 7 + (n % 3)) % 3 === 0 ? '#1a1a1a' : 'transparent' }"
-          ></view>
-        </view>
+        <view class="qr__no">{{ detail.orderNo }}</view>
       </view>
-      <view class="qr__hint">到店请向工作人员出示此核销码</view>
+      <view class="qr__hint">到店请向工作人员出示订单号核销</view>
     </view>
 
     <!-- 门店 -->
@@ -131,11 +135,13 @@ function goBooking() {
       <view class="info__row"><text>支付方式</text><text>{{ detail.payMethod }}</text></view>
     </view>
 
-    <view v-if="!isCompleted" class="bottom-space"></view>
-    <view v-if="!isCompleted" class="bar">
+    <view v-if="showActionBar" class="bottom-space"></view>
+    <view v-if="showActionBar" class="bar">
       <view class="bar__btn bar__btn--ghost" @click="goAdvisor">联系顾问</view>
       <view class="bar__btn bar__btn--main" @click="goBooking">预约到店</view>
     </view>
+    </template>
+    <view v-else class="nf">订单不存在或无权查看</view>
   </view>
 </template>
 
@@ -182,23 +188,20 @@ function goBooking() {
   text-align: center;
 }
 .qr__code {
-  width: 320rpx;
-  height: 320rpx;
   margin: 0 auto;
-  padding: 24rpx;
+  padding: 40rpx 24rpx;
   border: 2rpx dashed #ffb3cd;
   border-radius: 24rpx;
   box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.qr__grid {
-  width: 100%;
-  height: 100%;
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 4rpx;
-}
-.qr__cell {
-  border-radius: 2rpx;
+.qr__no {
+  font-size: 40rpx;
+  font-weight: 700;
+  color: #1a1a1a;
+  letter-spacing: 4rpx;
 }
 .qr__hint {
   font-size: 24rpx;
@@ -330,5 +333,11 @@ function goBooking() {
 .bar__btn--main {
   background: linear-gradient(135deg, #ffbff0, #ff6b9e);
   color: #fff;
+}
+.nf {
+  text-align: center;
+  color: #bbb;
+  font-size: 28rpx;
+  padding: 200rpx 0;
 }
 </style>

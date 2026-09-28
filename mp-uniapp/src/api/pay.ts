@@ -24,10 +24,13 @@ export interface WxPayParams {
 }
 
 export interface CreateOrderPayload {
-  /** 项目/商品 id */
+  /** 项目/商品 id（sku） */
   itemId: string
   /** 数量 */
   qty: number
+  /** 服务门店（C-B4：/c/stores 拉取；storeCode 优先，storeName 由后端解析为 store_code） */
+  storeCode?: string
+  storeName?: string
   /** 预约信息（可选） */
   bookingId?: string
   remark?: string
@@ -64,4 +67,13 @@ export async function createOrderAndPay(payload: CreateOrderPayload): Promise<{ 
   })
 
   return { orderNo: res.orderNo }
+}
+
+/**
+ * 发起微信支付（C-B4）：POST /c/orders/{id}/pay。
+ * 商户入网/预下单未完成时后端如实 503＋审计 PAY_FAILED（红线②：禁止伪造支付成功），
+ * 后端中文 message 由 http 层 toast 原话弹出并随异常抛出，调用方无需重复提示。
+ */
+export async function payOrder(orderNo: string): Promise<void> {
+  await http.post(`/c/orders/${encodeURIComponent(orderNo)}/pay`, {})
 }

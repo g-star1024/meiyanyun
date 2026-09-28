@@ -1,53 +1,43 @@
 <script setup lang="ts">
-/* 我的订单 pages/orders/list — 订单列表（store 订单 + 模拟历史单） */
+/* 我的订单 pages/orders/list — 订单列表（C-B4 切真：GET /c/orders 行级隔离投影，直接消费 store 照 booking/list 先例） */
 import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { useOrderStore } from '@/stores/order'
-import { useMemberStore } from '@/stores/member'
 import { navTo } from '@/utils/nav'
 
 const order = useOrderStore()
-const points = useMemberStore()
 
 onShow(() => {
   order.seed()
-  points.seed()
 })
 
 const tabs = [
   { key: 'ALL', label: '全部' },
   { key: 'PENDING_PAY', label: '待付款' },
-  { key: 'PENDING_WRITE', label: '待核销' },
+  { key: 'PAID', label: '待核销' },
   { key: 'DONE', label: '已完成' },
 ]
 const active = ref('ALL')
 
-// 订单状态映射
+// 订单状态映射（C 端六态，与后端 toCStatus 对齐）
 const STATUS: Record<string, { label: string; cls: string }> = {
-  PENDING_PAY: { label: '待付款', cls: 'warn' },
   PENDING_SIGN: { label: '待确认', cls: 'warn' },
-  PENDING_WRITE: { label: '待核销', cls: 'ok' },
+  PENDING_PAY: { label: '待付款', cls: 'warn' },
   PAID: { label: '待核销', cls: 'ok' },
   COMPLETED: { label: '已完成', cls: 'done' },
+  CANCELLED: { label: '已取消', cls: 'muted' },
 }
-// 模拟历史单（演示用）
-const mockHistory = [
-  { id: 'mk1', orderNo: 'SO20260818002', items: [{ name: '闺蜜分享次卡', qty: 1, price: 3980 }], amount: 3980, status: 'COMPLETED' as const },
-  { id: 'mk2', orderNo: 'SO20260810008', items: [{ name: '玻尿酸填充（瑞蓝2号）', qty: 1, price: 5280 }], amount: 5280, status: 'COMPLETED' as const },
-]
-const all = computed(() => {
-  const mine = order.byCustomer(points.member.memberId).map((o) => ({
+const all = computed(() =>
+  order.orders.map((o) => ({
     id: o.id,
     orderNo: o.orderNo,
     items: o.items,
     amount: o.amount,
     status: o.status as string,
-  }))
-  return [...mine, ...mockHistory]
-})
+  })),
+)
 const filtered = computed(() => {
   if (active.value === 'ALL') return all.value
-  if (active.value === 'PENDING_WRITE') return all.value.filter((o) => o.status === 'PENDING_WRITE' || o.status === 'PAID')
   if (active.value === 'DONE') return all.value.filter((o) => o.status === 'COMPLETED')
   return all.value.filter((o) => o.status === active.value)
 })

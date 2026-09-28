@@ -16,11 +16,11 @@ onShow(() => {
 })
 
 const order = computed(() => {
-  return orderStore.get(orderId.value) || orderStore.orders.find((o) => o.status === 'PENDING_WRITE') || orderStore.orders[0]
+  return orderStore.get(orderId.value) || orderStore.orders.find((o) => o.status === 'PAID') || orderStore.orders[0]
 })
 
 const paidAmount = computed(() => (order.value ? order.value.amount : 0))
-const payMethodLabel = computed(() => order.value?.payMethod || '会员卡')
+const payMethodLabel = computed(() => order.value?.payMethod || '—')
 
 function fmt(n: number) { return '¥' + n.toFixed(2) }
 function fmtDate(s: string) { return s ? s.slice(0, 19).replace('T', ' ') : '' }

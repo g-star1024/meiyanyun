@@ -1,13 +1,16 @@
 /**
  * 订单 store（C 端）
- * 会员查看自己的订单、订单详情（含核销码）。
- * 后端就绪后：列表 GET /c/orders，详情 GET /c/orders/:id；
- * 下单/支付走 src/api/pay.ts（统一下单由服务端签名）。
+ * 会员查看自己的订单、订单详情（含核销凭证）。
+ * C-B4 切真：列表 GET /c/orders（txn_order 行级隔离只读投影，B 五态→C 六态，金额元）、
+ * 创建 POST /c/orders（c-service 侧定价自查「用户所见价=落库价」→ txn internal 落库）；
+ * 支付发起走 src/api/pay.ts（商户入网未完成时后端如实 503＋审计 PAY_FAILED）。
+ * seed/create async 化照 appointment store C-B3 先例（导出签名保留，铁律-1-B）。
  */
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { http } from '@/utils/request'
 
-export type OrderStatus = 'PENDING_PAY' | 'PENDING_WRITE' | 'PAID' | 'COMPLETED'
+export type OrderStatus = 'PENDING_SIGN' | 'PENDING_PAY' | 'PAID' | 'COMPLETED' | 'CANCELLED'
 export interface OrderItem {
   name: string
   spec?: string
@@ -24,12 +27,10 @@ export interface COrder {
   payMethod?: string
   createdAt: string
   store: string
-}
-
-let seq = 0
-function nextId() {
-  seq += 1
-  return `ord-${seq}`
+  /** C-B4：后端联查 store 表投影，详情页门店行展示用 */
+  storeCode?: string
+  storeName?: string
+  project?: string
 }
 
 export const useOrderStore = defineStore('mp-order', () => {
@@ -42,63 +43,42 @@ export const useOrderStore = defineStore('mp-order', () => {
     return orders.value.filter((o) => o.customerId === customerId)
   }
 
-  /** 创建一笔订单（支付成功后调用；真实链路在 api/pay.ts） */
-  function create(input: { customerId: string; items: OrderItem[]; payMethod?: string }): COrder {
-    const amount = input.items.reduce((s, it) => s + it.qty * it.price, 0)
-    const o: COrder = {
-      id: nextId(),
-      orderNo: `SO${Date.now().toString().slice(-8)}${seq}`,
-      customerId: input.customerId,
-      items: input.items,
-      amount,
-      status: 'PENDING_WRITE',
-      payMethod: input.payMethod || '微信支付',
-      createdAt: new Date().toISOString(),
-      store: '上海静安旗舰店',
+  /**
+   * 创建订单：POST /c/orders。customerId 由后端按登录态取（入参不含，行级隔离）；
+   * 校验 400/404 中文错误由 http 层 toast 原话弹出，此处如实落空返回 null。
+   */
+  async function create(input: {
+    itemId: string
+    qty?: number
+    storeCode?: string
+    storeName?: string
+  }): Promise<COrder | null> {
+    if (!input.itemId) return null
+    try {
+      const o = await http.post<COrder>('/c/orders', {
+        itemId: input.itemId,
+        qty: input.qty ?? 1,
+        storeCode: input.storeCode,
+        storeName: input.storeName,
+      })
+      if (o) orders.value.unshift(o)
+      return o || null
+    } catch {
+      return null
     }
-    orders.value.unshift(o)
-    return o
   }
 
   let seeded = false
-  function seed() {
+  async function seed() {
     if (seeded) return
     seeded = true
-    orders.value.push(
-      {
-        id: nextId(),
-        orderNo: 'SO20260818002',
-        customerId: 'C-201',
-        items: [{ name: '闺蜜分享次卡', spec: '10 次水光', qty: 1, price: 3980 }],
-        amount: 3980,
-        status: 'COMPLETED',
-        payMethod: '微信支付',
-        createdAt: '2026-08-18T14:02:00',
-        store: '上海静安旗舰店',
-      },
-      {
-        id: nextId(),
-        orderNo: 'SO20260810008',
-        customerId: 'C-201',
-        items: [{ name: '玻尿酸填充（瑞蓝2号）', spec: '瑞蓝2号 1支', qty: 1, price: 5280 }],
-        amount: 5280,
-        status: 'COMPLETED',
-        payMethod: '会员卡支付',
-        createdAt: '2026-08-10T10:20:00',
-        store: '上海静安旗舰店',
-      },
-      {
-        id: nextId(),
-        orderNo: 'SO20260825006',
-        customerId: 'C-201',
-        items: [{ name: '光子嫩肤（M22）', spec: '到店服务', qty: 1, price: 1280 }],
-        amount: 1280,
-        status: 'PENDING_WRITE',
-        payMethod: '微信支付',
-        createdAt: new Date().toISOString(),
-        store: '上海静安旗舰店',
-      },
-    )
+    try {
+      const list = await http.get<COrder[]>('/c/orders', { silent: true })
+      if (Array.isArray(list)) orders.value = list
+    } catch {
+      /* 未登录/后端未就绪：回滚 seeded 允许登录后 onShow 重拉（本地无假数据兜底） */
+      seeded = false
+    }
   }
 
   return { orders, get, byCustomer, create, seed }

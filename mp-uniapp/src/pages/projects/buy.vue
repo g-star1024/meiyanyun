@@ -1,21 +1,45 @@
 <script setup lang="ts">
-/* 项目购买 pages/projects/buy — 确认单 + 支付方式 + 提交订单 */
+/* 项目购买 pages/projects/buy — 确认单 + 支付方式 + 提交订单（C-B4 切真：门店 /c/stores、双分支真实 POST /c/orders） */
 import { computed, ref } from 'vue'
 import { onShow, onLoad } from '@dcloudio/uni-app'
 import { usePricelistStore } from '@/stores/pricelist'
 import { useMemberStore } from '@/stores/member'
-import { createOrderAndPay } from '@/api/pay'
+import { useOrderStore } from '@/stores/order'
+import { createOrderAndPay, payOrder } from '@/api/pay'
+import { http } from '@/utils/request'
 import { navTo, toast } from '@/utils/nav'
 
 const pricelist = usePricelistStore()
 const points = useMemberStore()
+const orderStore = useOrderStore()
 const id = ref('')
 onLoad((options) => {
   id.value = options?.id || ''
 })
-onShow(() => {
+
+interface StoreOption {
+  code: string
+  name: string
+}
+const stores = ref<StoreOption[]>([])
+const storeCode = ref('')
+const storeName = ref('')
+
+onShow(async () => {
   pricelist.seed()
   points.seed()
+  if (!stores.value.length) {
+    try {
+      const list = await http.get<StoreOption[]>('/c/stores', { silent: true })
+      if (Array.isArray(list) && list.length) {
+        stores.value = list
+        storeCode.value = list[0].code
+        storeName.value = list[0].name
+      }
+    } catch {
+      /* 未登录/后端未就绪：门店如实留空，提交时由后端中文校验兜底 */
+    }
+  }
 })
 
 const item = computed(() => pricelist.get(id.value))
@@ -23,6 +47,7 @@ const qty = ref(1)
 const payMethod = ref<'card' | 'wechat'>('card')
 const useBalance = ref(true)
 const done = ref(false)
+const doneOrderNo = ref('')
 const submitting = ref(false)
 
 const unit = computed(() => item.value?.promoPrice ?? item.value?.memberPrice ?? 0)
@@ -39,18 +64,29 @@ async function submit() {
   if (!item.value || submitting.value) return
   submitting.value = true
   try {
-    if (payMethod.value === 'wechat') {
-      // 微信支付：后端统一下单 + 唤起收银台；用户取消会抛异常
-      await createOrderAndPay({ itemId: item.value.id, qty: qty.value })
+    const payload = {
+      itemId: item.value.id,
+      qty: qty.value,
+      storeCode: storeCode.value || undefined,
+      storeName: storeName.value || undefined,
     }
-    // 会员卡支付/演示：直接成功
+    if (payMethod.value === 'wechat') {
+      // 微信支付：真实创建订单 → 发起支付；商户入网未完成时后端如实 503（http 层已 toast 中文原话）
+      const { orderNo } = await createOrderAndPay(payload)
+      await payOrder(orderNo)
+      doneOrderNo.value = orderNo
+    } else {
+      // 会员卡支付：真实创建订单（待收款），到店由收银台扣卡完成收款——不伪造扣款
+      const o = await orderStore.create(payload)
+      if (!o) return
+      doneOrderNo.value = o.orderNo
+    }
     done.value = true
   } catch (e: any) {
     if (e?.message === 'CANCEL') {
       toast('已取消支付')
-    } else {
-      toast('支付失败，请稍后重试')
     }
+    // 其余错误 http 层已 toast 后端中文原话（含支付未开通 503/校验 400），不重复弹
   } finally {
     submitting.value = false
   }
@@ -65,7 +101,10 @@ async function submit() {
       <view class="success__icon"><uni-icons type="checkmarkempty" size="52" color="#52c41a" /></view>
       <view class="success__title">下单成功</view>
       <view class="success__sub">{{ item.name }} × {{ qty }}</view>
-      <view class="success__amount">实付 ¥{{ needPay.toLocaleString() }}</view>
+      <view class="success__sub">订单号 {{ doneOrderNo }}</view>
+      <view v-if="payMethod === 'card'" class="success__sub">订单待收款，到店由收银台完成扣卡</view>
+      <view v-if="payMethod === 'card'" class="success__amount">应付 ¥{{ total.toLocaleString() }}（到店结算）</view>
+      <view v-else class="success__amount">实付 ¥{{ needPay.toLocaleString() }}</view>
       <view class="success__btn" @click="navTo('/pages/orders/list')">查看订单</view>
       <view class="success__link" @click="navTo('/pages/booking/list')">去预约到店时间 ›</view>
     </view>
@@ -88,10 +127,10 @@ async function submit() {
         </view>
       </view>
 
-      <!-- 服务门店 -->
+      <!-- 服务门店（C-B4 切真：GET /c/stores 营业中门店，默认第一家） -->
       <view class="cell card" @click="navTo('/pages/stores/list')">
         <text class="cell__label">服务门店</text>
-        <text class="cell__value">上海静安旗舰店 ›</text>
+        <text class="cell__value">{{ storeName || '请选择门店' }} ›</text>
       </view>
 
       <!-- 支付方式 -->
