@@ -16,19 +16,8 @@ onShow(() => {
 
 const member = computed(() => points.member)
 
-interface MyCard {
-  name: string
-  total?: number
-  remaining?: number
-  balance?: number
-  level?: string
-  expire: string
-}
-const myCards: MyCard[] = [
-  { name: '水光焕肤 10 次卡', total: 10, remaining: 6, expire: '2027-06-30' },
-  { name: 'VIP 钻石会员卡', balance: 12600, level: '钻石', expire: '2027-12-31' },
-  { name: '光子嫩肤 5 次卡', total: 5, remaining: 3, expire: '2026-12-31' },
-]
+/* C-B5 切真：卡项接 GET /c/member/cards（member store myCards） */
+const myCards = computed(() => points.myCards)
 
 const recentReceipts = computed(() =>
   order.orders
@@ -52,7 +41,7 @@ function goReceipt(id: string) {
     <MNavbar title="我的会员卡" />
     <!-- 会员卡头部 -->
     <view class="vip-card">
-      <view class="vip-card__level">{{ myCards[1].level }}会员</view>
+      <view class="vip-card__level">{{ member.level || '会员' }}</view>
       <view class="vip-card__name">{{ member.name }}</view>
       <view class="vip-card__no">No. {{ member.memberId }}</view>
       <view class="vip-card__balance">
@@ -74,13 +63,14 @@ function goReceipt(id: string) {
     <!-- 我的卡项 -->
     <view class="section">
       <view class="section__h">我的卡项</view>
-      <view v-for="c in myCards" :key="c.name" class="item-card">
+      <view v-if="!myCards.length" class="empty">暂无卡项</view>
+      <view v-for="c in myCards" :key="c.cardNo" class="item-card">
         <view class="item-card__name">{{ c.name }}</view>
-        <view v-if="c.remaining !== undefined" class="item-card__meta">
-          剩余 <text class="item-card__strong">{{ c.remaining }}/{{ c.total }}</text> 次
+        <view v-if="c.totalTimes > 0" class="item-card__meta">
+          剩余 <text class="item-card__strong">{{ c.remainTimes }}/{{ c.totalTimes }}</text> 次
         </view>
-        <view v-else class="item-card__meta">余额 <text class="item-card__strong">{{ fmt(c.balance!) }}</text></view>
-        <view class="item-card__expire">有效期至 {{ c.expire }}</view>
+        <view v-else class="item-card__meta">余额 <text class="item-card__strong">{{ fmt(c.balance) }}</text></view>
+        <view class="item-card__expire">{{ c.expire ? '有效期至 ' + c.expire.slice(0, 10) : '长期有效' }}</view>
       </view>
     </view>
 

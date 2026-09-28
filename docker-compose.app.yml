@@ -227,6 +227,10 @@ services:
       MEIYUN_AUDIT_SERVICE_URL: "http://audit-service:8084"
       # txn 预约域 internal 落库通道（C-B3：/api/txn/internal/c-appointments）
       MEIYUN_TXN_SERVICE_URL: "http://txn-service:8083"
+      # marketing 券域 internal 落库通道（C-B5：/api/marketing/internal/c-coupons/claim）
+      MEIYUN_MARKETING_SERVICE_URL: "http://marketing-service:8088"
+      # customer 积分商城 internal 落库通道（C-B5：/api/customer/internal/c-mall/exchange）
+      MEIYUN_CUSTOMER_SERVICE_URL: "http://customer-service:8082"
       # 服务间内部令牌（与 meiyun-security internal-token 同值，审计系统身份通道）
       MEIYUN_INTERNAL_TOKEN: "${MEIYUN_INTERNAL_TOKEN:-meiyun-dev-internal-token-please-change-in-prod}"
       # C 端独立 JWT 密钥（B/C 隔离红线：绝不与 B 端 MEIYUN_JWT_SECRET 同值；生产经宿主环境注入）

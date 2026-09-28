@@ -32,6 +32,8 @@ class CouponServiceTest {
     @Mock
     CouponGrantRepository grantRepo;
     @Mock
+    CouponHoldRepository holdRepo;
+    @Mock
     BizNoGenerator noGen;
     @Mock
     AuditRecorder audit;
@@ -40,7 +42,7 @@ class CouponServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new CouponService(couponRepo, grantRepo, noGen, audit);
+        service = new CouponService(couponRepo, grantRepo, holdRepo, noGen, audit);
         lenient().when(noGen.next(eq("CPN"), any())).thenReturn("CPN20260902-000001");
         lenient().when(noGen.next(eq("GR"), any())).thenReturn("GR20260902-000001");
         lenient().when(couponRepo.save(any(CouponTemplate.class))).thenAnswer(i -> i.getArgument(0));

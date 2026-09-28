@@ -23,14 +23,13 @@ function redeem(product: PointsProduct) {
     title: '确认兑换',
     content: `确认使用 ${product.pointsCost} 积分兑换「${product.name}」？\n兑换申请将提交至门店审核队列。`,
     confirmText: '确认兑换',
-    success: (res) => {
+    success: async (res) => {
       if (!res.confirm) return
-      const r = points.redeem(product.id, 1)
+      const r = await points.redeem(product.id, 1)
       if (r.ok) {
-        toast(`兑换申请已提交！审核通过后将通知您。剩余积分 ${member.value.points}`, 'success')
-      } else {
-        toast('兑换失败：' + (r.reason || '未知原因'))
+        toast('兑换申请已提交！审核通过后将通知您', 'success')
       }
+      /* 失败（积分不足/库存不足等）：后端中文原话已由 http 层 toast 弹出，不重复提示 */
     },
   })
 }

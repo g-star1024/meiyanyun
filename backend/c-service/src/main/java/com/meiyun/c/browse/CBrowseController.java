@@ -22,7 +22,7 @@ import java.util.Map;
  * C 端会员浏览域端点（DESIGN-C §二 #5，C-B2）：
  * GET /api/c/member/profile —— 当前会员档案投影：c_member_auth 已绑 customer 时投影
  *   customer(name/phone/level/points)＋member_card 在用卡余额合计（分→元）；未绑定/档案不可读
- *   时如实回落自身投影（积/余额/券数 0）。couponCount 暂无持有券数据源，如实 0（C-B5 接通）。
+ *   时如实回落自身投影（积/余额/券数 0）。couponCount 接 coupon_hold(V75) 本人 HELD 计数（C-B5 已接通）。
  * GET /api/c/pricelist —— 在售价目：store_price(ACTIVE) JOIN product_sku 富化名称/分类/单位/时长，
  *   金额分→元，照 B 端 PricelistService 口径；分类缺失行防御性剔除。
  * GET /api/c/projects/{id} —— 价目详情（id=sku），非在售/不存在 404 中文。
@@ -91,6 +91,10 @@ public class CBrowseController {
                         + "WHERE customer_id = ? AND status = '在用'",
                         Long.class, customerId);
                 data.put("cardBalance", fenToYuan(cardFen == null ? 0L : cardFen));
+                Long couponCnt = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM coupon_hold WHERE customer_id = ? AND status = 'HELD'",
+                        Long.class, customerId);
+                data.put("couponCount", couponCnt == null ? 0 : couponCnt.intValue());
             }
         }
         return ResponseEntity.ok(ok(data));

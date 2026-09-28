@@ -3,22 +3,17 @@
 import { computed, ref } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { useFollowupStore } from '@/stores/followup'
-import { useMemberStore } from '@/stores/member'
 import { toast } from '@/utils/nav'
 
 const followup = useFollowupStore()
-const memberStore = useMemberStore()
 
 onShow(() => {
   followup.seed()
-  memberStore.seed()
 })
 
-const member = computed(() => memberStore.member)
+/* C-B5 切真：行级隔离由后端按登录态绑定档案过滤，前端不再按 customerName 匹配 */
 const myFollowups = computed(() =>
-  followup.followups
-    .filter((f) => f.customerName === member.value.name)
-    .sort((a, b) => (a.planDate > b.planDate ? 1 : -1)),
+  [...followup.followups].sort((a, b) => (a.planDate > b.planDate ? 1 : -1)),
 )
 
 const activeId = ref<string | null>(null)
@@ -35,8 +30,8 @@ function toggle(id: string) {
   adverseNote.value = ''
 }
 
-function submit(f: (typeof followup.followups)[number]) {
-  const ok = followup.submitByCustomer(f.id, {
+async function submit(f: (typeof followup.followups)[number]) {
+  const ok = await followup.submitByCustomer(f.id, {
     satisfaction: satisfaction.value,
     note: feedback.value || undefined,
     adverseReaction: hasAdverse.value,

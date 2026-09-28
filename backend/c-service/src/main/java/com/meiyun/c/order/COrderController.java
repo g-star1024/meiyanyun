@@ -24,6 +24,11 @@ import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -53,6 +58,10 @@ import java.util.Map;
 public class COrderController {
 
     private static final ObjectMapper OM = new ObjectMapper();
+
+    /** 东八区小票时刻（timestamptz → yyyy-MM-dd HH:mm:ss；容器 JVM 默认 UTC，String.valueOf 直渲差 8 小时）。 */
+    private static final ZoneId CN_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final DateTimeFormatter CN_TIME_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     /** 与 CBrowseController 价目页同源同口径（逐字锚：store_price ACTIVE × product_sku）。 */
     private static final String PRICELIST_SQL =
@@ -96,9 +105,15 @@ public class COrderController {
                     + "WHERE o.customer_id = ? ORDER BY o.created_at DESC, o.order_no DESC",
                     customerId);
             Map<String, List<Map<String, Object>>> linesByOrder = loadLines(rows);
+            Map<String, String> payMethods = loadPayMethods(rows);
             for (Map<String, Object> row : rows) {
-                items.add(toCItem(row, linesByOrder.getOrDefault(
-                        String.valueOf(row.get("order_no")), List.of())));
+                Map<String, Object> item = toCItem(row, linesByOrder.getOrDefault(
+                        String.valueOf(row.get("order_no")), List.of()));
+                String payMethod = payMethods.get(String.valueOf(row.get("order_no")));
+                if (payMethod != null) {
+                    item.put("payMethod", payMethod);
+                }
+                items.add(item);
             }
         }
         return ResponseEntity.ok(ok(items));
@@ -129,7 +144,16 @@ public class COrderController {
         List<Map<String, Object>> lines = jdbcTemplate.queryForList(
                 "SELECT order_no, item_name, qty, unit_price FROM order_item "
                 + "WHERE order_no = ? ORDER BY line_no", id);
-        return ResponseEntity.ok(ok(toCItem(row, lines)));
+        Map<String, Object> item = toCItem(row, lines);
+        List<Map<String, Object>> payRows = jdbcTemplate.queryForList(
+                "SELECT pay_method FROM order_payment WHERE order_no = ? ORDER BY created_at DESC LIMIT 1", id);
+        if (!payRows.isEmpty()) {
+            String payMethod = payMethodText(str(payRows.get(0).get("pay_method")));
+            if (payMethod != null) {
+                item.put("payMethod", payMethod);
+            }
+        }
+        return ResponseEntity.ok(ok(item));
     }
 
     @PostMapping
@@ -325,11 +349,48 @@ public class COrderController {
         item.put("items", cLines);
         item.put("amount", fenToYuan(num(row.get("amount"))));
         item.put("status", toCStatus(String.valueOf(row.get("status"))));
-        item.put("createdAt", String.valueOf(row.get("created_at")));
+        item.put("createdAt", fmtCnTime(row.get("created_at")));
         return item;
     }
 
     /** txn internal COrderView 投影（创建响应 → 前端 COrder 契约；amountFen 分→元，qty 整除还原单价）。 */
+    private Map<String, String> loadPayMethods(List<Map<String, Object>> rows) {
+        Map<String, String> byOrder = new LinkedHashMap<>();
+        if (rows.isEmpty()) {
+            return byOrder;
+        }
+        List<Object> orderNos = new ArrayList<>();
+        for (Map<String, Object> row : rows) {
+            orderNos.add(String.valueOf(row.get("order_no")));
+        }
+        String placeholders = String.join(", ", Collections.nCopies(orderNos.size(), "?"));
+        List<Map<String, Object>> pays = jdbcTemplate.queryForList(
+                "SELECT order_no, pay_method FROM order_payment WHERE order_no IN (" + placeholders
+                        + ") ORDER BY created_at DESC",
+                orderNos.toArray());
+        for (Map<String, Object> pay : pays) {
+            String text = payMethodText(str(pay.get("pay_method")));
+            if (text != null) {
+                byOrder.putIfAbsent(String.valueOf(pay.get("order_no")), text);
+            }
+        }
+        return byOrder;
+    }
+
+    private String payMethodText(String method) {
+        if (method == null || method.isBlank()) {
+            return null;
+        }
+        return switch (method) {
+            case "cash" -> "现金";
+            case "wxpay" -> "微信支付";
+            case "alipay" -> "支付宝";
+            case "card" -> "银行卡";
+            case "balance" -> "储值余额";
+            default -> method;
+        };
+    }
+
     private static Map<String, Object> viewToCItem(Map<String, Object> view) {
         Map<String, Object> item = new LinkedHashMap<>();
         Object orderNo = view.get("orderNo");
@@ -387,6 +448,23 @@ public class COrderController {
 
     private static long num(Object v) {
         return v instanceof Number n ? n.longValue() : 0L;
+    }
+
+    /** timestamptz 行值 → 东八区 yyyy-MM-dd HH:mm:ss（JDBC Timestamp/OffsetDateTime/LocalDateTime 三型兜底）。 */
+    private static String fmtCnTime(Object v) {
+        if (v == null) {
+            return null;
+        }
+        if (v instanceof Timestamp t) {
+            return t.toInstant().atZone(CN_ZONE).format(CN_TIME_FMT);
+        }
+        if (v instanceof OffsetDateTime odt) {
+            return odt.atZoneSameInstant(CN_ZONE).format(CN_TIME_FMT);
+        }
+        if (v instanceof LocalDateTime ldt) {
+            return ldt.format(CN_TIME_FMT);
+        }
+        return String.valueOf(v);
     }
 
     private static BigDecimal fenToYuan(long fen) {

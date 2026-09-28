@@ -17,20 +17,19 @@ const tabs = [
 ]
 
 const available = computed(() => coupon.coupons.filter((c) => c.status === 'ACTIVE' && coupon.stockLeft(c) > 0))
-const used = ref([
-  { id: 'u1', name: '新客专享 8 折券', desc: '全场项目可用', usedOn: '2026-08-20 水光焕肤' },
-])
-const expired = ref([
-  { id: 'e1', name: '满 1000 减 200', desc: '疗程项目可用', date: '2026-07-31' },
-])
+const used = computed(() => coupon.myCoupons.filter((c) => c.status === 'USED'))
+const expired = computed(() =>
+  coupon.myCoupons.filter(
+    (c) => c.status === 'CANCELLED' || (c.status === 'HELD' && c.endDate && c.endDate < new Date().toISOString().slice(0, 10)),
+  ),
+)
 
-function claim(c: { id: string; name: string }) {
-  const r = coupon.grant(c.id, 'DESIGNATED', 'C端会员-陈美玲', 1)
+async function claim(c: { id: string; name: string }) {
+  const r = await coupon.claim(c.id)
   if (r.status === 'GRANTED') {
     toast(`已领取「${c.name}」！可在收银台核销使用。`, 'success')
-  } else {
-    toast('领取失败，库存不足或已领过。')
   }
+  /* 失败（售罄 409 等）：后端中文原话已由 http 层 toast 弹出 */
 }
 function isClaimed(id: string) {
   return coupon.claimedIds.includes(id)
@@ -75,28 +74,30 @@ function isClaimed(id: string) {
 
     <!-- 已使用 -->
     <view v-else-if="tab === 'used'" class="list">
-      <view v-for="u in used" :key="u.id" class="coupon coupon--used">
+      <view v-for="u in used" :key="u.holdId" class="coupon coupon--used">
         <view class="coupon__left">
           <view class="coupon__amount"><text class="coupon__strong">已用</text></view>
         </view>
         <view class="coupon__mid">
           <view class="coupon__name">{{ u.name }}</view>
-          <view class="coupon__date">使用于：{{ u.usedOn }}</view>
+          <view class="coupon__date">使用于：{{ u.usedAt ? u.usedAt.slice(0, 10) : '—' }}</view>
         </view>
       </view>
+      <view v-if="!used.length" class="empty">暂无已使用券</view>
     </view>
 
     <!-- 已过期 -->
     <view v-else class="list">
-      <view v-for="e in expired" :key="e.id" class="coupon coupon--expired">
+      <view v-for="e in expired" :key="e.holdId" class="coupon coupon--expired">
         <view class="coupon__left">
           <view class="coupon__amount"><text class="coupon__strong">过期</text></view>
         </view>
         <view class="coupon__mid">
           <view class="coupon__name">{{ e.name }}</view>
-          <view class="coupon__date">过期于 {{ e.date }}</view>
+          <view class="coupon__date">过期于 {{ e.endDate }}</view>
         </view>
       </view>
+      <view v-if="!expired.length" class="empty">暂无已过期券</view>
     </view>
 
     <view class="bc-hint">优惠券由门店配置发放，下单/收银时可直接抵扣使用。</view>

@@ -18,7 +18,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * 优惠券写链路：创建（草稿）/ 启用 / 停用 / 发放（防超发）。
+ * 优惠券写链路：创建（草稿）/ 启用 / 停用 / 发放（防超发）/ C 端领取（同锁防超发）。
  *
  * 状态机：DRAFT 草稿 → ACTIVE 进行中 → DISABLED 已停用（DRAFT/DISABLED 可再启用）；
  * EXPIRED 已过期由有效期日期在前端派生，不落库。
@@ -33,14 +33,16 @@ public class CouponService {
 
     private final CouponTemplateRepository couponRepo;
     private final CouponGrantRepository grantRepo;
+    private final CouponHoldRepository holdRepo;
     private final BizNoGenerator noGen;
     private final AuditRecorder audit;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public CouponService(CouponTemplateRepository couponRepo, CouponGrantRepository grantRepo,
-                         BizNoGenerator noGen, AuditRecorder audit) {
+                         CouponHoldRepository holdRepo, BizNoGenerator noGen, AuditRecorder audit) {
         this.couponRepo = couponRepo;
         this.grantRepo = grantRepo;
+        this.holdRepo = holdRepo;
         this.noGen = noGen;
         this.audit = audit;
     }
@@ -175,6 +177,50 @@ public class CouponService {
         payload.put("issuedQty", c.getIssuedQty());
         payload.put("totalQty", c.getTotalQty());
         audit("GRANT", saved.getGrantId(), payload);
+        return saved;
+    }
+
+    /**
+     * C 端领券（防超发）：与 B 端发放共用本实例 synchronized 锁；仅 ACTIVE 券可领取。
+     * 幂等键 idemKey = couponId + ":" + customerId，同券同人重复领取重放直返既有持有行；
+     * 库存为 0 → 409（与 grant 同口径）；领取成功 issued_qty + 1 并落 coupon_hold。
+     */
+    @Transactional
+    public synchronized CouponHold claimForCustomer(String couponId, String customerId, String openid) {
+        String idemKey = couponId + ":" + customerId;
+        CouponHold replay = holdRepo.findByIdemKey(idemKey).orElse(null);
+        if (replay != null) {
+            return replay;
+        }
+        CouponTemplate c = mustGet(couponId);
+        if (!"ACTIVE".equals(c.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "仅进行中的券可领取，当前状态为「" + statusLabel(c.getStatus()) + "」");
+        }
+        int left = c.getTotalQty() - c.getIssuedQty();
+        if (left <= 0) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "券「" + c.getCouponName() + "」库存已发完（总量 " + c.getTotalQty() + "，已发 " + c.getIssuedQty() + "）");
+        }
+        c.setIssuedQty(c.getIssuedQty() + 1);
+        couponRepo.save(c);
+
+        CouponHold h = new CouponHold();
+        h.setCouponId(couponId);
+        h.setCustomerId(customerId);
+        h.setIdemKey(idemKey);
+        h.setStatus("HELD");
+        h.setCreatedAt(OffsetDateTime.now());
+        CouponHold saved = holdRepo.save(h);
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("name", c.getCouponName());
+        payload.put("customerId", customerId);
+        payload.put("openid", openid == null ? "" : openid);
+        payload.put("channel", "C");
+        payload.put("issuedQty", c.getIssuedQty());
+        payload.put("totalQty", c.getTotalQty());
+        audit("CLAIM", idemKey, payload);
         return saved;
     }
 

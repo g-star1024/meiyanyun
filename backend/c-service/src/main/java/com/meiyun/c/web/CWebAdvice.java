@@ -1,5 +1,7 @@
 package com.meiyun.c.web;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -21,6 +23,8 @@ import java.util.Map;
  */
 @RestControllerAdvice
 public class CWebAdvice {
+
+    private static final Logger log = LoggerFactory.getLogger(CWebAdvice.class);
 
     @ExceptionHandler({MethodArgumentNotValidException.class, BindException.class})
     public ResponseEntity<Map<String, Object>> validation(BindException e) {
@@ -48,6 +52,7 @@ public class CWebAdvice {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> unknown(Exception e) {
+        log.error("C 端未捕获异常（对外统一 500 中文包约，堆栈仅服务端留痕）", e);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "服务繁忙，请稍后重试");
     }
 
