@@ -34,6 +34,7 @@ var routeTable = []routeEntry{
 	{"/api/marketing", "MARKETING_SERVICE_URL", "http://127.0.0.1:8088"}, // marketing-service
 	{"/api/ai", "AI_SERVICE_URL", "http://127.0.0.1:8089"},               // ai-service
 	{"/api/public", "MARKETING_SERVICE_URL", "http://127.0.0.1:8088"},    // marketing-service（P5-B98 落地页公开采集端点，免鉴权+限流）
+	{"/api/c", "C_SERVICE_URL", "http://127.0.0.1:8090"},                 // c-service（C 端移动端 BFF，C-B1；透传自验照 /api/public 先例）
 }
 
 // resolveTarget 读取环境变量，缺失时回退默认值。

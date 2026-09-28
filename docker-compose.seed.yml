@@ -154,6 +154,30 @@ services:
       retries: 10
       start_period: 60s
 
+  seed-c-service:
+    <<: *seed-backend
+    image: meiyun/c-service:latest
+    container_name: meiyun-seed-c-service
+    ports: ["18090:8090"]
+    environment:
+      <<: *seed-env
+      # 审计追加通道（seed 栈按 seed 容器名寻址；失败落 audit_outbox 补偿，不阻断登录）
+      MEIYUN_AUDIT_SERVICE_URL: "http://meiyun-seed-audit-service:8084"
+      MEIYUN_INTERNAL_TOKEN: "${MEIYUN_INTERNAL_TOKEN:-meiyun-dev-internal-token-please-change-in-prod}"
+      # C 端独立 JWT 密钥（B/C 隔离红线：绝不与 B 端 MEIYUN_JWT_SECRET 同值）
+      MEIYUN_C_JWT_SECRET: "${MEIYUN_C_JWT_SECRET:-meiyun-dev-c-jwt-secret-please-change-in-prod-01}"
+      # 开发期快捷登录：默认 false 端点 404 隐身；seed 演示库可宿主显式开启
+      MEIYUN_C_DEV_LOGIN: "${MEIYUN_C_DEV_LOGIN:-false}"
+      MEIYUN_C_WECHAT_APPID: "${MEIYUN_C_WECHAT_APPID:-}"
+      MEIYUN_C_WECHAT_SECRET: "${MEIYUN_C_WECHAT_SECRET:-}"
+      MEIYUN_C_WECHAT_PAY_ENABLED: "${MEIYUN_C_WECHAT_PAY_ENABLED:-false}"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8090' && exit 0 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
   seed-gateway:
     image: meiyun/gateway:latest
     container_name: meiyun-seed-gateway
@@ -161,6 +185,7 @@ services:
     ports: ["18443:8443"]
     depends_on:
       seed-ai-service: { condition: service_healthy }
+      seed-c-service: { condition: service_healthy }
     environment:
       CUSTOMER_SERVICE_URL: "http://meiyun-seed-customer-service:8082"
       TXN_SERVICE_URL: "http://meiyun-seed-txn-service:8083"
@@ -170,6 +195,7 @@ services:
       FINANCE_SERVICE_URL: "http://meiyun-seed-finance-service:8087"
       MARKETING_SERVICE_URL: "http://meiyun-seed-marketing-service:8088"
       AI_SERVICE_URL: "http://meiyun-seed-ai-service:8089"
+      C_SERVICE_URL: "http://meiyun-seed-c-service:8090"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/healthz || exit 1"]
       interval: 15s

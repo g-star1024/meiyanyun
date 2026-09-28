@@ -1,0 +1,69 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: c-service
+  datasource:
+    url: jdbc:postgresql://localhost:5433/meiyun_core?stringtype=unspecified
+    username: meiyun
+    password: meiyun123
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      # C 端批起即全量 Flyway 纳管（V74）：启动校验替代自动建表，杜绝 schema 静默漂移
+      ddl-auto: validate
+    properties:
+      hibernate:
+        jdbc:
+          lob:
+            non_contextual_creation: true
+    open-in-view: false
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    baseline-version: 0
+    baseline-description: "JPA 自动建表基线"
+    table: flyway_schema_history
+    validate-on-migrate: true
+    # 全库共享 flyway_schema_history（照 marketing B38 同款先例）：他服务脚本 missing/future 均忽略；
+    # c-service 仅持 V74+，V1-V73 由 customer/finance/audit/marketing/ai/org 各服务类路径持有
+    out-of-order: true
+    ignore-migration-patterns:
+      - "*:missing"
+      - "*:future"
+
+# C 端 BFF 配置（B/C 隔离红线：全部独立命名空间 meiyun.c.*，与 B 端 meiyun.security.* 零共享）
+meiyun:
+  audit:
+    service-url: ${MEIYUN_AUDIT_SERVICE_URL:http://127.0.0.1:8084}
+  c:
+    # C 端 JWT 独立密钥（HS256 ≥32 字节；生产经 MEIYUN_C_JWT_SECRET 注入，绝不与 B 端 MEIYUN_JWT_SECRET 同值）
+    jwt-secret: ${MEIYUN_C_JWT_SECRET:meiyun-dev-c-jwt-secret-please-change-in-prod-01}
+    # C 端 token 有效期：移动端免频繁登录，默认 30 天
+    jwt-ttl: ${MEIYUN_C_JWT_TTL:720h}
+    # 开发期免密登录（/api/c/auth/dev-login）：默认关闭 404 隐身（照 B 端 dev-login 先例）；仅 seed 联调栈显式开启
+    dev-login-enabled: ${MEIYUN_C_DEV_LOGIN:false}
+    # 租户标识校验（mp-uniapp request.ts 全请求携带 X-Tenant-Id；不等/缺失一律 403 中文）
+    tenant-id: ${MEIYUN_C_TENANT_ID:meiyun-demo}
+    # 服务间内部调用令牌（审计追加带 X-Internal-Token；与全栈同一 dev 默认值，生产 MEIYUN_INTERNAL_TOKEN 注入）
+    internal-token: ${MEIYUN_INTERNAL_TOKEN:meiyun-dev-internal-token-please-change-in-prod}
+    wechat:
+      # 微信小程序凭证（配置窗口后端落地留 C 批 §7 移交；本拍环境变量注入，空=未配置→wechat-login 如实 502）
+      appid: ${MEIYUN_C_WECHAT_APPID:}
+      secret: ${MEIYUN_C_WECHAT_SECRET:}
+      # 微信支付开关（无商户凭证默认 false 如实；mp/config 投影给端侧控制支付入口展示）
+      pay-enabled: ${MEIYUN_C_WECHAT_PAY_ENABLED:false}
+    brand:
+      # mp/config 公开投影（密钥永不下发端侧；配置窗口落地后改读库）
+      brand-name: ${MEIYUN_C_BRAND_NAME:美研云}
+      service-phone: ${MEIYUN_C_SERVICE_PHONE:400-000-0000}
+      theme-color: ${MEIYUN_C_THEME_COLOR:#ff6b9e}
+      notice: ${MEIYUN_C_NOTICE:}
+      points-mall-enabled: ${MEIYUN_C_POINTS_MALL_ENABLED:true}
+      invite-enabled: ${MEIYUN_C_INVITE_ENABLED:true}
+
+logging:
+  level:
+    com.meiyun: INFO

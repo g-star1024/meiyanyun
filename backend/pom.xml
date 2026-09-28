@@ -30,6 +30,7 @@
         <module>finance-service</module>
         <module>marketing-service</module>
         <module>ai-service</module>
+        <module>c-service</module>
     </modules>
 
     <dependencyManagement>
