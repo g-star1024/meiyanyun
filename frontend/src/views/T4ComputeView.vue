@@ -249,15 +249,15 @@ function openAlloc() {
   Object.assign(alloc, { department: '', project: '', gpuHours: 100, budget: 3000, period: '2026-08' })
   allocOpen.value = true
 }
-function submitAlloc() {
-  store.allocateQuota({
+async function submitAlloc() {
+  const q = await store.allocateQuota({
     department: alloc.department.trim(),
     project: alloc.project.trim(),
     gpuHours: Number(alloc.gpuHours),
     budget: Number(alloc.budget),
     period: alloc.period,
   })
-  allocOpen.value = false
+  if (q) allocOpen.value = false
 }
 </script>
 
