@@ -8,6 +8,10 @@ import com.meiyun.ai.domain.AiFeatureBinding;
 import com.meiyun.ai.domain.AiFeatureBindingRepository;
 import com.meiyun.ai.domain.AiModel;
 import com.meiyun.ai.domain.AiModelRepository;
+import com.meiyun.ai.domain.AiT4Model;
+import com.meiyun.ai.domain.AiT4ModelRepository;
+import com.meiyun.ai.domain.AiT4ModelVersion;
+import com.meiyun.ai.domain.AiT4ModelVersionRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -23,22 +27,28 @@ import java.util.Set;
 @Service
 public class ApprovalService {
 
-    private static final Set<String> TYPES = Set.of("PROVIDER", "MODEL", "BINDING");
+    private static final Set<String> TYPES = Set.of("PROVIDER", "MODEL", "BINDING", "T4_MODEL");
     private static final int PAGE_MAX = 200;
 
     private final AiApprovalRepository approvalRepo;
     private final AiModelRepository modelRepo;
     private final AiFeatureBindingRepository bindingRepo;
+    private final AiT4ModelRepository t4ModelRepo;
+    private final AiT4ModelVersionRepository t4VersionRepo;
     private final AuditRecorder audit;
     private final ObjectMapper json = new ObjectMapper();
 
     public ApprovalService(AiApprovalRepository approvalRepo,
                            AiModelRepository modelRepo,
                            AiFeatureBindingRepository bindingRepo,
+                           AiT4ModelRepository t4ModelRepo,
+                           AiT4ModelVersionRepository t4VersionRepo,
                            AuditRecorder audit) {
         this.approvalRepo = approvalRepo;
         this.modelRepo = modelRepo;
         this.bindingRepo = bindingRepo;
+        this.t4ModelRepo = t4ModelRepo;
+        this.t4VersionRepo = t4VersionRepo;
         this.audit = audit;
     }
 
@@ -68,7 +78,7 @@ public class ApprovalService {
     @Transactional
     public ApprovalView apply(ApplyCmd cmd, String actor) {
         if (cmd == null || cmd.approvalType() == null || !TYPES.contains(cmd.approvalType().trim().toUpperCase())) {
-            throw badRequest("审批类型仅支持 PROVIDER/MODEL/BINDING");
+            throw badRequest("审批类型仅支持 PROVIDER/MODEL/BINDING/T4_MODEL");
         }
         if (cmd.content() == null || cmd.content().isBlank()) {
             throw badRequest("申请内容不能为空");
@@ -96,7 +106,8 @@ public class ApprovalService {
         return toView(saved);
     }
 
-    /** 申请目标校验：MODEL/BINDING 必须指向存在且未启用的目标；PROVIDER 不做联动，宽松处理。 */
+    /** 申请目标校验：MODEL/BINDING 必须指向存在且未启用的目标；T4_MODEL 必须指向存在且
+     *  READY 的 T4 模型版本（红线：非 READY 禁发，V78 起）；PROVIDER 不做联动，宽松处理。 */
     private void validateApplyTarget(String type, Long targetId) {
         if ("MODEL".equals(type)) {
             if (targetId == null) {
@@ -115,6 +126,15 @@ public class ApprovalService {
                     .orElseThrow(() -> badRequest("目标功能绑定不存在（id=" + targetId + "）"));
             if (Boolean.TRUE.equals(b.getEnabled())) {
                 throw badRequest("功能绑定已启用，无需重复申请");
+            }
+        } else if ("T4_MODEL".equals(type)) {
+            if (targetId == null) {
+                throw badRequest("T4 模型发布申请必须指定目标版本");
+            }
+            AiT4ModelVersion v = t4VersionRepo.findById(targetId)
+                    .orElseThrow(() -> badRequest("目标模型版本不存在（id=" + targetId + "）"));
+            if (!"READY".equals(v.getStatus())) {
+                throw badRequest("仅 READY 状态的版本可申请发布");
             }
         }
     }
@@ -168,6 +188,29 @@ public class ApprovalService {
                 b.setUpdatedBy(a.getDecidedBy());
                 bindingRepo.save(b);
                 return "BINDING_ENABLED";
+            }
+        } else if ("T4_MODEL".equals(a.getApprovalType())) {
+            // T4 模型发布联动（逐字对齐前端 mock releaseModel）：其余 PUBLISHED 回退 READY，
+            // 目标版本发布并记审批人，模型 status/currentVersion 同步。
+            AiT4ModelVersion v = t4VersionRepo.findById(a.getTargetId()).orElse(null);
+            if (v != null && "READY".equals(v.getStatus())) {
+                AiT4Model m = t4ModelRepo.findById(v.getModelId()).orElse(null);
+                if (m != null) {
+                    t4VersionRepo.findByModelIdAndStatus(m.getModelId(), "PUBLISHED").forEach(x -> {
+                        x.setStatus("READY");
+                        x.setPublishedAt(null);
+                        x.setApprovedBy(null);
+                        t4VersionRepo.save(x);
+                    });
+                    v.setStatus("PUBLISHED");
+                    v.setPublishedAt(OffsetDateTime.now());
+                    v.setApprovedBy(a.getDecidedBy());
+                    t4VersionRepo.save(v);
+                    m.setStatus("PUBLISHED");
+                    m.setCurrentVersion(v.getVersion());
+                    t4ModelRepo.save(m);
+                    return "T4_MODEL_PUBLISHED";
+                }
             }
         }
         return "NONE";

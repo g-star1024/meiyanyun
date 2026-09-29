@@ -401,8 +401,8 @@ function openRegister() {
   Object.assign(form, { name: '', type: 'CLASSIFICATION', description: '', owner: '', department: '', inputSchema: '{}', outputSchema: '{}', tagsStr: '' })
   registerOpen.value = true
 }
-function submitRegister() {
-  store.registerModel({
+async function submitRegister() {
+  const m = await store.registerModel({
     name: form.name.trim(),
     type: form.type,
     description: form.description.trim(),
@@ -412,7 +412,7 @@ function submitRegister() {
     outputSchema: form.outputSchema,
     tags: form.tagsStr.split(',').map((s) => s.trim()).filter(Boolean),
   })
-  registerOpen.value = false
+  if (m) registerOpen.value = false
 }
 
 // ---- 发布红线确认 ----
@@ -430,29 +430,27 @@ function askRelease(m: ModelRecord, version?: string) {
   }
   releaseAsk.value = { model: m, version: v! }
 }
-function confirmRelease() {
+async function confirmRelease() {
   if (!releaseAsk.value) return
   const { model, version } = releaseAsk.value
-  const r = store.requestRelease(model.id, version)
+  const r = await store.requestRelease(model.id, version)
   if (!r.ok) {
     window.alert(r.reason || '提交失败')
   } else {
-    // 演示：提交后立即模拟 T3-01 审批通过
-    store.releaseModel(model.id, version)
-    window.alert('已提交 T3-01 审批流程，审批通过后模型已发布。')
+    window.alert('已提交 T3-01 审批流程，审批通过后自动发布。')
   }
   releaseAsk.value = null
 }
 
-function rollback(m: ModelRecord, version?: string) {
+async function rollback(m: ModelRecord, version?: string) {
   if (!store.can('model:rollback')) return
   const v = version ?? m.currentVersion
   if (!v) return
-  store.rollbackModel(m.id, v)
+  await store.rollbackModel(m.id, v)
 }
-function deprecate(m: ModelRecord) {
+async function deprecate(m: ModelRecord) {
   if (!window.confirm(`确认废弃模型「${m.name}」？`)) return
-  store.deprecateModel(m.id)
+  await store.deprecateModel(m.id)
 }
 </script>
 
