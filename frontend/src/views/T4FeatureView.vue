@@ -29,7 +29,7 @@
           </template>
           <template #col-onlineServing="{ row }">
             <label class="switch" :class="{ 'is-on': row.onlineServing }">
-              <input type="checkbox" :checked="row.onlineServing" @change="toggleServing(row)" :disabled="!store.can('feature:edit')" />
+              <input type="checkbox" :checked="row.onlineServing" @change="toggleServing(row, $event)" :disabled="!store.can('feature:edit')" />
               <span class="switch__track" />
             </label>
           </template>
@@ -203,13 +203,19 @@ const filteredRows = computed(() => {
   }))
 })
 
-function toggleServing(row: any) {
-  store.toggleOnline(row.id, !row.onlineServing)
+async function toggleServing(row: any, ev: Event) {
+  const target = !row.onlineServing
+  await store.toggleOnline(row.id, target)
+  const cur = store.getFeature(row.id)
+  // 失败/无权限时数据未翻转，强制把开关 DOM 对齐回真值
+  if (!cur || cur.onlineServing !== target) {
+    ;(ev.target as HTMLInputElement).checked = row.onlineServing
+  }
 }
-function publish(row: any) { store.publishFeature(row.id) }
-function deprecate(row: any) {
+async function publish(row: any) { await store.publishFeature(row.id) }
+async function deprecate(row: any) {
   if (!window.confirm(`确认下线特征「${row.name}」？`)) return
-  store.deprecateFeature(row.id)
+  await store.deprecateFeature(row.id)
 }
 
 // ---- 血缘 DAG 布局（4 列：SOURCE → FEATURE → MODEL → SERVICE） ----
@@ -309,8 +315,8 @@ function openRegister() {
   Object.assign(form, { name: '', group: '', type: 'ONLINE', valueType: 'FLOAT', description: '', source: '', owner: '', onlineServing: true, ttl: '', freshness: 'T+0 实时' })
   registerOpen.value = true
 }
-function submit() {
-  store.registerFeature({
+async function submit() {
+  const f = await store.registerFeature({
     name: form.name.trim(),
     group: form.group.trim(),
     type: form.type,
@@ -322,7 +328,7 @@ function submit() {
     ttl: form.ttl.trim() || undefined,
     freshness: form.freshness,
   })
-  registerOpen.value = false
+  if (f) registerOpen.value = false
 }
 </script>
 
