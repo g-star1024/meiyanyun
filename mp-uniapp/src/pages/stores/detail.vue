@@ -1,31 +1,50 @@
 <script setup lang="ts">
-/* C 端门店详情 pages/stores/detail?id= */
+/* C 端门店详情 pages/stores/detail?id= — C-B6 切真：GET /c/stores/{id}（404 中文原话 http 层弹出；hotProjects=全局 ACTIVE 前 5；无源字段空值回落 §七） */
 import { onLoad } from '@dcloudio/uni-app'
-import { ref } from 'vue'
+import { reactive, ref } from 'vue'
+import { useShopStore } from '@/stores/shop'
 import { navTo, toast } from '@/utils/nav'
 
+const shop = useShopStore()
 const id = ref('')
 // 自定义导航栏总高（状态栏 + 44px），用于透明模式下 Hero 沉浸上移
 const navH = (uni.getSystemInfoSync().statusBarHeight || 20) + 44
 onLoad((options) => {
   id.value = options?.id || ''
+  load()
 })
 
-const store = {
-  name: '上海静安旗舰店',
-  addr: '静安区南京西路 1266 号恒隆广场 B1',
-  hours: '10:00 - 21:00',
-  phone: '021-6288-1234',
-  rating: 4.9,
-  sold: '月服务 2,300+ 人次',
-  intro: '美研云旗舰医美中心，配备热玛吉 FLX、M22 光子、VISIA 皮肤检测等高端光电设备，拥有 12 位执业医师团队，提供注射、光电、皮肤管理、形体塑形一站式服务。',
-  facilities: ['免费停车', 'VIP 休息室', '术后修复区', '皮肤检测室', '无菌手术室'],
+const store = reactive({
+  name: '',
+  addr: '',
+  hours: '',
+  phone: '',
+  rating: null as number | null,
+  sold: '',
+  intro: '',
+  facilities: [] as string[],
+})
+const hotProjects = ref<string[]>([])
+
+async function load() {
+  const d = await shop.fetchDetail(id.value)
+  if (!d) return
+  store.name = d.name
+  store.addr = d.addr
+  store.hours = d.hours
+  store.phone = d.phone
+  store.rating = d.rating
+  store.sold = d.sold
+  store.intro = d.intro
+  store.facilities = d.facilities
+  hotProjects.value = d.hotProjects
 }
-const hotProjects = ['热玛吉紧致', '光子嫩肤', '玻尿酸填充', '水光焕肤', 'VISIA 检测']
 
 function goProjects() { navTo('/pages/projects/list') }
 function call() {
-  try { uni.makePhoneCall({ phoneNumber: '02162881234' }) } catch (e) { toast('拨打失败') }
+  const num = store.phone.replace(/\D/g, '')
+  if (!num) { toast('门店电话暂未收录'); return }
+  try { uni.makePhoneCall({ phoneNumber: num }) } catch (e) { toast('拨打失败') }
 }
 function navigate() { toast('即将打开地图导航') }
 function book() { navTo('/pages/booking/new') }
@@ -39,28 +58,30 @@ function book() { navTo('/pages/booking/new') }
     <view class="hero" :style="{ marginTop: -navH + 'px', paddingTop: navH + 'px' }">
       <view class="hero__icon"><uni-icons type="shop" size="48" color="#fff" /></view>
       <view class="hero__name">{{ store.name }}</view>
-      <view class="hero__rating"><uni-icons type="star" size="14" color="#ffe08a" /> {{ store.rating }} · {{ store.sold }}</view>
+      <view v-if="store.rating != null || store.sold" class="hero__rating">
+        <template v-if="store.rating != null"><uni-icons type="star" size="14" color="#ffe08a" /> {{ store.rating }} · </template>{{ store.sold }}
+      </view>
     </view>
 
     <view class="card info">
-      <view class="info__row"><uni-icons type="map-pin" size="15" color="#ff6b9e" /> {{ store.addr }}</view>
-      <view class="info__row"><uni-icons type="calendar" size="15" color="#ff6b9e" /> 营业时间 {{ store.hours }}</view>
-      <view class="info__row"><uni-icons type="phone" size="15" color="#ff6b9e" /> {{ store.phone }}</view>
+      <view v-if="store.addr" class="info__row"><uni-icons type="map-pin" size="15" color="#ff6b9e" /> {{ store.addr }}</view>
+      <view v-if="store.hours" class="info__row"><uni-icons type="calendar" size="15" color="#ff6b9e" /> 营业时间 {{ store.hours }}</view>
+      <view v-if="store.phone" class="info__row"><uni-icons type="phone" size="15" color="#ff6b9e" /> {{ store.phone }}</view>
     </view>
 
-    <view class="card">
+    <view v-if="store.facilities.length" class="card">
       <view class="t">门店设施</view>
       <view class="fac">
         <view v-for="f in store.facilities" :key="f" class="fac__item"><uni-icons type="checkmarkempty" size="13" color="#52c41a" /><text>{{ f }}</text></view>
       </view>
     </view>
 
-    <view class="card">
+    <view v-if="store.intro" class="card">
       <view class="t">门店介绍</view>
       <view class="intro">{{ store.intro }}</view>
     </view>
 
-    <view class="card">
+    <view v-if="hotProjects.length" class="card">
       <view class="t">热门项目</view>
       <view class="hot">
         <view v-for="p in hotProjects" :key="p" class="hot__item" @click="goProjects">{{ p }} ›</view>

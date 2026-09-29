@@ -28,6 +28,12 @@ import java.util.Map;
  * GET /api/c/projects/{id} —— 价目详情（id=sku），非在售/不存在 404 中文。
  * GET /api/c/stores —— 可预约门店（status='营业中'；自端点 #9 提前至 C-B3：预约新建页
  *   门店选择链路必需真实数据源，否则写死三店名与库内 SST01-06 不符验收不可达，DESIGN-C 随拍回填订正）。
+ *   C-B6 富化：stores/list 页切真补投 tags（status 有源投影）＋addr/hours/phone/distance/rating
+ *   无源字段空值如实回落（store 表仅 6 列，DESIGN-C §7 登记）。
+ * GET /api/c/stores/{id} —— 门店详情（端点 #9，C-B6）：store 6 列只读投影，非营业中/不存在
+ *   404 中文；hotProjects=store_price(ACTIVE)×product_sku 全局在售前 5（实证 store_price 无
+ *   store_code 列、价目系全局 sku 维度，随拍订正为全局投影）；rating/sold/intro/facilities
+ *   无源字段空值如实回落（§7 登记）。
  * 既有表零改动契约：全部 JdbcTemplate 只读 SELECT（照 C-B1 auth/me L187 先例），不落实体不触发 ddl。
  * 行级隔离：profile 只取 token 自有 customer_id，天然无越权面。
  */
@@ -137,9 +143,43 @@ public class CBrowseController {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("code", row.get("code"));
             item.put("name", row.get("name"));
+            item.put("tags", List.of("营业中"));
+            item.put("addr", "");
+            item.put("hours", "");
+            item.put("phone", "");
+            item.put("distance", "");
+            item.put("rating", null);
             items.add(item);
         }
         return ok(items);
+    }
+
+    @GetMapping("/stores/{id}")
+    public ResponseEntity<Map<String, Object>> storeDetail(@PathVariable("id") String id) {
+        List<Map<String, Object>> rows = jdbcTemplate.queryForList(
+                "SELECT store_code AS code, store_name AS name FROM store "
+                + "WHERE store_code = ? AND status = '营业中'", id);
+        if (rows.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(err(404, "门店不存在或已关店"));
+        }
+        Map<String, Object> row = rows.get(0);
+        List<String> hot = jdbcTemplate.queryForList(
+                "SELECT ps.name FROM store_price sp JOIN product_sku ps ON ps.sku = sp.sku "
+                + "WHERE sp.status = 'ACTIVE' ORDER BY sp.sku LIMIT 5", String.class);
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("code", row.get("code"));
+        data.put("name", row.get("name"));
+        data.put("tags", List.of("营业中"));
+        data.put("addr", "");
+        data.put("hours", "");
+        data.put("phone", "");
+        data.put("distance", "");
+        data.put("rating", null);
+        data.put("sold", null);
+        data.put("intro", "");
+        data.put("facilities", List.of());
+        data.put("hotProjects", hot);
+        return ResponseEntity.ok(ok(data));
     }
 
     private static Map<String, Object> toPriceItem(Map<String, Object> row) {

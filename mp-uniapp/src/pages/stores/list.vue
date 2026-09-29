@@ -1,16 +1,14 @@
 <script setup lang="ts">
-/* C 端门店列表 pages/stores/list */
+/* C 端门店列表 pages/stores/list — C-B6 切真：GET /c/stores（shop store seed，营业中投影；无源字段空值回落 §七） */
 import { ref, computed } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import { useShopStore } from '@/stores/shop'
 import { navTo } from '@/utils/nav'
 
+const shop = useShopStore()
+onShow(() => shop.seed())
 const keyword = ref('')
-const stores = [
-  { id: 's1', name: '上海静安旗舰店', addr: '静安区南京西路 1266 号恒隆广场', distance: '1.2km', tags: ['旗舰店', '光电中心', '营业中'], hours: '10:00-21:00', phone: '021-6288-1234', rating: 4.9 },
-  { id: 's2', name: '上海徐汇万象城店', addr: '徐汇区淮海中路 999 号环贸 iapm', distance: '3.8km', tags: ['医美中心', '营业中'], hours: '10:00-21:00', phone: '021-5456-7890', rating: 4.8 },
-  { id: 's3', name: '上海浦东陆家嘴店', addr: '浦东新区世纪大道 8 号国金中心', distance: '5.5km', tags: ['精品店', '营业中'], hours: '10:00-22:00', phone: '021-2059-4567', rating: 4.7 },
-  { id: 's4', name: '上海虹桥天地店', addr: '闵行区申长路 99 弄虹桥天地', distance: '12km', tags: ['社区店', '营业中'], hours: '10:00-20:30', phone: '021-6220-8888', rating: 4.6 },
-]
-const list = computed(() => stores.filter((s) => !keyword.value || s.name.includes(keyword.value) || s.addr.includes(keyword.value)))
+const list = computed(() => shop.stores.filter((s) => !keyword.value || s.name.includes(keyword.value) || s.addr.includes(keyword.value)))
 function go(id: string) { navTo(`/pages/stores/detail?id=${id}`) }
 </script>
 
@@ -25,12 +23,12 @@ function go(id: string) { navTo(`/pages/stores/detail?id=${id}`) }
       <view v-for="s in list" :key="s.id" class="scard" @click="go(s.id)">
         <view class="scard__img"><uni-icons type="shop" size="30" color="#ff6b9e" /></view>
         <view class="scard__body">
-          <view class="scard__name">{{ s.name }} <text class="scard__rating"><uni-icons type="star" size="13" color="#f5a623" /> {{ s.rating }}</text></view>
+          <view class="scard__name">{{ s.name }} <text v-if="s.rating != null" class="scard__rating"><uni-icons type="star" size="13" color="#f5a623" /> {{ s.rating }}</text></view>
           <view class="scard__tags">
             <text v-for="t in s.tags" :key="t" class="scard__tag" :class="{ open: t.includes('营业') }">{{ t }}</text>
           </view>
-          <view class="scard__addr"><uni-icons type="map-pin" size="13" color="#999" /> {{ s.addr }}</view>
-          <view class="scard__meta"><uni-icons type="calendar" size="12" color="#aaa" /> {{ s.hours }} · <uni-icons type="phone" size="12" color="#aaa" /> {{ s.phone }}</view>
+          <view v-if="s.addr" class="scard__addr"><uni-icons type="map-pin" size="13" color="#999" /> {{ s.addr }}</view>
+          <view v-if="s.hours || s.phone" class="scard__meta"><template v-if="s.hours"><uni-icons type="calendar" size="12" color="#aaa" /> {{ s.hours }}</template><text v-if="s.hours && s.phone"> · </text><template v-if="s.phone"><uni-icons type="phone" size="12" color="#aaa" /> {{ s.phone }}</template></view>
         </view>
         <view class="scard__dist">{{ s.distance }}</view>
       </view>

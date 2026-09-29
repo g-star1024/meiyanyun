@@ -1,19 +1,12 @@
 <script setup lang="ts">
-/* 我的套餐 pages/packages/index — 会员已购卡项/疗程（模拟数据） */
-interface MyPackage {
-  name: string
-  total: number
-  used: number
-  expire: string
-  type: string
-  balance?: string
-}
-// 已购套餐疗程
-const myPackages: MyPackage[] = [
-  { name: '光子嫩肤亮肤疗程', total: 6, used: 2, expire: '2027-02-18', type: '美肤疗程' },
-  { name: '闺蜜分享次卡', total: 10, used: 4, expire: '2027-01-10', type: '次卡' },
-  { name: '焕颜抗衰储值卡', total: 1, used: 0, expire: '2027-08-20', type: '储值卡', balance: '¥8,600' },
-]
+/* 我的套餐 pages/packages/index — C-B6 切真：GET /c/packages（asset store，member_card 投影；次卡次数/储值余额元） */
+import { computed } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import { useAssetStore } from '@/stores/asset'
+
+const asset = useAssetStore()
+onShow(() => asset.seed())
+const myPackages = computed(() => asset.packages)
 </script>
 
 <template>

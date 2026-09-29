@@ -1,35 +1,20 @@
 <script setup lang="ts">
-/* C 端消息通知 pages/notifications/index — 预约提醒/回访通知/优惠通知 */
+/* C 端消息通知 pages/notifications/index — C-B6 切真：GET /c/notifications（notice store，V77 行级隔离 LIMIT 50 倒序）；已读/全读接 PUT 写路径 */
 import { ref, computed } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import { useNoticeStore, type Notif } from '@/stores/notice'
 import { navTo } from '@/utils/nav'
 
+const notice = useNoticeStore()
+onShow(() => notice.seed())
 const tab = ref<'all' | 'appt' | 'promo'>('all')
 
-interface Notif {
-  id: string
-  type: 'appt' | 'promo' | 'system'
-  title: string
-  body: string
-  time: string
-  read: boolean
-  to?: string
-}
-
-const notifs = ref<Notif[]>([
-  { id: 'n1', type: 'appt', title: '预约提醒', body: '您预约的「水光焕肤」将于明日 14:00 到店，请准时到达。', time: '今天 10:20', read: false, to: '/pages/booking/list' },
-  { id: 'n2', type: 'promo', title: '专属优惠券到账', body: '满 500 减 100 优惠券已到账，有效期 7 天，快去使用吧~', time: '昨天 16:45', read: false, to: '/pages/coupons/index' },
-  { id: 'n3', type: 'appt', title: '回访邀请', body: '您的「光子嫩肤」已到恢复期，点击填写回访反馈，帮助我们更好服务。', time: '2 天前', read: true, to: '/pages/followup/index' },
-  { id: 'n4', type: 'promo', title: '积分即将过期', body: '您有 200 积分将于月底过期，快去积分商城兑换心仪好礼！', time: '3 天前', read: true, to: '/pages/points-mall/index' },
-  { id: 'n5', type: 'system', title: '电子小票已生成', body: '您 8 月 22 日的消费小票已生成，点击查看详情。', time: '4 天前', read: true, to: '/pages/card/index' },
-  { id: 'n6', type: 'appt', title: '预约确认', body: '您的预约已确认，订单号 APT20260820005，请按时到店。', time: '6 天前', read: true, to: '/pages/booking/list' },
-])
-
 const filtered = computed(() => {
-  if (tab.value === 'all') return notifs.value
-  return notifs.value.filter((n) => n.type === tab.value)
+  if (tab.value === 'all') return notice.notifs
+  return notice.notifs.filter((n) => n.type === tab.value)
 })
 
-const unreadCount = computed(() => notifs.value.filter((n) => !n.read).length)
+const unreadCount = computed(() => notice.notifs.filter((n) => !n.read).length)
 
 function iconOf(type: Notif['type']) {
   return type === 'appt' ? 'calendar' : type === 'promo' ? 'gift' : 'notification'
@@ -39,12 +24,12 @@ function iconColorOf(type: Notif['type']) {
 }
 
 function open(n: Notif) {
-  n.read = true
+  notice.markRead(n)
   if (n.to) navTo(n.to)
 }
 
 function markAllRead() {
-  notifs.value.forEach((n) => (n.read = true))
+  notice.markAllRead()
 }
 </script>
 
@@ -86,6 +71,11 @@ function markAllRead() {
           <view class="notif-item__text">{{ n.body }}</view>
         </view>
         <view v-if="!n.read" class="notif-item__dot"></view>
+      </view>
+      <view v-if="!filtered.length" class="notif-empty">
+        <view class="notif-empty__icon"><uni-icons type="notification" size="36" color="#ddd" /></view>
+        <view class="notif-empty__t">暂无消息</view>
+        <view class="notif-empty__d">预约提醒与优惠活动将在此通知您</view>
       </view>
     </view>
   </view>
@@ -143,4 +133,11 @@ function markAllRead() {
   position: absolute; top: 24rpx; right: 24rpx;
   width: 16rpx; height: 16rpx; border-radius: 50%; background: #ff6b9e;
 }
+.notif-empty { text-align: center; padding: 96rpx 32rpx; }
+.notif-empty__icon {
+  width: 128rpx; height: 128rpx; border-radius: 50%; background: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.notif-empty__t { font-size: 28rpx; font-weight: 600; color: #666; margin-top: 24rpx; }
+.notif-empty__d { font-size: 24rpx; color: #999; margin-top: 12rpx; }
 </style>

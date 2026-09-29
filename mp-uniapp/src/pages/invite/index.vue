@@ -1,9 +1,16 @@
 <script setup lang="ts">
-/* C 端邀请有礼 pages/invite/index */
-import { ref } from 'vue'
+/* C 端邀请有礼 pages/invite/index — C-B6 切真：GET /c/invite（engage store；code=本人会员编号，三统计全源；三档奖励文案前端常量 §七） */
+import { computed, ref } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import { useEngageStore } from '@/stores/engage'
 import { toast } from '@/utils/nav'
 
-const code = 'MY8888'
+const engage = useEngageStore()
+onShow(() => engage.seed())
+const code = computed(() => engage.invite?.code ?? '')
+const invited = computed(() => engage.invite?.invited ?? 0)
+const visited = computed(() => engage.invite?.visited ?? 0)
+const points = computed(() => (engage.invite?.points ?? 0).toLocaleString())
 const copied = ref(false)
 // 自定义导航栏总高（状态栏 + 44px），用于透明模式下 Hero 沉浸上移
 const navH = (uni.getSystemInfoSync().statusBarHeight || 20) + 44
@@ -13,8 +20,9 @@ const rewards = [
   { icon: 'link', title: '双人同行', desc: '邀请满 3 位好友', reward: '赠水光护理 1 次' },
 ]
 function copy() {
+  if (!code.value) { toast('邀请码生成中，请稍后'); return }
   uni.setClipboardData({
-    data: code,
+    data: code.value,
     success: () => {
       copied.value = true
       setTimeout(() => (copied.value = false), 2000)
@@ -55,9 +63,9 @@ function inviteNow() { toast('请通过微信分享邀请好友') }
 
     <!-- 邀请记录 -->
     <view class="card stat">
-      <view class="stat__item"><text class="stat__b">6</text><text class="stat__l">已邀请</text></view>
-      <view class="stat__item"><text class="stat__b">3</text><text class="stat__l">已到店</text></view>
-      <view class="stat__item"><text class="stat__b">1,200</text><text class="stat__l">累计积分</text></view>
+      <view class="stat__item"><text class="stat__b">{{ invited }}</text><text class="stat__l">已邀请</text></view>
+      <view class="stat__item"><text class="stat__b">{{ visited }}</text><text class="stat__l">已到店</text></view>
+      <view class="stat__item"><text class="stat__b">{{ points }}</text><text class="stat__l">累计积分</text></view>
     </view>
 
     <view class="bottom-space"></view>

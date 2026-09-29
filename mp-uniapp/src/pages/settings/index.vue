@@ -1,13 +1,17 @@
 <script setup lang="ts">
-/* C 端设置 pages/settings/index */
-import { reactive } from 'vue'
+/* C 端设置 pages/settings/index — C-B6 切真：GET/PUT /c/settings（notice store；开关持久化失败回滚；手机号取登录档案掩码；实名/地址/缓存/关于/帮助留前端静态 §七） */
+import { computed } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import { useNoticeStore } from '@/stores/notice'
 import { navTo, toast } from '@/utils/nav'
 
-const toggles = reactive({ order: true, appt: true, promo: false })
-type Row = { label: string; value?: string; toggle?: keyof typeof toggles }
-const groups: { title: string; items: Row[] }[] = [
+const notice = useNoticeStore()
+onShow(() => notice.seed())
+const toggles = notice.settings
+type Row = { label: string; value?: string; toggle?: 'order' | 'appt' | 'promo' }
+const groups = computed<{ title: string; items: Row[] }[]>(() => [
   { title: '账户与安全', items: [
-    { label: '手机号', value: '138****1234' },
+    { label: '手机号', value: notice.settings.phone },
     { label: '实名认证', value: '已认证' },
     { label: '收货地址', value: '' },
   ]},
@@ -21,10 +25,10 @@ const groups: { title: string; items: Row[] }[] = [
     { label: '关于美研云', value: 'v1.0.0' },
     { label: '帮助中心', value: '' },
   ]},
-]
+])
 
-function onToggle(key: keyof typeof toggles) {
-  toggles[key] = !toggles[key]
+function onToggle(key: 'order' | 'appt' | 'promo') {
+  notice.toggle(key)
 }
 function onRow(it: Row) {
   if (it.toggle) return

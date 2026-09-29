@@ -1,31 +1,15 @@
 <script setup lang="ts">
-/* 消费记录 pages/records/index — 按时间分组的到店消费流水 */
-import { ref } from 'vue'
+/* 消费记录 pages/records/index — C-B6 切真：GET /c/records（asset store，四路归并按日分组；金额支出负/收入正/扣次 0） */
+import { ref, computed } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import { useAssetStore } from '@/stores/asset'
 import { navTo } from '@/utils/nav'
 
+const asset = useAssetStore()
+onShow(() => asset.seed())
 const tabs = ['全部', '项目消费', '卡项充值', '退款']
 const active = ref('全部')
-const records = [
-  {
-    date: '2026-08-25',
-    list: [
-      { name: '光子嫩肤（第3次）', store: '静安旗舰店', amount: 0, note: '疗程卡扣次', time: '15:20', type: '项目消费' },
-    ],
-  },
-  {
-    date: '2026-08-18',
-    list: [
-      { name: '闺蜜分享次卡', store: '静安旗舰店', amount: -3980, note: '微信支付', time: '14:02', type: '卡项充值' },
-    ],
-  },
-  {
-    date: '2026-08-10',
-    list: [
-      { name: '玻尿酸填充（瑞蓝2号）', store: '静安旗舰店', amount: -5280, note: '卡余额支付', time: '16:40', type: '项目消费' },
-      { name: '储值卡充值', store: '静安旗舰店', amount: -10000, note: '微信支付', time: '16:10', type: '卡项充值' },
-    ],
-  },
-]
+const records = computed(() => asset.records)
 const shown = (t: string) => active.value === '全部' || active.value === t
 function iconOf(type: string): { type: string; color: string } {
   if (type === '退款') return { type: 'undo', color: '#fa8c16' }

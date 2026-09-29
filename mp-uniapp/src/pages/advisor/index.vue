@@ -1,16 +1,13 @@
 <script setup lang="ts">
-/* C 端专属顾问 pages/advisor/index */
+/* C 端专属顾问 pages/advisor/index — C-B6 切真：GET /c/advisor（engage store；未分配/档案不可读空态「专属顾问待分配」；无源字段空值回落 §七） */
+import { computed } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import { useEngageStore } from '@/stores/engage'
 import { navTo, toast } from '@/utils/nav'
 
-const advisor = {
-  name: '林微',
-  title: '资深皮肤管理顾问',
-  avatar: '林',
-  years: '8 年医美咨询经验',
-  tags: ['皮肤管理', '抗衰方案', '术后护理'],
-  served: '已服务 1,200+ 会员',
-  rating: '4.9 分好评',
-}
+const engage = useEngageStore()
+onShow(() => engage.seed())
+const advisor = computed(() => engage.advisor)
 const faqs = [
   { q: '项目做完后多久能化妆？', a: '光电类项目建议 24-48 小时后再化妆，具体遵医嘱。' },
   { q: '疗程可以分次做吗？', a: '可以，疗程有效期内按建议周期分次到店即可。' },
@@ -27,21 +24,26 @@ function call() {
 <template>
   <view class="adv">
     <MNavbar title="专属顾问" />
-    <!-- 顾问卡片 -->
-    <view class="profile card">
+    <!-- 顾问卡片（未分配/档案不可读：空态如实呈现） -->
+    <view v-if="advisor" class="profile card">
       <view class="profile__avatar">{{ advisor.avatar }}</view>
       <view class="profile__info">
         <view class="profile__name">{{ advisor.name }} <text class="profile__badge">专属</text></view>
         <view class="profile__title">{{ advisor.title }}</view>
-        <view class="profile__tags">
+        <view v-if="advisor.tags && advisor.tags.length" class="profile__tags">
           <text v-for="t in advisor.tags" :key="t" class="profile__tag">{{ t }}</text>
         </view>
       </view>
     </view>
-    <view class="stats card">
-      <view class="stats__item"><text class="stats__b">{{ advisor.years }}</text><text class="stats__l">从业经验</text></view>
-      <view class="stats__item"><text class="stats__b">{{ advisor.served }}</text><text class="stats__l">服务规模</text></view>
-      <view class="stats__item"><text class="stats__b">{{ advisor.rating }}</text><text class="stats__l">会员口碑</text></view>
+    <view v-else class="card empty">
+      <view class="empty__icon"><uni-icons type="staff" size="40" color="#ffb0c8" /></view>
+      <view class="empty__t">专属顾问待分配</view>
+      <view class="empty__d">门店将尽快为您分配专属顾问，敬请期待</view>
+    </view>
+    <view v-if="advisor && (advisor.years || advisor.served || advisor.rating)" class="stats card">
+      <view class="stats__item"><text class="stats__b">{{ advisor.years || '—' }}</text><text class="stats__l">从业经验</text></view>
+      <view class="stats__item"><text class="stats__b">{{ advisor.served || '—' }}</text><text class="stats__l">服务规模</text></view>
+      <view class="stats__item"><text class="stats__b">{{ advisor.rating || '—' }}</text><text class="stats__l">会员口碑</text></view>
     </view>
 
     <!-- 快捷操作 -->
@@ -80,6 +82,10 @@ function call() {
 .actions { display: flex; padding: 32rpx 24rpx; }
 .action { flex: 1; background: #faf5f8; border-radius: 24rpx; padding: 28rpx 0; display: flex; flex-direction: column; align-items: center; font-size: 26rpx; color: #555; margin: 0 10rpx; }
 .action__ic { margin-bottom: 12rpx; }
+.empty { text-align: center; padding: 64rpx 32rpx; }
+.empty__icon { width: 128rpx; height: 128rpx; border-radius: 50%; background: #fff0f5; display: inline-flex; align-items: center; justify-content: center; }
+.empty__t { font-size: 30rpx; font-weight: 700; color: #1a1a1a; margin-top: 24rpx; }
+.empty__d { font-size: 24rpx; color: #999; margin-top: 12rpx; }
 .faq__title { margin-bottom: 24rpx; font-size: 30rpx; font-weight: 700; color: #1a1a1a; }
 .faq__item { padding: 24rpx 0; border-bottom: 1rpx solid #f5f5f5; }
 .faq__item:last-child { border-bottom: none; }
