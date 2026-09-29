@@ -302,9 +302,9 @@ function toggleChannel(c: string) {
   if (i >= 0) ruleForm.notifyChannels.splice(i, 1)
   else ruleForm.notifyChannels.push(c)
 }
-function submitRule() {
+async function submitRule() {
   const m = store.metrics.find((x) => x.modelId === ruleForm.modelId)
-  store.createRule({
+  const created = await store.createRule({
     name: ruleForm.name.trim(),
     modelId: ruleForm.modelId,
     modelName: m?.modelName ?? '',
@@ -314,7 +314,7 @@ function submitRule() {
     severity: ruleForm.severity,
     notifyChannels: [...ruleForm.notifyChannels],
   })
-  createOpen.value = false
+  if (created) createOpen.value = false
 }
 </script>
 

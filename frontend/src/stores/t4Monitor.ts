@@ -4,8 +4,11 @@
 // ============================================================
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { nextId, useActivityStore } from './activity'
+import { useActivityStore } from './activity'
 import { useAuthStore } from './auth'
+import { errMsg } from './m5Coupon'
+import { useToast } from '@/composables/useToast'
+import * as api from '@/api/t4Monitor'
 
 export type AlertSeverity = 'CRITICAL' | 'WARNING' | 'INFO'
 export type AlertStatus = 'FIRING' | 'ACKNOWLEDGED' | 'RESOLVED'
@@ -70,14 +73,66 @@ export const ALERT_METRIC_LABEL: Record<AlertRule['metric'], string> = {
   QPS_DROP: 'QPS 下跌(%)',
 }
 
+// —— 铁律 -1-B：前后端差异只在此消化；id = 后端 code；null→undefined ——
+function mapMetric(v: api.MetricView): ModelMetric {
+  return {
+    modelId: v.modelId,
+    modelName: v.modelName,
+    timestamp: v.timestamp,
+    qps: Number(v.qps),
+    latencyP99: Number(v.latencyP99),
+    errorRate: Number(v.errorRate),
+    driftScore: Number(v.driftScore),
+    accuracy: Number(v.accuracy),
+  }
+}
+
+function mapRule(v: api.RuleView): AlertRule {
+  return {
+    id: v.id,
+    name: v.name,
+    modelId: v.modelId,
+    modelName: v.modelName,
+    metric: v.metric as AlertRule['metric'],
+    threshold: Number(v.threshold),
+    operator: v.operator as AlertRule['operator'],
+    severity: v.severity as AlertSeverity,
+    enabled: v.enabled,
+    notifyChannels: v.notifyChannels ?? [],
+    createdAt: v.createdAt,
+  }
+}
+
+function mapEvent(v: api.EventView): AlertEvent {
+  return {
+    id: v.id,
+    ruleId: v.ruleId,
+    ruleName: v.ruleName,
+    modelId: v.modelId,
+    modelName: v.modelName,
+    severity: v.severity as AlertSeverity,
+    status: v.status as AlertStatus,
+    message: v.message,
+    value: Number(v.value),
+    threshold: Number(v.threshold),
+    triggeredAt: v.triggeredAt,
+    acknowledgedAt: v.acknowledgedAt ?? undefined,
+    resolvedAt: v.resolvedAt ?? undefined,
+    acknowledgedBy: v.acknowledgedBy ?? undefined,
+  }
+}
+
 export const useT4MonitorStore = defineStore('t4Monitor', () => {
   const auth = useAuthStore()
   const activity = useActivityStore()
+  const toast = useToast()
 
   const metrics = ref<ModelMetric[]>([])
   const rules = ref<AlertRule[]>([])
   const events = ref<AlertEvent[]>([])
   const loaded = ref(false)
+  const loading = ref(false)
+  const loadError = ref('')
 
   // ---- 查询 ----
   const firingAlerts = computed(() => events.value.filter((e) => e.status === 'FIRING'))
@@ -91,122 +146,127 @@ export const useT4MonitorStore = defineStore('t4Monitor', () => {
     return { firing, critical, avgLatency, models: metrics.value.length }
   })
 
+  async function load() {
+    if (loading.value) return
+    loading.value = true
+    loadError.value = ''
+    try {
+      const data = await api.overview()
+      metrics.value = data.metrics.map(mapMetric)
+      rules.value = data.rules.map(mapRule)
+      events.value = data.events.map(mapEvent)
+      loaded.value = true
+    } catch (e) {
+      loadError.value = errMsg(e, '监控数据加载失败')
+    } finally {
+      loading.value = false
+    }
+  }
+
   function can(perm: string) {
     return auth.can(perm)
   }
 
   // ---- 命令 ----
-  function createRule(input: Omit<AlertRule, 'id' | 'createdAt' | 'enabled'> & { enabled?: boolean }): AlertRule {
-    if (!auth.can('monitor:rule:create')) throw new Error('无告警规则创建权限')
-    const r: AlertRule = {
-      id: nextId('rule'),
-      ...input,
-      enabled: input.enabled ?? true,
-      createdAt: new Date().toISOString(),
+  async function createRule(input: Omit<AlertRule, 'id' | 'createdAt' | 'enabled'> & { enabled?: boolean }): Promise<AlertRule | null> {
+    if (!can('monitor:rule:create')) {
+      toast.error('无操作权限：需要 monitor:rule:create')
+      return null
     }
-    rules.value.unshift(r)
-    activity.log(auth.user.name, `创建告警规则「${r.name}」（${ALERT_METRIC_LABEL[r.metric]} ${r.operator} ${r.threshold}）`, r.id)
-    return r
+    try {
+      const created = await api.createRule({
+        name: input.name,
+        modelId: input.modelId,
+        modelName: input.modelName,
+        metric: input.metric,
+        threshold: input.threshold,
+        operator: input.operator,
+        severity: input.severity,
+        enabled: input.enabled,
+        notifyChannels: input.notifyChannels,
+      })
+      const r = mapRule(created)
+      rules.value.unshift(r)
+      activity.log(auth.user.name, `创建告警规则「${r.name}」（${ALERT_METRIC_LABEL[r.metric]} ${r.operator} ${r.threshold}）`, r.id)
+      toast.success(`告警规则「${r.name}」已创建（${r.id}）`)
+      return r
+    } catch (e) {
+      toast.error(errMsg(e, '告警规则创建失败'))
+      return null
+    }
   }
 
-  function updateRule(id: string, patch: Partial<Omit<AlertRule, 'id' | 'createdAt'>>) {
-    if (!auth.can('monitor:rule:edit')) throw new Error('无告警规则编辑权限')
+  async function updateRule(id: string, patch: Partial<Omit<AlertRule, 'id' | 'createdAt'>>) {
+    if (!can('monitor:rule:edit')) {
+      toast.error('无操作权限：需要 monitor:rule:edit')
+      return
+    }
     const r = rules.value.find((x) => x.id === id)
     if (!r) return
-    Object.assign(r, patch)
-    activity.log(auth.user.name, `更新告警规则「${r.name}」`, id)
+    try {
+      const next = await api.updateRule(id, {
+        name: patch.name,
+        metric: patch.metric,
+        threshold: patch.threshold,
+        operator: patch.operator,
+        severity: patch.severity,
+        notifyChannels: patch.notifyChannels,
+      })
+      Object.assign(r, mapRule(next))
+      activity.log(auth.user.name, `更新告警规则「${r.name}」`, id)
+      toast.success(`告警规则「${r.name}」已更新`)
+    } catch (e) {
+      toast.error(errMsg(e, '告警规则更新失败'))
+    }
   }
 
-  function toggleRule(id: string, enabled: boolean) {
-    if (!auth.can('monitor:rule:edit')) throw new Error('无告警规则编辑权限')
+  async function toggleRule(id: string, enabled: boolean) {
+    if (!can('monitor:rule:edit')) {
+      toast.error('无操作权限：需要 monitor:rule:edit')
+      return
+    }
     const r = rules.value.find((x) => x.id === id)
     if (!r) return
-    r.enabled = enabled
-    activity.log(auth.user.name, `告警规则「${r.name}」${enabled ? '启用' : '停用'}`, id)
+    try {
+      const next = await api.setEnabled(id, enabled)
+      Object.assign(r, mapRule(next))
+      activity.log(auth.user.name, `告警规则「${r.name}」${enabled ? '启用' : '停用'}`, id)
+      toast.success(`告警规则「${r.name}」已${enabled ? '启用' : '停用'}`)
+    } catch (e) {
+      toast.error(errMsg(e, '操作失败'))
+    }
   }
 
-  function acknowledgeAlert(id: string) {
+  async function acknowledgeAlert(id: string) {
     const e = events.value.find((x) => x.id === id)
     if (!e || e.status !== 'FIRING') return
-    e.status = 'ACKNOWLEDGED'
-    e.acknowledgedAt = new Date().toISOString()
-    e.acknowledgedBy = auth.user.name
-    activity.log(auth.user.name, `确认告警「${e.ruleName}」（模型：${e.modelName}）`, id)
+    try {
+      const next = await api.acknowledge(id)
+      Object.assign(e, mapEvent(next))
+      activity.log(auth.user.name, `确认告警「${e.ruleName}」（模型：${e.modelName}）`, id)
+      toast.success(`告警「${e.ruleName}」已确认`)
+    } catch (err) {
+      toast.error(errMsg(err, '确认失败'))
+    }
   }
 
-  function resolveAlert(id: string) {
+  async function resolveAlert(id: string) {
     const e = events.value.find((x) => x.id === id)
     if (!e || e.status === 'RESOLVED') return
-    e.status = 'RESOLVED'
-    e.resolvedAt = new Date().toISOString()
-    if (!e.acknowledgedAt) {
-      e.acknowledgedAt = e.resolvedAt
-      e.acknowledgedBy = auth.user.name
+    try {
+      const next = await api.resolve(id)
+      Object.assign(e, mapEvent(next))
+      activity.log(auth.user.name, `解决告警「${e.ruleName}」（模型：${e.modelName}）`, id)
+      toast.success(`告警「${e.ruleName}」已解决`)
+    } catch (err) {
+      toast.error(errMsg(err, '解决失败'))
     }
-    activity.log(auth.user.name, `解决告警「${e.ruleName}」（模型：${e.modelName}）`, id)
   }
 
-  // ---- 种子 ----
-  function seed() {
+  // ---- 种子（切真：拉取后端概览） ----
+  async function seed() {
     if (loaded.value) return
-    loaded.value = true
-    const now = Date.now()
-    const minsAgo = (m: number) => new Date(now - m * 60_000).toISOString()
-
-    metrics.value = [
-      { modelId: 'mdl-churn', modelName: '客户流失预测 v3', timestamp: minsAgo(1), qps: 142, latencyP99: 58, errorRate: 0.18, driftScore: 0.21, accuracy: 0.91 },
-      { modelId: 'mdl-skin', modelName: '皮肤影像分类', timestamp: minsAgo(1), qps: 28, latencyP99: 218, errorRate: 0.62, driftScore: 0.78, accuracy: 0.86 },
-      { modelId: 'mdl-sales', modelName: '门店销量预测', timestamp: minsAgo(2), qps: 12, latencyP99: 92, errorRate: 0.05, driftScore: 0.12, accuracy: 0.92 },
-      { modelId: 'mdl-rec', modelName: '项目疗程推荐', timestamp: minsAgo(1), qps: 86, latencyP99: 76, errorRate: 0.02, driftScore: 0.08, accuracy: 0.88 },
-      { modelId: 'mdl-nlp', modelName: '客服意图识别(待发布)', timestamp: minsAgo(3), qps: 0, latencyP99: 0, errorRate: 0, driftScore: 0, accuracy: 0.93 },
-    ]
-
-    rules.value = [
-      { id: nextId('rule'), name: '皮肤影像-漂移过高', modelId: 'mdl-skin', modelName: '皮肤影像分类', metric: 'DRIFT', threshold: 0.7, operator: '>', severity: 'CRITICAL', enabled: true, notifyChannels: ['企微', '邮件'], createdAt: minsAgo(60 * 24 * 10) },
-      { id: nextId('rule'), name: '流失预测-P99 延迟', modelId: 'mdl-churn', modelName: '客户流失预测 v3', metric: 'LATENCY', threshold: 200, operator: '>', severity: 'WARNING', enabled: true, notifyChannels: ['企微'], createdAt: minsAgo(60 * 24 * 8) },
-      { id: nextId('rule'), name: '皮肤影像-错误率', modelId: 'mdl-skin', modelName: '皮肤影像分类', metric: 'ERROR_RATE', threshold: 5, operator: '>=', severity: 'WARNING', enabled: true, notifyChannels: ['企微', '邮件', '短信'], createdAt: minsAgo(60 * 24 * 8) },
-      { id: nextId('rule'), name: '销量预测-准确率下跌', modelId: 'mdl-sales', modelName: '门店销量预测', metric: 'ACCURACY', threshold: 0.8, operator: '<', severity: 'WARNING', enabled: true, notifyChannels: ['邮件'], createdAt: minsAgo(60 * 24 * 6) },
-      { id: nextId('rule'), name: '推荐服务-QPS 下跌', modelId: 'mdl-rec', modelName: '项目疗程推荐', metric: 'QPS_DROP', threshold: 30, operator: '>', severity: 'INFO', enabled: false, notifyChannels: ['企微'], createdAt: minsAgo(60 * 24 * 3) },
-      { id: nextId('rule'), name: '流失预测-漂移', modelId: 'mdl-churn', modelName: '客户流失预测 v3', metric: 'DRIFT', threshold: 0.6, operator: '>', severity: 'INFO', enabled: true, notifyChannels: ['企微'], createdAt: minsAgo(60 * 24 * 2) },
-    ]
-
-    events.value = [
-      {
-        id: nextId('evt'), ruleId: rules.value[0].id, ruleName: rules.value[0].name,
-        modelId: 'mdl-skin', modelName: '皮肤影像分类',
-        severity: 'CRITICAL', status: 'FIRING',
-        message: '漂移分数 0.78 超过阈值 0.70，建议立即复核模型效果或触发重训',
-        value: 0.78, threshold: 0.7, triggeredAt: minsAgo(18),
-      },
-      {
-        id: nextId('evt'), ruleId: rules.value[2].id, ruleName: rules.value[2].name,
-        modelId: 'mdl-skin', modelName: '皮肤影像分类',
-        severity: 'WARNING', status: 'FIRING',
-        message: '近 5 分钟错误率 5.6% ≥ 阈值 5%，疑似推理服务异常',
-        value: 5.6, threshold: 5, triggeredAt: minsAgo(26),
-      },
-      {
-        id: nextId('evt'), ruleId: rules.value[1].id, ruleName: rules.value[1].name,
-        modelId: 'mdl-churn', modelName: '客户流失预测 v3',
-        severity: 'WARNING', status: 'ACKNOWLEDGED',
-        message: 'P99 延迟 218ms 超过阈值 200ms，已通知值班同学',
-        value: 218, threshold: 200, triggeredAt: minsAgo(120), acknowledgedAt: minsAgo(115), acknowledgedBy: '王运维',
-      },
-      {
-        id: nextId('evt'), ruleId: rules.value[3].id, ruleName: rules.value[3].name,
-        modelId: 'mdl-sales', modelName: '门店销量预测',
-        severity: 'WARNING', status: 'RESOLVED',
-        message: '准确率跌至 0.78，低于阈值 0.80',
-        value: 0.78, threshold: 0.8, triggeredAt: minsAgo(60 * 8), acknowledgedAt: minsAgo(60 * 8 - 3), resolvedAt: minsAgo(60 * 6), acknowledgedBy: '赵磊',
-      },
-      {
-        id: nextId('evt'), ruleId: rules.value[0].id, ruleName: rules.value[0].name,
-        modelId: 'mdl-skin', modelName: '皮肤影像分类',
-        severity: 'CRITICAL', status: 'RESOLVED',
-        message: '历史漂移告警（0.72）已随 v1.4 重训解决',
-        value: 0.72, threshold: 0.7, triggeredAt: minsAgo(60 * 24 * 2), acknowledgedAt: minsAgo(60 * 24 * 2 - 5), resolvedAt: minsAgo(60 * 24 * 1), acknowledgedBy: '张医生',
-      },
-    ]
+    await load()
   }
 
   return {
