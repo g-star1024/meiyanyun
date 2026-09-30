@@ -1,5 +1,10 @@
 <template>
   <div class="ov">
+    <!-- 层级选择器（棒②卡1：集团→区域→门店；作用于门店排行聚焦） -->
+    <div class="ov__scope">
+      <OrgScopePicker />
+    </div>
+
     <!-- KPI 行 -->
     <div class="ov__kpis">
       <div class="kpi kpi--hero">
@@ -56,7 +61,7 @@
     <CCard title="门店营收排行" padding="none">
       <CTable :columns="rankCols" :rows="rankRows" row-key="id" />
     </CCard>
-    <p class="ov-footnote">数据源：GET /api/finance/group-overview（monthly_store_metrics 月度事实表，MonthlyMetricJob 跑批聚合，金额「分」→万元）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。顶部 hero=最新月集团合计；「各区域营收」「门店营收排行」=全期累计；负毛利预警=事实表毛利率<0 门店；新客/复购/活跃/治疗人次数据已备于 monthTotals、本屏 KPI 暂未接入显「—」；满意度暂无数据源显「—」。</p>
+    <p class="ov-footnote">数据源：GET /api/finance/group-overview（monthly_store_metrics 月度事实表，MonthlyMetricJob 跑批聚合，金额「分」→万元）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。顶部 hero=最新月集团合计；「各区域营收」「门店营收排行」=全期累计；负毛利预警=事实表毛利率<0 门店；新客/复购/活跃/治疗人次数据已备于 monthTotals、本屏 KPI 暂未接入显「—」；满意度暂无数据源显「—」。层级选择器（集团→区域→门店）作用于门店排行 Top5 内聚焦；KPI 与图表保持集团口径，全量层级化随棒②卡3 逐页铺开。</p>
   </div>
 </template>
 
@@ -66,10 +71,18 @@ import CCard from '@/components/CCard.vue'
 import CIcon from '@/components/CIcon.vue'
 import CBarChart from '@/components/CBarChart.vue'
 import CTable from '@/components/CTable.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1OverviewStore } from '@/stores/m1Overview'
+import { useM1ContextStore } from '@/stores/m1Context'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const ov = useM1OverviewStore()
-onMounted(() => ov.load())
+const scope = useM1ContextStore()
+const org = useM1OrgStore()
+onMounted(() => {
+  ov.load()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const heroValue = computed(() => ov.kpis.revenue.value?.toLocaleString() ?? '—')
 const heroDelta = computed(() => ov.kpis.revenue.delta)
@@ -95,17 +108,24 @@ const rankCols = [
   { key: 'customers', label: '客户数', align: 'right' as const },
   { key: 'satisfaction', label: '满意度', align: 'right' as const },
 ]
-const rankRows = computed(() => ov.storeRanks.map((s) => ({
-  id: s.id, name: s.name, region: s.region,
-  revenue: s.revenue.toLocaleString(),
-  growth: s.growth == null ? '—' : (s.growth >= 0 ? '+' : '') + s.growth + '%',
-  customers: s.customers?.toLocaleString() ?? '—',
-  satisfaction: s.satisfaction == null ? '—' : s.satisfaction + '%',
-})))
+const rankRows = computed(() => ov.storeRanks
+  .filter((s) => {
+    if (scope.storeCode && s.id !== scope.storeCode) return false
+    if (!scope.storeCode && scope.selectedRegionShort && s.region !== scope.selectedRegionShort) return false
+    return true
+  })
+  .map((s) => ({
+    id: s.id, name: s.name, region: s.region,
+    revenue: s.revenue.toLocaleString(),
+    growth: s.growth == null ? '—' : (s.growth >= 0 ? '+' : '') + s.growth + '%',
+    customers: s.customers?.toLocaleString() ?? '—',
+    satisfaction: s.satisfaction == null ? '—' : s.satisfaction + '%',
+  })))
 </script>
 
 <style scoped>
 .ov { display: flex; flex-direction: column; gap: var(--s-lg); }
+.ov__scope { display: flex; align-items: center; padding: var(--s-sm) var(--s-md); background: var(--c-surface); border: 1px solid var(--c-border-light); border-radius: var(--r-xl); }
 .ov__kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--s-md); }
 .kpi { background: var(--c-surface); border: 1px solid var(--c-border-light); border-radius: var(--r-xl); padding: var(--s-lg); display: flex; flex-direction: column; align-items: flex-start; text-align: left; min-width: 0; }
 .kpi--hero { background: linear-gradient(135deg, var(--c-brand), var(--c-brand-secondary)); border: none; color: #fff; grid-column: span 1; }

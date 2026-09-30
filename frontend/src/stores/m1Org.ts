@@ -20,6 +20,8 @@ export interface OrgNode {
   name: string
   type: OrgType
   parentId: string | null
+  /** 门店节点挂载的 store 主数据编码（B87 D4）；非门店节点为 undefined */
+  storeCode?: string
   leaderName: string
   headcount: number
   status: OrgStatus
@@ -46,6 +48,7 @@ function mapNode(n: OrgTreeNode): OrgNode {
     name: n.orgName,
     type,
     parentId: n.parentCode ?? null,
+    storeCode: n.storeCode ?? undefined,
     leaderName: n.leaderName ?? '',
     headcount: n.headcount ?? 0,
     status: n.statusCode === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE',
