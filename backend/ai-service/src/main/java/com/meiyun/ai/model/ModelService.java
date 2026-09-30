@@ -189,26 +189,52 @@ public class ModelService {
         return new SaveResult(true, id);
     }
 
-    /** 真实连通性测试：拿供应商解密 Key 打一次 OpenAI 兼容 /chat/completions，结果回写模型状态。 */
+    /** 真实连通性测试：按模型能力路由真实 ping——CHAT 打 /chat/completions，VISION 打多模态 chat，仅 EMBEDDING 打 /embeddings，结果回写模型状态。 */
     @Transactional
     public TestResult testConnection(Long id, String actor) {
         AiModel m = requireModel(id);
         AiProvider p = requireProvider(m.getProviderId());
         String apiKey = keyRef.decrypt(p);
+        String capability = primaryCapability(m.getCapabilities());
         long start = System.currentTimeMillis();
         try {
-            LlmClient.ChatResult r = llm.ping(p.getBaseUrl(), apiKey, m.getModelCode());
-            long latency = System.currentTimeMillis() - start;
+            long latency;
+            String msg;
+            String snippet;
+            int totalTokens;
+            switch (capability) {
+                case "CHAT" -> {
+                    LlmClient.ChatResult r = llm.ping(p.getBaseUrl(), apiKey, m.getModelCode());
+                    latency = System.currentTimeMillis() - start;
+                    totalTokens = r.totalTokens();
+                    msg = "连通正常，模型返回 " + totalTokens + " tokens";
+                    snippet = r.content() == null ? "" :
+                            (r.content().length() > 80 ? r.content().substring(0, 80) : r.content());
+                }
+                case "VISION" -> {
+                    LlmClient.ChatResult r = llm.visionPing(p.getBaseUrl(), apiKey, m.getModelCode());
+                    latency = System.currentTimeMillis() - start;
+                    totalTokens = r.totalTokens();
+                    msg = "连通正常，多模态图片输入验证通过，模型返回 " + totalTokens + " tokens";
+                    snippet = r.content() == null ? "" :
+                            (r.content().length() > 80 ? r.content().substring(0, 80) : r.content());
+                }
+                default -> {
+                    LlmClient.EmbedResult r = llm.embed(p.getBaseUrl(), apiKey, m.getModelCode(), "ping");
+                    latency = System.currentTimeMillis() - start;
+                    totalTokens = r.promptTokens();
+                    msg = "连通正常，向量维度 " + r.dimensions();
+                    snippet = "dimensions=" + r.dimensions();
+                }
+            }
             m.setConnStatus("SUCCESS");
-            String msg = "连通正常，模型返回 " + r.totalTokens() + " tokens";
             m.setConnMessage(msg);
             m.setConnCheckedAt(OffsetDateTime.now());
             modelRepo.save(m);
             audit.record("AI_MODEL", "MDL-" + id, actor, "TEST_CONN",
-                    payload(Map.of("result", "SUCCESS", "latencyMs", latency, "totalTokens", r.totalTokens())));
-            String snippet = r.content() == null ? "" :
-                    (r.content().length() > 80 ? r.content().substring(0, 80) : r.content());
-            return new TestResult(true, "SUCCESS", msg, snippet, (int) latency, r.totalTokens(), m.getConnCheckedAt());
+                    payload(Map.of("result", "SUCCESS", "capability", capability,
+                            "latencyMs", latency, "totalTokens", totalTokens)));
+            return new TestResult(true, "SUCCESS", msg, snippet, (int) latency, totalTokens, m.getConnCheckedAt());
         } catch (Exception e) {
             long latency = System.currentTimeMillis() - start;
             m.setConnStatus("FAIL");
@@ -217,7 +243,8 @@ public class ModelService {
             m.setConnCheckedAt(OffsetDateTime.now());
             modelRepo.save(m);
             audit.record("AI_MODEL", "MDL-" + id, actor, "TEST_CONN",
-                    payload(Map.of("result", "FAIL", "latencyMs", latency, "error", m.getConnMessage())));
+                    payload(Map.of("result", "FAIL", "capability", capability,
+                            "latencyMs", latency, "error", m.getConnMessage())));
             return new TestResult(false, "FAIL", m.getConnMessage(), null, (int) latency, 0, m.getConnCheckedAt());
         }
     }
@@ -275,6 +302,20 @@ public class ModelService {
             }
         }
         return String.join(",", parts);
+    }
+
+    private String primaryCapability(String capabilities) {
+        List<String> caps = capabilities == null || capabilities.isBlank()
+                ? List.of("CHAT")
+                : Arrays.stream(capabilities.split("[,，]"))
+                        .map(String::trim).filter(s -> !s.isEmpty()).map(String::toUpperCase).toList();
+        if (caps.contains("CHAT")) {
+            return "CHAT";
+        }
+        if (caps.contains("VISION")) {
+            return "VISION";
+        }
+        return "EMBEDDING";
     }
 
     private ModelView toView(AiModel m, AiProvider p) {

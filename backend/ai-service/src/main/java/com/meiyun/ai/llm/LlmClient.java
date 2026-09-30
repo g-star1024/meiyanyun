@@ -26,7 +26,14 @@ public class LlmClient {
     public record ChatResult(String content, int promptTokens, int completionTokens, int totalTokens) {
     }
 
+    public record EmbedResult(int dimensions, int promptTokens) {
+    }
+
     private static final Logger log = LoggerFactory.getLogger(LlmClient.class);
+
+    /** 1x1 透明 PNG（vision ping 最小图片输入，避免外链依赖）。 */
+    private static final String TINY_PNG_BASE64 =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
     private final int connectTimeout;
     private final int readTimeout;
@@ -40,7 +47,7 @@ public class LlmClient {
 
     /** 最小一次对话，用于连通性测试与后续无状态生成。 */
     public ChatResult chat(String baseUrl, String apiKey, String model,
-                           List<Map<String, String>> messages,
+                           List<? extends Map<String, ?>> messages,
                            Double temperature, Integer maxTokens) {
         return chat(baseUrl, apiKey, model, messages, temperature, maxTokens, false);
     }
@@ -51,7 +58,7 @@ public class LlmClient {
      *                空回答/截断在 ping 语义下不代表故障。
      */
     private ChatResult chat(String baseUrl, String apiKey, String model,
-                            List<Map<String, String>> messages,
+                            List<? extends Map<String, ?>> messages,
                             Double temperature, Integer maxTokens, boolean lenient) {
         String url = normalizeBaseUrl(baseUrl) + "/chat/completions";
         Map<String, Object> body = new java.util.LinkedHashMap<>();
@@ -134,6 +141,62 @@ public class LlmClient {
     public ChatResult ping(String baseUrl, String apiKey, String model) {
         return chat(baseUrl, apiKey, model,
                 List.of(Map.of("role", "user", "content", "ping")), 0.0, 8, true);
+    }
+
+    /** VISION 多模态 ping：OpenAI content 数组（文本 + 1x1 PNG data URI），验证模型的图片输入通路。 */
+    public ChatResult visionPing(String baseUrl, String apiKey, String model) {
+        String dataUri = "data:image/png;base64," + TINY_PNG_BASE64;
+        Map<String, Object> content0 = Map.of("type", "text", "text", "ping");
+        Map<String, Object> content1 = Map.of("type", "image_url", "image_url", Map.of("url", dataUri));
+        return chat(baseUrl, apiKey, model,
+                List.of(Map.of("role", "user", "content", List.of(content0, content1))), 0.0, 32, true);
+    }
+
+    /** EMBEDDING 向量 ping：POST {base_url}/embeddings，取返回向量维度与 prompt tokens。 */
+    public EmbedResult embed(String baseUrl, String apiKey, String model, String input) {
+        String url = normalizeBaseUrl(baseUrl) + "/embeddings";
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("model", model);
+        body.put("input", input);
+        try {
+            byte[] rawBytes = client().post()
+                    .uri(url)
+                    .headers(h -> {
+                        h.setContentType(MediaType.APPLICATION_JSON);
+                        h.setBearerAuth(apiKey);
+                    })
+                    .body(body)
+                    .retrieve()
+                    .body(byte[].class);
+            if (rawBytes == null || rawBytes.length == 0) {
+                throw new IllegalStateException("供应商返回为空");
+            }
+            String raw = new String(rawBytes, java.nio.charset.StandardCharsets.UTF_8);
+            JsonNode resp;
+            try {
+                resp = mapper.readTree(raw);
+            } catch (Exception parseEx) {
+                throw new IllegalStateException("供应商返回不是合法 JSON："
+                        + (raw.length() > 200 ? raw.substring(0, 200) : raw));
+            }
+            JsonNode embedding = resp.path("data").path(0).path("embedding");
+            if (!embedding.isArray() || embedding.isEmpty()) {
+                throw new IllegalStateException("供应商返回缺少 data[0].embedding 向量");
+            }
+            return new EmbedResult(embedding.size(), resp.path("usage").path("prompt_tokens").asInt(0));
+        } catch (RestClientResponseException e) {
+            String detail = parseError(e.getResponseBodyAsString());
+            throw new IllegalStateException("供应商拒绝请求（HTTP " + e.getStatusCode().value() + "）：" + detail);
+        } catch (Exception e) {
+            if (e instanceof IllegalStateException) {
+                throw (IllegalStateException) e;
+            }
+            if (isReadTimeout(e)) {
+                throw new IllegalStateException(
+                        "供应商响应超时（超过 " + readTimeout + "ms 读取时限）", e);
+            }
+            throw new IllegalStateException("调用供应商失败：" + e.getMessage(), e);
+        }
     }
 
     private RestClient client() {
