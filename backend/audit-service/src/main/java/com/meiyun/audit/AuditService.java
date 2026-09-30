@@ -17,9 +17,11 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 
 /**
@@ -36,10 +38,13 @@ public class AuditService {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final AuditRepository repository;
+    private final AuditChainExemptionRepository exemptionRepository;
     private final JdbcTemplate jdbcTemplate;
 
-    public AuditService(AuditRepository repository, JdbcTemplate jdbcTemplate) {
+    public AuditService(AuditRepository repository, AuditChainExemptionRepository exemptionRepository,
+                        JdbcTemplate jdbcTemplate) {
         this.repository = repository;
+        this.exemptionRepository = exemptionRepository;
         this.jdbcTemplate = jdbcTemplate;
     }
 
@@ -76,12 +81,14 @@ public class AuditService {
     /**
      * 巡检整链：逐条重算 cur_hash 并与存储值比对，<b>遍历全程</b>收集所有失配节点。
      * <p>关键：发现失配后不能沿重算值继续（否则历史断链会导致其后全部节点误报），
-     * expectedPrev 始终推进为「存储的 node.curHash」，从而独立检出每一处断链。
-     * brokenAtId 保留首处口径以兼容旧前端，全量清单见 breaks。</p>
+     * expectedPrev 始终推进为「存储的 node.curHash」，从而独立检出每一处断链。</p>
+     * <p>豁免分离（棒③卡1）：已登记豁免的历史断链进 exemptedBreaks 单列，
+     * breaks 仅含「新增未豁免」断链，ok/brokenAtId 只由新增断链决定（无豁免登记时
+     * 与旧行为完全一致，向后兼容）。</p>
      */
     public ChainVerifyResult verifyChain() {
         List<AuditLog> chain = repository.findAllByOrderByIdAsc();
-        List<ChainBreak> breaks = new ArrayList<>();
+        List<ChainBreak> detected = new ArrayList<>();
         String expectedPrev = AuditChain.genesisHash();
         for (AuditLog node : chain) {
             // 验链时也要对 payload 做 canonicalize（与写入时一致）
@@ -92,14 +99,78 @@ public class AuditService {
                     expectedPrev, canonicalPayload, node.getActor(), node.getAction(),
                     createdAtIso, node.getCurHash());
             if (!ok) {
-                breaks.add(new ChainBreak(node.getId(), expectedPrev, node.getPrevHash(),
+                detected.add(new ChainBreak(node.getId(), expectedPrev, node.getPrevHash(),
                         node.getCurHash(), node.getAction(), node.getActor(), createdAtIso));
             }
             // 无论是否失配都沿「存储值」推进，保证后续断链可被独立检出
             expectedPrev = node.getCurHash();
         }
+        List<ChainBreak> breaks = detected;
+        List<ChainBreak> exemptedBreaks = List.of();
+        if (!detected.isEmpty()) {
+            Set<Long> exemptedIds = new HashSet<>();
+            exemptionRepository.findByAuditLogIdIn(
+                            detected.stream().map(ChainBreak::id).toList())
+                    .forEach(e -> exemptedIds.add(e.getAuditLogId()));
+            breaks = detected.stream().filter(b -> !exemptedIds.contains(b.id())).toList();
+            exemptedBreaks = detected.stream().filter(b -> exemptedIds.contains(b.id())).toList();
+        }
         Long firstBreak = breaks.isEmpty() ? null : breaks.get(0).id();
-        return new ChainVerifyResult(breaks.isEmpty(), firstBreak, chain.size(), breaks);
+        return new ChainVerifyResult(breaks.isEmpty(), firstBreak, chain.size(), breaks, exemptedBreaks);
+    }
+
+    /**
+     * 断链豁免登记（棒③卡1）：已知历史断链登记后与新增断链分离呈现。
+     * <p>幂等：audit_log_id 唯一索引兜底，同一节点重复登记直接返回已存在记录
+     * （duplicated=true），不重复落库、不重复写审计留痕。</p>
+     * <p>审计自洽：登记行为本身经 append 写入审计链（action=AUDIT_CHAIN_EXEMPT），
+     * 豁免决策同样不可篡改、可追溯。</p>
+     */
+    @Transactional
+    public Map<String, Object> registerExemption(Long auditLogId, String reason, String registeredBy) {
+        if (auditLogId == null) throw new IllegalArgumentException("auditLogId 不可空");
+        if (reason == null || reason.isBlank()) throw new IllegalArgumentException("reason 不可空");
+        if (registeredBy == null || registeredBy.isBlank()) throw new IllegalArgumentException("registeredBy 不可空");
+
+        var existing = exemptionRepository.findByAuditLogId(auditLogId);
+        if (existing.isPresent()) {
+            AuditChainExemption e = existing.get();
+            return Map.of(
+                    "id", e.getId(),
+                    "auditLogId", e.getAuditLogId(),
+                    "registeredBy", e.getRegisteredBy(),
+                    "registeredAt", e.getRegisteredAt().toString(),
+                    "duplicated", true);
+        }
+
+        AuditLog node = repository.findById(auditLogId)
+                .orElseThrow(() -> new IllegalArgumentException("audit_log 节点不存在: " + auditLogId));
+
+        AuditChainExemption saved = exemptionRepository.save(new AuditChainExemption(
+                auditLogId, node.getPrevHash(), node.getCurHash(), reason.trim(), registeredBy));
+
+        String trailPayload;
+        try {
+            trailPayload = MAPPER.writeValueAsString(Map.of(
+                    "auditLogId", auditLogId,
+                    "exemptionId", saved.getId(),
+                    "reason", reason.trim()));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("豁免留痕 payload 序列化失败", e);
+        }
+        append("AUDIT", "EXEMPT:" + auditLogId, registeredBy, "AUDIT_CHAIN_EXEMPT", trailPayload);
+
+        return Map.of(
+                "id", saved.getId(),
+                "auditLogId", saved.getAuditLogId(),
+                "registeredBy", saved.getRegisteredBy(),
+                "registeredAt", saved.getRegisteredAt().toString(),
+                "duplicated", false);
+    }
+
+    /** 豁免清单全量（登记顺序，供前端分离呈现与对账排查）。 */
+    public List<AuditChainExemption> listExemptions() {
+        return exemptionRepository.findAllByOrderByIdAsc();
     }
 
     /**
@@ -117,7 +188,13 @@ public class AuditService {
                              String action, String actor, String createdAt) {
     }
 
-    public record ChainVerifyResult(boolean ok, Long brokenAtId, int total, List<ChainBreak> breaks) {
+    /**
+     * 巡检返回体。breaks＝新增未豁免断链（旧前端按 breaks 计数即得「需关注」口径），
+     * exemptedBreaks＝已登记豁免的历史断链（棒③卡1 新增字段，旧消费者忽略即可）。
+     * ok/brokenAtId 只由新增断链决定；无豁免登记时与旧行为完全一致。
+     */
+    public record ChainVerifyResult(boolean ok, Long brokenAtId, int total, List<ChainBreak> breaks,
+                                    List<ChainBreak> exemptedBreaks) {
     }
 
     public List<AuditLog> findAll() {

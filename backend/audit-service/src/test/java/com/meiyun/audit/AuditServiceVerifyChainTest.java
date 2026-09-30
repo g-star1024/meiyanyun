@@ -18,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 /**
@@ -31,6 +32,7 @@ import static org.mockito.Mockito.when;
 class AuditServiceVerifyChainTest {
 
     @Mock AuditRepository repository;
+    @Mock AuditChainExemptionRepository exemptionRepository;
     @Mock JdbcTemplate jdbcTemplate;
     @InjectMocks AuditService service;
 
@@ -94,6 +96,7 @@ class AuditServiceVerifyChainTest {
         tamperPayloadAndRechain(chain, 1, "{\"i\":2,\"tampered\":true}");
         tamperPayloadAndRechain(chain, 4, "{\"i\":5,\"tampered\":true}");
         when(repository.findAllByOrderByIdAsc()).thenReturn(chain);
+        when(exemptionRepository.findByAuditLogIdIn(any())).thenReturn(List.of());
 
         AuditService.ChainVerifyResult result = service.verifyChain();
 
@@ -102,6 +105,7 @@ class AuditServiceVerifyChainTest {
         assertEquals(List.of(3L, 6L), result.breaks().stream().map(AuditService.ChainBreak::id).toList());
         assertEquals(3L, result.brokenAtId(), "brokenAtId 保留首处口径");
         assertEquals(6, result.total());
+        assertTrue(result.exemptedBreaks().isEmpty(), "无豁免登记时 exemptedBreaks 为空");
     }
 
     @Test
@@ -109,11 +113,52 @@ class AuditServiceVerifyChainTest {
         List<AuditLog> chain = buildChain(4);
         tamperPayloadAndRechain(chain, 1, "{\"i\":2,\"tampered\":true}");
         when(repository.findAllByOrderByIdAsc()).thenReturn(chain);
+        when(exemptionRepository.findByAuditLogIdIn(any())).thenReturn(List.of());
 
         AuditService.ChainVerifyResult result = service.verifyChain();
 
         assertEquals(1, result.breaks().size());
         assertEquals(3L, result.breaks().get(0).id());
         assertEquals(chain.get(2).getPrevHash(), result.breaks().get(0).storedPrev());
+    }
+
+    @Test
+    void exemptedBreak_isSeparatedFromNewBreaks() {
+        List<AuditLog> chain = buildChain(6);
+        tamperPayloadAndRechain(chain, 1, "{\"i\":2,\"tampered\":true}");
+        tamperPayloadAndRechain(chain, 4, "{\"i\":5,\"tampered\":true}");
+        when(repository.findAllByOrderByIdAsc()).thenReturn(chain);
+        // 断点 3 已登记豁免，断点 6 未豁免
+        when(exemptionRepository.findByAuditLogIdIn(any())).thenReturn(
+                List.of(new AuditChainExemption(3L, "p3", "c3", "历史断链豁免", "admin")));
+
+        AuditService.ChainVerifyResult result = service.verifyChain();
+
+        assertFalse(result.ok(), "仍有新增未豁免断链，ok 必须为 false");
+        assertEquals(List.of(6L), result.breaks().stream().map(AuditService.ChainBreak::id).toList(),
+                "breaks 仅含新增未豁免断链");
+        assertEquals(List.of(3L), result.exemptedBreaks().stream().map(AuditService.ChainBreak::id).toList(),
+                "已豁免断链单列呈现");
+        assertEquals(6L, result.brokenAtId(), "brokenAtId 报首个新增断链");
+    }
+
+    @Test
+    void allBreaksExempted_okTrueAndBrokenAtIdNull() {
+        List<AuditLog> chain = buildChain(6);
+        tamperPayloadAndRechain(chain, 1, "{\"i\":2,\"tampered\":true}");
+        tamperPayloadAndRechain(chain, 4, "{\"i\":5,\"tampered\":true}");
+        when(repository.findAllByOrderByIdAsc()).thenReturn(chain);
+        when(exemptionRepository.findByAuditLogIdIn(any())).thenReturn(List.of(
+                new AuditChainExemption(3L, "p3", "c3", "历史断链豁免", "admin"),
+                new AuditChainExemption(6L, "p6", "c6", "历史断链豁免", "admin")));
+
+        AuditService.ChainVerifyResult result = service.verifyChain();
+
+        assertTrue(result.ok(), "全部断链已豁免，ok 恢复 true（豁免机制核心语义）");
+        assertNull(result.brokenAtId());
+        assertTrue(result.breaks().isEmpty());
+        assertEquals(List.of(3L, 6L),
+                result.exemptedBreaks().stream().map(AuditService.ChainBreak::id).toList());
+        assertEquals(6, result.total());
     }
 }

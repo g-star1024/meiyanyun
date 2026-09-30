@@ -5,6 +5,7 @@ import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -51,11 +52,32 @@ public class AuditController {
                 "createdAt", log.getCreatedAt().toString());
     }
 
-    /** 审计全链巡检（不可篡改校验）。 */
+    /** 审计全链巡检（不可篡改校验；已豁免断链与新增断链分离呈现）。 */
     @GetMapping("/verify")
     @RequirePerm("audit:view")
     public AuditService.ChainVerifyResult verify() {
         return auditService.verifyChain();
+    }
+
+    /**
+     * 断链豁免登记（棒③卡1）。双通道鉴权同 append：X-Internal-Token 系统身份或
+     * 持 audit:view 的员工。登记人取通道口径：系统通道=system，员工通道=JWT 真实人，
+     * 杜绝冒名登记。幂等：同一 audit_log_id 重复登记返回已存在记录（duplicated=true）。
+     * 登记行为本身写入审计链（action=AUDIT_CHAIN_EXEMPT）自洽留痕。
+     */
+    @PostMapping("/exemptions")
+    @RequirePerm("audit:view")
+    public Map<String, Object> registerExemption(@RequestBody @Valid ExemptionRequest req) {
+        boolean systemChannel = "system".equals(DataScope.currentActor());
+        String registeredBy = systemChannel ? "system" : DataScope.currentRealActor();
+        return auditService.registerExemption(req.auditLogId(), req.reason(), registeredBy);
+    }
+
+    /** 豁免清单全量（登记顺序）：已豁免断链的理由/登记人/快照，供前端分离呈现。 */
+    @GetMapping("/exemptions")
+    @RequirePerm("audit:view")
+    public List<AuditChainExemption> exemptions() {
+        return auditService.listExemptions();
     }
 
     @GetMapping
@@ -121,6 +143,12 @@ public class AuditController {
             String actor,
             @NotBlank String action,
             @NotBlank String payload
+    ) {
+    }
+
+    public record ExemptionRequest(
+            @NotNull Long auditLogId,
+            @NotBlank String reason
     ) {
     }
 }
