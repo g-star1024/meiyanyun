@@ -9,6 +9,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { listGroupOverview, type GroupOverviewView } from '@/api/finance'
 import { listStores, type Store } from '@/api/org'
+import { useM1ContextStore } from './m1Context'
 
 export interface KpiTrend { value: number; label: string }
 export interface StoreRank {
@@ -25,6 +26,7 @@ export interface OverviewAlert { level: 'HIGH' | 'MED' | 'LOW'; text: string; ti
 const fen2wan = (fen: number) => Math.round((fen / 1e6) * 10) / 10 // 分 → 万元（1 位小数）
 
 export const useM1OverviewStore = defineStore('m1Overview', () => {
+  const ctx = useM1ContextStore()
   const ov = ref<GroupOverviewView | null>(null)
   const storeList = ref<Store[]>([])
   const loaded = ref(false)
@@ -124,7 +126,8 @@ export const useM1OverviewStore = defineStore('m1Overview', () => {
     loading.value = true
     error.value = ''
     try {
-      const [g, s] = await Promise.all([listGroupOverview(), listStores()])
+      // 棒②卡3：随层级选择器后端收窄（空集=不额外收窄）
+      const [g, s] = await Promise.all([listGroupOverview(ctx.effectiveStoreCodes), listStores()])
       ov.value = g.data
       storeList.value = s.data || []
       loaded.value = true

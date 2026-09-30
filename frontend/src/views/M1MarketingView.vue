@@ -6,18 +6,22 @@ import CInput from '@/components/CInput.vue'
 import CTextarea from '@/components/CTextarea.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import {
   useM1MarketingStore, type Campaign, type CampaignStatus, type CampaignType,
 } from '@/stores/m1Marketing'
 import { errMsg } from '@/stores/m5Coupon'
 import { useToast } from '@/composables/useToast'
 import { useAuthStore } from '@/stores/auth'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const mk = useM1MarketingStore()
 const auth = useAuthStore()
 const toast = useToast()
+const org = useM1OrgStore()
 onMounted(async () => {
   try { await mk.seed() } catch (e) { toast.error('活动数据加载失败：' + errMsg(e)) }
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
 })
 
 const canEdit = computed(() => auth.can('marketing:edit'))
@@ -104,6 +108,9 @@ const selectedCoupons = computed(() => selected.value ? mk.couponsOf(selected.va
 
 <template>
   <div class="mkt-page">
+    <!-- 层级选择器（棒②卡3：本页为纯集团口径、无门店维度，选择器作层级上下文展示，不过滤本页数据） -->
+    <OrgScopePicker />
+
     <div class="mkt-kpis">
       <div class="kpi kpi--success"><div class="kpi__icon"><CIcon name="trend-up" :size="20" /></div><div class="kpi__body"><div class="kpi__label">进行中活动</div><div class="kpi__value">{{ mk.stats.running }}</div></div></div>
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="pos" :size="20" /></div><div class="kpi__body"><div class="kpi__label">累计成交额</div><div class="kpi__value">{{ fmtMoney(mk.stats.amount) }}</div></div></div>

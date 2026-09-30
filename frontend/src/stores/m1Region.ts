@@ -8,6 +8,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import { getOrgTree, listStoreRegionDist, type StoreRegionDist } from '@/api/org'
+import { useM1ContextStore } from './m1Context'
 
 export type RegionStatus = 'ACTIVE' | 'INACTIVE'
 
@@ -48,14 +49,26 @@ const EMPTY_STATS: RegionStats = {
 }
 
 export const useM1RegionStore = defineStore('m1Region', () => {
+  const ctx = useM1ContextStore()
   const regions = ref<Region[]>([])
   const dist = ref<StoreRegionDist[]>([])
   const loaded = ref(false)
   const loading = ref(false)
   const error = ref('')
 
+  // 棒②卡3：区域行随层级选择器收窄（选区→该区域行；选店→聚焦其所属区域；全部→不过滤；
+  //   区域维度页无门店行可滤，端点无层级参数，前端过滤）
+  const scoped = computed<Region[]>(() => {
+    if (ctx.regionCode) return regions.value.filter((r) => r.id === ctx.regionCode)
+    if (ctx.storeCode) {
+      const node = ctx.storeNodes.find((n) => n.storeCode === ctx.storeCode)
+      if (node) return regions.value.filter((r) => r.id === node.parentId)
+    }
+    return regions.value
+  })
+
   const withStats = computed<RegionWithStats[]>(() =>
-    regions.value.map((r) => {
+    scoped.value.map((r) => {
       const d = dist.value.find((x) => x.region === r.name)
       if (!d) return { ...r, ...EMPTY_STATS }
       return {
@@ -105,5 +118,5 @@ export const useM1RegionStore = defineStore('m1Region', () => {
     }
   }
 
-  return { regions, loaded, loading, error, withStats, active, get, fetchAll, REGION_STATUS_LABEL }
+  return { regions, loaded, loading, error, scoped, withStats, active, get, fetchAll, REGION_STATUS_LABEL }
 })

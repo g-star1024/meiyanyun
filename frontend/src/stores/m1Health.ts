@@ -16,6 +16,7 @@ import {
 } from '@/api/health'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from '@/stores/m5Coupon'
+import { useM1ContextStore } from './m1Context'
 
 // 健康度巡检：门店多维指标评分 + 异常整改任务
 export type Dimension = 'SAFETY' | 'SERVICE' | 'FINANCE' | 'COMPLIANCE' | 'STAFF' | 'EQUIPMENT'
@@ -120,6 +121,7 @@ function toIssue(d: HealthIssueDTO): HealthIssue {
 
 export const useM1HealthStore = defineStore('m1Health', () => {
   const toast = useToast()
+  const ctx = useM1ContextStore()
   const tenants = ref<TenantHealth[]>([])
   const issues = ref<HealthIssue[]>([])
   const seeded = ref(false)
@@ -140,14 +142,23 @@ export const useM1HealthStore = defineStore('m1Health', () => {
     }
   }
 
-  const overallScore = computed(() => {
-    if (!tenants.value.length) return 0
-    return Math.round(tenants.value.reduce((s, t) => s + overall(t.scores), 0) / tenants.value.length)
+  // 棒②卡3：门店行随层级选择器收窄（空集=全部；端点无层级参数，前端过滤；tenantId 即门店码）
+  const scopedTenants = computed(() =>
+    tenants.value.filter((t) => !ctx.effectiveStoreCodes.length || ctx.effectiveStoreCodes.includes(t.tenantId)))
+  // 整改任务同步收窄到范围内门店
+  const scopedIssues = computed(() => {
+    if (!ctx.effectiveStoreCodes.length) return issues.value
+    return issues.value.filter((i) => ctx.effectiveStoreCodes.includes(i.tenantId))
   })
-  const healthyCount = computed(() => tenants.value.filter((t) => overall(t.scores) >= 85).length)
-  const warningCount = computed(() => tenants.value.filter((t) => { const o = overall(t.scores); return o >= 70 && o < 85 }).length)
-  const criticalCount = computed(() => tenants.value.filter((t) => overall(t.scores) < 70).length)
-  const openIssues = computed(() => issues.value.filter((i) => i.status === 'OPEN' || i.status === 'PROCESSING'))
+
+  const overallScore = computed(() => {
+    if (!scopedTenants.value.length) return 0
+    return Math.round(scopedTenants.value.reduce((s, t) => s + overall(t.scores), 0) / scopedTenants.value.length)
+  })
+  const healthyCount = computed(() => scopedTenants.value.filter((t) => overall(t.scores) >= 85).length)
+  const warningCount = computed(() => scopedTenants.value.filter((t) => { const o = overall(t.scores); return o >= 70 && o < 85 }).length)
+  const criticalCount = computed(() => scopedTenants.value.filter((t) => overall(t.scores) < 70).length)
+  const openIssues = computed(() => scopedIssues.value.filter((i) => i.status === 'OPEN' || i.status === 'PROCESSING'))
   const highRiskIssues = computed(() => openIssues.value.filter((i) => i.severity === 'HIGH'))
 
   function scoreOf(t: TenantHealth): number { return overall(t.scores) }
@@ -206,6 +217,7 @@ export const useM1HealthStore = defineStore('m1Health', () => {
 
   return {
     tenants, issues, seeded, loading, seed,
+    scopedTenants, scopedIssues,
     overallScore, healthyCount, warningCount, criticalCount, openIssues, highRiskIssues,
     scoreOf, statusOf, startIssue, resolveIssue, ignoreIssue, rerun,
   }

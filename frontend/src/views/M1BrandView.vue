@@ -6,12 +6,18 @@ import CInput from '@/components/CInput.vue'
 import CTextarea from '@/components/CTextarea.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1BrandStore, type Brand, type CommonStatus, type Product } from '@/stores/m1Brand'
 import { useAuthStore } from '@/stores/auth'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const mb = useM1BrandStore()
 const auth = useAuthStore()
-onMounted(() => { void mb.load() })
+const org = useM1OrgStore()
+onMounted(() => {
+  void mb.load()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const canEdit = computed(() => auth.can('brand:edit'))
 
@@ -191,6 +197,9 @@ function categoryPath(catId: string): string {
 
 <template>
   <div class="mb-page">
+    <!-- 层级选择器（棒②卡3：本页为纯集团口径、无门店维度，选择器作层级上下文展示，不过滤本页数据） -->
+    <OrgScopePicker />
+
     <!-- KPI -->
     <div class="mb-kpis">
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="mall" :size="20" /></div><div class="kpi__body"><div class="kpi__label">合作品牌</div><div class="kpi__value">{{ mb.stats.brandCount }}<span class="kpi__sub">/启用 {{ mb.stats.activeBrand }}</span></div></div></div>

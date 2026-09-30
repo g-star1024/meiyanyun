@@ -6,14 +6,20 @@ import CInput from '@/components/CInput.vue'
 import CTextarea from '@/components/CTextarea.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import {
   useM1ProcurementStore, type PurchaseOrder, type PoStatus,
 } from '@/stores/m1Procurement'
+import { useM1OrgStore } from '@/stores/m1Org'
 import { useAuthStore } from '@/stores/auth'
 
 const pc = useM1ProcurementStore()
+const org = useM1OrgStore()
 const auth = useAuthStore()
-onMounted(() => pc.seed())
+onMounted(() => {
+  pc.seed()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const canEdit = computed(() => auth.can('inventory:edit'))
 const canApprove = computed(() => auth.can('inventory:approve') || auth.isSuper)
@@ -21,8 +27,9 @@ const canApprove = computed(() => auth.can('inventory:approve') || auth.isSuper)
 const tab = ref<'po' | 'supplier' | 'inventory'>('po')
 const statusFilter = ref<PoStatus | ''>('')
 
+// 棒②卡3：pc.scopedOrders 已随层级选择器前端收窄，本处仅叠加页内状态筛选
 const filteredOrders = computed(() => {
-  return pc.orders.filter((o) => !statusFilter.value || o.status === statusFilter.value)
+  return pc.scopedOrders.filter((o) => !statusFilter.value || o.status === statusFilter.value)
 })
 
 // 选中采购单
@@ -112,9 +119,10 @@ function doCancel() { if (selected.value) pc.cancel(selected.value.id) }
 
 // 库存搜索
 const invKw = ref('')
+// 棒②卡3：pc.scopedInventory 已随层级选择器前端收窄，本处仅叠加页内关键词搜索
 const filteredInv = computed(() => {
   const kw = invKw.value.trim()
-  const list = pc.inventory
+  const list = pc.scopedInventory
   if (!kw) return list
   return list.filter((i) => `${i.sku} ${i.name} ${i.brand} ${i.storeName}`.includes(kw))
 })
@@ -127,6 +135,9 @@ function stockLevel(i: { onHand: number; safety: number }) {
 
 <template>
   <div class="mp-page">
+    <!-- 层级选择器（棒②卡3：集团→区域→门店，采购单/库存行与 KPI 随选择收窄；供应商为集团级主数据不收窄） -->
+    <OrgScopePicker />
+
     <!-- KPI -->
     <div class="mp-kpis">
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="package" :size="20" /></div><div class="kpi__body"><div class="kpi__label">合作供应商</div><div class="kpi__value">{{ pc.stats.supplierCount }}</div></div></div>

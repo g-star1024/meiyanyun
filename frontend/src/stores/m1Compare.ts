@@ -8,6 +8,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { listGroupOverview, type GroupOverviewView } from '@/api/finance'
 import { listStores, type Store } from '@/api/org'
+import { useM1ContextStore } from './m1Context'
 
 export interface CompareMetric {
   key: string
@@ -36,6 +37,7 @@ export const COMPARE_METRICS: CompareMetric[] = [
 interface CompareStore { id: string; name: string; region: string }
 
 export const useM1CompareStore = defineStore('m1Compare', () => {
+  const ctx = useM1ContextStore()
   const ov = ref<GroupOverviewView | null>(null)
   const storeList = ref<Store[]>([])
   const loaded = ref(false)
@@ -136,7 +138,8 @@ export const useM1CompareStore = defineStore('m1Compare', () => {
     loading.value = true
     error.value = ''
     try {
-      const [g, s] = await Promise.all([listGroupOverview(), listStores()])
+      // 棒②卡3：随层级选择器后端收窄（空集=不额外收窄；对标门店自 periodRows 派生自动跟随）
+      const [g, s] = await Promise.all([listGroupOverview(ctx.effectiveStoreCodes), listStores()])
       ov.value = g.data
       storeList.value = s.data || []
       const ids = stores.value.map((x) => x.id)

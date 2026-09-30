@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useSettingsStore } from '@/stores/settings'
 import { useStoreContext } from '@/stores/storeContext'
+import { useM1ContextStore } from '@/stores/m1Context'
 import { listConsumables, type ConsumableDTO } from '@/api/consumable'
 import {
   listSuppliers, listPurchaseOrders,
@@ -78,6 +79,7 @@ export interface InventoryLine {
   sku: string
   name: string
   brand: string
+  storeCode: string // 门店码（棒②卡3 层级过滤键；演示数据无真实码置 ''）
   storeName: string
   unit: string
   onHand: number // 现存量
@@ -109,6 +111,7 @@ const nz = (s: string | null | undefined) => s ?? ''
 export const useM1ProcurementStore = defineStore('m1Procurement', () => {
   const settings = useSettingsStore()
   const ctx = useStoreContext()
+  const m1ctx = useM1ContextStore()
 
   const suppliers = ref<Supplier[]>([])
   const orders = ref<PurchaseOrder[]>([])
@@ -124,12 +127,19 @@ export const useM1ProcurementStore = defineStore('m1Procurement', () => {
   function supplier(id: string) { return suppliers.value.find((s) => s.id === id) }
   function order(id: string) { return orders.value.find((o) => o.id === id) }
 
-  const pendingApprove = computed(() => orders.value.filter((o) => o.status === 'SUBMITTED'))
-  const pendingReceive = computed(() => orders.value.filter((o) => o.status === 'APPROVED' || o.status === 'PARTIAL'))
-  const lowStock = computed(() => inventory.value.filter((i) => i.onHand <= i.safety))
+  // 棒②卡3：采购单/库存行随层级选择器收窄（空集=全部；端点无层级参数，前端过滤；
+  //   供应商为集团级主数据不收窄）
+  const scopedOrders = computed(() =>
+    orders.value.filter((o) => !m1ctx.effectiveStoreCodes.length || m1ctx.effectiveStoreCodes.includes(o.storeId)))
+  const scopedInventory = computed(() =>
+    inventory.value.filter((i) => !m1ctx.effectiveStoreCodes.length || m1ctx.effectiveStoreCodes.includes(i.storeCode)))
+
+  const pendingApprove = computed(() => scopedOrders.value.filter((o) => o.status === 'SUBMITTED'))
+  const pendingReceive = computed(() => scopedOrders.value.filter((o) => o.status === 'APPROVED' || o.status === 'PARTIAL'))
+  const lowStock = computed(() => scopedInventory.value.filter((i) => i.onHand <= i.safety))
 
   const stats = computed(() => {
-    const totalAmount = orders.value.filter((o) => ['SUBMITTED', 'APPROVED', 'PARTIAL', 'RECEIVED'].includes(o.status))
+    const totalAmount = scopedOrders.value.filter((o) => ['SUBMITTED', 'APPROVED', 'PARTIAL', 'RECEIVED'].includes(o.status))
       .reduce((s, o) => s + o.totalAmount, 0)
     return {
       supplierCount: suppliers.value.filter((s) => s.status === 'ACTIVE').length,
@@ -137,7 +147,7 @@ export const useM1ProcurementStore = defineStore('m1Procurement', () => {
       pendingReceive: pendingReceive.value.length,
       lowStock: lowStock.value.length,
       totalAmount,
-      inventoryValue: r2(inventory.value.reduce((s, i) => s + i.value, 0)),
+      inventoryValue: r2(scopedInventory.value.reduce((s, i) => s + i.value, 0)),
     }
   })
 
@@ -263,6 +273,7 @@ export const useM1ProcurementStore = defineStore('m1Procurement', () => {
       sku: c.skuCode,
       name: c.name,
       brand: c.supplier || c.category || '—',
+      storeCode: c.storeCode,
       storeName,
       unit: c.unit || '个',
       onHand: c.qty,
@@ -342,16 +353,17 @@ export const useM1ProcurementStore = defineStore('m1Procurement', () => {
 
   function loadInventoryDemo() {
     inventory.value = [
-      { id: cid('inv'), sku: 'HX-QUADHA', name: '润百颜次抛精华(疗程)', brand: '华熙生物', storeName: '静安旗舰店', unit: '盒', onHand: 86, safety: 20, value: 86 * 220, batchNo: 'BHU812', expireDate: day(365) },
-      { id: cid('inv'), sku: 'ZH-THERMAGE-FL', name: '热玛吉FLX面部900发', brand: '中韩光电', storeName: '徐汇社区店', unit: '部位', onHand: 3, safety: 5, value: 3 * 7200, batchNo: 'BZH077', expireDate: day(180) },
-      { id: cid('inv'), sku: 'AGN-BTX-100', name: '保妥适100U瘦脸针', brand: '艾尔建', storeName: '静安旗舰店', unit: '支', onHand: 4, safety: 10, value: 4 * 1650, batchNo: 'BAGN12', expireDate: day(90) },
-      { id: cid('inv'), sku: 'HX-RST-2.5ML', name: '润致娃娃针2.5ml', brand: '华熙生物', storeName: '静安旗舰店', unit: '支', onHand: 12, safety: 15, value: 12 * 680, batchNo: 'BHX33', expireDate: day(200) },
-      { id: cid('inv'), sku: 'AGN-JUV-1ML', name: '乔雅登极致1ml', brand: '艾尔建', storeName: '浦东诊所', unit: '支', onHand: 7, safety: 3, value: 7 * 3200, batchNo: 'BAGJ9', expireDate: day(120) },
+      { id: cid('inv'), sku: 'HX-QUADHA', name: '润百颜次抛精华(疗程)', brand: '华熙生物', storeCode: '', storeName: '静安旗舰店', unit: '盒', onHand: 86, safety: 20, value: 86 * 220, batchNo: 'BHU812', expireDate: day(365) },
+      { id: cid('inv'), sku: 'ZH-THERMAGE-FL', name: '热玛吉FLX面部900发', brand: '中韩光电', storeCode: '', storeName: '徐汇社区店', unit: '部位', onHand: 3, safety: 5, value: 3 * 7200, batchNo: 'BZH077', expireDate: day(180) },
+      { id: cid('inv'), sku: 'AGN-BTX-100', name: '保妥适100U瘦脸针', brand: '艾尔建', storeCode: '', storeName: '静安旗舰店', unit: '支', onHand: 4, safety: 10, value: 4 * 1650, batchNo: 'BAGN12', expireDate: day(90) },
+      { id: cid('inv'), sku: 'HX-RST-2.5ML', name: '润致娃娃针2.5ml', brand: '华熙生物', storeCode: '', storeName: '静安旗舰店', unit: '支', onHand: 12, safety: 15, value: 12 * 680, batchNo: 'BHX33', expireDate: day(200) },
+      { id: cid('inv'), sku: 'AGN-JUV-1ML', name: '乔雅登极致1ml', brand: '艾尔建', storeCode: '', storeName: '浦东诊所', unit: '支', onHand: 7, safety: 3, value: 7 * 3200, batchNo: 'BAGJ9', expireDate: day(120) },
     ]
   }
 
   return {
     suppliers, orders, inventory, receipts,
+    scopedOrders, scopedInventory,
     stats, pendingApprove, pendingReceive, lowStock,
     loaded, demo, workflowDemo,
     PO_STATUS_LABEL, PO_TRANSITIONS,

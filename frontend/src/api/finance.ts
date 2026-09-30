@@ -416,7 +416,11 @@ export const getRevenue = (storeCode?: string, month?: string) =>
   client.get<RevenueMonthly[]>('/finance/revenue', { params: { storeCode, month } })
 
 /** 集团多店经营概览（M1 集团屏；数据域逐行收敛，区域域只见本区门店，金额「分」） */
-export const listGroupOverview = () => client.get<GroupOverviewView>('/finance/group-overview')
+// 棒②卡3：storeCodes 可选——逗号分隔门店码收窄（后端 DataScope 之上再过滤，空参行为不变）
+export const listGroupOverview = (storeCodes?: string[]) =>
+  client.get<GroupOverviewView>('/finance/group-overview', {
+    params: storeCodes && storeCodes.length ? { storeCodes: storeCodes.join(',') } : {}
+  })
 
 /** 台账流水（finance 读时聚合 txn 订单/退款/划扣，金额「元」） */
 export const getLedger = (params?: { storeCode?: string; from?: string; to?: string }) =>

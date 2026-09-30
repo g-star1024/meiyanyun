@@ -1,5 +1,8 @@
 <template>
   <div class="rp">
+    <!-- 层级选择器（棒②卡3：本页为纯集团口径、无门店维度，选择器作层级上下文展示，不过滤本页数据） -->
+    <OrgScopePicker />
+
     <div class="rp__kpis">
       <CKpi :value="String(rp.templates.length)" label="报表模板" tone="brand" icon="settings" />
       <CKpi :value="String(rp.subscribedCount)" label="订阅报表" tone="success" icon="trend-up" />
@@ -149,16 +152,22 @@ import CIcon from '@/components/CIcon.vue'
 import CTable from '@/components/CTable.vue'
 import CSelect from '@/components/CSelect.vue'
 import CKpi from '@/components/CKpi.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1ReportStore, CAT_LABEL, STATUS_LABEL, FORMAT_LABEL,
   type ReportStatus, type ExportFormat, type ReportJob, type ReportPreview,
   type ReportVerifyResult, type ReportVerifyReason } from '@/stores/m1Report'
 import { useAuthStore } from '@/stores/auth'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const PERIOD_LABEL: Record<string, string> = { DAY: '日报', WEEK: '周报', MONTH: '月报', QUARTER: '季报', YEAR: '年报', RANGE: '自定义' }
 
 const rp = useM1ReportStore()
 const auth = useAuthStore()
-onMounted(() => { void rp.seed() })
+const org = useM1OrgStore()
+onMounted(() => {
+  void rp.seed()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const canExport = computed(() => auth.can('report:export') || auth.isSuper)
 

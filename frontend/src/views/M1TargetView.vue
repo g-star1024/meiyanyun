@@ -1,5 +1,8 @@
 <template>
   <div class="tg">
+    <!-- 层级选择器（棒②卡3：本页为纯集团口径、无门店维度，选择器作层级上下文展示，不过滤本页数据） -->
+    <OrgScopePicker />
+
     <div class="tg__kpis">
       <CKpi :value="tg.overallProgress + '%'" label="集团加权达成" tone="brand" icon="trend-up" />
       <CKpi :value="String(tg.pendingApprovals.length)" label="待审批目标" tone="warning" icon="check-square" />
@@ -127,13 +130,19 @@ import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import CKpi from '@/components/CKpi.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1TargetStore, METRIC_LABEL, PERIOD_LABEL, APPROVAL_LABEL, STATUS_LABEL, statusOf,
   type TargetLine, type ApprovalStatus } from '@/stores/m1Target'
 import { useAuthStore } from '@/stores/auth'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const tg = useM1TargetStore()
 const auth = useAuthStore()
-onMounted(() => tg.seed())
+const org = useM1OrgStore()
+onMounted(() => {
+  tg.seed()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const canEdit = computed(() => auth.can('target:edit') || auth.isSuper)
 const canApprove = computed(() => auth.can('target:approve') || auth.isSuper)

@@ -1,5 +1,8 @@
 <template>
   <div class="hl">
+    <!-- 层级选择器（棒②卡3：集团→区域→门店，门店健康列表与 KPI 随选择收窄） -->
+    <OrgScopePicker />
+
     <!-- KPI -->
     <div class="hl__kpis">
       <CKpi :value="String(h.overallScore)" label="集团健康均分" tone="brand" icon="trend-up" />
@@ -12,7 +15,7 @@
     <div class="hl__body">
       <!-- 左：门店列表 -->
       <CCard title="门店健康度" padding="none" class="hl__list">
-        <div class="tenant" v-for="t in h.tenants" :key="t.tenantId"
+        <div class="tenant" v-for="t in h.scopedTenants" :key="t.tenantId"
              :class="{ 'is-active': selId === t.tenantId }" @click="selId = t.tenantId">
           <div class="tenant__top">
             <span class="tenant__name">{{ t.tenantName }}</span>
@@ -99,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
@@ -107,17 +110,27 @@ import CIcon from '@/components/CIcon.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
 import CDrawer from '@/components/CDrawer.vue'
 import CKpi from '@/components/CKpi.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1HealthStore, DIM_LABEL, DIM_ICON, STATUS_LABEL, ISSUE_STATUS_LABEL, scoreStatus,
   type CheckStatus, type HealthIssue, type Severity } from '@/stores/m1Health'
+import { useM1OrgStore } from '@/stores/m1Org'
 import { useAuthStore } from '@/stores/auth'
 
 const h = useM1HealthStore()
+const org = useM1OrgStore()
 const auth = useAuthStore()
-onMounted(() => h.seed())
+onMounted(() => {
+  h.seed()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const canEdit = computed(() => auth.can('health:edit') || auth.isSuper)
 const selId = ref('SST01')
-const sel = computed(() => h.tenants.find((t) => t.tenantId === selId.value))
+// 棒②卡3：详情只认范围内门店；层级收窄把当前选中滤出时回落到范围内首行
+const sel = computed(() => h.scopedTenants.find((t) => t.tenantId === selId.value))
+watch(() => h.scopedTenants, (list) => {
+  if (list.length && !list.some((t) => t.tenantId === selId.value)) selId.value = list[0].tenantId
+})
 const tenantIssues = computed(() => h.issues.filter((i) => i.tenantId === selId.value))
 
 const resolving = ref<HealthIssue | null>(null)

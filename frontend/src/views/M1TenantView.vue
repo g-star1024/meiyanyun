@@ -10,10 +10,16 @@ import CSelect from '@/components/CSelect.vue'
 import CTable from '@/components/CTable.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1TenantStore, type TenantStatus } from '@/stores/m1Tenant'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const tenant = useM1TenantStore()
-onMounted(() => tenant.fetchAll())
+const org = useM1OrgStore()
+onMounted(() => {
+  tenant.fetchAll()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 // ---- 筛选 ----
 const keyword = ref('')
@@ -36,9 +42,10 @@ const natureOptions = computed(() => [
   ...tenant.natures.map((n) => ({ value: n, label: n })),
 ])
 
+// 棒②卡3：tenant.scoped 已随层级选择器前端收窄，本处仅叠加页内筛选
 const filtered = computed(() => {
   const kw = keyword.value.trim()
-  return tenant.tenants.filter((t) => {
+  return tenant.scoped.filter((t) => {
     if (fRegion.value && t.region !== fRegion.value) return false
     if (fStatus.value && t.status !== fStatus.value) return false
     if (fNature.value && t.nature !== fNature.value) return false
@@ -48,10 +55,10 @@ const filtered = computed(() => {
 })
 
 const kpis = computed(() => ({
-  operating: tenant.tenants.filter((t) => t.status === 'OPERATING').length,
-  settingUp: tenant.tenants.filter((t) => t.status === 'SETTING_UP').length,
-  suspended: tenant.tenants.filter((t) => t.status === 'SUSPENDED').length,
-  total: tenant.tenants.length,
+  operating: tenant.scoped.filter((t) => t.status === 'OPERATING').length,
+  settingUp: tenant.scoped.filter((t) => t.status === 'SETTING_UP').length,
+  suspended: tenant.scoped.filter((t) => t.status === 'SUSPENDED').length,
+  total: tenant.scoped.length,
 }))
 
 // ---- 表格 ----
@@ -81,6 +88,9 @@ function natureTone(n: string) {
 
 <template>
   <div class="mt-page">
+    <!-- 层级选择器（棒②卡3：集团→区域→门店，门店行与 KPI 随选择收窄） -->
+    <OrgScopePicker />
+
     <!-- KPI -->
     <div class="mt-kpis">
       <div class="kpi kpi--brand">
@@ -143,6 +153,7 @@ function natureTone(n: string) {
     <p class="mt-footnote">
       数据源：GET /api/stores（store-service）。数据范围随登录人数据域（DataScope）：区域经理见本区门店，集团账号见全部门店。
       门店新建 / 编辑 / 停用暂不支持（已入 Backlog），本页只读。
+      层级选择器（棒②卡3）：门店行与 KPI 随集团→区域→门店收窄（前端过滤，端点无层级参数）。
     </p>
   </div>
 </template>

@@ -7,6 +7,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { listGroupOverview, type GroupOverviewView } from '@/api/finance'
 import { listStores, type Store } from '@/api/org'
+import { useM1ContextStore } from './m1Context'
 
 export type MetricGroup = 'FINANCE' | 'CUSTOMER' | 'OPERATION' | 'STAFF'
 export interface MatrixMetric {
@@ -48,6 +49,7 @@ export const METRICS: MatrixMetric[] = [
 interface MatrixStore { id: string; name: string; region: string }
 
 export const useM1MatrixStore = defineStore('m1Matrix', () => {
+  const ctx = useM1ContextStore()
   const ov = ref<GroupOverviewView | null>(null)
   const storeList = ref<Store[]>([])
   const loaded = ref(false)
@@ -57,8 +59,11 @@ export const useM1MatrixStore = defineStore('m1Matrix', () => {
   const period = ref('')
   const selectedCell = ref<{ metricKey: string; storeId: string } | null>(null)
 
+  // 棒②卡3：门店列随层级选择器收窄（空集=全部）
   const stores = computed<MatrixStore[]>(() =>
-    storeList.value.map((s) => ({ id: s.storeCode, name: s.storeName, region: s.region ?? '—' })))
+    storeList.value
+      .filter((s) => !ctx.effectiveStoreCodes.length || ctx.effectiveStoreCodes.includes(s.storeCode))
+      .map((s) => ({ id: s.storeCode, name: s.storeName, region: s.region ?? '—' })))
 
   // 有月报的真实月份（yyyy-MM 升序）
   const periods = computed(() => (ov.value?.months ?? []).map((m) => m.slice(0, 7)))
@@ -134,7 +139,8 @@ export const useM1MatrixStore = defineStore('m1Matrix', () => {
     loading.value = true
     error.value = ''
     try {
-      const [g, s] = await Promise.all([listGroupOverview(), listStores()])
+      // 棒②卡3：随层级选择器后端收窄（空集=不额外收窄）
+      const [g, s] = await Promise.all([listGroupOverview(ctx.effectiveStoreCodes), listStores()])
       ov.value = g.data
       storeList.value = s.data || []
       if (!period.value || !periods.value.includes(period.value)) period.value = defaultPeriod.value

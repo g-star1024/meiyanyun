@@ -1,27 +1,34 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1DispatchStore, type Assignment, type Job, type Resource } from '@/stores/m1Dispatch'
+import { useM1ContextStore } from '@/stores/m1Context'
+import { useM1OrgStore } from '@/stores/m1Org'
 import { useAuthStore } from '@/stores/auth'
-import { listStores, type Store } from '@/api/org'
 
 const dp = useM1DispatchStore()
+const ctx = useM1ContextStore()
+const org = useM1OrgStore()
 const auth = useAuthStore()
 
-// 门店选择器（M1 集团页，本地选择不走全局 storeContext；默认 SST01 照卡10 先例）
+// 棒②卡3：门店选择改由层级选择器驱动——本页是单店视图（派单端点本身带 storeCode 参数，
+//   非列表过滤场景），选择器收窄到区域/门店时取范围内首店重拉；「全部」不切换、保留当前门店
 const selId = ref('SST01')
-const stores = ref<Store[]>([])
+const selName = computed(() =>
+  ctx.storeNodes.find((n) => n.storeCode === selId.value)?.name || selId.value)
 onMounted(async () => {
-  try {
-    const res = await listStores()
-    stores.value = res.data || []
-    if (!stores.value.some((s) => s.storeCode === selId.value)) {
-      selId.value = stores.value[0]?.storeCode || 'SST01'
-    }
-  } catch { /* 列表拉取失败保留默认门店码，读链 toast 由 store 负责 */ }
+  await org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+  const codes = ctx.effectiveStoreCodes
+  if (codes.length && !codes.includes(selId.value)) selId.value = codes[0]
   await dp.seed(selId.value)
+})
+watch(() => ctx.effectiveStoreCodes, (codes) => {
+  if (!codes.length || codes.includes(selId.value)) return
+  selId.value = codes[0]
+  changeStore()
 })
 function changeStore() {
   activeJobId.value = ''
@@ -137,6 +144,9 @@ function utilTone(u: number) {
 
 <template>
   <div class="dp-page">
+    <!-- 层级选择器（棒②卡3：集团→区域→门店；本页单店视图，选择收窄即切换范围内首店重拉派单数据） -->
+    <OrgScopePicker />
+
     <div class="dp-kpis">
       <div class="kpi kpi--success"><div class="kpi__icon"><CIcon name="user-check" :size="20" /></div><div class="kpi__body"><div class="kpi__label">在岗医生</div><div class="kpi__value">{{ dp.stats.onDoctors }}</div></div></div>
       <div class="kpi kpi--info"><div class="kpi__icon"><CIcon name="store" :size="20" /></div><div class="kpi__body"><div class="kpi__label">可用治疗室</div><div class="kpi__value">{{ dp.stats.rooms }}</div></div></div>
@@ -180,9 +190,7 @@ function utilTone(u: number) {
           <button class="bt" :class="{ 'is-on': resTab === 'DOCTOR' }" @click="resTab = 'DOCTOR'">医生</button>
           <button class="bt" :class="{ 'is-on': resTab === 'ROOM' }" @click="resTab = 'ROOM'">治疗室</button>
           <button class="bt" :class="{ 'is-on': resTab === 'DEVICE' }" @click="resTab = 'DEVICE'">设备</button>
-          <select v-model="selId" class="sel" @change="changeStore">
-            <option v-for="s in stores" :key="s.storeCode" :value="s.storeCode">{{ s.storeName }}（{{ s.storeCode }}）</option>
-          </select>
+          <span class="sel-name"><CIcon name="store" :size="12" /> {{ selName }}（{{ selId }}）</span>
           <span class="board-hint">{{ activeJob ? `点击班次内空闲时段派单（预约 ${activeJob.apptTime}，可自由选时）` : '先从左侧选择待派单' }}</span>
         </div>
 
@@ -286,6 +294,7 @@ function utilTone(u: number) {
 .bt:hover { color: var(--c-text); background: var(--c-surface, #f7f8fa); }
 .bt.is-on { color: var(--c-brand); background: var(--c-brand-soft); }
 .board-hint { margin-left: auto; font-size: var(--t-xs); color: var(--c-text-3); }
+.sel-name { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-xs); color: var(--c-text-2); padding: 4px 8px; background: var(--c-surface, #f7f8fa); border-radius: var(--r-md); }
 
 .ruler { display: grid; grid-template-columns: 140px 1fr 90px; align-items: center; padding: var(--s-sm) 0; border-bottom: 1px solid var(--c-border-light); background: var(--c-surface, #f7f8fa); position: sticky; top: 0; z-index: 2; }
 .ruler__label { font-size: var(--t-xs); color: var(--c-text-3); padding-left: var(--s-md); font-weight: 600; }

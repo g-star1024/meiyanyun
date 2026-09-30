@@ -5,14 +5,20 @@ import CButton from '@/components/CButton.vue'
 import CTextarea from '@/components/CTextarea.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import {
   useM1ComplianceStore, type CheckItem, type CheckCategory, type ComplianceStatus,
 } from '@/stores/m1Compliance'
 import { useAuthStore } from '@/stores/auth'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const cp = useM1ComplianceStore()
 const auth = useAuthStore()
-onMounted(() => cp.seed())
+const org = useM1OrgStore()
+onMounted(() => {
+  cp.seed()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const canEdit = computed(() => auth.can('compliance:edit'))
 
@@ -87,6 +93,9 @@ const scoreColor = (rate: number) => rate >= 90 ? 'var(--c-success-fg)' : rate >
 
 <template>
   <div class="cx-page">
+    <!-- 层级选择器（棒②卡3：本页为纯集团口径、无门店维度，选择器作层级上下文展示，不过滤本页数据） -->
+    <OrgScopePicker />
+
     <div class="cx-kpis">
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="shield" :size="20" /></div><div class="kpi__body"><div class="kpi__label">整体合规率</div><div class="kpi__value" :style="{ color: scoreColor(cp.stats.passRate) }">{{ cp.stats.passRate }}%</div></div></div>
       <div class="kpi kpi--success"><div class="kpi__icon"><CIcon name="check" :size="20" /></div><div class="kpi__body"><div class="kpi__label">合规</div><div class="kpi__value">{{ cp.stats.pass }}</div></div></div>

@@ -5,10 +5,16 @@ import CButton from '@/components/CButton.vue'
 import CInput from '@/components/CInput.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1AuditStore, type AuditLogRow } from '@/stores/m1Audit'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const au = useM1AuditStore()
-onMounted(() => au.init())
+const org = useM1OrgStore()
+onMounted(() => {
+  au.init()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const selectedId = ref<number | null>(null)
 const selected = computed(() => au.items.find((e) => e.id === selectedId.value) ?? null)
@@ -70,6 +76,9 @@ function breakTime(iso: string) {
 
 <template>
   <div class="au-page">
+    <!-- 层级选择器（棒②卡3：本页为纯集团口径、无门店维度，选择器作层级上下文展示，不过滤本页数据） -->
+    <OrgScopePicker />
+
     <div class="au-kpis">
       <div class="kpi kpi--brand"><div class="kpi__icon"><CIcon name="order" :size="20" /></div><div class="kpi__body"><div class="kpi__label">审计记录总数</div><div class="kpi__value">{{ au.stats.total }}</div></div></div>
       <div class="kpi kpi--warning"><div class="kpi__icon"><CIcon name="clock" :size="20" /></div><div class="kpi__body"><div class="kpi__label">近24小时新增</div><div class="kpi__value">{{ au.stats.last24 }}</div></div></div>

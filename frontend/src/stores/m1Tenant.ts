@@ -5,6 +5,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { listStores } from '@/api/org'
+import { useM1ContextStore } from './m1Context'
 
 export type TenantStatus = 'OPERATING' | 'SETTING_UP' | 'SUSPENDED'
 
@@ -43,12 +44,16 @@ function deriveCity(name: string): string {
 }
 
 export const useM1TenantStore = defineStore('m1Tenant', () => {
+  const ctx = useM1ContextStore()
   const tenants = ref<Tenant[]>([])
   const loaded = ref(false)
   const loading = ref(false)
   const error = ref('')
 
   // ---- 查询 ----
+  // 棒②卡3：门店行随层级选择器收窄（空集=全部；端点无层级参数，前端过滤）
+  const scoped = computed(() =>
+    tenants.value.filter((t) => !ctx.effectiveStoreCodes.length || ctx.effectiveStoreCodes.includes(t.id)))
   const operating = computed(() => tenants.value.filter((t) => t.status === 'OPERATING'))
   const byRegion = computed(() => {
     const m: Record<string, Tenant[]> = {}
@@ -100,7 +105,7 @@ export const useM1TenantStore = defineStore('m1Tenant', () => {
 
   return {
     tenants, loaded, loading, error,
-    operating, byRegion, natures, get, fetchAll,
+    scoped, operating, byRegion, natures, get, fetchAll,
     TENANT_STATUS_LABEL,
   }
 })

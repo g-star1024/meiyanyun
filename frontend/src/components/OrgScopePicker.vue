@@ -35,7 +35,8 @@ const { regionCode, storeCode } = storeToRefs(scope)
 </template>
 
 <style scoped>
-.scope-picker { display: flex; align-items: center; gap: var(--s-sm); flex-wrap: nowrap; }
+/* 棒②卡3：卡片壳内置组件根（全铺 14 页一处挂接一致外观；M1Overview 旧 .ov__scope 外壳样式同步移除） */
+.scope-picker { display: flex; align-items: center; gap: var(--s-sm); flex-wrap: nowrap; padding: var(--s-sm) var(--s-md); background: var(--c-surface); border: 1px solid var(--c-border-light); border-radius: var(--r-xl); }
 .scope-picker__icon { color: var(--c-brand); flex: none; }
 .scope-picker__group { font-size: var(--t-sm); font-weight: 700; color: var(--c-text); white-space: nowrap; }
 .scope-picker__sep { color: var(--c-text-3); flex: none; }

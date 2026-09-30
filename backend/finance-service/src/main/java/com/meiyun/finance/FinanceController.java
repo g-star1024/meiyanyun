@@ -189,10 +189,24 @@ public class FinanceController {
      * 金额「分」，无源字段 null 前端显「—」）、
      * monthTotals（按月合计 revenue/cost/grossProfit＋7 计数合计＋storeCount 当月有事实表行门店数）。
      * 门店名称/大区由前端 join /api/stores（org 域），本端点不跨域 join。
+     * 棒②卡3：新增可选参 storeCodes（逗号分隔门店码，M1 层级选择器后端参数化）——
+     * 在数据域（DataScope）逐行收敛之上再收窄；空参/空白时行为与历史完全一致（向后兼容）。
      */
     @GetMapping("/group-overview")
-    public Map<String, Object> groupOverview() {
+    public Map<String, Object> groupOverview(@RequestParam(required = false) String storeCodes) {
         Specification<MonthlyStoreMetric> spec = DataScope.storeSpec("storeCode");
+        if (storeCodes != null && !storeCodes.isBlank()) {
+            List<String> codes = new ArrayList<>();
+            for (String s : storeCodes.split(",")) {
+                String t = s.trim();
+                if (!t.isEmpty()) {
+                    codes.add(t);
+                }
+            }
+            if (!codes.isEmpty()) {
+                spec = spec.and((root, q, cb) -> root.get("storeCode").in(codes));
+            }
+        }
         List<MonthlyStoreMetric> metrics = metricRepo.findAll(spec,
                 Sort.by(Sort.Order.asc("periodMonth"), Sort.Order.asc("storeCode")));
         Map<String, long[]> totals = new LinkedHashMap<>();

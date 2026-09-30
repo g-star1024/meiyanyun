@@ -87,10 +87,19 @@ export const useM1ContextStore = defineStore('m1Context', () => {
     storeCode.value = ''
   }
 
+  // ---- 棒②卡3：后端参数化派生 ----
+  /** 生效门店码集：选店→[该店]；选区→区域内全部启用门店码；全部→[]（空数组=不额外收窄，沿用数据域全量） */
+  const effectiveStoreCodes = computed(() => {
+    if (storeCode.value) return [storeCode.value]
+    if (regionCode.value) return storeNodes.value.map((n) => n.storeCode!)
+    return [] as string[]
+  })
+
   return {
     regionCode, storeCode,
     groupNode, groupLabel, regionNodes, storeNodes,
     regionOptions, storeOptions,
     selectedRegionShort, pathLabel, reset,
+    effectiveStoreCodes,
   }
 })

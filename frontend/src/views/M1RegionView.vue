@@ -13,6 +13,7 @@ import CTextarea from '@/components/CTextarea.vue'
 import CDrawer from '@/components/CDrawer.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1RegionStore, type RegionStatus, type Region } from '@/stores/m1Region'
 import { useM1OrgStore } from '@/stores/m1Org'
 import { useAuthStore } from '@/stores/auth'
@@ -174,6 +175,9 @@ async function confirmStatus() {
 
 <template>
   <div class="mr-page">
+    <!-- 层级选择器（棒②卡3：集团→区域→门店，区域卡片与 KPI 随选择收窄：选区→该区域、选店→聚焦其所属区域） -->
+    <OrgScopePicker />
+
     <div class="mr-kpis">
       <div class="kpi kpi--brand">
         <div class="kpi__icon"><CIcon name="org" :size="20" /></div>
@@ -261,6 +265,7 @@ async function confirmStatus() {
       数据源：GET /api/org/tree + GET /api/stores/regions/dist（集团聚合视角，不受登录人数据域收窄影响）。
       区域主数据 = org_unit 区域节点（棒②卡1 定案，门店归属以组织树挂载为准）；写侧经 B87 接口
       （新建父=集团 / 编辑 / 停用启用留痕），需 org:edit 权限，后端校验失败中文 message 原样展示。
+      层级选择器（棒②卡3）：区域卡片与 KPI 随集团→区域→门店收窄——选区过滤到该区域行、选店聚焦其所属区域（前端过滤，端点无层级参数）。
     </p>
 
     <!-- 抽屉：新建区域 / 编辑区域 -->

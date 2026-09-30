@@ -1,5 +1,8 @@
 <template>
   <div class="sop">
+    <!-- 层级选择器（棒②卡3：本页为纯集团口径、无门店维度，选择器作层级上下文展示，不过滤本页数据） -->
+    <OrgScopePicker />
+
     <div class="sop__kpis">
       <CKpi :value="String(sop.published.length)" label="已发布 SOP" tone="brand" icon="check-square" />
       <CKpi :value="String(sop.taskStats.inProgress)" label="执行中任务" tone="warning" icon="check-square" />
@@ -187,13 +190,19 @@ import CInput from '@/components/CInput.vue'
 import CSelect from '@/components/CSelect.vue'
 import CTextarea from '@/components/CTextarea.vue'
 import CCheckbox from '@/components/CCheckbox.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1SopStore, CAT_LABEL, STATUS_LABEL, TASK_STATUS_LABEL,
   type SopStatus, type TaskStatus, type Priority, type SopCategory } from '@/stores/m1Sop'
 import { useAuthStore } from '@/stores/auth'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const sop = useM1SopStore()
 const auth = useAuthStore()
-onMounted(() => sop.seed())
+const org = useM1OrgStore()
+onMounted(() => {
+  sop.seed()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
 
 const canEdit = computed(() => auth.can('sop:edit') || auth.isSuper)
 const canApprove = computed(() => auth.can('sop:approve') || auth.isSuper)

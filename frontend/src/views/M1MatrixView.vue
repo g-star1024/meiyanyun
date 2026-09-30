@@ -1,5 +1,8 @@
 <template>
   <div class="mx">
+    <!-- 层级选择器（棒②卡3：集团→区域→门店，矩阵门店列随选择收窄） -->
+    <OrgScopePicker />
+
     <!-- 工具栏 -->
     <div class="mx__bar">
       <div class="bar__left">
@@ -93,21 +96,31 @@
         </div>
       </CCard>
     </div>
-    <p class="mx-footnote">数据源：GET /api/finance/group-overview（monthly_store_metrics 月度事实表，MonthlyMetricJob 跑批聚合）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。默认周期=已出月报门店数最多月份（并列取最新）；11 项指标中「营收/毛利率/新客数/复购率/治疗人次」5 项已接事实表真源，其余 6 项暂无数据源显「—」；月份不相邻时环比/同比不可比不显；目标值为管理基准非真实统计；热力色按达成率渲染，无数据单元格不着色。</p>
+    <p class="mx-footnote">数据源：GET /api/finance/group-overview（monthly_store_metrics 月度事实表，MonthlyMetricJob 跑批聚合）+ GET /api/stores（门店名录），数据范围随登录人数据域（DataScope）。默认周期=已出月报门店数最多月份（并列取最新）；11 项指标中「营收/毛利率/新客数/复购率/治疗人次」5 项已接事实表真源，其余 6 项暂无数据源显「—」；月份不相邻时环比/同比不可比不显；目标值为管理基准非真实统计；热力色按达成率渲染，无数据单元格不着色。层级选择器（棒②卡3）已后端参数化：门店列与单元格数值随集团→区域→门店收窄。</p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CIcon from '@/components/CIcon.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import CProgressBar from '@/components/CProgressBar.vue'
+import OrgScopePicker from '@/components/OrgScopePicker.vue'
 import { useM1MatrixStore, GROUP_LABEL,
   type MetricGroup, type MatrixMetric } from '@/stores/m1Matrix'
+import { useM1ContextStore } from '@/stores/m1Context'
+import { useM1OrgStore } from '@/stores/m1Org'
 
 const mx = useM1MatrixStore()
-onMounted(() => mx.load())
+const scope = useM1ContextStore()
+const org = useM1OrgStore()
+onMounted(() => {
+  mx.load()
+  org.load().catch(() => { /* 层级选项加载失败不阻塞页面，选择器回落「全部」 */ })
+})
+// 棒②卡3：层级变化 → 强制重载（后端 storeCodes 收窄）
+watch(() => [scope.regionCode, scope.storeCode], () => { mx.load(true) })
 
 const groupOptions = [
   { label: '全部', value: 'ALL' },
