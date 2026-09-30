@@ -66,8 +66,10 @@ export interface AuditChainVerifyResult {
   /** 首处断链 id（保留旧口径兼容；全量清单见 breaks） */
   brokenAtId: number | null
   total: number
-  /** 全量断链清单（按 id 升序） */
+  /** 新增未豁免断链清单（按 id 升序；棒③起已豁免者单列 exemptedBreaks） */
   breaks: AuditChainBreak[]
+  /** 已豁免断链清单（棒③豁免登记机制；旧后端无此字段时消费侧回落 []） */
+  exemptedBreaks?: AuditChainBreak[]
 }
 
 export const pageAuditLogs = (query: AuditPageQuery) =>

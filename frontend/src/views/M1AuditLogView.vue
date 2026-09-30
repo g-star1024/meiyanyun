@@ -56,15 +56,22 @@ const chainTone = computed(() => {
   return au.verify.ok ? 'success' : 'danger'
 })
 const chainBreaks = computed(() => au.verify?.breaks ?? [])
+const chainExempted = computed(() => au.verify?.exemptedBreaks ?? [])
 const chainText = computed(() => {
   if (!au.verify) return '校验中…'
-  if (au.verify.ok) return `完整 · ${au.verify.total} 条`
+  if (au.verify.ok) {
+    const ex = chainExempted.value.length
+    return `完整 · ${au.verify.total} 条${ex ? `（豁免 ${ex} 处）` : ''}`
+  }
   const n = chainBreaks.value.length
   return n > 1 ? `断链 ${n} 处 · #${au.verify.brokenAtId} 等` : `断链 #${au.verify.brokenAtId}`
 })
 const chainTitle = computed(() => {
   if (!au.verify) return '哈希链巡检中'
-  if (au.verify.ok) return `哈希链完整，共 ${au.verify.total} 条；点击重新巡检`
+  if (au.verify.ok) {
+    const ex = chainExempted.value.length
+    return `哈希链完整，共 ${au.verify.total} 条${ex ? `；已豁免 ${ex} 处见豁免登记` : ''}；点击重新巡检`
+  }
   const ids = chainBreaks.value.map((b) => `#${b.id}`).join('、')
   return `检出 ${chainBreaks.value.length} 处断链：${ids}（点击重新巡检）`
 })
@@ -96,6 +103,15 @@ function breakTime(iso: string) {
           <CStatusPill status="danger" dot>#{{ b.id }}</CStatusPill>
           <span class="brk-meta">{{ breakTime(b.createdAt) }} · {{ au.displayActor(b.actor) }}（{{ b.actor }}） · {{ b.action }}</span>
         </div>
+      </div>
+    </CCard>
+    <CCard v-if="chainExempted.length" padding="md" class="au-breaks au-breaks--exempted">
+      <div class="brk-head">
+        已豁免断链 <b>{{ chainExempted.length }}</b> 处（append-only 存量不回改 · 豁免登记仅分离巡检呈现），点击 KPI 卡可重新巡检
+      </div>
+      <div v-for="b in chainExempted" :key="b.id" class="brk-item brk-item--exempted">
+        <CStatusPill status="warning" dot>#{{ b.id }}</CStatusPill>
+        <span class="brk-meta">{{ breakTime(b.createdAt) }} · {{ au.displayActor(b.actor) }}（{{ b.actor }}） · {{ b.action }}</span>
       </div>
     </CCard>
 
@@ -198,6 +214,20 @@ function breakTime(iso: string) {
 .brk-list { display: flex; flex-direction: column; gap: 6px; margin-top: var(--s-sm); }
 .brk-item { display: flex; align-items: center; gap: var(--s-sm); font-size: var(--t-xs); }
 .brk-meta { color: var(--c-text-2); }
+.brk-item .brk-meta {
+  font-size: 12px;
+  color: var(--c-danger-fg, #e03e3e);
+  opacity: 0.85;
+}
+.au-breaks--exempted {
+  border-color: var(--c-warning-fg, #d9a321);
+}
+.au-breaks--exempted .brk-head b {
+  color: var(--c-warning-fg, #d9a321);
+}
+.brk-item--exempted .brk-meta {
+  color: var(--c-warning-fg, #d9a321);
+}
 
 .au-filter { display: flex; align-items: center; gap: var(--s-sm); flex-wrap: nowrap; overflow-x: auto; }
 .au-filter .sel { flex-shrink: 0; }
