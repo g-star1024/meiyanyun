@@ -121,8 +121,21 @@ public class MarketingController {
      */
     @GetMapping("/stats/export.csv")
     @RequirePerm("marketing:export")
-    public ResponseEntity<byte[]> exportStats() {
-        return csvResponse(exportService.exportOverview());
+    public ResponseEntity<byte[]> exportStatsCsv() {
+        return attachmentResponse(exportService.exportOverview());
+    }
+
+    /** 棒④卡3：营销总览导出格式增强（04 L162），复刻 finance Report 三格式链。 */
+    @GetMapping("/stats/export.xlsx")
+    @RequirePerm("marketing:export")
+    public ResponseEntity<byte[]> exportStatsXlsx() {
+        return attachmentResponse(exportService.exportOverviewXlsx());
+    }
+
+    @GetMapping("/stats/export.pdf")
+    @RequirePerm("marketing:export")
+    public ResponseEntity<byte[]> exportStatsPdf() {
+        return attachmentResponse(exportService.exportOverviewPdf());
     }
 
     // ==================== 周报订阅（P5-B94 D6/D7） ====================
@@ -432,13 +445,13 @@ public class MarketingController {
         return Map.of("changed", liveService.toggleVideo(id, cmd == null ? null : cmd.status()));
     }
 
-    /** 统一 CSV 附件响应（复刻 FinanceController）：中文文件名走 filename*=UTF-8'' 编码，兼容 BOM 防乱码。 */
-    private ResponseEntity<byte[]> csvResponse(MarketingExportService.CsvReport report) {
+    /** 统一附件响应（复刻 FinanceController）：中文文件名走 filename*=UTF-8'' 编码；棒④卡3 泛化 mediaType 支撑 CSV/XLSX/PDF 三格式。 */
+    private ResponseEntity<byte[]> attachmentResponse(MarketingExportService.ExportReport report) {
         String encoded = URLEncoder.encode(report.filename(), StandardCharsets.UTF_8).replace("+", "%20");
         return ResponseEntity.ok()
-                .header(HttpHeaders.CONTENT_TYPE, "text/csv; charset=UTF-8")
+                .header(HttpHeaders.CONTENT_TYPE, report.mediaType())
                 .header(HttpHeaders.CONTENT_DISPOSITION,
-                        "attachment; filename=\"export.csv\"; filename*=UTF-8''" + encoded)
+                        "attachment; filename=\"export\"; filename*=UTF-8''" + encoded)
                 .contentLength(report.content().length)
                 .body(report.content());
     }

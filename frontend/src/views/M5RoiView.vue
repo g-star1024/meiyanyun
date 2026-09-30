@@ -17,10 +17,14 @@ import CSegmented from '@/components/CSegmented.vue'
 import { useM5RoiStore, ATTR_MODEL_LABEL, ATTR_MODEL_DESC, type AttributionModel } from '@/stores/m5Roi'
 import { useActivityStore } from '@/stores/activity'
 import { useAuthStore } from '@/stores/auth'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { exportMarketingStats, type MarketingExportFormat } from '@/api/marketing'
 
 const store = useM5RoiStore()
 const activity = useActivityStore()
 const auth = useAuthStore()
+const toast = useToast()
 onMounted(() => store.seed())
 
 const kpis = computed(() => [
@@ -58,11 +62,27 @@ const modelOptions = (Object.keys(ATTR_MODEL_LABEL) as AttributionModel[]).map((
 }))
 
 const exported = ref(false)
-function onExport() {
-  if (!auth.can('marketing:export')) return
-  activity.log(auth.user?.name ?? '系统', '导出投放 ROI 报表', 'm5-roi')
-  exported.value = true
-  setTimeout(() => (exported.value = false), 1800)
+const exportFormat = ref<MarketingExportFormat>('csv')
+const exportFormatOptions: { value: MarketingExportFormat; label: string }[] = [
+  { value: 'csv', label: 'CSV' },
+  { value: 'xlsx', label: 'XLSX' },
+  { value: 'pdf', label: 'PDF' },
+]
+/** 棒④卡3（04 L163）：导出桩接真——与营销总览同源同端点 /stats/export.{csv,xlsx,pdf}。 */
+async function onExport() {
+  if (!auth.can('marketing:export') || exported.value) return
+  try {
+    await exportMarketingStats(exportFormat.value)
+    activity.log(
+      auth.user?.name ?? '系统',
+      `导出投放 ROI 报表（${exportFormat.value.toUpperCase()}）`,
+      'm5-roi',
+    )
+    exported.value = true
+    setTimeout(() => (exported.value = false), 1800)
+  } catch (e) {
+    toast.error(errMsg(e, '导出失败，请稍后重试'))
+  }
 }
 </script>
 
@@ -77,9 +97,17 @@ function onExport() {
       <template #header>
         <div class="ri__card-head">
           <span>各渠道投放对比</span>
-          <CButton variant="secondary" size="sm" v-perm.disable="'marketing:export'" @click="onExport">
-            <CIcon name="export" :size="14" />{{ exported ? '已导出' : '导出报表' }}
-          </CButton>
+          <div class="ri__export">
+            <CSegmented
+              v-model="exportFormat"
+              :options="exportFormatOptions"
+              size="sm"
+              aria-label="导出格式"
+            />
+            <CButton variant="secondary" size="sm" v-perm.disable="'marketing:export'" @click="onExport">
+              <CIcon name="export" :size="14" />{{ exported ? '已导出' : '导出报表' }}
+            </CButton>
+          </div>
         </div>
       </template>
       <div class="ri-table">
@@ -279,6 +307,7 @@ function onExport() {
 .ri__head { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: var(--s-md); }
 @media (max-width: 1024px) { .ri__head { grid-auto-flow: row; grid-template-columns: repeat(2, 1fr); } }
 .ri__card-head { display: flex; align-items: center; justify-content: space-between; width: 100%; gap: var(--s-sm); font-size: var(--t-md); font-weight: 700; flex-wrap: wrap; }
+.ri__export { display: flex; align-items: center; gap: var(--s-sm); }
 :deep(.ckpi) { min-width: 0; }
 
 /* 表格 */

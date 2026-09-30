@@ -544,11 +544,24 @@ export const saveMarketingConfig = (cmd: MarketingCfgCmd) =>
   client.post<TransitResult>('/marketing/config', cmd)
 
 // -------------------- M5-14 看板导出 / 周报订阅（P5-B94 D10） --------------------
-// 导出：GET /stats/export.csv 同步 CSV（UTF-8 BOM + 中文表头，后端七节单文件，方法级 marketing:export）。
+// 导出：GET /stats/export.{csv,xlsx,pdf} 三格式（棒④卡3 复刻 finance 三格式链；CSV 为 UTF-8 BOM +
+// 中文表头七节单文件，XLSX 七 sheet、PDF 横向 A4，方法级 marketing:export）。
 // 订阅：GET/POST /weekly-sub 本人态（无行回落 enabled=false；同值重 POST changed=false 幂等零审计）。
 
+export type MarketingExportFormat = 'csv' | 'xlsx' | 'pdf'
+
+const EXPORT_MIME: Record<MarketingExportFormat, string> = {
+  csv: 'text/csv;charset=utf-8',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pdf: 'application/pdf',
+}
+
 /** 从 Content-Disposition 解析后端文件名（filename*=UTF-8'' 优先），取不到用兜底名 */
-function downloadCsv(resp: { data?: BlobPart; headers?: unknown }, fallback: string) {
+function downloadBinary(
+  resp: { data?: BlobPart; headers?: unknown },
+  fallback: string,
+  mime: string,
+) {
   const h = (resp?.headers ?? {}) as { get?(k: string): unknown } & Record<string, unknown>
   const raw = typeof h.get === 'function' ? h.get('content-disposition') : h['content-disposition']
   const disposition = String(raw ?? '')
@@ -561,7 +574,7 @@ function downloadCsv(resp: { data?: BlobPart; headers?: unknown }, fallback: str
       filename = star[1]
     }
   }
-  const blob = new Blob([resp.data as BlobPart], { type: 'text/csv;charset=utf-8' })
+  const blob = new Blob([resp.data as BlobPart], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -572,10 +585,10 @@ function downloadCsv(resp: { data?: BlobPart; headers?: unknown }, fallback: str
   URL.revokeObjectURL(url)
 }
 
-/** 营销总览导出 CSV（浏览器触发下载；无 marketing:export 权限后端 403，由视图 toast 兜底）。 */
-export const exportMarketingStatsCsv = async () => {
-  const resp = await client.get('/marketing/stats/export.csv', { responseType: 'blob' })
-  downloadCsv(resp, '营销总览.csv')
+/** 营销总览导出（浏览器触发下载；无 marketing:export 权限后端 403，由视图 toast 兜底）。 */
+export const exportMarketingStats = async (format: MarketingExportFormat = 'csv') => {
+  const resp = await client.get(`/marketing/stats/export.${format}`, { responseType: 'blob' })
+  downloadBinary(resp, `营销总览.${format}`, EXPORT_MIME[format])
 }
 
 /** 本人周报订阅态：{enabled, lastSentWeek}，无行回落 enabled=false。 */
