@@ -17,11 +17,22 @@ import java.util.List;
  * @param realSub   超管代操作（impersonate）真实操作人工号；普通登录为 null
  * @param act       超管代操作时被切换人工号（与 staffId 同值，审计留痕冗余）；普通登录为 null
  * @param issuedAt  token 签发时刻（JWT iat，epoch 秒）；代操作退出算会话时长用，系统身份为 null
+ * @param groupCode 所属集团 org_code（登录时经 org_unit 上溯，总部/双空兜底 G001）；
+ *                  存量 token 无 group claim 解析为 null——GROUP_ONLY 域对其缺省宽容不施加集团过滤
  */
 public record LoginUser(String staffId, String staffName, List<String> roles,
                         String storeCode, String scope, List<String> perms,
                         boolean devLogin, String region, List<String> stores,
-                        String realSub, String act, Long issuedAt) {
+                        String realSub, String act, Long issuedAt, String groupCode) {
+
+    /** 兼容旧调用（升级前的 12 参构造）：无集团 group claim。 */
+    public LoginUser(String staffId, String staffName, List<String> roles,
+                     String storeCode, String scope, List<String> perms,
+                     boolean devLogin, String region, List<String> stores,
+                     String realSub, String act, Long issuedAt) {
+        this(staffId, staffName, roles, storeCode, scope, perms, devLogin, region, stores,
+                realSub, act, issuedAt, null);
+    }
 
     /** 兼容旧调用（meiyun-security 升级前的 9 参构造）：无 impersonate 双 claim。 */
     public LoginUser(String staffId, String staffName, List<String> roles,

@@ -18,6 +18,9 @@ import java.util.List;
  * <ul>
  *   <li>无登录上下文（服务间匿名调用，如 name-map）→ 不过滤（开放）；</li>
  *   <li>GROUP / BRAND（超管、集团角色）→ 全量可见；</li>
+ *   <li>GROUP_ONLY（本集团可见，棒②卡2 新增·多租户集团隔离机制先行档）→ 可见 JWT stores
+ *       预解析的本集团门店；group claim 缺失（存量 token）→ 缺省宽容不施加集团过滤；
+ *       group 有值但 stores 为空（集团无门店/集团不存在）→ 永假隔离不见任何数据；</li>
  *   <li>REGION（区域经理）→ 可见 JWT stores 列表内门店数据；stores 为空（如未分配大区的财务）→ 全量；</li>
  *   <li>STORE（店长/医生/前台/运营）→ 仅本门店；storeCode 为空（数据异常）→ 不见任何数据；</li>
  *   <li>SELF（咨询师）→ 门店范围内且归属人为本人；ownerAttr 为空时退化为仅门店可见。</li>
@@ -33,6 +36,8 @@ public final class DataScope {
     public static final String SCOPE_BRAND = "BRAND";
     public static final String SCOPE_REGION = "REGION";
     public static final String SCOPE_GROUP = "GROUP";
+    /** 本集团可见（集团隔离机制先行档，单集团下暂无角色映射，Phase 3 挂接租户体系）。 */
+    public static final String SCOPE_GROUP_ONLY = "GROUP_ONLY";
 
     private DataScope() {
     }
@@ -84,6 +89,16 @@ public final class DataScope {
         if (u.isSuper() || SCOPE_GROUP.equals(u.scope()) || SCOPE_BRAND.equals(u.scope())) {
             return null;
         }
+        if (SCOPE_GROUP_ONLY.equals(u.scope())) {
+            if (u.groupCode() == null || u.groupCode().isBlank()) {
+                return null;
+            }
+            List<String> stores = u.stores();
+            if (stores == null || stores.isEmpty()) {
+                return cb.disjunction();
+            }
+            return storePath.in(stores);
+        }
         if (SCOPE_REGION.equals(u.scope())) {
             List<String> stores = u.stores();
             if (stores == null || stores.isEmpty()) {
@@ -106,6 +121,13 @@ public final class DataScope {
         }
         if (u.isSuper() || SCOPE_GROUP.equals(u.scope()) || SCOPE_BRAND.equals(u.scope())) {
             return true;
+        }
+        if (SCOPE_GROUP_ONLY.equals(u.scope())) {
+            if (u.groupCode() == null || u.groupCode().isBlank()) {
+                return true;
+            }
+            List<String> stores = u.stores();
+            return stores != null && !stores.isEmpty() && stores.contains(dataStoreCode);
         }
         if (SCOPE_REGION.equals(u.scope())) {
             List<String> stores = u.stores();
@@ -139,6 +161,9 @@ public final class DataScope {
             return true;
         }
         if ("REGION".equals(ownerType)) {
+            if (SCOPE_GROUP_ONLY.equals(u.scope())) {
+                return true;
+            }
             if (!SCOPE_REGION.equals(u.scope())) {
                 return false;
             }

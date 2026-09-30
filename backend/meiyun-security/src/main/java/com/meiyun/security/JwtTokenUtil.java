@@ -18,7 +18,9 @@ import java.util.Map;
  *
  * Token 结构：base64url(header).base64url(payload).base64url(HMACSHA256(header.payload, secret))
  * payload 为自包含 claims：sub（工号）/ name / roles / store / scope / perms / dev / iat / exp；
+ * 另携 region（所属大区中文）/ stores（数据域可见门店预解析）/ group（所属集团 org_code，棒②卡2 起）；
  * 超管代操作（impersonate）短 token 额外携带 realSub（真实操作超管工号）/ act（被切换人工号）。
+ * 解析对缺失 claim 缺省宽容（如存量 token 无 group → LoginUser.groupCode 为 null，免强制重登）。
  * 各服务共享同一 secret 本地验签，服务自治、无状态。
  */
 public class JwtTokenUtil {
@@ -57,6 +59,7 @@ public class JwtTokenUtil {
         payload.put("perms", user.perms());
         if (user.region() != null && !user.region().isBlank()) payload.put("region", user.region());
         if (user.stores() != null && !user.stores().isEmpty()) payload.put("stores", user.stores());
+        if (user.groupCode() != null && !user.groupCode().isBlank()) payload.put("group", user.groupCode());
         if (user.realSub() != null && !user.realSub().isBlank()) payload.put("realSub", user.realSub());
         if (user.act() != null && !user.act().isBlank()) payload.put("act", user.act());
         payload.put("dev", user.devLogin());
@@ -105,7 +108,8 @@ public class JwtTokenUtil {
                     asStringList(payload.get("stores")),
                     (String) payload.get("realSub"),
                     (String) payload.get("act"),
-                    payload.get("iat") instanceof Number n ? n.longValue() : null);
+                    payload.get("iat") instanceof Number n ? n.longValue() : null,
+                    (String) payload.get("group"));
         } catch (Exception e) {
             throw new JwtAuthException("登录凭证字段缺失");
         }

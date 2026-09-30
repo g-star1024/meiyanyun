@@ -12,6 +12,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -26,7 +27,8 @@ import java.util.Set;
  * - POST /api/org/auth/impersonate      超管代操作：签发 30 分钟短 token（sub=目标人，realSub=超管，act=目标人）
  * - POST /api/org/auth/impersonate/exit 退出代操作：凭短 token 反解 realSub 重签超管原会话
  *
- * JWT claims：sub(工号)/name/roles[]/store/scope/perms[](超管为 *)；
+ * JWT claims：sub(工号)/name/roles[]/store/scope/perms[](超管为 *)/region(大区中文)/stores[](数据域
+ * 可见门店预解析)/group(所属集团 org_code，棒②卡2 起——登录时经 org_unit 上溯，总部兜底 G001)；
  * 代操作短 token 追加 realSub(真实超管)/act(被切换人工号)，权限与数据域按 sub 目标身份自然收窄。
  */
 @RestController
@@ -312,10 +314,11 @@ public class AuthController {
         }
         String scope = topScope(roles);
         String region = resolveRegion(staff, scope);
-        List<String> stores = resolveVisibleStores(staff, scope, region);
+        String groupCode = resolveGroupCode(staff);
+        List<String> stores = resolveVisibleStores(staff, scope, region, groupCode);
         LoginUser user = new LoginUser(staff.getStaffId(), staff.getStaffName(),
                 roles, staff.getStoreCode(), scope, new ArrayList<>(perms),
-                devLogin, region, stores, realSub, act, null);
+                devLogin, region, stores, realSub, act, null, groupCode);
         String token = jwt.issue(user, tokenTtl);
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -326,6 +329,7 @@ public class AuthController {
         result.put("roleCode", staff.getRoleCode());
         result.put("storeCode", staff.getStoreCode());
         result.put("region", region);
+        result.put("groupCode", groupCode);
         result.put("stores", stores);
         result.put("scope", scope);
         result.put("permissions", new ArrayList<>(perms));
@@ -349,12 +353,74 @@ public class AuthController {
     }
 
     /**
+     * 所属集团 org_code 解析（JWT group claim·棒②卡2）：门店锚点（store_code→门店节点→沿
+     * parent_code 上溯至集团节点）优先，区域锚点（staff.region 中文短名→区域节点 org_name 包含
+     * 匹配，兼容「事业部/大区」双后缀→上溯集团）次之；总部/双空/未挂载兜底 G001（单集团默认，
+     * Phase 3 多集团时改租户映射）。解析不阻断登录——org_unit 断链时同兜底。
+     */
+    private String resolveGroupCode(Staff staff) {
+        String storeCode = staff.getStoreCode();
+        if (storeCode != null && !storeCode.isBlank()) {
+            String g = ascendToGroup(orgUnitRepo.findFirstByStoreCode(storeCode).orElse(null));
+            if (g != null) {
+                return g;
+            }
+        }
+        String region = staff.getRegion();
+        if (region != null && !region.isBlank()) {
+            String g = orgUnitRepo.findByOrgTypeOrderBySortNoAsc("区域").stream()
+                    .filter(o -> region.equals(o.getRegion())
+                            || (o.getOrgName() != null && o.getOrgName().contains(region)))
+                    .findFirst()
+                    .map(this::ascendToGroup)
+                    .orElse(null);
+            if (g != null) {
+                return g;
+            }
+        }
+        return "G001";
+    }
+
+    /** 沿 parent_code 上溯至「集团」节点返回其 org_code；节点缺失/断链/成环返回 null。 */
+    private String ascendToGroup(OrgUnit node) {
+        Set<String> seen = new HashSet<>();
+        OrgUnit cur = node;
+        while (cur != null && cur.getOrgCode() != null && seen.add(cur.getOrgCode())) {
+            if ("集团".equals(cur.getOrgType())) {
+                return cur.getOrgCode();
+            }
+            String parent = cur.getParentCode();
+            cur = (parent == null || parent.isBlank()) ? null : orgUnitRepo.findById(parent).orElse(null);
+        }
+        return null;
+    }
+
+    /**
      * 数据域可见门店预解析（登录时一次性算好，随 JWT stores claim 下发，各服务零跨服务调用）：
      * REGION + 大区有值 → 组织树中该大区下全部门店；
+     * GROUP_ONLY + 集团有值 → 组织树中该集团节点下全部门店（集团→区域→门店两层遍历，部门层不进入；
+     * 集团不存在/无门店 → 空列表，DataScope 遇 GROUP_ONLY 空列表永假隔离）；
      * STORE/SELF → 本门店单元素；
      * GROUP/BRAND 或 REGION 无大区 → 空列表（DataScope 遇空视为全量）。
      */
-    private List<String> resolveVisibleStores(Staff staff, String scope, String region) {
+    private List<String> resolveVisibleStores(Staff staff, String scope, String region, String groupCode) {
+        if ("GROUP_ONLY".equals(scope)) {
+            if (groupCode == null || groupCode.isBlank()) {
+                return List.of();
+            }
+            List<String> groupStores = new ArrayList<>();
+            for (OrgUnit regionNode : orgUnitRepo.findByParentCodeOrderBySortNoAsc(groupCode)) {
+                if (!"区域".equals(regionNode.getOrgType())) {
+                    continue;
+                }
+                orgUnitRepo.findByParentCodeOrderBySortNoAsc(regionNode.getOrgCode()).stream()
+                        .filter(o -> "门店".equals(o.getOrgType()))
+                        .map(OrgUnit::getStoreCode)
+                        .filter(c -> c != null && !c.isBlank())
+                        .forEach(groupStores::add);
+            }
+            return groupStores.stream().distinct().sorted().toList();
+        }
         if ("REGION".equals(scope)) {
             if (region == null || region.isBlank()) {
                 return List.of();
