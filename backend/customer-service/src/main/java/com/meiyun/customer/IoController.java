@@ -49,6 +49,20 @@ public class IoController {
     return ioTaskService.importFile(file);
   }
 
+  @GetMapping("/import-template")
+  @RequirePerm("io:import")
+  public ResponseEntity<byte[]> importTemplate() {
+    IoTaskService.TemplateFile tpl = ioTaskService.importTemplate();
+    String encoded =
+        URLEncoder.encode(tpl.fileName(), StandardCharsets.UTF_8).replace("+", "%20");
+    return ResponseEntity.ok()
+        .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename*=UTF-8''" + encoded)
+        .contentType(
+            MediaType.parseMediaType(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+        .body(tpl.bytes());
+  }
+
   @PostMapping("/export")
   @RequirePerm("io:export")
   public ResponseEntity<byte[]> export(@RequestBody(required = false) IoTaskService.ExportCmd cmd) {

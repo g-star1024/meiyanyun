@@ -11,7 +11,7 @@ import { useAuthStore } from './auth'
 import { useToast } from '@/composables/useToast'
 import { errMsg } from './m5Coupon'
 import {
-  listImports, listExports, getIoStats, uploadImport, exportCustomers,
+  listImports, listExports, getIoStats, uploadImport, exportCustomers, downloadImportTemplate,
   type IoImportView, type IoExportView, type IoStats,
 } from '@/api/customerio'
 
@@ -136,6 +136,23 @@ export const useCustomerIoStore = defineStore('customerio', () => {
     }
   }
 
+  async function downloadTemplate(): Promise<void> {
+    if (!auth.can('io:import')) return
+    try {
+      const f = await downloadImportTemplate()
+      const url = URL.createObjectURL(f.blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = f.fileName
+      a.click()
+      URL.revokeObjectURL(url)
+      activity.log(auth.user.name, '下载客户导入模板')
+      toast.success(`模板已下载：${f.fileName}`)
+    } catch (e) {
+      toast.error(errMsg(e, '模板下载失败'))
+    }
+  }
+
   // ===== 加载（切真：customer /api/customer/m3/io；保留 seed 名兼容视图入口） =====
   let seeded = false
   async function seed() {
@@ -155,7 +172,7 @@ export const useCustomerIoStore = defineStore('customerio', () => {
   return {
     imports, exports,
     monthImportTotal, monthExportTotal, pending, importSuccessRate,
-    createImport, createExport, seed,
+    createImport, createExport, downloadTemplate, seed,
     IMPORT_STATUS_LABEL,
   }
 })

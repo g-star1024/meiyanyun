@@ -21,9 +21,13 @@ import {
 } from '@/stores/complaint'
 import { useSettingsStore } from '@/stores/settings'
 import { COMPLAINT_STATUS, COMPLAINT_SEVERITY, COMPLAINT_SOURCE, COMPLAINT_CATEGORY, dictPill } from '@/config/dictionary'
+import { useToast } from '@/composables/useToast'
+import { errMsg } from '@/stores/m5Coupon'
+import { searchCustomers, type CustomerDTO } from '@/api/customer'
 
 const complaint = useComplaintStore()
 const settings = useSettingsStore()
+const toast = useToast()
 
 onMounted(() => complaint.seed())
 
@@ -128,7 +132,9 @@ async function doReject() {
 // 发起投诉
 const showForm = ref(false)
 const form = ref({
+  customerId: '',
   customerName: '',
+  customerKeyword: '',
   source: 'STORE' as ComplaintSource,
   severity: 'MEDIUM' as ComplaintSeverity,
   category: 'SERVICE' as ComplaintCategory,
@@ -137,15 +143,38 @@ const form = ref({
   description: '',
   compensationAmount: '',
 })
+// 客户检索接真（searchCustomers）：选中回填 customerId+customerName，杜绝 'C-NEW' 硬编码
+const customerHits = ref<CustomerDTO[]>([])
+const searching = ref(false)
+async function searchCustomer() {
+  const kw = form.value.customerKeyword.trim()
+  if (!kw) { customerHits.value = []; return }
+  searching.value = true
+  try {
+    const res = await searchCustomers(kw)
+    customerHits.value = res.data ?? []
+    if (!customerHits.value.length) toast.info('未检索到客户，请先建档或更换关键字')
+  } catch (e) {
+    toast.error(errMsg(e, '客户检索失败'))
+  } finally {
+    searching.value = false
+  }
+}
+function pickCustomer(c: CustomerDTO) {
+  form.value.customerId = c.customerId
+  form.value.customerName = c.name
+  form.value.customerKeyword = `${c.name}（${c.customerId}）`
+  customerHits.value = []
+}
 const formCompNum = computed(() => Number(form.value.compensationAmount) || 0)
 const formTier = computed(() => settings.tierFor(formCompNum.value))
 const canSubmit = computed(
-  () => form.value.customerName.trim() && form.value.description.trim(),
+  () => form.value.customerId && form.value.description.trim(),
 )
 async function submitForm() {
   if (!canSubmit.value) return
   const c = await complaint.create({
-    customerId: 'C-NEW',
+    customerId: form.value.customerId,
     customerName: form.value.customerName.trim(),
     source: form.value.source,
     severity: form.value.severity,
@@ -158,9 +187,11 @@ async function submitForm() {
   if (c) {
     showForm.value = false
     form.value = {
-      customerName: '', source: 'STORE', severity: 'MEDIUM', category: 'SERVICE',
+      customerId: '', customerName: '', customerKeyword: '',
+      source: 'STORE', severity: 'MEDIUM', category: 'SERVICE',
       medicalRisk: false, relatedOrderNo: '', description: '', compensationAmount: '',
     }
+    customerHits.value = []
     selectedId.value = c.id
     tab.value = 'pending_accept'
   }
@@ -359,11 +390,26 @@ async function submitForm() {
     <div v-if="showForm" class="modal-mask" @click.self="showForm = false">
       <CCard class="modal" title="登记投诉" padding="lg">
         <div class="form">
-          <div class="form__row form__row--2">
-            <div>
-              <label class="form__label">客户姓名</label>
-              <CInput v-model="form.customerName" placeholder="如：王美丽" />
+          <div class="form__row">
+            <label class="form__label">客户 <span class="req">*</span></label>
+            <div class="pick">
+              <CInput v-model="form.customerKeyword" placeholder="输入客户姓名 / 手机号 / 客户编号后点检索" />
+              <CButton variant="secondary" :disabled="searching" @click="searchCustomer">
+                <CIcon name="customer" :size="16" />检索
+              </CButton>
             </div>
+            <div v-if="customerHits.length" class="pick__panel">
+              <button
+                v-for="c in customerHits" :key="c.customerId"
+                type="button" class="pick__opt"
+                @click="pickCustomer(c)"
+              >
+                <span class="pick__name">{{ c.name }}</span>
+                <span class="pick__sub">{{ c.customerId }} · {{ c.phone || '无手机号' }} · {{ c.level }}</span>
+              </button>
+            </div>
+          </div>
+          <div class="form__row form__row--2">
             <div>
               <label class="form__label">关联订单号（选填）</label>
               <CInput v-model="form.relatedOrderNo" placeholder="如：SO20260824001" />
@@ -555,6 +601,18 @@ async function submitForm() {
 .form__tier { font-size: var(--t-sm); color: var(--c-text-2); padding: var(--s-sm) var(--s-md); background: var(--c-brand-soft); border-radius: var(--r-md); align-self: end; }
 .form__tier strong { color: var(--c-brand); margin: 0 var(--s-xs); }
 .form__tier-hint { color: var(--c-text-3); font-size: var(--t-xs); }
+
+.req { color: var(--c-danger-fg); }
+.pick { display: flex; gap: var(--s-sm); align-items: center; }
+.pick :deep(.cinput) { flex: 1; }
+.pick__panel {
+  margin-top: var(--s-xs); border: 1px solid var(--c-border); border-radius: var(--r-md);
+  overflow: hidden; background: var(--c-surface); box-shadow: var(--shadow-card); max-height: 220px; overflow-y: auto;
+}
+.pick__opt { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: var(--s-sm) var(--s-md); background: none; border: none; border-bottom: 1px solid var(--c-border-light); cursor: pointer; }
+.pick__opt:hover { background: var(--c-brand-soft); }
+.pick__name { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); }
+.pick__sub { font-size: var(--t-xs); color: var(--c-text-3); }
 
 @media (max-width: 1024px) {
   .cp__body { grid-template-columns: 1fr; }

@@ -70,6 +70,25 @@ export function uploadImport(file: File): Promise<IoImportView> {
   return client.post('/customer/m3/io/import', fd, { timeout: 60000 }).then((r) => r.data)
 }
 
+export async function downloadImportTemplate(): Promise<IoExportFile> {
+  try {
+    const r = await client.get('/customer/m3/io/import-template', { responseType: 'blob', timeout: 60000 })
+    const dispo = String(r.headers['content-disposition'] || '')
+    const m = dispo.match(/filename\*=UTF-8''([^;]+)/)
+    const fileName = m?.[1] ? decodeURIComponent(m[1]) : '客户导入模板.xlsx'
+    return { blob: r.data as Blob, fileName }
+  } catch (e) {
+    // responseType=blob 时错误体也是 Blob，还原为 JSON 供 errMsg 统一取 message
+    const anyE = e as { response?: { data?: unknown } }
+    if (anyE?.response?.data instanceof Blob) {
+      try {
+        anyE.response.data = JSON.parse(await (anyE.response.data as Blob).text())
+      } catch { /* 保留原始错误 */ }
+    }
+    throw e
+  }
+}
+
 export async function exportCustomers(cmd: IoExportCmd): Promise<IoExportFile> {
   try {
     const r = await client.post('/customer/m3/io/export', cmd, { responseType: 'blob', timeout: 60000 })

@@ -1,6 +1,8 @@
 package com.meiyun.customer;
 
 import com.alibaba.excel.EasyExcel;
+import com.alibaba.excel.ExcelWriter;
+import com.alibaba.excel.write.metadata.WriteSheet;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.customer.CustomerService.BadReq;
@@ -339,6 +341,33 @@ public class IoTaskService {
     }
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     EasyExcel.write(out).head(head).sheet("客户导出").doWrite(data);
+    return out.toByteArray();
+  }
+
+  public record TemplateFile(String fileName, byte[] bytes) {}
+
+  /** M3 导入模板：首 sheet 表头四列与导入解析列严格对齐（姓名/手机号/性别/等级），第二 sheet 填写说明；不落 IoTask、不审计（无客户数据）。 */
+  public TemplateFile importTemplate() {
+    return new TemplateFile("客户导入模板.xlsx", buildImportTemplate());
+  }
+
+  private byte[] buildImportTemplate() {
+    List<List<String>> head =
+        List.of(List.of("姓名"), List.of("手机号"), List.of("性别"), List.of("等级"));
+    List<List<String>> noteHead = List.of(List.of("字段"), List.of("填写要求"));
+    List<List<Object>> notes = new ArrayList<>();
+    notes.add(List.<Object>of("姓名", "必填"));
+    notes.add(List.<Object>of("手机号", "必填，11 位数字（1 开头）"));
+    notes.add(List.<Object>of("性别", "选填，仅支持 男/女"));
+    notes.add(List.<Object>of("等级", "选填，仅支持 普通/银卡/金卡/钻石/黑卡"));
+    notes.add(List.<Object>of("（通用）", "第一个工作表第一行为表头，请勿删改；从第二行开始填写数据"));
+    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    try (ExcelWriter writer = EasyExcel.write(out).build()) {
+      WriteSheet dataSheet = EasyExcel.writerSheet(0, "客户导入").head(head).build();
+      writer.write(List.of(), dataSheet);
+      WriteSheet noteSheet = EasyExcel.writerSheet(1, "填写说明").head(noteHead).build();
+      writer.write(notes, noteSheet);
+    }
     return out.toByteArray();
   }
 

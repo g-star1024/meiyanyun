@@ -57,7 +57,7 @@ function handleUpload() {
   input.click()
 }
 function downloadTpl() {
-  // 占位
+  store.downloadTemplate()
 }
 
 // 导出
@@ -109,7 +109,7 @@ function doExport() {
           <div class="fm-row"><span>等级</span><span class="arrow">→</span><span class="fm-tgt">customer.level</span></div>
         </div>
         <div class="action-card__foot">
-          <CButton variant="ghost" size="sm" @click="downloadTpl">
+          <CButton variant="ghost" size="sm" v-perm.disable="'io:import'" @click="downloadTpl">
             <CIcon name="export" :size="14" />下载模板
           </CButton>
           <span v-if="uploadName" class="upload-tip">
