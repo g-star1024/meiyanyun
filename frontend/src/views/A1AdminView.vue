@@ -107,6 +107,7 @@ const models = ref<ModelView[]>([])
 const bindCols = [
   { key: 'featureName', label: 'AI 功能' },
   { key: 'model', label: '绑定模型' },
+  { key: 'backupText', label: '备用链（failover）' },
   { key: 'storeScopeText', label: '门店灰度' },
   { key: 'enabled', label: '状态', width: '90', align: 'center' as const },
   { key: 'roles', label: '已放开角色' },
@@ -117,6 +118,7 @@ const bindRows = computed(() =>
   features.value.map((f) => ({
     ...f,
     model: f.modelDisplayName ? `${f.modelDisplayName}（${f.modelCode}）` : '—',
+    backupText: f.backupModelNames?.length ? f.backupModelNames.join(' → ') : '—',
     storeScopeText: f.storeScope === 'SPECIFIED' ? `指定门店：${f.storeCodes || '—'}` : '全部门店',
     roles: roleCodes.filter((r) => f.roles?.[r]).map((r) => roleNames[r]).join('、') || '—',
     updatedAt: f.updatedAt ? fmtDateTime(f.updatedAt, true) : '—',
@@ -128,18 +130,25 @@ const bindModelOptions = computed(() =>
     value: String(m.modelId),
   })),
 )
+// 备用链下拉：含「不配置」空项，并排除当前主模型（后端保存时也会去重/排除）
+const bindBackupOptions = computed(() => [
+  { label: '（不配置）', value: '' },
+  ...bindModelOptions.value.filter((o) => o.value !== bForm.modelId),
+])
 
 const bDrawer = ref(false)
 const bEditing = ref<BindingView | null>(null)
 const bSaving = ref(false)
 const bForm = reactive({
-  modelId: '', storeScope: 'ALL', storeCodes: '', promptTemplate: '',
+  modelId: '', backup1: '', backup2: '', storeScope: 'ALL', storeCodes: '', promptTemplate: '',
   paramOverrides: '', enabled: false, requireApproval: false,
 })
 function openBind(row: BindingView) {
   bEditing.value = row
   Object.assign(bForm, {
     modelId: row.modelId == null ? '' : String(row.modelId),
+    backup1: row.backupModelIds?.[0] == null ? '' : String(row.backupModelIds[0]),
+    backup2: row.backupModelIds?.[1] == null ? '' : String(row.backupModelIds[1]),
     storeScope: row.storeScope || 'ALL',
     storeCodes: row.storeCodes || '',
     promptTemplate: row.promptTemplate || '',
@@ -175,6 +184,7 @@ async function saveBinding() {
       paramOverrides: overrides,
       enabled: bForm.enabled,
       requireApproval: bForm.requireApproval,
+      backupModelIds: [bForm.backup1, bForm.backup2].filter((v) => v !== '').map(Number),
     })
     toast.success(r.changed ? '功能绑定已保存并写入审计日志' : '配置无变化，未产生更新')
     await loadMatrix()
@@ -550,6 +560,17 @@ onMounted(loadAll)
         </div>
         <div class="bf-grid">
           <div class="bf-row">
+            <label class="fld-label">备用模型 1（主挂自动切换）</label>
+            <CSelect v-model="bForm.backup1" :options="bindBackupOptions" width="100%" />
+          </div>
+          <div class="bf-row">
+            <label class="fld-label">备用模型 2</label>
+            <CSelect v-model="bForm.backup2" :options="bindBackupOptions" width="100%" />
+          </div>
+        </div>
+        <p class="muted bf-backup-hint">主模型调用失败（5xx/超时/拒绝）时按序自动切换备用模型；每段调用的实际供应商/模型均沉淀调用日志，可在调用日志页核对 failover 轨迹。</p>
+        <div class="bf-grid">
+          <div class="bf-row">
             <label class="fld-label">门店灰度范围</label>
             <CSelect v-model="bForm.storeScope" width="100%"
               :options="[{ label: '全部门店', value: 'ALL' }, { label: '指定门店', value: 'SPECIFIED' }]" />
@@ -708,6 +729,7 @@ onMounted(loadAll)
 .bind-form { display: flex; flex-direction: column; gap: var(--s-md); }
 .bf-row { display: flex; flex-direction: column; gap: 6px; }
 .bf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-md); }
+.bf-backup-hint { margin: calc(-1 * var(--s-xs)) 0 0; font-size: 12px; line-height: 18px; }
 .fld-label { font-size: 13px; color: var(--c-text); line-height: 18px; }
 .bf-textarea {
   width: 100%; border: 1px solid var(--c-border); border-radius: var(--r-md);

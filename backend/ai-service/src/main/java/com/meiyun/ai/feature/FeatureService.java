@@ -41,11 +41,13 @@ public class FeatureService {
 
     public record BindingCmd(Long modelId, String storeScope, String storeCodes,
                              String promptTemplate, String paramOverrides,
-                             Boolean enabled, Boolean requireApproval) {
+                             Boolean enabled, Boolean requireApproval,
+                             List<Long> backupModelIds) {
     }
 
     public record BindingView(Long bindingId, String featureCode, String featureName, Long modelId,
                               String modelCode, String modelDisplayName,
+                              List<Long> backupModelIds, List<String> backupModelNames,
                               String storeScope, String storeCodes,
                               String promptTemplate, String paramOverrides,
                               boolean enabled, boolean requireApproval,
@@ -131,6 +133,11 @@ public class FeatureService {
             b.setStoreCodes(blankToNull(cmd.storeCodes()));
             changed = true;
         }
+        String normalizedBackup = normalizeBackupChain(cmd.backupModelIds(), cmd.modelId());
+        if (!str(b.getBackupModelIds()).equals(str(normalizedBackup))) {
+            b.setBackupModelIds(normalizedBackup);
+            changed = true;
+        }
         if (!str(b.getPromptTemplate()).equals(str(cmd.promptTemplate()))) {
             b.setPromptTemplate(blankToNull(cmd.promptTemplate()));
             changed = true;
@@ -158,6 +165,7 @@ public class FeatureService {
         audit.record("AI_FEATURE", "FEAT-" + featureCode, actor, "BIND",
                 payload(Map.of("featureCode", featureCode,
                         "modelId", b.getModelId() == null ? "" : b.getModelId(),
+                        "backupModelIds", str(b.getBackupModelIds()),
                         "enabled", enabled,
                         "requireApproval", requireApproval,
                         "storeScope", scope)));
@@ -198,6 +206,14 @@ public class FeatureService {
 
     private BindingView toView(AiFeatureBinding b, Map<Long, String> modelCodes, Map<Long, String> modelNames) {
         Long mid = b.getModelId();
+        List<Long> backupIds = parseBackupChain(b.getBackupModelIds());
+        List<String> backupNames = backupIds.stream()
+                .map(id -> {
+                    String name = modelNames.get(id);
+                    String code = modelCodes.get(id);
+                    return name == null ? "#" + id : name + "（" + code + "）";
+                })
+                .toList();
         return new BindingView(
                 b.getBindingId(),
                 b.getFeatureCode(),
@@ -205,6 +221,8 @@ public class FeatureService {
                 mid,
                 mid == null ? null : modelCodes.getOrDefault(mid, null),
                 mid == null ? null : modelNames.getOrDefault(mid, null),
+                backupIds,
+                backupNames,
                 b.getStoreScope(),
                 b.getStoreCodes(),
                 b.getPromptTemplate(),
@@ -220,6 +238,60 @@ public class FeatureService {
         return bindingRepo.findByFeatureCode(code)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
                         "AI 功能不存在（" + code + "）"));
+    }
+
+    /** 备用模型链落库前规整：去空/去重/排除主模型/逐个校验模型存在，返回逗号分隔串（空链返回 null）。 */
+    private String normalizeBackupChain(List<Long> ids, Long primaryId) {
+        if (ids == null || ids.isEmpty()) {
+            return null;
+        }
+        if (primaryId == null) {
+            throw badRequest("请先选择主模型，再配置备用模型链");
+        }
+        List<Long> chain = new ArrayList<>();
+        for (Long id : ids) {
+            if (id == null || id.equals(primaryId) || chain.contains(id)) {
+                continue;
+            }
+            if (modelRepo.findById(id).isEmpty()) {
+                throw badRequest("备用模型不存在（id=" + id + "）");
+            }
+            chain.add(id);
+        }
+        if (chain.isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (Long id : chain) {
+            if (sb.length() > 0) {
+                sb.append(',');
+            }
+            sb.append(id);
+        }
+        return sb.toString();
+    }
+
+    /** 逗号分隔备用链串 → model_id 列表（非法段跳过）。 */
+    static List<Long> parseBackupChain(String raw) {
+        List<Long> out = new ArrayList<>();
+        if (raw == null || raw.isBlank()) {
+            return out;
+        }
+        for (String seg : raw.split("[,，]")) {
+            String t = seg.trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            try {
+                long id = Long.parseLong(t);
+                if (!out.contains(id)) {
+                    out.add(id);
+                }
+            } catch (NumberFormatException ignored) {
+                // 跳过非法段
+            }
+        }
+        return out;
     }
 
     private static String str(String s) {

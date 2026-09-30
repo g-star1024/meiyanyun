@@ -33,6 +33,9 @@ public class AiFeatureBinding {
     @Column(name = "model_id")
     private Long modelId;
 
+    @Column(name = "backup_model_ids")
+    private String backupModelIds;
+
     /** ALL / SPECIFIED */
     @Column(name = "store_scope", nullable = false)
     private String storeScope = "ALL";

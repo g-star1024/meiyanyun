@@ -32,6 +32,7 @@ import java.util.Map;
 /**
  * AI 功能真实调用闭环：登录 + 角色灰度矩阵 + 门店灰度 + 功能/模型/供应商启用校验
  * → 按绑定模板组装提示词 → LlmClient.chat 真实出站 → 成功/失败均沉淀 ai_invoke_log（含 token、耗时、费用分）。
+ * 多供应商 failover：功能绑定可配置备用模型链，主模型 5xx/超时/拒绝即按链自动切换，每段日志记实际 provider/model。
  * 鉴权独立于管理端 aiAdmin:*：业务用户能否调用由 ai_feature_role 矩阵决定。
  */
 @Service
@@ -119,9 +120,86 @@ public class FeatureInvokeService {
                     "门店 " + reqStore + " 不在功能「" + featureName + "」的灰度范围内");
         }
 
-        AiModel model = modelRepo.findById(binding.getModelId())
+        sensitiveWordService.screen(input, featureCode, user, reqStore);
+
+        String prompt = buildPrompt(binding.getPromptTemplate(), input);
+        List<Map<String, String>> messages = new java.util.ArrayList<>();
+        if (binding.getPromptTemplate() != null && !binding.getPromptTemplate().isBlank()) {
+            messages.add(Map.of("role", "system", "content", binding.getPromptTemplate().trim()));
+        }
+        messages.add(Map.of("role", "user", "content", input));
+
+        // 多供应商 failover：主模型 + 备用模型链按序尝试；任一段 5xx/超时/拒绝即切下一段，
+        // 每段成功/失败均落 ai_invoke_log 记实际 provider/model，全链失败抛 502 并附链轨迹。
+        List<Long> chain = new java.util.ArrayList<>();
+        chain.add(binding.getModelId());
+        for (Long bid : FeatureService.parseBackupChain(binding.getBackupModelIds())) {
+            if (!bid.equals(binding.getModelId()) && !chain.contains(bid)) {
+                chain.add(bid);
+            }
+        }
+        List<String> trail = new java.util.ArrayList<>();
+        long start = System.currentTimeMillis();
+        for (Long modelId : chain) {
+            Target target;
+            try {
+                target = resolveTarget(modelId);
+            } catch (ResponseStatusException loadEx) {
+                if (chain.size() == 1) {
+                    throw loadEx;
+                }
+                String reason = loadEx.getReason() == null ? "模型不可用" : loadEx.getReason();
+                trail.add("模型#" + modelId + " " + reason);
+                writeFailLog(user, reqStore, featureCode, prompt, null, "#" + modelId, start,
+                        "模型装载失败：" + reason);
+                continue;
+            }
+            quotaService.check(featureCode, target.model().getModelCode());
+            Double temperature = overrideDecimal(binding.getParamOverrides(), "temperature", target.model().getTemperature());
+            Integer maxTokens = overrideInt(binding.getParamOverrides(), "maxTokens", target.model().getMaxTokens());
+            try {
+                LlmClient.ChatResult r = llm.chat(target.provider().getBaseUrl(), target.apiKey(), target.model().getModelCode(),
+                        messages, temperature, maxTokens);
+                long latency = System.currentTimeMillis() - start;
+                long costFen = costFen(target.model(), r.promptTokens(), r.completionTokens());
+                AiInvokeLog log = new AiInvokeLog();
+                fillActor(log, user, reqStore);
+                log.setFeatureCode(featureCode);
+                log.setProviderCode(target.provider().getProviderCode());
+                log.setModelCode(target.model().getModelCode());
+                log.setPromptSnippet(snippet(prompt));
+                log.setOutputSnippet(snippet(r.content()));
+                log.setPromptTokens(r.promptTokens());
+                log.setCompletionTokens(r.completionTokens());
+                log.setTotalTokens(r.totalTokens());
+                log.setLatencyMs(latency);
+                log.setSuccess(true);
+                log.setCostFen(costFen);
+                logRepo.save(log);
+                return new InvokeView(true, featureCode, featureName,
+                        target.provider().getProviderCode(), target.model().getModelCode(), r.content(),
+                        r.promptTokens(), r.completionTokens(), r.totalTokens(),
+                        latency, costFen, null, log.getLogId());
+            } catch (Exception e) {
+                String msg = e.getMessage() == null ? "调用失败" : e.getMessage();
+                trail.add(target.model().getModelCode() + " " + msg);
+                writeFailLog(user, reqStore, featureCode, prompt,
+                        target.provider().getProviderCode(), target.model().getModelCode(), start, msg);
+            }
+        }
+        if (chain.size() == 1) {
+            String only = trail.isEmpty() ? "调用失败" : trail.get(0);
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "大模型调用失败：" + only);
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                "主模型及备用链全部调用失败：" + String.join("；", trail));
+    }
+
+    /** 装载单个调用目标：模型存在/启用/CHAT 能力 + 供应商存在/启用 + 密钥解引用。 */
+    private Target resolveTarget(Long modelId) {
+        AiModel model = modelRepo.findById(modelId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.CONFLICT,
-                        "绑定模型不存在（id=" + binding.getModelId() + "），请重新绑定"));
+                        "绑定模型不存在（id=" + modelId + "），请重新绑定"));
         if (!Boolean.TRUE.equals(model.getEnabled())) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "绑定模型「" + model.getDisplayName() + "」已停用，请更换模型或启用后再试");
@@ -137,62 +215,26 @@ public class FeatureInvokeService {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "供应商「" + provider.getProviderName() + "」已停用");
         }
-        String apiKey = keyRef.decrypt(provider);
+        return new Target(model, provider, keyRef.decrypt(provider));
+    }
 
-        sensitiveWordService.screen(input, featureCode, user, reqStore);
-        quotaService.check(featureCode, model.getModelCode());
+    private record Target(AiModel model, AiProvider provider, String apiKey) {
+    }
 
-        String prompt = buildPrompt(binding.getPromptTemplate(), input);
-        Double temperature = overrideDecimal(binding.getParamOverrides(), "temperature", model.getTemperature());
-        Integer maxTokens = overrideInt(binding.getParamOverrides(), "maxTokens", model.getMaxTokens());
-
-        List<Map<String, String>> messages = new java.util.ArrayList<>();
-        if (binding.getPromptTemplate() != null && !binding.getPromptTemplate().isBlank()) {
-            messages.add(Map.of("role", "system", "content", binding.getPromptTemplate().trim()));
-        }
-        messages.add(Map.of("role", "user", "content", input));
-
-        long start = System.currentTimeMillis();
-        try {
-            LlmClient.ChatResult r = llm.chat(provider.getBaseUrl(), apiKey, model.getModelCode(),
-                    messages, temperature, maxTokens);
-            long latency = System.currentTimeMillis() - start;
-            long costFen = costFen(model, r.promptTokens(), r.completionTokens());
-            AiInvokeLog log = new AiInvokeLog();
-            fillActor(log, user, reqStore);
-            log.setFeatureCode(featureCode);
-            log.setProviderCode(provider.getProviderCode());
-            log.setModelCode(model.getModelCode());
-            log.setPromptSnippet(snippet(prompt));
-            log.setOutputSnippet(snippet(r.content()));
-            log.setPromptTokens(r.promptTokens());
-            log.setCompletionTokens(r.completionTokens());
-            log.setTotalTokens(r.totalTokens());
-            log.setLatencyMs(latency);
-            log.setSuccess(true);
-            log.setCostFen(costFen);
-            logRepo.save(log);
-            return new InvokeView(true, featureCode, featureName,
-                    provider.getProviderCode(), model.getModelCode(), r.content(),
-                    r.promptTokens(), r.completionTokens(), r.totalTokens(),
-                    latency, costFen, null, log.getLogId());
-        } catch (Exception e) {
-            long latency = System.currentTimeMillis() - start;
-            String msg = e.getMessage() == null ? "调用失败" : e.getMessage();
-            AiInvokeLog log = new AiInvokeLog();
-            fillActor(log, user, reqStore);
-            log.setFeatureCode(featureCode);
-            log.setProviderCode(provider.getProviderCode());
-            log.setModelCode(model.getModelCode());
-            log.setPromptSnippet(snippet(prompt));
-            log.setLatencyMs(latency);
-            log.setSuccess(false);
-            log.setErrorCode(msg.length() > 512 ? msg.substring(0, 512) : msg);
-            log.setCostFen(0L);
-            logRepo.save(log);
-            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
-                    "大模型调用失败：" + msg);
-        }
+    private void writeFailLog(LoginUser user, String reqStore, String featureCode, String prompt,
+                              String providerCode, String modelCode, long start, String msg) {
+        long latency = System.currentTimeMillis() - start;
+        AiInvokeLog log = new AiInvokeLog();
+        fillActor(log, user, reqStore);
+        log.setFeatureCode(featureCode);
+        log.setProviderCode(providerCode);
+        log.setModelCode(modelCode);
+        log.setPromptSnippet(snippet(prompt));
+        log.setLatencyMs(latency);
+        log.setSuccess(false);
+        log.setErrorCode(msg.length() > 512 ? msg.substring(0, 512) : msg);
+        log.setCostFen(0L);
+        logRepo.save(log);
     }
 
     private boolean roleAllowed(LoginUser user, String featureCode) {

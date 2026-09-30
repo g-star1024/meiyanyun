@@ -140,6 +140,7 @@ export interface BindingCmd {
   paramOverrides: string | null
   enabled: boolean
   requireApproval: boolean
+  backupModelIds?: number[]
 }
 
 export interface BindingView {
@@ -149,6 +150,8 @@ export interface BindingView {
   modelId: number | null
   modelCode: string | null
   modelDisplayName: string | null
+  backupModelIds: number[]
+  backupModelNames: string[]
   storeScope: string | null
   storeCodes: string | null
   promptTemplate: string | null
