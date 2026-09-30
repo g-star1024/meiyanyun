@@ -233,8 +233,12 @@ const billCols = [
   { key: 'trend', label: '环比' },
 ]
 const bills = ref<FeatureBill[]>([])
+function momText(pct: number | null): string {
+  if (pct === null || pct === undefined) return '环比不可算'
+  return `${pct >= 0 ? '+' : ''}${pct}%`
+}
 const billRows = computed(() =>
-  bills.value.map((b) => ({ ...b, trend: '—' })),
+  bills.value.map((b) => ({ ...b, trend: momText(b.costMomPct) })),
 )
 
 // 配额管理：维度 FEATURE/MODEL/GLOBAL，用量按 ai_invoke_log 实时聚合，空限额 = 不限
@@ -454,7 +458,7 @@ onMounted(loadAll)
           <template #col-costFen="{ value }"><strong>¥{{ fmtYuan(value) }}</strong></template>
           <template #col-trend="{ value }"><span class="muted">{{ value }}</span></template>
         </CTable>
-        <p class="hint">账单口径：按 ai_invoke_log 当月成功调用汇总，金额按模型定价折算（分 → 元）；环比为后续批次能力。</p>
+        <p class="hint">账单口径：东八区自然月、按 ai_invoke_log 成功调用汇总，金额按模型定价折算（分 → 元）；环比＝本月费用 vs 上月同口径，上月无成功调用时环比不可算。</p>
       </div>
 
       <!-- 配额管理 -->

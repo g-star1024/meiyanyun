@@ -58,16 +58,20 @@ public interface AiInvokeLogRepository extends JpaRepository<AiInvokeLog, Long> 
         Long getCostFen();
     }
 
+    /** 时间窗内成功调用按功能聚合出账（月度账单本月/上月双窗共用）。 */
     @Query(value = """
             select feature_code as featureCode,
                    count(*) as calls,
                    coalesce(sum(total_tokens), 0) as tokens,
                    coalesce(sum(cost_fen), 0) as costFen
             from ai_invoke_log
+            where success = true
+              and invoked_at >= :start and invoked_at < :end
             group by feature_code
             order by calls desc
             """, nativeQuery = true)
-    List<FeatureCost> costByFeature();
+    List<FeatureCost> costByFeatureBetween(@Param("start") OffsetDateTime start,
+                                           @Param("end") OffsetDateTime end);
 
     interface MetricAgg {
         Long getCalls();

@@ -233,6 +233,12 @@ export interface FeatureBill {
   calls: number
   tokens: number
   costFen: number
+  prevCalls: number
+  prevTokens: number
+  prevCostFen: number
+  callsMomPct: number | null
+  tokensMomPct: number | null
+  costMomPct: number | null
 }
 
 export interface AiKpi {
