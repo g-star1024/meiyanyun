@@ -19,4 +19,9 @@ public interface TxnRefundRepository extends JpaRepository<TxnRefund, String>, J
     @Query(value = "select coalesce(max(cast(substring(txn_no from 12) as bigint)), 0) " +
            "from txn_refund where txn_no like :prefix", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);
+
+    /** L166 同合同已终审（REFUNDED）退款单基数合计（基数＝已付额 paid_amt，judge 第五重跨单累计上限校验用）。 */
+    @Query(value = "select coalesce(sum(paid_amt), 0) from txn_refund " +
+           "where contract_no = :contractNo and status = 'REFUNDED'", nativeQuery = true)
+    long sumRefundedBaseByContractNo(@Param("contractNo") String contractNo);
 }

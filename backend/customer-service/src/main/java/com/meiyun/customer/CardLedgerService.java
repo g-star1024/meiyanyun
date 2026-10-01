@@ -320,7 +320,8 @@ public class CardLedgerService {
     }
 
     /**
-     * 退卡终审联动（txn 退卡 CC 终审后内部回调）：行锁找卡 → 状态置「已退卡」→ 本金与赠金一并清零 →
+     * 退卡终审联动（txn 退卡 CC 终审后内部回调）：行锁找卡 → 状态置「已退卡」→ 本金与赠金一并清零、
+     * 剩余次数与总次数一并核销（L165 解约次数资产联动，次数快照入审计 payload）→
      * 写 REFUND 负额流水（amount=-旧本金、gift_amount=-旧赠金、balance_after/gift_after=0，bizRef=退卡单号）。
      * 已退卡/同退卡单号 REFUND 重放幂等返回（终审重试不重复清零；冻结/解冻 ADJUST 行 bizRef 带 -F/-U 后缀，
      * 不与本方法重放冲突）。资金分录由 txn 域 outbox 投递。
@@ -340,10 +341,13 @@ public class CardLedgerService {
                 .orElseThrow(() -> new NotFound("会员卡不存在: " + cardNo));
         long before = card.getBalance() == null ? 0L : card.getBalance();
         long giftBefore = card.getGiftBalance() == null ? 0L : card.getGiftBalance();
+        int totalTimesBefore = card.getTotalTimes() == null ? 0 : card.getTotalTimes();
+        int remainTimesBefore = card.getRemainTimes() == null ? 0 : card.getRemainTimes();
 
         card.setStatus("已退卡");
         card.setBalance(0L);
         card.setGiftBalance(0L);
+        card.setRemainTimes(0);
         cardRepo.save(card);
 
         CardLedger l = new CardLedger();
@@ -360,9 +364,10 @@ public class CardLedgerService {
         CardLedger saved = ledgerRepo.save(l);
 
         audit.record("CARD", cancelNo, "system", "REFUND",
-                json(refundAudit(cardNo, cancelNo, before, giftBefore,
+                json(refundAudit(cardNo, cancelNo, before, giftBefore, totalTimesBefore, remainTimesBefore,
                         "退卡终审清零：退回本金 " + yuan(before) + " 元、核销赠金 " + yuan(giftBefore)
-                                + " 元，卡置「已退卡」")));
+                                + " 元、核销剩余次数 " + remainTimesBefore + " 次（原总次数 " + totalTimesBefore
+                                + " 次），卡置「已退卡」")));
         return saved;
     }
 
@@ -872,9 +877,10 @@ public class CardLedgerService {
         return m;
     }
 
-    /** 退卡清零审计 payload：卡号/退卡单号/本金退回与赠金核销额，动账权威来源 customer。 */
+    /** 退卡清零审计 payload：卡号/退卡单号/本金退回与赠金核销额/次数核销段（L165 解约次数资产一并核销，快照溯源），动账权威来源 customer。 */
     private static Map<String, Object> refundAudit(String cardNo, String cancelNo, long refundAmount,
-                                                   long giftCleared, String summary) {
+                                                   long giftCleared, int totalTimesBefore, int remainTimesBefore,
+                                                   String summary) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("cardNo", cardNo);
         m.put("cancelNo", cancelNo);
@@ -882,6 +888,11 @@ public class CardLedgerService {
         m.put("giftCleared", giftCleared);
         m.put("balanceAfter", 0L);
         m.put("giftAfter", 0L);
+        m.put("timesCleared", remainTimesBefore);
+        m.put("totalTimesBefore", totalTimesBefore);
+        m.put("totalTimesAfter", totalTimesBefore);
+        m.put("remainTimesBefore", remainTimesBefore);
+        m.put("remainTimesAfter", 0);
         m.put("kind", "CARD_CANCEL");
         m.put("authority", "customer");
         m.put("summary", summary);

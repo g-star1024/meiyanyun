@@ -133,6 +133,16 @@ const estimate = computed(() => {
   return contract.refundEstimate(selected.value, refundPaidNum.value)
 })
 
+// L167 退款条款富文本渲染：按换行拆分为条款段落（空条款显式空态）
+const refundTermsLines = computed(() =>
+  (selected.value?.refundTerms || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+)
+
+// L167 打印合同：浏览器打印通道（@media print 仅留合同要素与条款）
+function doPrint() {
+  window.print()
+}
+
 watch(selected, (c) => {
   refundPaidInput.value = c ? String(c.totalAmount) : ''
 })
@@ -306,7 +316,12 @@ async function submitForm() {
               </span>
               <span class="badge badge--warn">违约金 {{ Math.round(selected.penaltyRate * 100) }}%</span>
             </div>
-            <p class="terms__text">{{ selected.refundTerms }}</p>
+            <div class="terms__text">
+              <template v-if="refundTermsLines.length">
+                <p v-for="(line, i) in refundTermsLines" :key="i" class="terms__para">{{ line }}</p>
+              </template>
+              <p v-else class="terms__para terms__para--empty">未填写退款条款</p>
+            </div>
           </div>
 
           <!-- 退款估算器 -->
@@ -336,6 +351,9 @@ async function submitForm() {
 
         <!-- 操作区 -->
         <div class="ops">
+          <CButton variant="ghost" class="ops__print" @click="doPrint">
+            <CIcon name="order" :size="16" />打印合同
+          </CButton>
           <template v-if="selected.status === 'DRAFT'">
             <CButton variant="primary" v-perm.disable="'contract:edit'" @click="doActivate">
               <CIcon name="check" :size="16" />合同生效
@@ -511,7 +529,10 @@ async function submitForm() {
 .badge { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-xs); padding: var(--s-xs) var(--s-sm); border-radius: var(--r-capsule); background: var(--c-surface); border: 1px solid var(--c-border); color: var(--c-text-2); }
 .badge--active { background: var(--c-success-bg, #f0fbf0); color: var(--c-success-fg); border-color: var(--c-success-fg); }
 .badge--warn { background: var(--c-warning-bg, #fff7e6); color: var(--c-warning-fg); border-color: var(--c-warning-fg); }
-.terms__text { font-size: var(--t-sm); color: var(--c-text-2); line-height: 1.6; margin: 0; }
+.terms__text { font-size: var(--t-sm); color: var(--c-text-2); line-height: 1.6; }
+.terms__para { margin: 0 0 var(--s-xs); }
+.terms__para:last-child { margin-bottom: 0; }
+.terms__para--empty { color: var(--c-text-3); }
 
 .estimator { margin-top: var(--s-md); padding: var(--s-md); border: 1px solid var(--c-border); border-radius: var(--r-md); }
 .estimator__title { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); margin-bottom: var(--s-sm); }
@@ -527,6 +548,7 @@ async function submitForm() {
 .reject-note { margin-top: var(--s-md); padding: var(--s-sm) var(--s-md); background: var(--c-danger-bg); color: var(--c-danger-fg); border-radius: var(--r-md); font-size: var(--t-sm); line-height: 1.6; }
 
 .ops { display: flex; justify-content: flex-end; gap: var(--s-sm); margin-top: var(--s-lg); padding-top: var(--s-lg); border-top: 1px solid var(--c-border-light); }
+.ops__print { margin-right: auto; }
 .ops__done { display: flex; align-items: center; gap: var(--s-sm); font-size: var(--t-sm); color: var(--c-success-fg); font-weight: 600; margin-left: auto; }
 .ops__done--danger { color: var(--c-danger-fg); }
 
@@ -542,6 +564,13 @@ async function submitForm() {
 .form__row { display: flex; flex-direction: column; gap: var(--s-xs); }
 .form__row--2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-md); }
 .form__label { font-size: var(--t-xs); color: var(--c-text-3); }
+
+/* L167 打印合同：仅留合同要素与退款条款，隐藏列表栏/操作区/估算器等交互件 */
+@media print {
+  .ct__list, .ops, .estimator, .reject-box, .modal-mask { display: none !important; }
+  .ct__body { display: block; }
+  .ct__detail { box-shadow: none; border: none; }
+}
 
 @media (max-width: 1024px) {
   .ct__body { grid-template-columns: 1fr; }

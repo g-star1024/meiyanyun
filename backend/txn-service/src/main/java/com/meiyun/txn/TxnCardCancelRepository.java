@@ -22,4 +22,9 @@ public interface TxnCardCancelRepository extends JpaRepository<TxnCardCancel, St
     @Query(value = "select coalesce(max(cast(substring(txn_no from 12) as bigint)), 0) " +
            "from txn_card_cancel where txn_no like :prefix", nativeQuery = true)
     long maxSeqOfDay(@Param("prefix") String prefix);
+
+    /** L166 同合同已终审（REFUNDED）退卡单基数合计（基数＝卡余额 balance 快照，judge 第五重跨单累计上限校验用）。 */
+    @Query(value = "select coalesce(sum(balance), 0) from txn_card_cancel " +
+           "where contract_no = :contractNo and status = 'REFUNDED'", nativeQuery = true)
+    long sumRefundedBaseByContractNo(@Param("contractNo") String contractNo);
 }

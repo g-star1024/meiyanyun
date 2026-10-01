@@ -12,7 +12,9 @@ import java.util.Map;
 /**
  * B95 合同冷静期/违约金判定器（DESIGN §3 D2/D3/D6，退款 RF / 退卡 CC 双链复用）：
  * <ul>
- *   <li>四重校验（400 中文）：合同存在 → 状态「生效中」 → 客户匹配 → 计算基数 ≤ 合同总额；</li>
+ *   <li>五重校验（400 中文）：合同存在 → 状态「生效中」 → 客户匹配 → 计算基数 ≤ 合同总额 →
+ *       L166 跨单累计上限（Σ 同合同已终审 REFUNDED 单基数＋本次基数 ≤ 合同总额，
+ *       基数口径 RF＝已付额 paid_amt / CC＝卡余额 balance 快照，超限拒单请核对口径或转人工）；</li>
  *   <li>D2 窗口判定：inCooling = effectiveAt + coolingDays 天 &gt; 判定时刻（仅「生效中」可挂，状态机保证
  *       effectiveAt 非空，null 防御按期外计）；</li>
  *   <li>D3 口径：冷静期内违约金 0；期后 Math.round(基数 × penaltyRate / 10000.0)（HALF_UP，
@@ -30,9 +32,14 @@ public class ContractPenaltyJudge {
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final ContractRepository contractRepo;
+    private final TxnRefundRepository refundRepo;
+    private final TxnCardCancelRepository cancelRepo;
 
-    public ContractPenaltyJudge(ContractRepository contractRepo) {
+    public ContractPenaltyJudge(ContractRepository contractRepo, TxnRefundRepository refundRepo,
+                                TxnCardCancelRepository cancelRepo) {
         this.contractRepo = contractRepo;
+        this.refundRepo = refundRepo;
+        this.cancelRepo = cancelRepo;
     }
 
     /**
@@ -58,6 +65,14 @@ public class ContractPenaltyJudge {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "违约金计算基数（¥" + fenToYuan(baseCents) + "）不得超过合同总额（¥" + fenToYuan(total) + "）");
         }
+        long clearedBase = refundRepo.sumRefundedBaseByContractNo(no)
+                + cancelRepo.sumRefundedBaseByContractNo(no);
+        if (clearedBase + baseCents > total) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "关联合同「" + no + "」累计核销将超合同总额：已终审核销 ¥" + fenToYuan(clearedBase)
+                            + " ＋本次基数 ¥" + fenToYuan(baseCents) + " ＞合同总额 ¥" + fenToYuan(total)
+                            + "，请核对合同订单口径或转人工处理");
+        }
         OffsetDateTime now = OffsetDateTime.now();
         int coolingDays = c.getCoolingDays() == null ? 7 : c.getCoolingDays();
         int penaltyRate = c.getPenaltyRate() == null ? 2000 : c.getPenaltyRate();
@@ -66,12 +81,13 @@ public class ContractPenaltyJudge {
         long penalty = inCooling ? 0L : Math.min(baseCents, Math.round(baseCents * penaltyRate / 10000.0));
         return new PenaltyVerdict(no, c.getTitle(), c.getContractType(), c.getEffectiveAt(),
                 coolingDays, penaltyRate, inCooling, baseCents, penalty,
-                snapshot(no, c, coolingDays, penaltyRate, inCooling, baseCents, penalty, now));
+                snapshot(no, c, coolingDays, penaltyRate, inCooling, baseCents, penalty, clearedBase, now));
     }
 
-    /** D6 判定快照 JSON（LinkedHashMap 保序，要素→结论→判定时刻）。 */
+    /** D6 判定快照 JSON（LinkedHashMap 保序，要素→结论→判定时刻；L166 增跨单累计留证两键）。 */
     private static String snapshot(String no, Contract c, int coolingDays, int penaltyRate,
-                                   boolean inCooling, long baseCents, long penalty, OffsetDateTime now) {
+                                   boolean inCooling, long baseCents, long penalty, long clearedBase,
+                                   OffsetDateTime now) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("contractNo", no);
         m.put("title", c.getTitle());
@@ -82,6 +98,8 @@ public class ContractPenaltyJudge {
         m.put("inCooling", inCooling);
         m.put("baseCents", baseCents);
         m.put("penaltyAmt", penalty);
+        m.put("refundedBaseBefore", clearedBase);
+        m.put("cumulativeBaseAfter", clearedBase + baseCents);
         m.put("judgedAt", now.toString());
         try {
             return MAPPER.writeValueAsString(m);
