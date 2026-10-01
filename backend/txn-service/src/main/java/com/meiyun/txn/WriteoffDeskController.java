@@ -93,7 +93,7 @@ public class WriteoffDeskController {
             long unit = c.getBalance() != null && c.getRemainTimes() != null && c.getRemainTimes() > 0
                     ? c.getBalance() / c.getRemainTimes() : 0L;
             out.add(new CardOption(c.getCardNo(), c.getCardItem(), c.getStoreCode(),
-                    c.getTotalTimes(), c.getRemainTimes(), c.getBalance(), unit));
+                    c.getTotalTimes(), c.getRemainTimes(), c.getBalance(), unit, c.getProductCode()));
         }
         return out;
     }
@@ -158,9 +158,10 @@ public class WriteoffDeskController {
             OffsetDateTime appointmentTime, OffsetDateTime executedAt,
             List<Map<String, String>> timeline) {}
 
-    /** 卡选择器选项。 */
+    /** 卡选择器选项；productCode=售卡目录模板编码（B16 只读投影，历史导入卡为 null）。 */
     public record CardOption(String cardNo, String cardName, String storeCode,
-                             int totalTimes, int remainTimes, long balance, long unitAmount) {}
+                             int totalTimes, int remainTimes, long balance, long unitAmount,
+                             String productCode) {}
 
     public record WalkinCmd(
             @NotBlank String customerId,

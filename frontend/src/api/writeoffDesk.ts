@@ -48,6 +48,8 @@ export interface WdCardOptionDTO {
   balance: number
   /** 单次均价（分） */
   unitAmount: number
+  /** 售卡目录模板编码（B16 投影；历史导入卡为 null） */
+  productCode?: string | null
 }
 
 /** 待划扣队列：date 缺省今日（yyyy-MM-dd），storeCode/status 可选过滤。 */

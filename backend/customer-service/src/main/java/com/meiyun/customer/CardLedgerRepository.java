@@ -14,6 +14,9 @@ public interface CardLedgerRepository extends JpaRepository<CardLedger, Long> {
     /** 卡流水：按卡号时间正序（账龄顺序），卡详情「储值流水」读模型。 */
     List<CardLedger> findByCardNoOrderByLedgerIdAsc(String cardNo);
 
+    /** 按卡号+流水类型查（棒⑤卡1 L45 首笔流水核对：验某卡是否已有 RECHARGE 流水，回填幂等锚）。 */
+    List<CardLedger> findByCardNoAndChangeType(String cardNo, String changeType);
+
     /** 幂等查询：按来源单号查流水（充值 RC 单号重放 / 内部卡扣订单号重放防双扣）。 */
     Optional<CardLedger> findFirstByBizRef(String bizRef);
 

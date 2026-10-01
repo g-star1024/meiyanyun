@@ -8,6 +8,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -561,6 +562,73 @@ public class CardLedgerService {
     }
 
     /**
+     * 开卡首笔流水核对（棒⑤卡1 L45 存量数据修复，干跑只读）：种子/存量导入只写 member_card
+     * 从不插 card_ledger，导致「在用」卡缺首笔 RECHARGE 流水、破坏 Σ amount = balance 恒等式。
+     * 本方法列出全部 status=「在用」且无 RECHARGE 流水的卡差异清单（卡号/客户/卡项/余额/门店），
+     * 供 {@link #firstLedgerBackfill()} 前置核对与回填后复核（回填完毕应归零）。
+     */
+    @Transactional(readOnly = true)
+    public List<Map<String, Object>> firstLedgerReconcile() {
+        List<Map<String, Object>> diffs = new ArrayList<>();
+        for (MemberCard c : cardRepo.findByStatus("在用")) {
+            if (!ledgerRepo.findByCardNoAndChangeType(c.getCardNo(), "RECHARGE").isEmpty()) {
+                continue;
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("cardNo", c.getCardNo());
+            row.put("customerId", c.getCustomerId());
+            row.put("cardItem", c.getCardItem());
+            row.put("balance", c.getBalance() == null ? 0L : c.getBalance());
+            row.put("storeCode", c.getStoreCode() == null ? "" : c.getStoreCode());
+            diffs.add(row);
+        }
+        return diffs;
+    }
+
+    /**
+     * 开卡首笔流水幂等回填（棒⑤卡1 L45 存量数据修复）：对核对差异清单逐卡补首笔 RECHARGE
+     * <b>正额</b>流水（amount=balance_after=回填时卡余额，biz_ref=INIT-卡号 可识别锚点
+     * ——biz_ref 列 varchar(24)，SEED-INIT- 前缀 26 字符超长故缩为 INIT- 21 字符，
+     * operator=system-backfill），<b>只补流水不动 member_card</b>（余额导入时已落库，
+     * 与 B6 划扣回填同口径）；卡已有 RECHARGE 流水（含本次回填产物）自动跳过，重跑不双补。
+     * 每补一笔落 CARD/FIRST_LEDGER_BACKFILL 审计；返回回填/跳过计数与回填后剩余差异数（应归零）。
+     */
+    @Transactional
+    public Map<String, Object> firstLedgerBackfill() {
+        int backfilled = 0;
+        int skipped = 0;
+        for (MemberCard c : cardRepo.findByStatus("在用")) {
+            String cardNo = c.getCardNo();
+            if (!ledgerRepo.findByCardNoAndChangeType(cardNo, "RECHARGE").isEmpty()) {
+                skipped++;
+                continue;
+            }
+            long balance = c.getBalance() == null ? 0L : c.getBalance();
+            String bizRef = "INIT-" + cardNo;
+            CardLedger l = new CardLedger();
+            l.setCardNo(cardNo);
+            l.setCustomerId(c.getCustomerId());
+            l.setChangeType("RECHARGE");
+            l.setAmount(balance);
+            l.setBalanceAfter(balance);
+            l.setBizRef(bizRef);
+            l.setOperator("system-backfill");
+            l.setStoreCode(c.getStoreCode());
+            ledgerRepo.save(l);
+            audit.record("CARD", bizRef, "system", "FIRST_LEDGER_BACKFILL",
+                    json(firstLedgerPayload(cardNo, c.getCustomerId(), c.getCardItem(), balance,
+                            "存量卡开卡首笔流水回填：member_card 余额已于导入时落库，本次只补 RECHARGE 流水 "
+                                    + yuan(balance) + " 元修复对账恒等式，不动卡余额")));
+            backfilled++;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("backfilled", backfilled);
+        out.put("skipped", skipped);
+        out.put("remainDiffs", firstLedgerReconcile().size());
+        return out;
+    }
+
+    /**
      * 全量资产转移动账（B85 卡1，动账权威收口 customer 域·定案 D1）：txn 回购转移终审通过后回调，
      * 同一 RP 单号下转出卡负额 TRANSFER 流水＋转入卡正额 TRANSFER 流水成对落账（原子同事务）。
      * 本金/赠金/次数三维度独立可选随转：赠金上限=来源卡赠金余额（D2）、次数转移须同品项卡（D5）；
@@ -868,6 +936,22 @@ public class CardLedgerService {
         m.put("writeoffId", writeoffId);
         m.put("timesUsed", timesUsed);
         m.put("amount", amount);
+        m.put("balanceAtBackfill", balanceAtBackfill);
+        m.put("backfill", true);
+        m.put("authority", "customer");
+        m.put("summary", summary);
+        return m;
+    }
+
+    /** 开卡首笔流水回填审计 payload（棒⑤卡1 L45）：只补 RECHARGE 流水不动卡，记录回填时余额快照。 */
+    private static Map<String, Object> firstLedgerPayload(String cardNo, String customerId,
+                                                          String cardItem, long balanceAtBackfill,
+                                                          String summary) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("cardNo", cardNo);
+        m.put("customerId", customerId);
+        m.put("cardItem", cardItem);
+        m.put("amount", balanceAtBackfill);
         m.put("balanceAtBackfill", balanceAtBackfill);
         m.put("backfill", true);
         m.put("authority", "customer");

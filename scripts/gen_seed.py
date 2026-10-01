@@ -68,6 +68,7 @@ SEGMENTS = [
 SKIN_TAGS = ["STG07", "STG08", "STG09"]
 
 cust_rows, tag_rows, order_rows, card_rows = [], [], [], []
+card_ledger_rows = []
 item_rows = []  # 订单收费子项 order_item
 appt_rows, consult_rows, push_rows = [], [], []
 ledger_raw = defaultdict(list)
@@ -193,10 +194,16 @@ for seg in SEGMENTS:
             card_balance = int(cprice * remain / ctimes / 100) * 100 if cstatus == "在用" else 0
             card_date = created + timedelta(days=rng.randint(5, 40) + ci * 30)
             caid += 1
+            card_no = "MC%s-%06d" % (card_date.strftime("%Y%m%d"), caid)
             card_dates.append(card_date)
             card_rows.append("(%s,%s,%s,%s,%d,%d,%d,%s,%s)" % (
-                q("MC%s-%06d" % (card_date.strftime("%Y%m%d"), caid)), q(cust_id), q(cname), q(store),
+                q(card_no), q(cust_id), q(cname), q(store),
                 ctimes, remain, card_balance, q(cstatus), q(ts_str(card_date))))
+            # 在用卡补首笔 RECHARGE 流水（L45 根治：Σ amount = balance 恒等式自种子成立）
+            if cstatus == "在用":
+                card_ledger_rows.append("(%s,%s,%s,%d,%d,%s,%s,%s,%s)" % (
+                    q(card_no), q(cust_id), q("RECHARGE"), card_balance, card_balance,
+                    q("SEED-INIT-" + card_no), q("system-backfill"), q(store), q(ts_str(card_date))))
         first_card_date = card_dates[0] if card_dates else None
 
         # 积分流水：期末余额 == target_pts（开卡赠积分仅首张卡触发一次，避免重复）
@@ -305,6 +312,9 @@ w()
 w("INSERT INTO member_card (card_no,customer_id,card_item,store_code,total_times,remain_times,balance,status,created_at) VALUES")
 w(",\n".join(card_rows) + ";")
 w()
+w("INSERT INTO card_ledger (card_no,customer_id,change_type,amount,balance_after,biz_ref,operator,store_code,created_at) VALUES")
+w(",\n".join(card_ledger_rows) + ";")
+w()
 w("INSERT INTO points_ledger (customer_id,change_amt,balance_after,reason,created_at) VALUES")
 w(",\n".join(ledger_sql) + ";")
 w()
@@ -322,7 +332,7 @@ out_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "backen
 with io.open(out_path, "w", encoding="utf-8") as f:
     f.write("\n".join(OUT))
 
-print("customers=%d tagRels=%d orders=%d orderItems=%d cards=%d ledger=%d appts=%d consults=%d pushes=%d" % (
-    len(cust_rows), len(tag_rows), len(order_rows), len(item_rows), len(card_rows), len(ledger_sql),
+print("customers=%d tagRels=%d orders=%d orderItems=%d cards=%d cardLedgers=%d ledger=%d appts=%d consults=%d pushes=%d" % (
+    len(cust_rows), len(tag_rows), len(order_rows), len(item_rows), len(card_rows), len(card_ledger_rows), len(ledger_sql),
     len(appt_rows), len(consult_rows), len(push_rows)))
 print("written:", out_path)

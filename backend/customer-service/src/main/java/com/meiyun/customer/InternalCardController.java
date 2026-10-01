@@ -333,6 +333,32 @@ public class InternalCardController {
                 "giftAfter", saved.getGiftAfter() == null ? 0L : saved.getGiftAfter());
     }
 
+    /**
+     * 存量卡开卡首笔流水核对（棒⑤卡1 L45 数据修复，干跑只读）：
+     * POST /api/customer/internal/cards/first-ledger-reconcile。
+     * 列出全部「在用」但 card_ledger 无 RECHARGE 流水的卡差异清单（种子/存量导入遗留），
+     * 不改任何数据，供回填前置核对与回填后复核（回填完毕 count 应归零）。
+     */
+    @PostMapping("/cards/first-ledger-reconcile")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> firstLedgerReconcile() {
+        List<Map<String, Object>> diffs = ledgerService.firstLedgerReconcile();
+        return Map.of("count", diffs.size(), "diffs", diffs);
+    }
+
+    /**
+     * 存量卡开卡首笔流水幂等回填（棒⑤卡1 L45 数据修复）：
+     * POST /api/customer/internal/cards/first-ledger-backfill。
+     * 对核对差异清单逐卡补首笔 RECHARGE 正额流水（amount=balance_after=回填时卡余额，
+     * biz_ref=INIT-卡号（列长 24 适配）、operator=system-backfill 可识别），只补流水不动 member_card；
+     * 已有 RECHARGE 流水的卡自动跳过，重跑不双补；逐笔落 CARD/FIRST_LEDGER_BACKFILL 审计。
+     */
+    @PostMapping("/cards/first-ledger-backfill")
+    @RequirePerm("internal:card-write")
+    public Map<String, Object> firstLedgerBackfill() {
+        return ledgerService.firstLedgerBackfill();
+    }
+
     /** 储值扣款入参：cardNo/customerId/amount（分，&gt;0）/orderNo（幂等键）。 */
     public record ConsumeCmd(String cardNo, String customerId, Long amount, String orderNo) {}
 

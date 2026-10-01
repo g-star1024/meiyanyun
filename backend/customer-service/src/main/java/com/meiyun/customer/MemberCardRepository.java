@@ -13,6 +13,9 @@ public interface MemberCardRepository extends JpaRepository<MemberCard, String> 
     List<MemberCard> findByCustomerId(String customerId);
     List<MemberCard> findByCustomerIdAndStatus(String customerId, String status);
 
+    /** 按中文状态全量查卡（棒⑤卡1 L45 存量核对：扫「在用」卡验首笔 RECHARGE 流水缺失）。 */
+    List<MemberCard> findByStatus(String status);
+
     /** 财务卡余额聚合：按门店列卡（卡号倒序）；无门店过滤时用 findAll。 */
     List<MemberCard> findByStoreCodeOrderByCardNoDesc(String storeCode);
 

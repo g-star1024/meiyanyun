@@ -3,7 +3,7 @@
  * 划扣执行台 /m2-writeoff-desk（M2-01）
  * 门店端今日待划扣队列 + 双签执行区。独立新页，不改 WriteoffView。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import CCard from '@/components/CCard.vue'
 import CWorkbenchShell from '@/components/CWorkbenchShell.vue'
@@ -16,6 +16,7 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import { useWriteoffDeskStore, type WriteoffDeskItem, type WdExceptionReason, type WdCardOption } from '@/stores/writeoffDesk'
 import { searchCustomers, type CustomerDTO } from '@/api/customer'
+import { listCatalog } from '@/api/catalog'
 import { listStaff, type Staff } from '@/api/org'
 import { WRITEOFF_DESK_STATUS, dictPill } from '@/config/dictionary'
 import { DEFAULT_SETTINGS, signTierForAmount } from '@/config/settings'
@@ -302,6 +303,23 @@ const canWalkin = computed(
   () => !!walkinCustomer.value && walkinCards.value.length > 0
     && walkinForm.value.project.trim().length > 0 && !walkinSubmitting.value,
 )
+// L46 选卡智能预填：卡带售卡目录 productCode → 查目录 includes 预填核销项目；
+// 多值首值填入+备选可点切换，includes 空/未命中目录/历史卡无编码时不动，回落手输不阻塞。
+const walkinProjectHints = ref<string[]>([])
+watch(() => walkinForm.value.cardNo, async (cardNo) => {
+  walkinProjectHints.value = []
+  if (!cardNo) return
+  const card = walkinCards.value.find((c) => c.cardNo === cardNo)
+  if (!card?.productCode) return
+  try {
+    const res = await listCatalog({ storeCode: card.storeCode })
+    const hit = (res.data || []).find((p) => p.productCode === card.productCode)
+    const includes = (hit?.includes || []).map((s) => s.trim()).filter(Boolean)
+    if (includes.length === 0) return
+    walkinForm.value.project = includes[0]
+    walkinProjectHints.value = includes.slice(1)
+  } catch { /* 目录查询失败不阻塞手输 */ }
+})
 function openWalkin() {
   walkinForm.value = { customerId: '', project: '', cardNo: '' }
   walkinKeyword.value = ''
@@ -554,6 +572,16 @@ async function submitWalkin() {
           <div class="form__row">
             <label class="form__label">核销项目 <span class="req">*</span></label>
             <CInput v-model="walkinForm.project" placeholder="如：超声炮全脸提拉" />
+            <div v-if="walkinProjectHints.length > 0" class="hint-line">
+              该卡目录还可选：
+              <button
+                v-for="h in walkinProjectHints"
+                :key="h"
+                type="button"
+                class="hint-chip"
+                @click="walkinForm.project = h"
+              >{{ h }}</button>
+            </div>
           </div>
           <div v-if="walkinCardOptions.length > 0" class="form__row">
             <label class="form__label">划扣所用卡</label>
@@ -574,6 +602,10 @@ async function submitWalkin() {
 
 <style scoped>
 .wd { display: flex; flex-direction: column; gap: var(--s-lg); }
+
+.hint-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s-sm); margin-top: var(--s-sm); font-size: var(--t-sm); color: var(--c-text-3); }
+.hint-chip { border: 1px solid var(--c-border-light); background: none; border-radius: var(--s-sm); padding: 2px var(--s-sm); font-size: var(--t-sm); color: var(--c-brand); cursor: pointer; }
+.hint-chip:hover { background: var(--c-brand-soft); }
 
 .filters { display: flex; gap: var(--s-sm); padding: var(--s-md); border-bottom: 1px solid var(--c-border-light); flex-shrink: 0; }
 .list { flex: 1; min-height: 0; overflow-y: auto; }

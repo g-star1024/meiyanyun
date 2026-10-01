@@ -63,6 +63,8 @@ export interface WdCardOption {
   remainTimes: number
   balance: number
   unitAmount: number
+  /** 售卡目录模板编码（历史导入卡为 null） */
+  productCode: string | null
 }
 
 const SOURCE_LABEL: Record<WdSource, string> = {
@@ -121,6 +123,7 @@ function adaptCard(dto: WdCardOptionDTO): WdCardOption {
     remainTimes: dto.remainTimes ?? 0,
     balance: fen2yuan(dto.balance),
     unitAmount: fen2yuan(dto.unitAmount),
+    productCode: dto.productCode ?? null,
   }
 }
 
