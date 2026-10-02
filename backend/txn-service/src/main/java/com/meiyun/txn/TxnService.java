@@ -46,12 +46,14 @@ public class TxnService {
     private final CustomerCardClient cardClient;
     private final MarketingGrantClient grantClient;
     private final ContractPenaltyJudge penaltyJudge;
+    private final ContractRepository contractRepo;
 
     public TxnService(TxnRefundRepository refundRepo, TxnCardCancelRepository cancelRepo,
                       TxnOrderRepository orderRepo, MemberCardRepository cardRepo,
                       AuditRecorder audit, @Lazy ApprovalService approvalService,
                       FinanceEventPublisher financeEvents, CustomerCardClient cardClient,
-                      MarketingGrantClient grantClient, ContractPenaltyJudge penaltyJudge) {
+                      MarketingGrantClient grantClient, ContractPenaltyJudge penaltyJudge,
+                      ContractRepository contractRepo) {
         this.refundRepo = refundRepo;
         this.cancelRepo = cancelRepo;
         this.orderRepo = orderRepo;
@@ -62,6 +64,7 @@ public class TxnService {
         this.cardClient = cardClient;
         this.grantClient = grantClient;
         this.penaltyJudge = penaltyJudge;
+        this.contractRepo = contractRepo;
     }
 
     // ---------------- 退款 RF ----------------
@@ -99,7 +102,7 @@ public class TxnService {
             }
         }
         String tier = tierFor(cmd.refundAmt());
-        String storeCode = resolveRefundStore(cmd.orderNo());
+        String storeCode = resolveRefundStore(cmd);
         TxnRefund r = new TxnRefund();
         r.setTxnNo(nextNo("RF", refundRepo::maxSeqOfDay));
         r.setOrderNo(cmd.orderNo());
@@ -507,16 +510,36 @@ public class TxnService {
         return DataScope.currentActor();
     }
 
-    /** 退款单门店：按订单反查回填并做数据域闸门（越权直接 404，不泄露存在性）；无订单号时回落登录人门店。 */
-    private String resolveRefundStore(String orderNo) {
-        if (orderNo != null && !orderNo.isBlank()) {
-            TxnOrder o = orderRepo.findById(orderNo).orElse(null);
+    /**
+     * 退款单门店（棒⑥卡1 根治 04 L180：超管/集团角色退款 storeCode=null 致 REFUND_CONFIRMED
+     * 事件 finance 422 重试耗尽 DEAD）：四层兜底——①订单反查→②合同反查（contract.store_code
+     * nullable=false 必得）→③前端显式传参（当前门店上下文）→④登录人门店；均过数据域闸门
+     * （越权直接 404，不泄露存在性）。
+     */
+    private String resolveRefundStore(CreateRefundCmd cmd) {
+        if (cmd.orderNo() != null && !cmd.orderNo().isBlank()) {
+            TxnOrder o = orderRepo.findById(cmd.orderNo()).orElse(null);
             if (o != null && o.getStoreCode() != null && !o.getStoreCode().isBlank()) {
                 if (!DataScope.canReadStore(o.getStoreCode())) {
                     throw new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看");
                 }
                 return o.getStoreCode();
             }
+        }
+        if (cmd.contractNo() != null && !cmd.contractNo().isBlank()) {
+            Contract c = contractRepo.findById(cmd.contractNo()).orElse(null);
+            if (c != null && c.getStoreCode() != null && !c.getStoreCode().isBlank()) {
+                if (!DataScope.canReadStore(c.getStoreCode())) {
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看");
+                }
+                return c.getStoreCode();
+            }
+        }
+        if (cmd.storeCode() != null && !cmd.storeCode().isBlank()) {
+            if (!DataScope.canReadStore(cmd.storeCode())) {
+                throw new ResponseStatusException(HttpStatus.NOT_FOUND, "数据不存在或无权查看");
+            }
+            return cmd.storeCode();
         }
         var u = DataScope.current();
         return u == null ? null : u.storeCode();
@@ -567,7 +590,9 @@ public class TxnService {
             Boolean feeManualOverride,
             Long feeCents,
             String feeOverrideReason,
-            String contractNo) {
+            String contractNo,
+            /** 棒⑥卡1（04 L180）：发起方当前门店上下文（可空）——门店解析第③层，超管/集团角色必传 */
+            String storeCode) {
     }
 
     public record CreateCardCancelCmd(
@@ -581,7 +606,7 @@ public class TxnService {
             Integer remainTimes,
             Boolean medical,
             Boolean feeManualOverride,
-            Long feeCents,
+            Long feeCents,String refundType,
             String feeOverrideReason,
             String contractNo) {
     }

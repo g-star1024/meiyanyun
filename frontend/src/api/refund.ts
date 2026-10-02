@@ -5,6 +5,9 @@
 // B95：双 Cmd 尾增 contractNo（可空，空＝旧链手动口径）；挂合同后 RF 侧 refundAmt
 //   必须等于后端合同口径（已付−违约金，不符 400），CC 侧 fee 由后端自动计算覆写；
 //   双 DTO 增 contractNo/contractSnapshot（penaltyAmt 仅 RF），旧单为空回落「—」。
+// 棒⑥卡1（04 L180）：RefundCmd 尾增 storeCode?（可空）——发起时透传当前门店上下文，
+//   后端门店解析扩四层兜底（订单→合同→显式传参→登录人），根治超管/集团角色退款
+//   REFUND_CONFIRMED 事件 storeCode=null 致 finance 422 重试耗尽 DEAD；旧链不传向后兼容。
 // ============================================================
 import client from './client'
 
@@ -32,6 +35,8 @@ export interface RefundCmd {
   feeOverrideReason?: string
   /** B95：关联生效中合同号；挂合同后 refundAmt 须等于后端口径（已付−违约金） */
   contractNo?: string
+  /** 棒⑥卡1（04 L180）：发起方当前门店上下文（可空）——后端门店解析第③层，超管/集团角色必传 */
+  storeCode?: string
 }
 
 export interface CardCancelCmd {

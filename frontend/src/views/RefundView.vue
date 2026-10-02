@@ -23,6 +23,7 @@ import CFab from '@/components/CFab.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { useContractStore } from '@/stores/contract'
+import { useStoreContext } from '@/stores/storeContext'
 import { useToast } from '@/composables/useToast'
 import { parseContractSnapshot, type Refund, type RefundKind } from '@/stores/refund'
 import {
@@ -35,6 +36,7 @@ import { REFUND_STATUS, REFUND_CHANNEL, dictPill, type RefundChannel } from '@/c
 const auth = useAuthStore()
 const settings = useSettingsStore()
 const contract = useContractStore()
+const storeCtx = useStoreContext()
 const route = useRoute()
 const toast = useToast()
 
@@ -182,6 +184,7 @@ async function create(input: {
       paidAmt: Math.round(input.paidAmount * 100),
       refundAmt: Math.round(input.refundAmount * 100),
       reason: input.reason,
+      storeCode: storeCtx.currentStoreCode || undefined,
       ...(input.contractNo ? { contractNo: input.contractNo } : {}),
     })
     await load()
