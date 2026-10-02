@@ -27,7 +27,7 @@ services:
     container_name: meiyun-customer-service
     restart: unless-stopped
     networks: [meiyun-network]
-    ports: ["8082:8082"]
+    ports: ["127.0.0.1:8082:8082"]
     environment:
       SPRING_DATASOURCE_URL: "jdbc:postgresql://meiyun-pg:5432/meiyun_core?stringtype=unspecified"
       MEIYUN_ES_ENDPOINT: "http://meiyun-es:9200"
@@ -76,7 +76,7 @@ services:
         PORT: "8083"
     image: meiyun/txn-service:latest
     container_name: meiyun-txn-service
-    ports: ["8083:8083"]
+    ports: ["127.0.0.1:8083:8083"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8083' && exit 0 || exit 1"]
       interval: 15s
@@ -94,7 +94,7 @@ services:
         PORT: "8084"
     image: meiyun/audit-service:latest
     container_name: meiyun-audit-service
-    ports: ["8084:8084"]
+    ports: ["127.0.0.1:8084:8084"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8084' && exit 0 || exit 1"]
       interval: 15s
@@ -112,7 +112,7 @@ services:
         PORT: "8085"
     image: meiyun/store-service:latest
     container_name: meiyun-store-service
-    ports: ["8085:8085"]
+    ports: ["127.0.0.1:8085:8085"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8085' && exit 0 || exit 1"]
       interval: 15s
@@ -130,7 +130,7 @@ services:
         PORT: "8086"
     image: meiyun/org-service:latest
     container_name: meiyun-org-service
-    ports: ["8086:8086"]
+    ports: ["127.0.0.1:8086:8086"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8086' && exit 0 || exit 1"]
       interval: 15s
@@ -148,7 +148,7 @@ services:
         PORT: "8087"
     image: meiyun/finance-service:latest
     container_name: meiyun-finance-service
-    ports: ["8087:8087"]
+    ports: ["127.0.0.1:8087:8087"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8087' && exit 0 || exit 1"]
       interval: 15s
@@ -166,7 +166,7 @@ services:
         PORT: "8088"
     image: meiyun/marketing-service:latest
     container_name: meiyun-marketing-service
-    ports: ["8088:8088"]
+    ports: ["127.0.0.1:8088:8088"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8088' && exit 0 || exit 1"]
       interval: 15s
@@ -184,7 +184,7 @@ services:
         PORT: "8089"
     image: meiyun/ai-service:latest
     container_name: meiyun-ai-service
-    ports: ["8089:8089"]
+    ports: ["127.0.0.1:8089:8089"]
     environment:
       SPRING_DATASOURCE_URL: "jdbc:postgresql://meiyun-pg:5432/meiyun_core?stringtype=unspecified"
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"
@@ -218,7 +218,7 @@ services:
         PORT: "8090"
     image: meiyun/c-service:latest
     container_name: meiyun-c-service
-    ports: ["8090:8090"]
+    ports: ["127.0.0.1:8090:8090"]
     environment:
       SPRING_DATASOURCE_URL: "jdbc:postgresql://meiyun-pg:5432/meiyun_core?stringtype=unspecified"
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: "5"

@@ -20,7 +20,7 @@ import java.util.Map;
 /**
  * 门店名解析（服务间调用，铁律：禁止 JdbcTemplate 直读别域表）。
  *
- * <p>调 store-service {@code GET /api/stores/name-map?codes=SST01,SST02}
+ * <p>调 store-service {@code GET /api/stores/internal/name-map?codes=SST01,SST02}
  * 返回 store_code → store_name。两种故障语义严格分层：
  * <ul>
  *   <li><b>远程故障</b>（连不上/超时/4xx/5xx）：{@link #resolveNamesRequired} 抛
@@ -82,7 +82,7 @@ public class StoreNameResolver {
             return out;
         }
         String url = UriComponentsBuilder
-                .fromHttpUrl(storeBaseUrl + "/api/stores/name-map")
+                .fromHttpUrl(storeBaseUrl + "/api/stores/internal/name-map")
                 .queryParam("codes", String.join(",", distinct))
                 .toUriString();
         HttpHeaders headers = new HttpHeaders();

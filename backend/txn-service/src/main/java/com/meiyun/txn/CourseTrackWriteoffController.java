@@ -20,7 +20,7 @@ import java.util.Map;
  * 权限码 course:view（与 G1 同权限，疗程跟踪详情查看）。数据域强制注入：
  * 取卡后校验 store_code 可读，越权统一 404（不泄露卡是否存在）。
  *
- * <p>operatorName 由 TxnStaffNameResolver 调 org-service /api/org/staff/name-map 批量解析，
+ * <p>operatorName 由 TxnStaffNameResolver 调 org-service /api/org/internal/staff/name-map 批量解析，
  * 服务不可用时降级返回 null（前端兜底用工号展示），不阻断主流程。
  * 金额单位「分」，纯扣次为 0；status DONE=已核销，中文存储中文展示。
  */

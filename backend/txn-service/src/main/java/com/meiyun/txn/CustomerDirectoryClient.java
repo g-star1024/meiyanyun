@@ -93,7 +93,7 @@ public class CustomerDirectoryClient {
     }
 
     /**
-     * 批量取客户姓名（B49 卡7 大屏成交流富化）：GET /api/customer/name-map?ids=...。
+     * 批量取客户姓名（B49 卡7 大屏成交流富化）：GET /api/customer/internal/name-map?ids=...。
      * 读侧富化容错口径：任何失败仅 log.warn 并返回空 Map（客户名降级为空串），
      * 与 {@link #findByPhone} 登记主链路「customer 不可用即 502 回滚」口径不同——
      * 大屏推送不阻塞、不重试，下一轮轮询自愈。
@@ -105,7 +105,7 @@ public class CustomerDirectoryClient {
         try {
             HttpHeaders headers = new HttpHeaders();
             headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
-            String url = UriComponentsBuilder.fromHttpUrl(customerBaseUrl + "/api/customer/name-map")
+            String url = UriComponentsBuilder.fromHttpUrl(customerBaseUrl + "/api/customer/internal/name-map")
                     .queryParam("ids", customerIds)
                     .toUriString();
             @SuppressWarnings("unchecked")

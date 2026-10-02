@@ -22,10 +22,10 @@ import java.util.Map;
 /**
  * 预约/核销台列表富化用的引用名解析器（服务间 REST 调用，不直读别域表）：
  * <ul>
- *   <li>员工工号（doctor/operator）→ org-service {@code /api/org/staff/name-map}</li>
- *   <li>门店编码（store_code）→ store-service {@code /api/stores/name-map}</li>
- *   <li>客户号（customer_id）→ customer-service {@code /api/customer/name-map}（姓名）</li>
- *   <li>客户号 → customer-service {@code /api/customer/phone-map}（掩码手机号 138****2046）</li>
+ *   <li>员工工号（doctor/operator）→ org-service {@code /api/org/internal/staff/name-map}</li>
+ *   <li>门店编码（store_code）→ store-service {@code /api/stores/internal/name-map}</li>
+ *   <li>客户号（customer_id）→ customer-service {@code /api/customer/internal/name-map}（姓名）</li>
+ *   <li>客户号 → customer-service {@code /api/customer/internal/phone-map}（掩码手机号 138****2046）</li>
  * </ul>
  * 手机号与真实姓名均属敏感字段：phone-map / name-map 端点均要求服务间内部身份（X-Internal-Token），
  * 四个解析调用一律以系统身份携带令牌；任一被调方不可用均降级为空 Map，不阻断主流程。
@@ -54,22 +54,22 @@ public class ApptRefNameResolver {
 
     /** 员工工号 → 姓名。 */
     public Map<String, String> staffNames(Collection<String> ids) {
-        return fetch(orgBaseUrl + "/api/org/staff/name-map", "ids", ids, "员工名", true);
+        return fetch(orgBaseUrl + "/api/org/internal/staff/name-map", "ids", ids, "员工名", true);
     }
 
     /** 门店编码 → 门店名。 */
     public Map<String, String> storeNames(Collection<String> codes) {
-        return fetch(storeBaseUrl + "/api/stores/name-map", "codes", codes, "门店名", true);
+        return fetch(storeBaseUrl + "/api/stores/internal/name-map", "codes", codes, "门店名", true);
     }
 
     /** 客户号 → 客户名。 */
     public Map<String, String> customerNames(Collection<String> ids) {
-        return fetch(customerBaseUrl + "/api/customer/name-map", "ids", ids, "客户名", true);
+        return fetch(customerBaseUrl + "/api/customer/internal/name-map", "ids", ids, "客户名", true);
     }
 
     /** 客户号 → 掩码手机号（138****2046）。敏感端点，携带 X-Internal-Token 以系统身份调用。 */
     public Map<String, String> customerPhones(Collection<String> ids) {
-        return fetch(customerBaseUrl + "/api/customer/phone-map", "ids", ids, "客户手机号", true);
+        return fetch(customerBaseUrl + "/api/customer/internal/phone-map", "ids", ids, "客户手机号", true);
     }
 
     private Map<String, String> fetch(String baseUrl, String param, Collection<String> values,

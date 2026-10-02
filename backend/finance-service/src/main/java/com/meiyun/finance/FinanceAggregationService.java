@@ -523,7 +523,7 @@ public class FinanceAggregationService {
     }
 
     /**
-     * 客户号 → 客户姓名批量解析（customer /api/customer/name-map，internal:name-map；
+     * 客户号 → 客户姓名批量解析（customer /api/customer/internal/name-map，internal:name-map；
      * 服务不可用/超时回落空 Map，调用方保守回落客户号本身）。
      */
     private Map<String, String> resolveCustomerNames(List<String> customerIds) {
@@ -531,7 +531,7 @@ public class FinanceAggregationService {
         if (ids.isEmpty()) return Collections.emptyMap();
         try {
             UriComponentsBuilder b = UriComponentsBuilder
-                    .fromHttpUrl(customerBaseUrl + "/api/customer/name-map");
+                    .fromHttpUrl(customerBaseUrl + "/api/customer/internal/name-map");
             ids.forEach(i -> b.queryParam("ids", i));
             ResponseEntity<Map<String, Object>> resp =
                     restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
@@ -554,7 +554,7 @@ public class FinanceAggregationService {
         if (codes.isEmpty()) return Collections.emptyMap();
         try {
             UriComponentsBuilder b = UriComponentsBuilder
-                    .fromHttpUrl(storeBaseUrl + "/api/stores/name-map");
+                    .fromHttpUrl(storeBaseUrl + "/api/stores/internal/name-map");
             codes.forEach(c -> b.queryParam("codes", c));
             ResponseEntity<Map<String, Object>> resp =
                     restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
@@ -602,7 +602,7 @@ public class FinanceAggregationService {
         String code = storeCode.trim();
         try {
             UriComponentsBuilder b = UriComponentsBuilder
-                    .fromHttpUrl(storeBaseUrl + "/api/stores/name-map")
+                    .fromHttpUrl(storeBaseUrl + "/api/stores/internal/name-map")
                     .queryParam("codes", code);
             ResponseEntity<Map<String, Object>> resp =
                     restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);
@@ -798,7 +798,7 @@ public class FinanceAggregationService {
         if (ids.isEmpty()) return Collections.emptyMap();
         try {
             UriComponentsBuilder b = UriComponentsBuilder
-                    .fromHttpUrl(orgBaseUrl + "/api/org/staff/name-map");
+                    .fromHttpUrl(orgBaseUrl + "/api/org/internal/staff/name-map");
             ids.forEach(i -> b.queryParam("ids", i));
             ResponseEntity<Map<String, Object>> resp =
                     restTemplate.exchange(b.build().encode().toUri(), HttpMethod.GET, internalEntity(), MAP_TYPE);

@@ -61,7 +61,7 @@ probe_path_of() {
     customer) echo "/api/customer/member-levels";;
     txn) echo "/api/txn/refund";;
     audit) echo "/api/audit/verify";;
-    store) echo "/api/stores/name-map";;
+    store) echo "/api/stores";;
     org) echo "/api/org/roles";;
     finance) echo "/api/finance/accounts";;
     marketing) echo "/api/marketing/config";;

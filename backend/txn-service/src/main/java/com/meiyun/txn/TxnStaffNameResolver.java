@@ -22,7 +22,7 @@ import java.util.Map;
 /**
  * 员工名解析：订单 consultant / 预约 doctor 存的是工号（SE007），客户视图需显中文。
  *
- * <p>通过 <b>服务间 REST 调用</b> org-service（{@code /api/org/staff/name-map}）批量解析，
+ * <p>通过 <b>服务间 REST 调用</b> org-service（{@code /api/org/internal/staff/name-map}）批量解析，
  * 不再直连 staff 表——微服务按域拆库后本类零改动即可成立（一劳永逸）。
  * 解析服务不可用时降级返回空 Map（名字回退为工号/不展示），不阻断订单/预约主流程。
  */
@@ -51,7 +51,7 @@ public class TxnStaffNameResolver {
         if (ids.isEmpty()) return Collections.emptyMap();
         try {
             UriComponentsBuilder builder =
-                    UriComponentsBuilder.fromHttpUrl(orgBaseUrl + "/api/org/staff/name-map");
+                    UriComponentsBuilder.fromHttpUrl(orgBaseUrl + "/api/org/internal/staff/name-map");
             ids.forEach(v -> builder.queryParam("ids", v));
             HttpHeaders headers = new HttpHeaders();
             headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);

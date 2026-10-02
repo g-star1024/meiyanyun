@@ -23,8 +23,8 @@ import java.util.Map;
  * 名字解析器：把客户上的归属员工工号 / 门店编码解析为中文名，供读模型 DTO 冗余展示。
  *
  * <p>背景：customer 表只存 owner_staff_id / store_code（逻辑外键），界面必须显中文（铁律：零技术码外露）。
- * 本类通过 <b>服务间 REST 调用</b> 解析：员工名走 org-service（{@code /api/org/staff/name-map}）、
- * 门店名走 store-service（{@code /api/stores/name-map}），不再直连 staff/store 表——
+ * 本类通过 <b>服务间 REST 调用</b> 解析：员工名走 org-service（{@code /api/org/internal/staff/name-map}）、
+ * 门店名走 store-service（{@code /api/stores/internal/name-map}），不再直连 staff/store 表——
  * 微服务按域拆库后本类零改动即可成立（一劳永逸）。
  *
  * <p>降级策略：解析服务不可用时仅记录日志、返回空 Map（名字字段回退为不展示），不阻断客户列表/详情主流程。
@@ -55,14 +55,14 @@ public class RefNameResolver {
     public Map<String, String> staffNames(Collection<String> staffIds) {
         List<String> ids = staffIds.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();
         if (ids.isEmpty()) return Collections.emptyMap();
-        return fetchNameMap(orgBaseUrl + "/api/org/staff/name-map", "ids", ids, "员工名");
+        return fetchNameMap(orgBaseUrl + "/api/org/internal/staff/name-map", "ids", ids, "员工名");
     }
 
     /** store_code → store_name（批量，缺失不留 key；服务异常返回空 Map）。 */
     public Map<String, String> storeNames(Collection<String> storeCodes) {
         List<String> codes = storeCodes.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();
         if (codes.isEmpty()) return Collections.emptyMap();
-        return fetchNameMap(storeBaseUrl + "/api/stores/name-map", "codes", codes, "门店名");
+        return fetchNameMap(storeBaseUrl + "/api/stores/internal/name-map", "codes", codes, "门店名");
     }
 
     /** 通用批量名解析：GET base?param=v1&amp;param=v2 → Map&lt;code,name&gt;，失败降级空 Map。name-map 为内部端点，携带 X-Internal-Token。 */

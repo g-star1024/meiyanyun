@@ -55,10 +55,10 @@ public class StoreController {
     /**
      * 批量门店名解析（服务间调用专用）：store_code → store_name。
      * 供 customer 等服务把客户归属门店编码解析为中文名，替代各服务直连 store 表的权宜做法。
-     * 例：GET /api/stores/name-map?codes=SST02,SST01 → {"SST01":"上海静安店","SST02":"上海浦东店"}
-     * 注：精确路径 /name-map 优先于 /{code} 匹配，不会被当成门店编码。
+     * 例：GET /api/stores/internal/name-map?codes=SST02,SST01 → {"SST01":"上海静安店","SST02":"上海浦东店"}
+     * 注：路径已收口迁入 /internal/ 伞下（棒⑤卡4），网关 isInternalPath 守卫外部 404 天然覆盖。
      */
-    @GetMapping("/name-map")
+    @GetMapping("/internal/name-map")
     @RequirePerm("internal:name-map")
     public Map<String, String> nameMap(@RequestParam(value = "codes", required = false) List<String> codes) {
         Map<String, String> out = new LinkedHashMap<>();

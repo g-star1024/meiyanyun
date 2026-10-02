@@ -208,9 +208,10 @@ public class OrgController {
      * 批量员工名解析（服务间调用专用）：staff_id → staff_name。
      * 供 customer / txn 等服务把订单咨询师、预约医生、客户归属员工等工号解析为中文名，
      * 替代各服务直连 staff 表的权宜做法（微服务拆库后依然成立）。
-     * 例：GET /api/org/staff/name-map?ids=SE006,SE007 → {"SE006":"沈咨询","SE007":"古医生"}
+     * 例：GET /api/org/internal/staff/name-map?ids=SE006,SE007 → {"SE006":"沈咨询","SE007":"古医生"}
+     * 注：路径已收口迁入 /internal/ 伞下（棒⑤卡4），与 /internal/staff/{id} 共存（精确路径优先）。
      */
-    @GetMapping("/staff/name-map")
+    @GetMapping("/internal/staff/name-map")
     @RequirePerm("internal:name-map")
     public Map<String, String> staffNameMap(@RequestParam(value = "ids", required = false) List<String> ids) {
         Map<String, String> out = new LinkedHashMap<>();

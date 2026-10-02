@@ -464,13 +464,13 @@ public class CustomerController {
     }
 
     /**
-     * 批量客户名解析：GET /api/customer/name-map?ids=SC001&ids=SC002 → {"SC001":"王女士"}。
+     * 批量客户名解析：GET /api/customer/internal/name-map?ids=SC001&ids=SC002 → {"SC001":"王女士"}。
      * 供交易域（预约/订单列表）服务间调用富化客户名，缺失的 id 不留 key。
      * 客户真实姓名属敏感字段：仅服务间内部身份（X-Internal-Token）可调用，
      * 普通登录人即便带 token 也无 internal:name-map 权限 → 403。
-     * 注：精确路径 /name-map 优先于 /{id} 匹配，不会被当成客户号。
+     * 注：路径已收口迁入 /internal/ 伞下（棒⑤卡4），网关 isInternalPath 守卫外部 404 天然覆盖。
      */
-    @GetMapping("/name-map")
+    @GetMapping("/internal/name-map")
     @RequirePerm("internal:name-map")
     public Map<String, String> nameMap(@RequestParam("ids") List<String> ids) {
         List<String> distinct = ids.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();
@@ -483,11 +483,11 @@ public class CustomerController {
     }
 
     /**
-     * 批量客户掩码手机号解析：GET /api/customer/phone-map?ids=SC001 → {"SC001":"138****2046"}。
+     * 批量客户掩码手机号解析：GET /api/customer/internal/phone-map?ids=SC001 → {"SC001":"138****2046"}。
      * 手机号属敏感字段：无条件返回掩码（不开放明文），且仅服务间内部身份（X-Internal-Token）可调用；
      * 普通登录人即便带 token 也无 internal:phone-map 权限 → 403。缺失的 id 不留 key。
      */
-    @GetMapping("/phone-map")
+    @GetMapping("/internal/phone-map")
     @RequirePerm("internal:phone-map")
     public Map<String, String> phoneMap(@RequestParam("ids") List<String> ids) {
         List<String> distinct = ids.stream().filter(s -> s != null && !s.isBlank()).distinct().toList();

@@ -32,7 +32,7 @@ services:
     image: meiyun/customer-service:latest
     container_name: meiyun-seed-customer-service
     networks: [seed-net]
-    ports: ["18082:8082"]
+    ports: ["127.0.0.1:18082:8082"]
     environment: &seed-env
       SPRING_DATASOURCE_URL: "jdbc:postgresql://meiyun-pg:5432/meiyun_seed?stringtype=unspecified"
       MEIYUN_ES_ENDPOINT: "http://meiyun-es:9200"
@@ -68,7 +68,7 @@ services:
     <<: *seed-backend
     image: meiyun/txn-service:latest
     container_name: meiyun-seed-txn-service
-    ports: ["18083:8083"]
+    ports: ["127.0.0.1:18083:8083"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8083' && exit 0 || exit 1"]
       interval: 15s
@@ -80,7 +80,7 @@ services:
     <<: *seed-backend
     image: meiyun/audit-service:latest
     container_name: meiyun-seed-audit-service
-    ports: ["18084:8084"]
+    ports: ["127.0.0.1:18084:8084"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8084' && exit 0 || exit 1"]
       interval: 15s
@@ -92,7 +92,7 @@ services:
     <<: *seed-backend
     image: meiyun/store-service:latest
     container_name: meiyun-seed-store-service
-    ports: ["18085:8085"]
+    ports: ["127.0.0.1:18085:8085"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8085' && exit 0 || exit 1"]
       interval: 15s
@@ -104,7 +104,7 @@ services:
     <<: *seed-backend
     image: meiyun/org-service:latest
     container_name: meiyun-seed-org-service
-    ports: ["18086:8086"]
+    ports: ["127.0.0.1:18086:8086"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8086' && exit 0 || exit 1"]
       interval: 15s
@@ -116,7 +116,7 @@ services:
     <<: *seed-backend
     image: meiyun/finance-service:latest
     container_name: meiyun-seed-finance-service
-    ports: ["18087:8087"]
+    ports: ["127.0.0.1:18087:8087"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8087' && exit 0 || exit 1"]
       interval: 15s
@@ -128,7 +128,7 @@ services:
     <<: *seed-backend
     image: meiyun/marketing-service:latest
     container_name: meiyun-seed-marketing-service
-    ports: ["18088:8088"]
+    ports: ["127.0.0.1:18088:8088"]
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/8088' && exit 0 || exit 1"]
       interval: 15s
@@ -140,7 +140,7 @@ services:
     <<: *seed-backend
     image: meiyun/ai-service:latest
     container_name: meiyun-seed-ai-service
-    ports: ["18089:8089"]
+    ports: ["127.0.0.1:18089:8089"]
     environment:
       <<: *seed-env
       AUDIT_SERVICE_URL: "http://meiyun-seed-audit-service:8084"
@@ -158,7 +158,7 @@ services:
     <<: *seed-backend
     image: meiyun/c-service:latest
     container_name: meiyun-seed-c-service
-    ports: ["18090:8090"]
+    ports: ["127.0.0.1:18090:8090"]
     environment:
       <<: *seed-env
       # 审计追加通道（seed 栈按 seed 容器名寻址；失败落 audit_outbox 补偿，不阻断登录）
