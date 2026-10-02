@@ -55,6 +55,10 @@ public class PlanItem {
     @Column(name = "risk_tags", length = 128)
     private String riskTags;
 
+    /** 免费护理标记（棒⑤卡3 L161）：true=签病历生成缴费单时本行免单并按订单号扣免费护理次数；null=false。 */
+    @Column(name = "free_care")
+    private Boolean freeCare;
+
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 

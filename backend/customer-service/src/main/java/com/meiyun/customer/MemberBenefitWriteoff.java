@@ -14,6 +14,9 @@ import java.time.OffsetDateTime;
  * 异常不抛 400，落流水 ok=false 返回（仿 CouponWriteoffService.saveAbnormal 范式），
  * 仅参数非法（项目名空/超长、clientRequestId 非 UUID、客户已合并）中文 400。
  * client_request_id UK 为前端 UUID 幂等键：重复提交/双击/重放命中直接返既有流水，不重复扣次。
+ *
+ * <p>order_no（棒⑤卡3 L161）：txn 计价订单免费护理免单联动的订单级幂等锚——同 orderNo 重放
+ * 返既有流水不重复扣次；UI 手核销为 null。订单链路任一项目次数不足 422 整笔回滚不落流水。
  */
 @Entity
 @Table(name = "member_benefit_writeoff", uniqueConstraints = {
@@ -72,6 +75,10 @@ public class MemberBenefitWriteoff {
 
     @Column(name = "store_name", length = 32)
     private String storeName;
+
+    /** 订单级幂等锚（棒⑤卡3 L161：txn 计价免单联动；UI 手核销为 null）。 */
+    @Column(name = "order_no", length = 24)
+    private String orderNo;
 
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;

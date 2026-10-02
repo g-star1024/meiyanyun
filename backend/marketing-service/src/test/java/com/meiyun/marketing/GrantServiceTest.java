@@ -13,6 +13,7 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -28,6 +29,8 @@ import static org.mockito.Mockito.when;
  * 退款终审赠金回加单测（JUnit5 + Mockito，B39）：
  * 全额回加 USED 券复活 VALID、逆向 FIFO 跨券部分回加、过期券保态加额、
  * RF 单号幂等重放、按原单累计封顶防超回、原单无 DEDUCT 422、参数校验 400。
+ * ＋赠金报表有效期分桶（棒⑤卡3 L62：既有三键保留、expiring7/30/90 嵌套口径、
+ * expired 面额口径、byExpireMonth 月分组聚合升序、空数据零值）。
  */
 @ExtendWith(MockitoExtension.class)
 class GrantServiceTest {
@@ -209,5 +212,85 @@ class GrantServiceTest {
                 () -> service.refund(CID, 1000L, " ", RF, "S", "E"));
         assertThrows(ResponseStatusException.class,
                 () -> service.refund(CID, 1000L, OD, " ", "S", "E"));
+    }
+
+    // ==================== 有效期报表（棒⑤卡3 L62：向后兼容只增不改） ====================
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void report_keepsLegacyKeysAndAddsExpiryBuckets() {
+        when(grantRepo.sumBalanceGroupByCustomer())
+                .thenReturn(List.of(new Object[]{"M0001", 5000L}, new Object[]{"M0002", 3000L}));
+        when(grantRepo.countByStatus("VALID")).thenReturn(2L);
+        when(grantRepo.sumExpiringBalance(any(OffsetDateTime.class), any(OffsetDateTime.class)))
+                .thenAnswer(inv -> {
+                    OffsetDateTime from = inv.getArgument(0);
+                    OffsetDateTime until = inv.getArgument(1);
+                    long days = java.time.Duration.between(from, until).toDays();
+                    if (days == 7L) return 100L;
+                    if (days == 30L) return 300L;
+                    return 900L;
+                });
+        when(grantRepo.sumExpiredAmountTotal()).thenReturn(8000L);
+        when(grantRepo.countByStatus("EXPIRED")).thenReturn(3L);
+        OffsetDateTime now = OffsetDateTime.now();
+        CustomerGrant g1 = grant(1L, 1200L, "VALID", false);
+        g1.setExpireAt(now.plusDays(10));
+        CustomerGrant g2 = grant(2L, 800L, "VALID", false);
+        g2.setExpireAt(now.plusDays(10).plusHours(6)); // 与 g1 同日必同月 → 验证同月聚合
+        CustomerGrant g3 = grant(3L, 2500L, "VALID", false);
+        g3.setExpireAt(now.plusDays(100)); // 与前两张相距 90 天必不同月 → 验证跨月两行
+        when(grantRepo.findByStatusAndExpireAtAfterOrderByExpireAtAsc(eq("VALID"), any()))
+                .thenReturn(List.of(g1, g2, g3));
+
+        Map<String, Object> out = service.report();
+
+        List<Map<String, Object>> perCustomer = (List<Map<String, Object>>) out.get("perCustomer");
+        assertEquals(2, perCustomer.size());
+        assertEquals("M0001", perCustomer.get(0).get("customerId"));
+        assertEquals(5000L, perCustomer.get(0).get("balanceFen"));
+        assertEquals("M0002", perCustomer.get(1).get("customerId"));
+        assertEquals(3000L, perCustomer.get(1).get("balanceFen"));
+        assertEquals(8000L, out.get("totalBalanceFen"));
+        assertEquals(2L, out.get("validGrantCount"));
+        assertEquals(100L, out.get("expiring7DaysFen"));
+        assertEquals(300L, out.get("expiring30DaysFen"));
+        assertEquals(900L, out.get("expiring90DaysFen"));
+        assertEquals(8000L, out.get("expiredTotalFen"));
+        assertEquals(3L, out.get("expiredGrantCount"));
+
+        List<Map<String, Object>> months = (List<Map<String, Object>>) out.get("byExpireMonth");
+        assertEquals(2, months.size());
+        String m1 = (String) months.get(0).get("month");
+        String m2 = (String) months.get(1).get("month");
+        assertTrue(m1.compareTo(m2) < 0); // 月升序
+        assertEquals(2000L, months.get(0).get("balanceFen")); // 1200+800 同月聚合
+        assertEquals(2L, months.get(0).get("grantCount"));
+        assertEquals(2500L, months.get(1).get("balanceFen"));
+        assertEquals(1L, months.get(1).get("grantCount"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void report_emptyDataReturnsZerosAndEmptyBuckets() {
+        when(grantRepo.sumBalanceGroupByCustomer()).thenReturn(List.of());
+        when(grantRepo.countByStatus("VALID")).thenReturn(0L);
+        when(grantRepo.sumExpiringBalance(any(), any())).thenReturn(0L);
+        when(grantRepo.sumExpiredAmountTotal()).thenReturn(0L);
+        when(grantRepo.countByStatus("EXPIRED")).thenReturn(0L);
+        when(grantRepo.findByStatusAndExpireAtAfterOrderByExpireAtAsc(eq("VALID"), any()))
+                .thenReturn(List.of());
+
+        Map<String, Object> out = service.report();
+
+        assertEquals(0L, out.get("totalBalanceFen"));
+        assertEquals(0L, out.get("validGrantCount"));
+        assertEquals(0L, out.get("expiring7DaysFen"));
+        assertEquals(0L, out.get("expiring30DaysFen"));
+        assertEquals(0L, out.get("expiring90DaysFen"));
+        assertEquals(0L, out.get("expiredTotalFen"));
+        assertEquals(0L, out.get("expiredGrantCount"));
+        assertTrue(((List<Map<String, Object>>) out.get("perCustomer")).isEmpty());
+        assertTrue(((List<Map<String, Object>>) out.get("byExpireMonth")).isEmpty());
     }
 }

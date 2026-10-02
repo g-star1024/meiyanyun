@@ -64,4 +64,22 @@ public interface CustomerGrantRepository extends JpaRepository<CustomerGrant, Lo
     @Query("select g.customerId, coalesce(sum(g.balanceFen),0) from CustomerGrant g " +
             "where g.status = 'VALID' group by g.customerId")
     List<Object[]> sumBalanceGroupByCustomer();
+
+    /**
+     * 有效期报表（棒⑤卡3 L62）：VALID 且 expireAt ∈ (from, until] 的余额合计，
+     * 7/30/90 天嵌套分桶共用（7⊂30⊂90）；与抵扣侧同口径含「尚未被过期 Job 扫到但事实有效」的券。
+     */
+    @Query("select coalesce(sum(g.balanceFen),0) from CustomerGrant g " +
+            "where g.status = 'VALID' and g.expireAt > :from and g.expireAt <= :until")
+    Long sumExpiringBalance(@Param("from") OffsetDateTime from, @Param("until") OffsetDateTime until);
+
+    /**
+     * 有效期报表：EXPIRED 券面额合计＋张数。过期时余额已清零（expireOne），
+     * 实际流失余额无法回溯，故以面额合计为「过期流失面额」口径。
+     */
+    @Query("select coalesce(sum(g.amountFen),0) from CustomerGrant g where g.status = 'EXPIRED'")
+    Long sumExpiredAmountTotal();
+
+    /** 有效期报表：VALID 且未过期券全量（byExpireMonth 在 Java 侧按业务时区 yyyy-MM 分组聚合）。 */
+    List<CustomerGrant> findByStatusAndExpireAtAfterOrderByExpireAtAsc(String status, OffsetDateTime now);
 }

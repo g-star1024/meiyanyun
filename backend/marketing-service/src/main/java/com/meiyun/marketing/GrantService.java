@@ -468,6 +468,13 @@ public class GrantService {
         return b == null ? 0L : b;
     }
 
+    /**
+     * 赠金报表（棒⑤卡3 L62 扩有效期维度，向后兼容只增不改）：
+     * 既有 perCustomer/totalBalanceFen/validGrantCount 三键保留；
+     * 新增 expiring7/30/90DaysFen 嵌套分桶（VALID 且 expireAt ∈ (now, now+N天] 余额和，7⊂30⊂90）、
+     * expiredTotalFen/expiredGrantCount（EXPIRED 面额合计与张数，过期时余额已清零故取面额口径）、
+     * byExpireMonth（VALID 且未过期券按业务时区 yyyy-MM 分组 [{month,balanceFen,grantCount}] 月升序）。
+     */
     public Map<String, Object> report() {
         List<Object[]> rows = grantRepo.sumBalanceGroupByCustomer();
         List<Map<String, Object>> byCustomer = new java.util.ArrayList<>();
@@ -482,10 +489,35 @@ public class GrantService {
             byCustomer.add(m);
         }
         long validCount = grantRepo.countByStatus("VALID");
+
+        OffsetDateTime now = OffsetDateTime.now(BIZ_ZONE);
+        Map<String, long[]> byMonth = new java.util.TreeMap<>();
+        for (CustomerGrant g : grantRepo.findByStatusAndExpireAtAfterOrderByExpireAtAsc("VALID", now)) {
+            String month = g.getExpireAt().atZoneSameInstant(BIZ_ZONE)
+                    .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM"));
+            long[] acc = byMonth.computeIfAbsent(month, k -> new long[2]);
+            acc[0] += g.getBalanceFen() == null ? 0L : g.getBalanceFen();
+            acc[1] += 1;
+        }
+        List<Map<String, Object>> monthRows = new java.util.ArrayList<>();
+        for (Map.Entry<String, long[]> e : byMonth.entrySet()) {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("month", e.getKey());
+            m.put("balanceFen", e.getValue()[0]);
+            m.put("grantCount", e.getValue()[1]);
+            monthRows.add(m);
+        }
+
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("perCustomer", byCustomer);
         out.put("totalBalanceFen", totalBalance);
         out.put("validGrantCount", validCount);
+        out.put("expiring7DaysFen", grantRepo.sumExpiringBalance(now, now.plusDays(7)));
+        out.put("expiring30DaysFen", grantRepo.sumExpiringBalance(now, now.plusDays(30)));
+        out.put("expiring90DaysFen", grantRepo.sumExpiringBalance(now, now.plusDays(90)));
+        out.put("expiredTotalFen", grantRepo.sumExpiredAmountTotal());
+        out.put("expiredGrantCount", grantRepo.countByStatus("EXPIRED"));
+        out.put("byExpireMonth", monthRows);
         return out;
     }
 

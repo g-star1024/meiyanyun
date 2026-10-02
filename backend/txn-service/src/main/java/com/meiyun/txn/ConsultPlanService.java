@@ -52,6 +52,7 @@ public class ConsultPlanService {
     private final FollowupScheduler followupScheduler;
     private final DispatchCompletion dispatchCompletion;
     private final MemberDiscountClient memberDiscountClient;
+    private final BenefitClient benefitClient;
     private final ObjectMapper json = new ObjectMapper();
 
     public ConsultPlanService(PlanRepository planRepo, PlanItemRepository itemRepo,
@@ -60,7 +61,7 @@ public class ConsultPlanService {
                               AuditRecorder audit, ApptRefNameResolver names,
                               StoreCatalogClient catalogClient, EmrService emrService,
                               FollowupScheduler followupScheduler, DispatchCompletion dispatchCompletion,
-                              MemberDiscountClient memberDiscountClient) {
+                              MemberDiscountClient memberDiscountClient, BenefitClient benefitClient) {
         this.planRepo = planRepo;
         this.itemRepo = itemRepo;
         this.revRepo = revRepo;
@@ -74,12 +75,17 @@ public class ConsultPlanService {
         this.followupScheduler = followupScheduler;
         this.dispatchCompletion = dispatchCompletion;
         this.memberDiscountClient = memberDiscountClient;
+        this.benefitClient = benefitClient;
     }
 
     // ==================== DTO ====================
 
+    /**
+     * 方案子项入参。freeCare（棒⑤卡3 L161，可选）：true=本行标记免费护理，签病历生成缴费单时
+     * 本行免单（折后计价先行的豁免口径）并按订单号向 customer 扣免费护理次数；缺省 null=false。
+     */
     public record PlanItemCmd(String itemCode, String itemName, String spec,
-                              Integer qty, Long unitPrice, String riskTags) {}
+                              Integer qty, Long unitPrice, String riskTags, Boolean freeCare) {}
 
     public record ContraCmd(Boolean pregnant, Boolean allergy, Boolean scarConstitution,
                             Boolean skinLesion, Boolean coagulationAbn, Boolean seriousIllness, String note) {}
@@ -138,7 +144,7 @@ public class ConsultPlanService {
                               String sourceType, String sourceId) {}
 
     public record PlanItemView(String itemCode, String itemName, String spec, Integer qty,
-                               Long unitPrice, Long amount, String riskTags) {}
+                               Long unitPrice, Long amount, String riskTags, Boolean freeCare) {}
     public record RevisionView(Long revId, String kind, String actorId, String actorName,
                                String reason, OffsetDateTime at) {}
     public record PlanView(String planId, String customerId, String customerName,
@@ -360,6 +366,7 @@ public class ConsultPlanService {
             pi.setUnitPrice(price);
             pi.setAmount(sub);
             pi.setRiskTags(it.riskTags());
+            pi.setFreeCare(Boolean.TRUE.equals(it.freeCare()));
             entities.add(pi);
             line++;
         }
@@ -441,6 +448,7 @@ public class ConsultPlanService {
             pi.setUnitPrice(price);
             pi.setAmount(sub);
             pi.setRiskTags(it.riskTags());
+            pi.setFreeCare(Boolean.TRUE.equals(it.freeCare()));
             entities.add(pi);
             line++;
         }
@@ -496,7 +504,8 @@ public class ConsultPlanService {
         MemberDiscountClient.MemberDiscount discount =
                 memberDiscountClient.getForCustomer(p.getCustomerId());
         List<M4FlowController.OrderItemCmd> orderItems = items.stream()
-                .map(pi -> new M4FlowController.OrderItemCmd(pi.getItemName(), pi.getQty(), pi.getUnitPrice()))
+                .map(pi -> new M4FlowController.OrderItemCmd(pi.getItemName(), pi.getQty(), pi.getUnitPrice(),
+                        pi.getFreeCare()))
                 .toList();
         String project = items.get(0).getItemName();
         TxnOrder order = buildPendingOrder(p.getCustomerId(), p.getStoreCode(), p.getConsultantId(),
@@ -506,8 +515,10 @@ public class ConsultPlanService {
         for (PlanItem pi : items) {
             int qty = pi.getQty() == null || pi.getQty() < 1 ? 1 : pi.getQty();
             long price = pi.getUnitPrice() == null ? 0L : pi.getUnitPrice();
-            MemberDiscountClient.PricedLine pl =
-                    MemberDiscountClient.priceLine(price, qty, discount.discount());
+            // 免费护理豁免行（棒⑤卡3 L161）：方案子项 free_care=true → 本行净额归 0、豁免额记 discountAmount
+            MemberDiscountClient.PricedLine pl = Boolean.TRUE.equals(pi.getFreeCare())
+                    ? MemberDiscountClient.freeCareLine(price, qty, discount.discount())
+                    : MemberDiscountClient.priceLine(price, qty, discount.discount());
             OrderItem oi = new OrderItem();
             oi.setOrderNo(order.getOrderNo());
             oi.setLineNo(ln++);
@@ -554,6 +565,11 @@ public class ConsultPlanService {
                         + ",\"memberLevel\":\"" + esc(order.getMemberLevel()) + "\""
                         + ",\"memberDiscount\":" + order.getMemberDiscount()
                         + ",\"items\":" + items.size() + "}");
+        // ---- 免费护理订单级扣次（棒⑤卡3 L161，先扣后生）：本地落库完成后、事务提交前调用；
+        // customer 侧 order_no 幂等锚＋行锁扣次（重复签署由方法头 orderNo 短路，走不到这里）----
+        benefitClient.consumeForOrder(p.getCustomerId(), order.getOrderNo(),
+                items.stream().filter(pi -> Boolean.TRUE.equals(pi.getFreeCare()))
+                        .map(pi -> pi.getItemName().trim()).distinct().toList());
         return orderView(order.getOrderNo());
     }
 
@@ -587,8 +603,10 @@ public class ConsultPlanService {
         for (M4FlowController.OrderItemCmd it : cmd.items()) {
             int qty = it.qty() == null || it.qty() < 1 ? 1 : it.qty();
             long price = it.unitPrice() == null || it.unitPrice() < 0 ? 0L : it.unitPrice();
-            MemberDiscountClient.PricedLine pl =
-                    MemberDiscountClient.priceLine(price, qty, discount.discount());
+            // 免费护理豁免行（棒⑤卡3 L161）：请求行 freeCare=true → 本行净额归 0、豁免额记 discountAmount
+            MemberDiscountClient.PricedLine pl = Boolean.TRUE.equals(it.freeCare())
+                    ? MemberDiscountClient.freeCareLine(price, qty, discount.discount())
+                    : MemberDiscountClient.priceLine(price, qty, discount.discount());
             OrderItem oi = new OrderItem();
             oi.setOrderNo(order.getOrderNo());
             oi.setLineNo(ln++);
@@ -609,6 +627,10 @@ public class ConsultPlanService {
                         + ",\"memberLevel\":\"" + esc(order.getMemberLevel()) + "\""
                         + ",\"memberDiscount\":" + order.getMemberDiscount()
                         + ",\"items\":" + cmd.items().size() + "}");
+        // ---- 免费护理订单级扣次（棒⑤卡3 L161，先扣后生）：同上，4xx/5xx/断连整笔回滚不落单 ----
+        benefitClient.consumeForOrder(cmd.customerId(), order.getOrderNo(),
+                cmd.items().stream().filter(it -> Boolean.TRUE.equals(it.freeCare()))
+                        .map(it -> it.itemName().trim()).distinct().toList());
         return orderView(order.getOrderNo());
     }
 
@@ -873,7 +895,7 @@ public class ConsultPlanService {
         List<PlanItem> items = itemRepo.findByPlanIdOrderByLineNoAsc(p.getPlanId());
         List<PlanItemView> itemViews = items.stream()
                 .map(pi -> new PlanItemView(pi.getItemCode(), pi.getItemName(), pi.getSpec(),
-                        pi.getQty(), pi.getUnitPrice(), pi.getAmount(), pi.getRiskTags()))
+                        pi.getQty(), pi.getUnitPrice(), pi.getAmount(), pi.getRiskTags(), pi.getFreeCare()))
                 .toList();
         List<PlanRevision> revs = revRepo.findByPlanIdOrderByRevIdAsc(p.getPlanId());
         List<RevisionView> revViews = revs.stream()
@@ -937,8 +959,10 @@ public class ConsultPlanService {
         for (M4FlowController.OrderItemCmd it : items) {
             int qty = it.qty() == null || it.qty() < 1 ? 1 : it.qty();
             long price = it.unitPrice() == null || it.unitPrice() < 0 ? 0L : it.unitPrice();
-            MemberDiscountClient.PricedLine pl =
-                    MemberDiscountClient.priceLine(price, qty, discount.discount());
+            // 免费护理豁免行（棒⑤卡3 L161）：豁免口径与落库循环一致，保证订单总额=行明细合计
+            MemberDiscountClient.PricedLine pl = Boolean.TRUE.equals(it.freeCare())
+                    ? MemberDiscountClient.freeCareLine(price, qty, discount.discount())
+                    : MemberDiscountClient.priceLine(price, qty, discount.discount());
             originalTotal += pl.originalAmount();
             netTotal += pl.netAmount();
         }

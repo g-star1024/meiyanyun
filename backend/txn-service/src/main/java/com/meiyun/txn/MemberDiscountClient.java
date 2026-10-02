@@ -28,6 +28,10 @@ import java.util.Map;
  * → 透传其状态码与中文 message（开单事务回滚）；网络异常 / 5xx → 502 中文（同样回滚，
  * 杜绝「取不到折扣却按原价/无折扣成交」）。客户不存在/等级缺失由 customer 侧兜底 普通/NORMAL/1.00，
  * 本端不做静默兜底（只在响应体异常缺字段时回 1.00，属数据契约防御）。
+ *
+ * <p>免费护理豁免行（棒⑤卡3 L161）：开单请求行带 freeCare=true 时走 {@link #freeCareLine} ——
+ * 先按会员折扣率折后计价，再把本行净额归 0（折后行小计记入 discountAmount 作豁免额）；
+ * 折前行小计保留，整单「折前合计−折后合计=会员折让＋免费护理豁免」勾稽不破。
  */
 @Component
 public class MemberDiscountClient {
@@ -164,6 +168,16 @@ public class MemberDiscountClient {
         long netLine = netUnit * safeQty;
         return new PricedLine(originalUnitPrice, netUnit, safeQty, originalLine, netLine,
                 originalLine - netLine);
+    }
+
+    /**
+     * 免费护理豁免行计价（棒⑤卡3 L161，与 priceLine 同入口的三处开单循环共用）：折后计价先行，
+     * 命中行折后单价/折后行小计归 0，豁免额（=折后行小计）记入 discountAmount；
+     * originalAmount 保留折前行小计，订单「折前−折后=优惠合计」勾稽与普通行完全一致。
+     */
+    public static PricedLine freeCareLine(long originalUnitPrice, int qty, BigDecimal discount) {
+        PricedLine pl = priceLine(originalUnitPrice, qty, discount);
+        return new PricedLine(originalUnitPrice, 0, pl.qty(), pl.originalAmount(), 0, pl.netAmount());
     }
 
     /** 单行计价结果：折前单价/折后单价/数量/折前行小计/折后行小计/本行优惠（均为分）。 */

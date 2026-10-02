@@ -19,10 +19,11 @@ import java.util.List;
  * {@link GrantService#issueByRule} 发放赠金。与 B25 消费自动积分复用同一事件源
  *（/api/txn/internal/paid-orders），但幂等命名空间独立（积分 AUTOPOINTS: vs 赠金 RULE:），互不干扰。
  *
- * <p>规则匹配口径（grant_rule 现有字段，无阶梯）：
+ * <p>规则匹配口径（grant_rule 现有字段，满赠阶梯=零 DDL 匹配语义，棒⑤卡3 L44 升级）：
  * <ul>
- *   <li>仅 status=ENABLED 且 grantType=CONSUME_THRESHOLD 参与，按 priority 升序，<b>单笔订单命中首条即止</b>
- *       （优先级即赠金力度次序，一单不叠加多档赠金）；</li>
+ *   <li>仅 status=ENABLED 且 grantType=CONSUME_THRESHOLD 参与；<b>达标规则中 thresholdFen 最高者命中</b>
+ *       （满赠阶梯：订单额够到更高门槛档时按高档发，力度更大；同门槛并列时按 priority 升序取先），
+ *       <b>单笔订单命中一档即止</b>（一单不叠加多档赠金）；</li>
  *   <li>门槛：order.amount(分) ≥ rule.thresholdFen；</li>
  *   <li>门店：applicableStores 空串=全部门店，否则逗号串须包含订单 storeCode。</li>
  * </ul>
@@ -135,15 +136,21 @@ public class AutoGrantService {
     }
 
     /**
-     * 按 priority 升序返回首条命中规则：门槛达标且门店在适用范围内；无命中返回 null。
+     * 满赠阶梯命中：达标（门槛+门店）规则中 thresholdFen 最高者胜出，同门槛按 priority 升序取先；
+     * 一单只命中一档，无命中返回 null。
      */
     private GrantRule matchRule(List<GrantRule> rules, TxnInternalClient.PaidOrder o) {
+        GrantRule best = null;
         for (GrantRule r : rules) {
             if (o.amount() < r.getThresholdFen()) continue;
             if (!storeMatches(r.getApplicableStores(), o.storeCode())) continue;
-            return r;
+            if (best == null
+                    || r.getThresholdFen() > best.getThresholdFen()
+                    || (r.getThresholdFen().equals(best.getThresholdFen()) && r.getPriority() < best.getPriority())) {
+                best = r;
+            }
         }
-        return null;
+        return best;
     }
 
     /** 适用门店为空串/空白=全部门店；否则逗号串须精确包含订单门店码（订单无门店码则限定类规则不命中）。 */

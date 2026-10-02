@@ -117,7 +117,7 @@ class AutoGrantServiceTest {
     }
 
     @Test
-    void first_matching_rule_by_priority_wins_and_single_order_gets_one_grant() {
+    void same_threshold_tie_broken_by_priority_and_single_order_gets_one_grant() {
         GrantRule low = rule("GRT-LOW", 5_000L, 1_000L, 10, "");
         GrantRule high = rule("GRT-HIGH", 5_000L, 5_000L, 1, "");
         when(ruleRepo.findByStatusOrderByPriorityAsc("ENABLED")).thenReturn(List.of(high, low));
@@ -129,6 +129,58 @@ class AutoGrantServiceTest {
 
         verify(grantService).issueByRule(eq("M0002"), eq(high), eq("OD003"));
         verify(grantService, never()).issueByRule(eq("M0002"), eq(low), eq("OD003"));
+    }
+
+    // ==================== 满赠阶梯（棒⑤卡3 L44：达标档中 threshold 最高者命中） ====================
+
+    @Test
+    void highest_qualified_tier_wins_regardless_of_priority() {
+        // 低档 priority 更高但门槛低；订单额够到高档 → 新语义必须命中高档
+        GrantRule lowTier = rule("GRT-T1", 5_000L, 1_000L, 1, "");
+        GrantRule highTier = rule("GRT-T2", 10_000L, 5_000L, 100, "");
+        when(ruleRepo.findByStatusOrderByPriorityAsc("ENABLED")).thenReturn(List.of(lowTier, highTier));
+        when(txnClient.fetchPaidOrders(anyString(), anyString()))
+                .thenReturn(List.of(order("OD020", "M0020", "ST-BJ-001", 12_000L, "SERVICE")));
+        when(grantRepo.existsBySourceBizRef("OD020")).thenReturn(false);
+
+        AutoGrantService.ScanResult res = service.scan();
+
+        assertEquals(1, res.granted());
+        verify(grantService).issueByRule(eq("M0020"), eq(highTier), eq("OD020"));
+        verify(grantService, never()).issueByRule(eq("M0020"), eq(lowTier), eq("OD020"));
+    }
+
+    @Test
+    void only_lower_tier_grants_when_high_tier_threshold_not_reached() {
+        GrantRule lowTier = rule("GRT-T1", 5_000L, 1_000L, 1, "");
+        GrantRule highTier = rule("GRT-T2", 10_000L, 5_000L, 100, "");
+        when(ruleRepo.findByStatusOrderByPriorityAsc("ENABLED")).thenReturn(List.of(lowTier, highTier));
+        when(txnClient.fetchPaidOrders(anyString(), anyString()))
+                .thenReturn(List.of(order("OD021", "M0021", "ST-BJ-001", 8_000L, "SERVICE")));
+        when(grantRepo.existsBySourceBizRef("OD021")).thenReturn(false);
+
+        AutoGrantService.ScanResult res = service.scan();
+
+        assertEquals(1, res.granted());
+        verify(grantService).issueByRule(eq("M0021"), eq(lowTier), eq("OD021"));
+        verify(grantService, never()).issueByRule(eq("M0021"), eq(highTier), eq("OD021"));
+    }
+
+    @Test
+    void tier_restricted_to_other_store_falls_back_to_qualified_lower_tier() {
+        // 高档限定上海门店，北京单够额但门店不匹配 → 落回全部门店低档
+        GrantRule lowTier = rule("GRT-T1", 5_000L, 1_000L, 1, "");
+        GrantRule shTier = rule("GRT-T3", 10_000L, 9_000L, 100, "ST-SH-001");
+        when(ruleRepo.findByStatusOrderByPriorityAsc("ENABLED")).thenReturn(List.of(lowTier, shTier));
+        when(txnClient.fetchPaidOrders(anyString(), anyString()))
+                .thenReturn(List.of(order("OD022", "M0022", "ST-BJ-001", 12_000L, "SERVICE")));
+        when(grantRepo.existsBySourceBizRef("OD022")).thenReturn(false);
+
+        AutoGrantService.ScanResult res = service.scan();
+
+        assertEquals(1, res.granted());
+        verify(grantService).issueByRule(eq("M0022"), eq(lowTier), eq("OD022"));
+        verify(grantService, never()).issueByRule(eq("M0022"), eq(shTier), eq("OD022"));
     }
 
     // ==================== 排除与去重 ====================

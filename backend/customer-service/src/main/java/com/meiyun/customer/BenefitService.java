@@ -14,6 +14,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -30,6 +31,9 @@ import java.util.regex.Pattern;
  * <p>核销写链路（D5/D9）：参数中文 400→client_request_id 幂等重放返既有（不重复扣次、不重复审计）→
  * 无钱包 NO_WALLET→剩余≤0 EXHAUSTED→行锁扣次 OK；异常落流水 ok=false 不抛 400
  * （仿 CouponWriteoffService.saveAbnormal），全动作 BENEFIT/WRITEOFF 审计（payload 含 before/after 剩余次数）。
+ *
+ * <p>订单级核销（棒⑤卡3 L161，txn 计价免单联动）：order_no 列幂等锚重放返既有零副作用；
+ * 与 UI 手核销差异——无钱包/次数不足抛 422 中文整笔回滚（不落异常流水），txn 侧透传后整笔订单回滚。
  */
 @Service
 public class BenefitService {
@@ -152,6 +156,79 @@ public class BenefitService {
                         + "\",\"status\":\"OK\",\"remainingBefore\":" + remaining
                         + ",\"remainingAfter\":" + (remaining - 1) + "}");
         return new WriteoffResult(true, flow.getWriteoffNo(), "OK", null, remaining - 1);
+    }
+
+    // ---- 订单级核销（棒⑤卡3 L161：txn 计价订单免费护理免单联动，internal:benefit-write 门槛） ----
+
+    /**
+     * 订单级免费护理核销：一单多项目行锁内整笔扣次，order_no 列为订单级幂等锚。
+     * 重放（网络重试/重复提交）返既有流水零副作用；无钱包/任一项目次数不足抛 422 中文，
+     * @Transactional 整笔回滚（已扣项目一并回滚、不落异常流水），txn 侧透传后整笔订单回滚。
+     * client_request_id 以 ORD-{orderNo}-{序号} 派生填充 UK 列（订单内唯一，并发撞行兜底 409）。
+     */
+    @Transactional
+    public List<WriteoffResult> writeoffForOrder(Customer customer, String orderNo, List<String> projectNames) {
+        String order = orderNo == null ? "" : orderNo.trim();
+        if (order.isEmpty()) throw new CustomerService.BadReq("订单号必填");
+        if (order.length() > 24) throw new CustomerService.BadReq("订单号须 ≤24 字");
+        if (projectNames == null || projectNames.isEmpty()) {
+            throw new CustomerService.BadReq("护理项目列表不能为空");
+        }
+        List<String> projects = new ArrayList<>();
+        for (String raw : projectNames) {
+            String p = raw == null ? "" : raw.trim();
+            if (p.isEmpty()) throw new CustomerService.BadReq("护理项目名必填");
+            if (p.length() > PROJECT_NAME_MAX) throw new CustomerService.BadReq("护理项目名须 ≤40 字");
+            projects.add(p);
+        }
+        if (customer.getMergedInto() != null) {
+            throw new CustomerService.BadReq("客户档案已合并，请在主档案 " + customer.getMergedInto() + " 下核销");
+        }
+
+        // 订单级幂等重放：同 orderNo 直接返既有流水（不重复扣次、不重复审计，与 clientRequestId 重放同口径）
+        List<MemberBenefitWriteoff> existing = writeoffRepo.findByOrderNoOrderByWriteoffIdAsc(order);
+        if (!existing.isEmpty()) {
+            return existing.stream().map(this::replayResult).toList();
+        }
+
+        String period = currentPeriod();
+        String operator = actor();
+        String storeCode = storeCodeOf(customer);
+        String storeName = storeCode == null ? null
+                : nameResolver.storeNames(List.of(storeCode)).get(storeCode);
+
+        MemberBenefitWallet wallet = getOrCreateWallet(customer, period, quotaOf(customer.getLevel()));
+        if (wallet == null) {
+            throw new CustomerService.Unprocessable("当前等级无免费护理权益");
+        }
+
+        // 行锁扣次：FOR UPDATE 串行化并发核销；锁内逐项目复核剩余，任一不足抛 422 整笔回滚
+        MemberBenefitWallet locked = walletRepo.findForUpdate(wallet.getWalletId())
+                .orElseThrow(() -> new CustomerService.NotFound("权益钱包不存在: " + wallet.getWalletId()));
+        List<WriteoffResult> results = new ArrayList<>();
+        int seq = 0;
+        for (String project : projects) {
+            int remaining = locked.getTotalTimes() - locked.getUsedTimes();
+            if (remaining <= 0) {
+                throw new CustomerService.Unprocessable("免费护理次数不足：项目「" + project
+                        + "」本期 " + locked.getTotalTimes() + " 次已用完");
+            }
+            locked.setUsedTimes(locked.getUsedTimes() + 1);
+            seq++;
+            MemberBenefitWriteoff flow = newFlow(customer, period, FREE_CARE, project,
+                    "ORD-" + order + "-" + seq, operator, storeCode, storeName, "OK", null,
+                    locked.getLevelSnap());
+            flow.setOrderNo(order);
+            flow = writeoffRepo.saveAndFlush(flow);
+            audit.record("BENEFIT", flow.getWriteoffNo(), operator, "WRITEOFF",
+                    "{\"customerId\":\"" + esc(customer.getCustomerId()) + "\",\"benefitType\":\"" + FREE_CARE
+                            + "\",\"period\":\"" + esc(period) + "\",\"projectName\":\"" + esc(project)
+                            + "\",\"orderNo\":\"" + esc(order) + "\",\"status\":\"OK\",\"remainingBefore\":"
+                            + remaining + ",\"remainingAfter\":" + (remaining - 1) + "}");
+            results.add(new WriteoffResult(true, flow.getWriteoffNo(), "OK", null, remaining - 1));
+        }
+        walletRepo.save(locked);
+        return results;
     }
 
     /**

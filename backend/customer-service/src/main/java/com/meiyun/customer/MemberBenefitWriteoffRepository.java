@@ -13,6 +13,9 @@ public interface MemberBenefitWriteoffRepository extends JpaRepository<MemberBen
     /** 幂等反查：client_request_id 命中返既有流水，重复提交/双击/重放不重复扣次。 */
     Optional<MemberBenefitWriteoff> findByClientRequestId(String clientRequestId);
 
+    /** 订单级幂等反查（棒⑤卡3 L161）：同 orderNo 重放返既有流水（一单多项目→多行，按主键升序回原顺序）。 */
+    List<MemberBenefitWriteoff> findByOrderNoOrderByWriteoffIdAsc(String orderNo);
+
     /** 360 读模型：客户核销流水倒序（近 20 条，Pageable 截断）。 */
     List<MemberBenefitWriteoff> findByCustomerIdOrderByWriteoffIdDesc(String customerId, Pageable pageable);
 

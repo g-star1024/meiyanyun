@@ -57,6 +57,7 @@ public class M4FlowController {
     private final CustomerCardClient customerCardClient;
     private final MarketingGrantClient grantClient;
     private final MemberDiscountClient memberDiscountClient;
+    private final BenefitClient benefitClient;
 
     public M4FlowController(ConsultationRepository consultRepo, TxnOrderRepository orderRepo,
                             OrderItemRepository itemRepo,
@@ -65,7 +66,7 @@ public class M4FlowController {
                             ConsultPlanService planService, OrderNoGenerator orderNoGen,
                             PaymentService paymentService, FinanceEventPublisher financeEvents,
                             CustomerCardClient customerCardClient, MarketingGrantClient grantClient,
-                            MemberDiscountClient memberDiscountClient) {
+                            MemberDiscountClient memberDiscountClient, BenefitClient benefitClient) {
         this.consultRepo = consultRepo;
         this.orderRepo = orderRepo;
         this.itemRepo = itemRepo;
@@ -80,6 +81,7 @@ public class M4FlowController {
         this.customerCardClient = customerCardClient;
         this.grantClient = grantClient;
         this.memberDiscountClient = memberDiscountClient;
+        this.benefitClient = benefitClient;
     }
 
     // ==================== M4-06 客情咨询 ====================
@@ -142,6 +144,8 @@ public class M4FlowController {
         long itemsOriginal = 0L;
         long itemsTotal = 0L;
         List<OrderItem> items = new ArrayList<>();
+        // 免费护理豁免行项目名（棒⑤卡3 L161）：trim 去重后按订单号向 customer 批量扣次
+        List<String> freeCareNames = new ArrayList<>();
         if (cmd.items() != null && !cmd.items().isEmpty()) {
             int line = 1;
             for (OrderItemCmd it : cmd.items()) {
@@ -153,8 +157,15 @@ public class M4FlowController {
                 if (price < 0) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "第 " + line + " 行单价不能为负");
                 }
-                MemberDiscountClient.PricedLine pl =
-                        MemberDiscountClient.priceLine(price, qty, discount.discount());
+                // 免费护理豁免行（棒⑤卡3 L161）：折后计价先行 → 本行净额归 0、豁免额记 discountAmount
+                boolean freeCare = Boolean.TRUE.equals(it.freeCare());
+                MemberDiscountClient.PricedLine pl = freeCare
+                        ? MemberDiscountClient.freeCareLine(price, qty, discount.discount())
+                        : MemberDiscountClient.priceLine(price, qty, discount.discount());
+                if (freeCare) {
+                    String pn = it.itemName().trim();
+                    if (!freeCareNames.contains(pn)) freeCareNames.add(pn);
+                }
                 itemsOriginal += pl.originalAmount();
                 itemsTotal += pl.netAmount();
                 OrderItem oi = new OrderItem();
@@ -253,6 +264,9 @@ public class M4FlowController {
                         + ",\"memberLevel\":\"" + discount.level() + "\""
                         + ",\"memberDiscount\":" + discount.discount()
                         + ",\"items\":" + items.size() + ",\"contra\":\"" + o.getContraCheck() + "\"}");
+        // ---- 免费护理订单级扣次（棒⑤卡3 L161，先扣后生）：本地校验/落库完成后、事务提交前调用；
+        // customer 侧 order_no 幂等锚＋行锁扣次，4xx/5xx/断连一律回滚本事务、不落单 ----
+        benefitClient.consumeForOrder(cmd.customerId(), o.getOrderNo(), freeCareNames);
         return toOrderView(o, items);
     }
 
@@ -765,7 +779,12 @@ public class M4FlowController {
             /** 成交时折扣率快照（如 0.95）。 */
             BigDecimal memberDiscount) {}
 
-    public record OrderItemCmd(String itemName, Integer qty, Long unitPrice) {}
+    /**
+     * 收费子项入参。freeCare（棒⑤卡3 L161，可选）：true=本行走免费护理免单（先按会员折后计价、
+     * 再把本行净额归 0，豁免额记 discountAmount；开单提交前按订单号向 customer 批量扣次，
+     * 次数不足/无权益 422 整笔回滚不落单）；缺省 null=false，历史请求零改动兼容。
+     */
+    public record OrderItemCmd(String itemName, Integer qty, Long unitPrice, Boolean freeCare) {}
 
     public record ConsultCmd(
             @NotBlank String customerId, String storeCode,
