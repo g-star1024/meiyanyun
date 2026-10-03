@@ -60,16 +60,19 @@ public class ComplaintService {
     private final M3SettingsService m3SettingsService;
     private final MarketingFollowTaskClient followTaskClient;
     private final RefNameResolver nameResolver;
+    private final CustomerRepository customerRepository;
 
     public ComplaintService(ComplaintRepository complaintRepository, ComplaintLogRepository logRepository,
                             AuditRecorder audit, M3SettingsService m3SettingsService,
-                            MarketingFollowTaskClient followTaskClient, RefNameResolver nameResolver) {
+                            MarketingFollowTaskClient followTaskClient, RefNameResolver nameResolver,
+                            CustomerRepository customerRepository) {
         this.complaintRepository = complaintRepository;
         this.logRepository = logRepository;
         this.audit = audit;
         this.m3SettingsService = m3SettingsService;
         this.followTaskClient = followTaskClient;
         this.nameResolver = nameResolver;
+        this.customerRepository = customerRepository;
     }
 
     /** 时间线条目（与前端 {at,by,action,note?} 契约一致；note 为空序列化为 null）。 */
@@ -105,11 +108,17 @@ public class ComplaintService {
                 .toList();
     }
 
-    /** 登记投诉：描述/姓名必填＋词表校验；单号 TS+yyyyMMdd-3位；签署层级统算；落 CREATE 审计＋跟进联动。 */
+    /** 登记投诉：客户编号非空＋customer 表存在性校验（纵深防御，拒 ''/'C-NEW' 硬编码透写）；描述/姓名必填＋词表校验；单号 TS+yyyyMMdd-3位；签署层级统算；落 CREATE 审计＋跟进联动。 */
     @Transactional
     public ComplaintView create(String customerId, String customerName, String source, String severity,
                                 String category, Boolean medicalRisk, String description,
                                 String relatedOrderNo, Double compensationYuan) {
+        if (customerId == null || customerId.isBlank()) {
+            throw new BadReq("客户编号必填，请检索选择真实客户");
+        }
+        if (!customerRepository.existsById(customerId.trim())) {
+            throw new BadReq("客户不存在，请检索选择真实客户");
+        }
         if (customerName == null || customerName.isBlank()) {
             throw new BadReq("客户姓名必填");
         }
@@ -134,7 +143,7 @@ public class ComplaintService {
         String storeCode = u == null ? null : u.storeCode();
         Complaint c = new Complaint();
         c.setComplaintNo(nextComplaintNo());
-        c.setCustomerId(customerId == null || customerId.isBlank() ? null : customerId.trim());
+        c.setCustomerId(customerId.trim());
         c.setCustomerName(customerName.trim());
         c.setSource(source);
         c.setSeverity(severity);

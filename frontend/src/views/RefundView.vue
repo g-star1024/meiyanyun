@@ -9,6 +9,8 @@
  *   冷静期内全额 / 期后扣违约金；金额按分计算与 ContractPenaltyJudge 逐分一致，
  *   提交 refundAmt=已付−违约金，否则后端 400）；支持合同页 ?contractNo= 跳转预选；
  *   详情展示判定时点合同快照块（旧单无快照不渲染）。
+ * 棒⑥卡3：客户选择器接真（照棒④卡2 客诉范式 searchCustomers 检索→选中回填 customerId，
+ *   canSubmit 增 customerId 必选门禁）消灭未挂合同 'C-NEW' 兜底硬编码；挂合同即锁定合同客户。
  * ============================================================ */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -31,6 +33,7 @@ import {
   approveTxn, rejectTxn, confirmTxn,
   type RefundDTO, type CardCancelDTO,
 } from '@/api/refund'
+import { searchCustomers, type CustomerDTO } from '@/api/customer'
 import { REFUND_STATUS, REFUND_CHANNEL, dictPill, type RefundChannel } from '@/config/dictionary'
 
 const auth = useAuthStore()
@@ -292,7 +295,9 @@ function doConfirmRefund() {
 const showForm = ref(false)
 const form = ref({
   kind: 'ORDER' as RefundKind,
+  customerId: '',
   customerName: '',
+  customerKeyword: '',
   project: '',
   paidAmount: '',
   refundAmount: '',
@@ -328,11 +333,47 @@ const contractEstimate = computed(() => {
 watch(contractEstimate, (est) => {
   if (est && selectedContract.value) form.value.refundAmount = est.refundYuan.toFixed(2)
 })
+// 客户检索接真（棒⑥卡3 照棒④卡2 客诉范式）：未挂合同时强制检索选择真实客户，杜绝 'C-NEW' 兜底
+const customerHits = ref<CustomerDTO[]>([])
+const searching = ref(false)
+async function searchCustomer() {
+  const kw = form.value.customerKeyword.trim()
+  if (!kw) { customerHits.value = []; return }
+  searching.value = true
+  try {
+    const res = await searchCustomers(kw)
+    customerHits.value = res.data ?? []
+    if (!customerHits.value.length) toast.info('未检索到客户，请先建档或更换关键字')
+  } catch (e: any) {
+    toast.error('客户检索失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
+  } finally {
+    searching.value = false
+  }
+}
+function pickCustomer(c: CustomerDTO) {
+  form.value.customerId = c.customerId
+  form.value.customerName = c.name
+  form.value.customerKeyword = `${c.name}（${c.customerId}）`
+  customerHits.value = []
+}
+// 合同联动：挂合同即锁定合同客户（退款主体=合同客户），摘合同清空强制重新检索选择
+watch(selectedContract, (c) => {
+  if (c) {
+    form.value.customerId = c.customerId
+    form.value.customerName = c.customerName
+    form.value.customerKeyword = `${c.customerName}（${c.customerId}）`
+    customerHits.value = []
+  } else {
+    form.value.customerId = ''
+    form.value.customerKeyword = ''
+  }
+})
 // 详情快照块（判定时点留存；旧单无快照回退 null 不渲染）
 const selectedSnapshot = computed(() => parseContractSnapshot(selected.value?.contractSnapshot))
 
 const canSubmit = computed(
   () =>
+    form.value.customerId &&
     form.value.customerName.trim() &&
     form.value.project.trim() &&
     form.value.reason.trim() &&
@@ -344,7 +385,7 @@ async function submitForm() {
   if (!canSubmit.value) return
   const r = await refund.create({
     kind: form.value.kind,
-    customerId: selectedContract.value?.customerId || 'C-NEW',
+    customerId: form.value.customerId,
     customerName: form.value.customerName.trim(),
     project: form.value.project.trim(),
     paidAmount: paidNum.value,
@@ -355,7 +396,8 @@ async function submitForm() {
   })
   if (r) {
     showForm.value = false
-    form.value = { kind: 'ORDER', customerName: '', project: '', paidAmount: '', refundAmount: '', channel: 'ORIGINAL', reason: '', contractNo: '' }
+    form.value = { kind: 'ORDER', customerId: '', customerName: '', customerKeyword: '', project: '', paidAmount: '', refundAmount: '', channel: 'ORIGINAL', reason: '', contractNo: '' }
+    customerHits.value = []
     selectedId.value = r.id
     tab.value = r.status === 'PENDING_REVIEW' ? 'pending_review' : 'pending_finance'
   }
@@ -534,8 +576,24 @@ async function submitForm() {
             </template>
           </div>
           <div class="form__row">
-            <label class="form__label">客户姓名</label>
-            <CInput v-model="form.customerName" placeholder="如：王美丽" />
+            <label class="form__label">客户 <span class="req">*</span></label>
+            <div class="pick">
+              <CInput v-model="form.customerKeyword" :disabled="!!selectedContract"
+                :placeholder="selectedContract ? '客户随关联合同锁定' : '输入客户姓名 / 手机号 / 客户编号后点检索'" />
+              <CButton variant="secondary" :disabled="searching || !!selectedContract" @click="searchCustomer">
+                <CIcon name="customer" :size="16" />检索
+              </CButton>
+            </div>
+            <div v-if="customerHits.length" class="pick__panel">
+              <button
+                v-for="c in customerHits" :key="c.customerId"
+                type="button" class="pick__opt"
+                @click="pickCustomer(c)"
+              >
+                <span class="pick__name">{{ c.name }}</span>
+                <span class="pick__sub">{{ c.customerId }} · {{ c.phone || '无手机号' }} · {{ c.level }}</span>
+              </button>
+            </div>
           </div>
           <div class="form__row">
             <label class="form__label">项目 / 卡项</label>
@@ -663,6 +721,17 @@ async function submitForm() {
 .form__row { display: flex; flex-direction: column; gap: var(--s-xs); }
 .form__row--2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-md); }
 .form__label { font-size: var(--t-xs); color: var(--c-text-3); }
+.req { color: var(--c-danger-fg); }
+.pick { display: flex; gap: var(--s-sm); align-items: center; }
+.pick :deep(.cinput) { flex: 1; }
+.pick__panel {
+  margin-top: var(--s-xs); border: 1px solid var(--c-border); border-radius: var(--r-md);
+  overflow: hidden; background: var(--c-surface); box-shadow: var(--shadow-card); max-height: 220px; overflow-y: auto;
+}
+.pick__opt { display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left; padding: var(--s-sm) var(--s-md); background: none; border: none; border-bottom: 1px solid var(--c-border-light); cursor: pointer; }
+.pick__opt:hover { background: var(--c-brand-soft); }
+.pick__name { font-size: var(--t-sm); font-weight: 600; color: var(--c-text); }
+.pick__sub { font-size: var(--t-xs); color: var(--c-text-3); }
 .form__seg { display: inline-flex; border: 1px solid var(--c-border); border-radius: var(--r-capsule); overflow: hidden; align-self: flex-start; }
 .form__seg button { padding: var(--s-xs) var(--s-md); font-size: var(--t-sm); background: none; border: none; cursor: pointer; color: var(--c-text-2); }
 .form__seg button.form__seg--on { background: var(--c-brand); color: #fff; }
