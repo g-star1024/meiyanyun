@@ -185,6 +185,8 @@ export interface PlanItem {
   price: number
   /** 项目命中的风险标签（禁忌初筛用，如 ANESTHESIA/INJECTION/LASER/PREGNANCY_RISK） */
   riskTags?: string[]
+  /** 免费护理标记（棒⑥卡4 L181）：true=本行免单（折后净额归 0），签病历生成缴费单时按订单号扣免费护理次数 */
+  freeCare?: boolean
 }
 
 /** 面诊禁忌初筛结果（结构化勾选，阳性项硬阻断） */

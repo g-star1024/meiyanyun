@@ -15,12 +15,13 @@ import { useSettingsStore } from '@/stores/settings'
 import { useStoreContext } from '@/stores/storeContext'
 import { useLevelStore } from '@/stores/level'
 import { useToast } from '@/composables/useToast'
-import { listCustomers, type CustomerDTO } from '@/api/customer'
+import { listCustomers, getCustomerBenefits, type CustomerDTO, type BenefitWalletDTO } from '@/api/customer'
 import { createRetailOrder } from '@/api/order'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
+import CCheckbox from '@/components/CCheckbox.vue'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -87,6 +88,27 @@ function selectCustomer(id: string) {
   selectedCustomer.value = matchedCustomers.value.find((c) => c.id === id) || null
 }
 
+// 免费护理勾选门控（棒⑥卡4 L181）：FREE_CARE 当月钱包剩余次数>0 才允许勾选，勾选行数不超剩余次数
+const freeCareWallets = ref<BenefitWalletDTO[]>([])
+async function refreshFreeCareWallets(id: string) {
+  freeCareWallets.value = []
+  if (!id) return
+  try {
+    const res = await getCustomerBenefits(id)
+    freeCareWallets.value = res.data.wallets || []
+  } catch {
+    freeCareWallets.value = []
+  }
+}
+watch(selectedCustomerId, (id) => { void refreshFreeCareWallets(id) }, { immediate: true })
+const freeCareWallet = computed(() => freeCareWallets.value.find((w) => w.benefitType === 'FREE_CARE'))
+const freeCareRemaining = computed(() => freeCareWallet.value?.remaining ?? 0)
+const freeCareCheckedCount = computed(() => items.value.filter((i) => i.freeCare).length)
+function freeCareCheckDisabled(i: { freeCare?: boolean }): boolean {
+  if (i.freeCare) return false
+  return freeCareRemaining.value <= 0 || freeCareCheckedCount.value >= freeCareRemaining.value
+}
+
 /** 散客卡：引导先去客情登记建档（不做匿名假单） */
 function onWalkin() {
   toast.warning('零售 / 药妆开单要求客户为建档客户，散客请先到「客情登记」建档后再开单')
@@ -121,7 +143,7 @@ const catalog = computed(() =>
 )
 
 // ---- 已选明细 ----
-const items = ref<(OrderItem & { uid: string; category: string })[]>([])
+const items = ref<(OrderItem & { uid: string; category: string; freeCare?: boolean })[]>([])
 function addItem(c: CatalogItem) {
   const exist = items.value.find((i) => i.name === c.name && i.spec === c.spec)
   if (exist) {
@@ -157,7 +179,7 @@ const totalFen = computed(() =>
   items.value.reduce((s, i) => s + Math.round(i.price * 100) * i.qty, 0))
 const netTotalFen = computed(() =>
   items.value.reduce((s, i) =>
-    s + levelStore.netFen(Math.round(i.price * 100), discountLevel.value, i.qty), 0))
+    s + (i.freeCare ? 0 : levelStore.netFen(Math.round(i.price * 100), discountLevel.value, i.qty)), 0))
 const total = computed(() => totalFen.value / 100)
 const netTotal = computed(() => netTotalFen.value / 100)
 const discountAmount = computed(() => Math.max(0, totalFen.value - netTotalFen.value) / 100)
@@ -190,12 +212,14 @@ async function submit() {
         itemName: i.name,
         qty: i.qty,
         unitPrice: Math.round(i.price * 100), // 元 → 分
+        freeCare: i.freeCare || undefined,
       })),
       operator: auth.user.staffId,
     })
     justCreatedNo.value = res.data.orderNo
     toast.success(`零售订单 ${res.data.orderNo} 已生成，进入待收款流程`)
     items.value = []
+    void refreshFreeCareWallets(selectedCustomerId.value)
   } catch (e: any) {
     toast.error('开单失败：' + (e?.response?.data?.message || e?.message || '网络异常'))
   } finally {
@@ -313,13 +337,17 @@ const netMoney = (n: number) =>
                   v-if="hasDiscount" class="price-now"
                 >/{{ netMoney(lineNet(i.price, 1)) }}</span>
               </span>
+              <CCheckbox v-model="i.freeCare" :disabled="!canEdit || freeCareCheckDisabled(i)" class="line__freecare">
+                免费护理<template v-if="freeCareWallet">（剩 {{ freeCareRemaining }} 次）</template>
+              </CCheckbox>
             </div>
             <div class="line__ctrl">
               <button class="qty" :disabled="!canEdit" @click="changeQty(i.uid, -1)">−</button>
               <span class="qty__num">{{ i.qty }}</span>
               <button class="qty" :disabled="!canEdit" @click="changeQty(i.uid, 1)">+</button>
               <span class="line__sum">
-                <template v-if="hasDiscount">
+                <template v-if="i.freeCare"><span class="price-now">免单 ¥0</span></template>
+                <template v-else-if="hasDiscount">
                   <span class="line__old">{{ money(i.qty * i.price) }}</span>{{ netMoney(lineNet(i.price, i.qty)) }}
                 </template>
                 <template v-else>{{ money(i.qty * i.price) }}</template>
@@ -430,6 +458,7 @@ const netMoney = (n: number) =>
 .line__info { display: flex; flex-direction: column; }
 .line__name { font-size: var(--t-sm); font-weight: 500; }
 .line__spec { font-size: var(--t-xs); color: var(--c-text-3); }
+.line__freecare { margin-top: 2px; }
 .line__ctrl { display: flex; align-items: center; gap: var(--s-xs); }
 .qty { width: 26px; height: 26px; border-radius: var(--r-md); border: 1px solid var(--c-border); background: var(--c-surface); cursor: pointer; font-size: var(--t-base); line-height: 1; display: flex; align-items: center; justify-content: center; color: var(--c-text-2); }
 .qty:disabled { opacity: .4; cursor: not-allowed; }

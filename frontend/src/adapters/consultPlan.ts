@@ -57,6 +57,7 @@ export function adaptPlan(dto: PlanViewDTO): Consultation {
     qty: it.qty,
     price: fen2yuan(it.unitPrice),
     riskTags: toRiskTags(it.riskTags),
+    freeCare: it.freeCare ?? false,
   }))
   const revisions: PlanRevision[] = (dto.revisions || []).map((r) => ({
     id: String(r.revId),
@@ -121,6 +122,7 @@ export function toPlanItemCmd(items: PlanItem[]): PlanItemCmd[] {
     qty: it.qty,
     unitPrice: yuan2fen(it.price),
     riskTags: it.riskTags?.length ? it.riskTags.join(',') : undefined,
+    freeCare: it.freeCare || undefined,
   }))
 }
 

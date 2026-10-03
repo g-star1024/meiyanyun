@@ -88,6 +88,8 @@ export interface OrderItemCmd {
   itemName: string
   qty: number
   unitPrice: number // 单价（分）
+  /** 免费护理标记（棒⑥卡4 L181）：true=本行免单并按订单号扣免费护理次数 */
+  freeCare?: boolean
 }
 
 export interface CreateOrderCmd {

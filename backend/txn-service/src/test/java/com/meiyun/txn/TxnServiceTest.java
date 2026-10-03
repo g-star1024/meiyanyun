@@ -50,6 +50,7 @@ class TxnServiceTest {
     @Mock MarketingGrantClient grantClient;
     @Mock ContractPenaltyJudge penaltyJudge;
     @Mock ContractRepository contractRepo;
+    @Mock BenefitClient benefitClient;
 
     FinanceEventPublisher financeEvents;
     TxnService service;
@@ -60,7 +61,7 @@ class TxnServiceTest {
     void setUp() {
         financeEvents = publisherCapturing(new ArrayList<>());
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo, benefitClient);
         lenient().when(refundRepo.save(any(TxnRefund.class))).thenAnswer(i -> i.getArgument(0));
     }
 
@@ -129,7 +130,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo, benefitClient);
         stubRefund(r, List.of(payment("grant", 3000L), payment("balance", 2000L), payment("cash", 5000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -156,7 +157,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo, benefitClient);
         stubRefund(r, List.of(payment("grant", 3000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -173,7 +174,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo, benefitClient);
         stubRefund(r, List.of(payment("cash", 5000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -192,7 +193,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo, benefitClient);
         stubRefund(r, List.of(payment("grant", 3000L), payment("cash", 7000L)));
         doThrow(new ResponseStatusException(HttpStatus.BAD_GATEWAY,
                 "赠金退款回加失败：营销服务暂不可用，请稍后重试（本笔操作已回滚，未扣款未记账）"))
@@ -217,7 +218,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo, benefitClient);
         stubRefund(r, List.of(payment("grant", 50000L), payment("wxpay", 108000L)));
         TxnRefund history = refund("RF20260912-000002", 50000L, "ORIGINAL");
         history.setStatus("REFUNDED");
@@ -246,7 +247,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo, benefitClient);
         stubRefund(r, List.of(payment("grant", 3000L), payment("cash", 7000L)));
         TxnRefund history = refund("RF20260912-000008", 2000L, "ORIGINAL");
         history.setStatus("REFUNDED");
@@ -260,5 +261,32 @@ class TxnServiceTest {
         assertEquals("REFUNDED", r.getStatus());
         verify(grantClient).refund(eq("M0001"), eq(1000L), eq(r.getOrderNo()), eq(r.getTxnNo()), anyString(), anyString());
         assertTrue(events.isEmpty());
+    }
+
+    // ==================== 第四段：免费护理次数返还（棒⑥卡4 L181） ====================
+
+    @Test
+    void confirmRefund_benefitReversalInvokedBeforeRefunded() {
+        TxnRefund r = refund("RF20261003-000001", 5000L, "ORIGINAL");
+        stubRefund(r, List.of(payment("cash", 5000L)));
+        when(benefitClient.refundForOrder(r.getOrderNo())).thenReturn(2);
+
+        service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
+
+        assertEquals("REFUNDED", r.getStatus());
+        verify(benefitClient).refundForOrder("OD20260912-000001");
+    }
+
+    @Test
+    void confirmRefund_benefitReversalFails_wholeRefundNotFinalized() {
+        TxnRefund r = refund("RF20261003-000002", 5000L, "ORIGINAL");
+        stubRefund(r, List.of(payment("cash", 5000L)));
+        doThrow(new ResponseStatusException(HttpStatus.BAD_GATEWAY, "免费护理返还失败：客户服务暂不可用"))
+                .when(benefitClient).refundForOrder(anyString());
+
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class,
+                () -> service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null)));
+        assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatusCode());
+        assertNotEquals("REFUNDED", r.getStatus());
     }
 }

@@ -28,6 +28,8 @@ export interface PlanItemCmd {
   qty: number
   unitPrice: number // 单价（分）
   riskTags?: string
+  /** 免费护理标记（棒⑥卡4 L181）：true=本行免单并按订单号扣免费护理次数 */
+  freeCare?: boolean
 }
 
 export interface ContraCmd {
@@ -48,6 +50,8 @@ export interface PlanItemViewDTO {
   unitPrice: number
   amount: number
   riskTags: string | null
+  /** 免费护理标记回显（棒⑥卡4 L181） */
+  freeCare: boolean | null
 }
 
 export interface PlanRevisionViewDTO {

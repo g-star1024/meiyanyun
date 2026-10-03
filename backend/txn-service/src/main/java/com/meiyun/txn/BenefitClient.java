@@ -84,6 +84,44 @@ public class BenefitClient {
         }
     }
 
+    /**
+     * 订单级免费护理次数返还（棒⑥卡4 L181，退款终审联动）：POST /api/customer/internal/benefits/order-refund。
+     * 该单存在 OK 核销流水即冲正返还（返回本次新冲正行数），无流水/重放零副作用返回 0；
+     * 任何 4xx/5xx/网络异常上抛，由调用方 @Transactional 整笔回滚（退款不终审）。
+     */
+    public int refundForOrder(String orderNo) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("orderNo", orderNo);
+        body.put("reason", "退款终审返还");
+        try {
+            String json = restTemplate.postForEntity(customerBaseUrl + "/api/customer/internal/benefits/order-refund",
+                    new HttpEntity<>(body, headers), String.class).getBody();
+            if (json != null && json.contains("\"reversedCount\"")) {
+                return MAPPER.readTree(json).path("reversedCount").asInt(0);
+            }
+            return 0;
+        } catch (HttpStatusCodeException e) {
+            int status = e.getStatusCode().value();
+            if (status >= 400 && status < 500) {
+                log.info("免费护理返还 customer 拒绝 status={} body={}", status, e.getResponseBodyAsString());
+                throw new ResponseStatusException(HttpStatus.valueOf(status),
+                        extractMessage(e.getResponseBodyAsString()));
+            }
+            log.error("免费护理返还 customer 服务端错误 status={}", status);
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "免费护理返还失败：客户服务暂不可用，请稍后重试（本笔操作已回滚，退款未终审）");
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("免费护理返还 customer 调用异常: {}", e.getMessage());
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY,
+                    "免费护理返还失败：无法连接客户服务，请稍后重试（本笔操作已回滚，退款未终审）");
+        }
+    }
+
     /** 从 customer 错误体 {"code":"...","message":"中文"} 提取中文原因；解析失败回落通用文案。 */
     private static String extractMessage(String body) {
         if (body != null && body.contains("\"message\"")) {

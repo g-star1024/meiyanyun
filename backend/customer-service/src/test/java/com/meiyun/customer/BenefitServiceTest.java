@@ -208,4 +208,111 @@ class BenefitServiceTest {
         assertTrue(ex.getMessage().contains("已合并"));
         verify(writeoffRepo, never()).saveAndFlush(any());
     }
+
+    // ==================== 订单级返还（棒⑥卡4 L181） ====================
+
+    @Test
+    void reverseForOrder_ok_reversesAllPositiveFlowsAndCreditsWallet() {
+        MemberBenefitWallet w = wallet(2, 2);
+        when(writeoffRepo.findByOrderNoOrderByWriteoffIdAsc("OD20261003-000001"))
+                .thenReturn(List.of(flow("BW20261003-000001", "OD20261003-000001", "补水护理"),
+                        flow("BW20261003-000002", "OD20261003-000001", "舒缓护理")));
+        when(writeoffRepo.findByClientRequestId(anyString())).thenReturn(Optional.empty());
+        when(walletRepo.findByCustomerIdAndPeriodAndBenefitType("M0001", BenefitService.currentPeriod(),
+                BenefitService.FREE_CARE)).thenReturn(Optional.of(w));
+        when(walletRepo.findForUpdate(9L)).thenReturn(Optional.of(w));
+        when(writeoffRepo.maxSeqOfDay(anyString())).thenReturn(10L, 11L);
+        when(writeoffRepo.saveAndFlush(any(MemberBenefitWriteoff.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        BenefitService.ReverseResult r = service.reverseForOrder("OD20261003-000001", "退款终审返还");
+
+        assertTrue(r.ok());
+        assertEquals(2, r.reversedCount());
+        assertEquals(2, r.writeoffNos().size());
+        assertNotEquals(r.writeoffNos().get(0), r.writeoffNos().get(1));
+        assertEquals(0, w.getUsedTimes());
+        assertEquals(2, r.remaining());
+
+        ArgumentCaptor<MemberBenefitWriteoff> captor = ArgumentCaptor.forClass(MemberBenefitWriteoff.class);
+        verify(writeoffRepo, times(2)).saveAndFlush(captor.capture());
+        List<MemberBenefitWriteoff> saved = captor.getAllValues();
+        assertEquals("REVERSED", saved.get(0).getStatus());
+        assertEquals("RFD-OD20261003-000001-1", saved.get(0).getClientRequestId());
+        assertEquals("RFD-OD20261003-000001-2", saved.get(1).getClientRequestId());
+        assertEquals("补水护理", saved.get(0).getProjectName());
+        assertEquals("舒缓护理", saved.get(1).getProjectName());
+        assertEquals("OD20261003-000001", saved.get(0).getOrderNo());
+        assertEquals("退款终审返还", saved.get(0).getReason());
+        assertTrue(saved.get(0).getWriteoffNo().startsWith("BW"));
+        verify(audit, times(2)).record(eq("BENEFIT"), anyString(), eq("system"), eq("REVERSE"),
+                contains("OD20261003-000001"));
+        verify(walletRepo, times(2)).save(w);
+    }
+
+    @Test
+    void reverseForOrder_noFlows_returnsZeroSideEffects() {
+        when(writeoffRepo.findByOrderNoOrderByWriteoffIdAsc("OD20261003-000002"))
+                .thenReturn(List.of());
+
+        BenefitService.ReverseResult r = service.reverseForOrder("OD20261003-000002", null);
+
+        assertTrue(r.ok());
+        assertEquals(0, r.reversedCount());
+        assertTrue(r.writeoffNos().isEmpty());
+        assertNull(r.remaining());
+        verify(walletRepo, never()).findForUpdate(any());
+        verify(writeoffRepo, never()).saveAndFlush(any());
+        verify(audit, never()).record(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void reverseForOrder_alreadyReversed_skipsWithoutDoubleCredit() {
+        MemberBenefitWriteoff dup = new MemberBenefitWriteoff();
+        dup.setWriteoffNo("BW20261003-000009");
+        when(writeoffRepo.findByOrderNoOrderByWriteoffIdAsc("OD20261003-000003"))
+                .thenReturn(List.of(flow("BW20261003-000005", "OD20261003-000003", "补水护理")));
+        when(writeoffRepo.findByClientRequestId("RFD-OD20261003-000003-1"))
+                .thenReturn(Optional.of(dup));
+
+        BenefitService.ReverseResult r = service.reverseForOrder("OD20261003-000003", null);
+
+        assertTrue(r.ok());
+        assertEquals(0, r.reversedCount());
+        verify(walletRepo, never()).findForUpdate(any());
+        verify(writeoffRepo, never()).saveAndFlush(any());
+        verify(audit, never()).record(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void reverseForOrder_mixedWithReversedRows_onlyReversesPositive() {
+        MemberBenefitWallet w = wallet(2, 1);
+        MemberBenefitWriteoff reversedRow = flow("BW20261003-000011", "OD20261003-000004", "舒缓护理");
+        reversedRow.setStatus("REVERSED");
+        when(writeoffRepo.findByOrderNoOrderByWriteoffIdAsc("OD20261003-000004"))
+                .thenReturn(List.of(flow("BW20261003-000010", "OD20261003-000004", "补水护理"), reversedRow));
+        when(writeoffRepo.findByClientRequestId(anyString())).thenReturn(Optional.empty());
+        when(walletRepo.findByCustomerIdAndPeriodAndBenefitType("M0001", BenefitService.currentPeriod(),
+                BenefitService.FREE_CARE)).thenReturn(Optional.of(w));
+        when(walletRepo.findForUpdate(9L)).thenReturn(Optional.of(w));
+        when(writeoffRepo.maxSeqOfDay(anyString())).thenReturn(20L);
+        when(writeoffRepo.saveAndFlush(any(MemberBenefitWriteoff.class)))
+                .thenAnswer(inv -> inv.getArgument(0));
+
+        BenefitService.ReverseResult r = service.reverseForOrder("OD20261003-000004", null);
+
+        assertEquals(1, r.reversedCount());
+        assertEquals(0, w.getUsedTimes());
+        ArgumentCaptor<MemberBenefitWriteoff> captor = ArgumentCaptor.forClass(MemberBenefitWriteoff.class);
+        verify(writeoffRepo, times(1)).saveAndFlush(captor.capture());
+        assertEquals("RFD-OD20261003-000004-1", captor.getValue().getClientRequestId());
+        assertEquals("退款返还：冲正核销 BW20261003-000010", captor.getValue().getReason());
+    }
+
+    @Test
+    void reverseForOrder_blankOrderNo_throws400() {
+        assertThrows(CustomerService.BadReq.class, () -> service.reverseForOrder("  ", null));
+        assertThrows(CustomerService.BadReq.class, () -> service.reverseForOrder(null, null));
+        verify(writeoffRepo, never()).findByOrderNoOrderByWriteoffIdAsc(anyString());
+    }
 }

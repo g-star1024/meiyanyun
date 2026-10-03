@@ -27,7 +27,7 @@ import {
   listPlans, saveDraft as apiSaveDraft, startPlan, submitPlan as apiSubmitPlan,
   type PlanViewDTO, type SaveDraftCmd, type SubmitPlanCmd,
 } from '@/api/consultPlan'
-import { searchCustomers, type CustomerDTO } from '@/api/customer'
+import { searchCustomers, getCustomerBenefits, type CustomerDTO, type BenefitWalletDTO } from '@/api/customer'
 import { injectPlanShadows, isRealPlan, REAL_FLAG, toPlanItemCmd } from '@/adapters/consultPlan'
 import { staffName, DOCTORS } from '@/config/staff'
 import CWorkbenchShell from '@/components/CWorkbenchShell.vue'
@@ -173,6 +173,30 @@ const SKIN_TYPES = ['干性·屏障受损', '油性·痤疮', '混合性', '敏�
 const planConsult = computed(() => consultation.get(selectedId.value))
 const planCustomer = computed(() => (planConsult.value ? customer.get(planConsult.value.customerId) : undefined))
 
+// 免费护理勾选门控（棒⑥卡4 L181）：FREE_CARE 当月钱包剩余次数>0 才允许勾选，勾选行数不超剩余次数
+const freeCareWallets = ref<BenefitWalletDTO[]>([])
+watch(
+  () => planConsult.value?.customerId,
+  async (id) => {
+    freeCareWallets.value = []
+    if (!id) return
+    try {
+      const res = await getCustomerBenefits(id)
+      freeCareWallets.value = res.data.wallets || []
+    } catch {
+      freeCareWallets.value = []
+    }
+  },
+  { immediate: true },
+)
+const freeCareWallet = computed(() => freeCareWallets.value.find((w) => w.benefitType === 'FREE_CARE'))
+const freeCareRemaining = computed(() => freeCareWallet.value?.remaining ?? 0)
+const freeCareCheckedCount = computed(() => planItems.value.filter((i) => i.freeCare).length)
+function freeCareCheckDisabled(it: PlanItem): boolean {
+  if (it.freeCare) return false
+  return freeCareRemaining.value <= 0 || freeCareCheckedCount.value >= freeCareRemaining.value
+}
+
 // 只读与否只看状态：审核/履约链路 + 作废为只读回看；PENDING/ACTIVE/REJECTED（真实或 mock）均可编辑。
 const isReadonly = computed(
   () => !!planConsult.value && READONLY_STATUSES.includes(planConsult.value.status),
@@ -233,7 +257,7 @@ const planDiscountText = computed(() => {
 })
 const planNetTotalFen = computed(() =>
   planItems.value.reduce((s, it) =>
-    s + levelStore.netFen(Math.round(it.price * 100), planLevel.value, it.qty), 0))
+    s + (it.freeCare ? 0 : levelStore.netFen(Math.round(it.price * 100), planLevel.value, it.qty)), 0))
 const planNetTotal = computed(() => planNetTotalFen.value / 100)
 const planDiscountAmount = computed(() =>
   Math.max(0, Math.round(planTotal.value * 100) - planNetTotalFen.value) / 100)
@@ -1108,12 +1132,19 @@ onUnmounted(() => {
                       <input v-model.number="it.price" type="number" min="0" class="mini-input" />
                     </label>
                     <span class="item-row__sum">小计
-                      <template v-if="planHasDiscount">
+                      <template v-if="it.freeCare">
+                        <span class="sum-old">¥{{ it.qty * it.price }}</span>
+                        <span class="sum-net">免单 ¥0</span>
+                      </template>
+                      <template v-else-if="planHasDiscount">
                         <span class="sum-old">¥{{ it.qty * it.price }}</span>
                         <span class="sum-net">{{ fmtYuan2(planLineNet(it.price, it.qty)) }}</span>
                       </template>
                       <template v-else>¥{{ it.qty * it.price }}</template>
                     </span>
+                    <CCheckbox v-model="it.freeCare" :disabled="freeCareCheckDisabled(it)" class="freecare-check">
+                      免费护理<template v-if="freeCareWallet">（剩 {{ freeCareRemaining }} 次）</template>
+                    </CCheckbox>
                   </div>
                   <div v-if="blockedOf(it)?.level === 'BLOCK'" class="issue issue--block">{{ blockedOf(it)?.text }}</div>
                   <div v-else-if="blockedOf(it)?.level === 'WARN'" class="issue issue--warn">{{ blockedOf(it)?.text }}</div>
@@ -1344,6 +1375,7 @@ onUnmounted(() => {
 .item-row__tags { display: flex; gap: 4px; margin-top: 4px; }
 .item-row__edit { display: flex; align-items: center; gap: var(--s-md); margin-top: var(--s-sm); font-size: var(--t-xs); color: var(--c-text-3); }
 .item-row__sum { margin-left: auto; font-weight: 700; color: var(--c-text); }
+.freecare-check { flex-shrink: 0; }
 .mini-input { width: 64px; padding: 4px 8px; border: 1px solid var(--c-border-light); border-radius: var(--r-sm); font-size: var(--t-sm); margin-left: 4px; }
 .total-row { display: flex; align-items: center; gap: var(--s-sm); justify-content: flex-end; margin-top: var(--s-md); padding-top: var(--s-sm); border-top: 1px dashed var(--c-border); font-size: var(--t-sm); color: var(--c-text-2); }
 .total-row strong { font-size: var(--t-lg); color: var(--c-brand); font-variant-numeric: tabular-nums; }

@@ -57,4 +57,27 @@ public class InternalBenefitController {
 
     /** 订单核销入参：projectNames 为本次免单联动核销的护理项目列表（一项目扣一次）。 */
     public record Cmd(String customerId, String orderNo, List<String> projectNames) {}
+
+    /**
+     * 订单级免费护理次数返还（txn 退款终审联动，棒⑥卡4 L181）：POST /api/customer/internal/benefits/order-refund。
+     * body{orderNo, reason?}；order_no 反查 OK 核销流水存在即返还（冲正 append-only＋钱包回拨，
+     * RFD-{orderNo}-{序号} 幂等锚重放零副作用）；该单无 OK 流水 → reversedCount=0 零开销返回；
+     * 触发依据=核销流水存在（OrderItem 不持久化 free_care 标记），普通单退款零副作用成立。
+     */
+    @PostMapping("/order-refund")
+    @RequirePerm("internal:benefit-write")
+    public Map<String, Object> orderRefund(@RequestBody RefundCmd cmd) {
+        if (cmd == null) throw new CustomerService.BadReq("请求体不能为空");
+        BenefitService.ReverseResult r = benefitService.reverseForOrder(cmd.orderNo(), cmd.reason());
+        Map<String, Object> resp = new HashMap<>();
+        resp.put("ok", true);
+        resp.put("orderNo", r.orderNo());
+        resp.put("reversedCount", r.reversedCount());
+        resp.put("writeoffNos", r.writeoffNos());
+        resp.put("remaining", r.remaining());
+        return resp;
+    }
+
+    /** 订单返还入参：reason 可空（兜底「退款返还：冲正核销 {原核销单号}」）。 */
+    public record RefundCmd(String orderNo, String reason) {}
 }

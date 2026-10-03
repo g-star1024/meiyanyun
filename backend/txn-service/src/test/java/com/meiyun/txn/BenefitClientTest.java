@@ -18,6 +18,7 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 /**
  * 棒⑤卡3 L161 免费护理核销客户端单测：fail-closed 错误语义（5xx/断连→502、4xx 透传中文、
  * 空项目列表零远程调用）与正常核销请求体三要素（customerId/orderNo/projectNames）。
+ * 棒⑥卡4 L181 增逆向 refundForOrder 覆盖（返还行数解析、无流水 0、5xx→502 退款未终审文案）。
  */
 class BenefitClientTest {
 
@@ -95,5 +96,34 @@ class BenefitClientTest {
                 .andRespond(withSuccess("{\"ok\":true}", MediaType.APPLICATION_JSON));
         assertDoesNotThrow(() -> client.consumeForOrder("C0001", "TX20261002001", List.of("水光针", "玻尿酸")));
         server.verify();
+    }
+
+    @Test
+    void 返还_正常解析冲正行数() {
+        server.expect(requestTo(org.hamcrest.Matchers.containsString("/internal/benefits/order-refund")))
+                .andExpect(method(org.springframework.http.HttpMethod.POST))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("\"orderNo\":\"TX20261003001\"")))
+                .andRespond(withSuccess("{\"ok\":true,\"orderNo\":\"TX20261003001\",\"reversedCount\":2}",
+                        MediaType.APPLICATION_JSON));
+        assertEquals(2, client.refundForOrder("TX20261003001"));
+        server.verify();
+    }
+
+    @Test
+    void 返还_无核销流水返回0() {
+        server.expect(requestTo(org.hamcrest.Matchers.containsString("/internal/benefits/order-refund")))
+                .andRespond(withSuccess("{\"ok\":true,\"reversedCount\":0}", MediaType.APPLICATION_JSON));
+        assertEquals(0, client.refundForOrder("TX20261003002"));
+        server.verify();
+    }
+
+    @Test
+    void 返还_5xx_转为502退款未终审() {
+        server.expect(requestTo(org.hamcrest.Matchers.containsString("/internal/benefits/order-refund")))
+                .andRespond(withServerError());
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class,
+                () -> client.refundForOrder("TX20261003003"));
+        assertEquals(HttpStatus.BAD_GATEWAY, ex.getStatusCode());
+        assertTrue(ex.getReason() != null && ex.getReason().contains("退款未终审"));
     }
 }

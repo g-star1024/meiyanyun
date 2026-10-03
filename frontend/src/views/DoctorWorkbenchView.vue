@@ -18,6 +18,7 @@ import { useLevelStore } from '@/stores/level'
 import { useAuthStore } from '@/stores/auth'
 import { useStoreContext } from '@/stores/storeContext'
 import { getOrder, type OrderViewDTO } from '@/api/order'
+import { getCustomerBenefits, type BenefitWalletDTO } from '@/api/customer'
 import { staffName } from '@/config/staff'
 import { RISK_TAG_LABEL } from '@/composables/useCompliance'
 import { useToast } from '@/composables/useToast'
@@ -178,7 +179,7 @@ const discountText = computed(() => {
 const planNetEstimate = computed(() => {
   const items = (editMode.value ? editItems.value : sel.value?.planItems) || []
   const fen = items.reduce(
-    (s, it) => s + levelStore.netFen(Math.round((it.price || 0) * 100), discountLevel.value, it.qty || 0),
+    (s, it) => s + (it.freeCare ? 0 : levelStore.netFen(Math.round((it.price || 0) * 100), discountLevel.value, it.qty || 0)),
     0,
   )
   return fen / 100
@@ -250,6 +251,30 @@ const editMode = ref(false)
 const editConclusion = ref('')
 const editItems = ref<PlanItem[]>([])
 const editReason = ref('')
+
+// 免费护理勾选门控（棒⑥卡4 L181）：FREE_CARE 当月钱包剩余次数>0 才允许勾选，勾选行数不超剩余次数
+const freeCareWallets = ref<BenefitWalletDTO[]>([])
+watch(
+  () => sel.value?.customerId,
+  async (id) => {
+    freeCareWallets.value = []
+    if (!id) return
+    try {
+      const res = await getCustomerBenefits(id)
+      freeCareWallets.value = res.data.wallets || []
+    } catch {
+      freeCareWallets.value = []
+    }
+  },
+  { immediate: true },
+)
+const freeCareWallet = computed(() => freeCareWallets.value.find((w) => w.benefitType === 'FREE_CARE'))
+const freeCareRemaining = computed(() => freeCareWallet.value?.remaining ?? 0)
+const freeCareCheckedCount = computed(() => editItems.value.filter((i) => i.freeCare).length)
+function freeCareCheckDisabled(it: PlanItem): boolean {
+  if (it.freeCare) return false
+  return freeCareRemaining.value <= 0 || freeCareCheckedCount.value >= freeCareRemaining.value
+}
 const rejectReason = ref('')
 const showReject = ref(false)
 const emrChief = ref('')
@@ -620,10 +645,17 @@ function goEmr() {
                       <label>单价 ¥
                         <input v-model.number="it.price" type="number" min="0" class="mini-input" />
                       </label>
-                      <span class="item-row__sum">小计 ¥{{ it.qty * it.price }}<template v-if="hasDiscount"> · 折后 ¥{{ lineNetEstimate(it.price, it.qty) }}</template></span>
+                      <span class="item-row__sum">小计
+                        <template v-if="it.freeCare"><span class="sum-net">免单 ¥0</span></template>
+                        <template v-else>¥{{ it.qty * it.price }}<template v-if="hasDiscount"> · 折后 ¥{{ lineNetEstimate(it.price, it.qty) }}</template></template>
+                      </span>
+                      <CCheckbox v-model="it.freeCare" :disabled="freeCareCheckDisabled(it)" class="freecare-check">
+                        免费护理<template v-if="freeCareWallet">（剩 {{ freeCareRemaining }} 次）</template>
+                      </CCheckbox>
                     </div>
                     <div v-else class="item-row__line">
                       {{ it.spec }} · ×{{ it.qty }} · ¥{{ it.price }} · 小计 ¥{{ it.qty * it.price }}<template v-if="hasDiscount"> · 折后小计 ¥{{ lineNetEstimate(it.price, it.qty) }}</template>
+                      <span v-if="it.freeCare" class="freecare-badge">免费护理·免单</span>
                     </div>
                   </div>
                 </div>
@@ -994,6 +1026,8 @@ function goEmr() {
 .item-row__edit { display: flex; align-items: center; gap: var(--s-md); margin-top: var(--s-sm); font-size: var(--t-xs); color: var(--c-text-3); }
 .item-row__line { font-size: var(--t-xs); color: var(--c-text-2); margin-top: 6px; }
 .item-row__sum { margin-left: auto; font-weight: 700; color: var(--c-text); }
+.sum-net { color: var(--c-brand); font-variant-numeric: tabular-nums; }
+.freecare-badge { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; background: #fdeef2; color: var(--c-brand); font-size: var(--t-xs); font-weight: 600; }
 .mini-input { width: 64px; padding: 4px 8px; border: 1px solid var(--c-border-light); border-radius: var(--r-sm); font-size: var(--t-sm); margin-left: 4px; }
 .total-row { display: flex; align-items: center; gap: var(--s-sm); justify-content: flex-end; flex-wrap: wrap; margin-top: var(--s-md); padding-top: var(--s-sm); border-top: 1px dashed var(--c-border); font-size: var(--t-sm); color: var(--c-text-2); }
 .total-row strong { font-size: var(--t-lg); color: var(--c-brand); }

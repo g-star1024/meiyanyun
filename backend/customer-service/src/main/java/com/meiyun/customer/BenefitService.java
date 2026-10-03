@@ -34,6 +34,10 @@ import java.util.regex.Pattern;
  *
  * <p>订单级核销（棒⑤卡3 L161，txn 计价免单联动）：order_no 列幂等锚重放返既有零副作用；
  * 与 UI 手核销差异——无钱包/次数不足抛 422 中文整笔回滚（不落异常流水），txn 侧透传后整笔订单回滚。
+ *
+ * <p>订单级返还（棒⑥卡4 L181，txn 退款终审联动）：order_no 反查 OK 核销流水存在即返还——
+ * 行锁钱包 usedTimes 回拨（下限 0）＋REVERSED 冲正流水 append-only（抄原行项目/门店快照），
+ * RFD-{orderNo}-{序号} 幂等锚重放/并发撞行零副作用；该单无 OK 流水零开销直接返回。
  */
 @Service
 public class BenefitService {
@@ -231,6 +235,79 @@ public class BenefitService {
         return results;
     }
 
+    // ---- 订单级返还（棒⑥卡4 L181：txn 退款终审免费护理次数逆向返还，internal:benefit-write 门槛） ----
+
+    /**
+     * 订单级免费护理次数返还（逆向·幂等）：order_no 反查 OK 核销流水存在即返还。
+     * <ol>
+     *   <li>该单无 OK 核销流水 → 零副作用直接返回（普通单退款零开销）；</li>
+     *   <li>逐行 OK 流水：RFD-{orderNo}-{序号} 幂等锚已存在 → 跳过（不重复回拨）；否则行锁钱包
+     *       usedTimes-1 回拨（下限 0）＋落 REVERSED 冲正流水（append-only，抄原行项目/门店快照）；</li>
+     *   <li>整体重放（全部已冲正）→ reversedCount=0 零副作用返回，重试安全。</li>
+     * </ol>
+     * @Transactional 整笔：任一冲正失败全部回滚（钱包回拨与冲正流水同生共死）；
+     * RFD 锚 UK 并发撞行 → DataIntegrityViolation 整笔回滚，Controller 兜底 409（与正向同口径）。
+     */
+    @Transactional
+    public ReverseResult reverseForOrder(String orderNo, String reason) {
+        String order = orderNo == null ? "" : orderNo.trim();
+        if (order.isEmpty()) throw new CustomerService.BadReq("订单号必填");
+        List<MemberBenefitWriteoff> positives = writeoffRepo.findByOrderNoOrderByWriteoffIdAsc(order).stream()
+                .filter(f -> "OK".equals(f.getStatus()))
+                .toList();
+        if (positives.isEmpty()) {
+            return new ReverseResult(true, order, 0, List.of(), null);
+        }
+        String operator = actor();
+        List<String> reversedNos = new ArrayList<>();
+        Integer remaining = null;
+        int seq = 0;
+        for (MemberBenefitWriteoff src : positives) {
+            seq++;
+            String rid = "RFD-" + order + "-" + seq;
+            if (writeoffRepo.findByClientRequestId(rid).isPresent()) {
+                continue;
+            }
+            MemberBenefitWallet locked = walletRepo.findByCustomerIdAndPeriodAndBenefitType(
+                            src.getCustomerId(), src.getPeriod(), src.getBenefitType())
+                    .flatMap(w -> walletRepo.findForUpdate(w.getWalletId()))
+                    .orElse(null);
+            Integer before = null;
+            if (locked != null) {
+                before = locked.getTotalTimes() - locked.getUsedTimes();
+                if (locked.getUsedTimes() > 0) {
+                    locked.setUsedTimes(locked.getUsedTimes() - 1);
+                }
+                remaining = locked.getTotalTimes() - locked.getUsedTimes();
+                walletRepo.save(locked);
+            }
+            MemberBenefitWriteoff rev = new MemberBenefitWriteoff();
+            rev.setWriteoffNo(nextWriteoffNo());
+            rev.setCustomerId(src.getCustomerId());
+            rev.setPeriod(src.getPeriod());
+            rev.setBenefitType(src.getBenefitType());
+            rev.setLevelSnap(src.getLevelSnap());
+            rev.setProjectName(src.getProjectName());
+            rev.setStatus("REVERSED");
+            rev.setReason(reason != null && !reason.isBlank() ? reason.trim()
+                    : "退款返还：冲正核销 " + src.getWriteoffNo());
+            rev.setClientRequestId(rid);
+            rev.setOperator(operator);
+            rev.setStoreCode(src.getStoreCode());
+            rev.setStoreName(src.getStoreName());
+            rev.setOrderNo(order);
+            rev = writeoffRepo.saveAndFlush(rev);
+            audit.record("BENEFIT", rev.getWriteoffNo(), operator, "REVERSE",
+                    "{\"customerId\":\"" + esc(src.getCustomerId()) + "\",\"benefitType\":\"" + FREE_CARE
+                            + "\",\"period\":\"" + esc(src.getPeriod()) + "\",\"projectName\":\""
+                            + esc(src.getProjectName()) + "\",\"orderNo\":\"" + esc(order)
+                            + "\",\"status\":\"REVERSED\",\"srcWriteoffNo\":\"" + esc(src.getWriteoffNo())
+                            + "\",\"remainingBefore\":" + before + ",\"remainingAfter\":" + remaining + "}");
+            reversedNos.add(rev.getWriteoffNo());
+        }
+        return new ReverseResult(true, order, reversedNos.size(), reversedNos, remaining);
+    }
+
     /**
      * client_request_id UK 并发撞行兜底（Controller catch DataIntegrityViolation 后调用）：
      * 撞行事务已整体回滚（未重复扣次），按幂等重放语义返既有流水。
@@ -342,4 +419,7 @@ public class BenefitService {
 
     /** 核销出参：ok=false 时 status/reason 为异常态中文说明；remaining 为当期剩余次数（重放历史周期/无钱包可为 null）。 */
     public record WriteoffResult(boolean ok, String writeoffNo, String status, String reason, Integer remaining) {}
+
+    /** 返还出参：reversedCount=本次新冲正行数（幂等重放/无 OK 流水=0）；writeoffNos 为冲正流水号；remaining 为回拨后当期剩余（无钱包=null）。 */
+    public record ReverseResult(boolean ok, String orderNo, int reversedCount, List<String> writeoffNos, Integer remaining) {}
 }
