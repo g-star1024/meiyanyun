@@ -381,6 +381,21 @@ public class MarketingController {
         return Map.of("changed", posterService.toggleTemplate(id));
     }
 
+    /** 新建模板（L160①：风格/视觉色白名单＋违禁词校验；初始 ENABLED/uses=0）。 */
+    @PostMapping("/poster-templates")
+    @RequirePerm("poster:edit")
+    public PosterTemplate createPosterTemplate(@RequestBody PosterService.TemplateCmd cmd) {
+        return posterService.createTemplate(cmd);
+    }
+
+    /** 编辑模板（L160①：名称/风格/视觉色/默认文案可改；status 与 uses 不动）。 */
+    @PutMapping("/poster-templates/{id}")
+    @RequirePerm("poster:edit")
+    public PosterTemplate updatePosterTemplate(@PathVariable String id,
+                                               @RequestBody PosterService.TemplateCmd cmd) {
+        return posterService.updateTemplate(id, cmd);
+    }
+
     @PostMapping("/posters")
     @RequirePerm("poster:edit")
     public PosterRecord createPoster(@RequestBody PosterService.PosterCmd cmd) {

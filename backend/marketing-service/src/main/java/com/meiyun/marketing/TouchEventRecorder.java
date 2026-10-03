@@ -5,6 +5,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 /**
  * 触点快照统一旁路落点（P5-B98 / DESIGN-T2 §3-D4：仅存不算）。
  *
@@ -28,17 +30,28 @@ public class TouchEventRecorder {
     public static final String TYPE_LANDING_VISIT = "LANDING_VISIT";
     public static final String TYPE_LANDING_LEAD = "LANDING_LEAD";
     public static final String TYPE_POSTER_SCAN = "POSTER_SCAN";
+    public static final String TYPE_POSTER_SHARE = "POSTER_SHARE";
+    public static final String TYPE_POSTER_LEAD = "POSTER_LEAD";
+    public static final String TYPE_POSTER_VISIT = "POSTER_VISIT";
     public static final String TYPE_PUSH_SEND = "PUSH_SEND";
     public static final String TYPE_RETURNBACK = "RETURNBACK";
 
     public static final String CHANNEL_LANDING = "LANDING";
+    public static final String CHANNEL_POSTER = "POSTER";
+
+    /** 海报漏斗四级可采集类型（deal 不经采集，由 DealBackfillService 成交回写）。 */
+    public static final List<String> POSTER_TRACK_TYPES =
+            List.of(TYPE_POSTER_SHARE, TYPE_POSTER_SCAN, TYPE_POSTER_LEAD, TYPE_POSTER_VISIT);
 
     private final TouchEventRepository repo;
     private final LandingPageRepository landingPageRepository;
+    private final PosterRecordRepository posterRecordRepository;
 
-    public TouchEventRecorder(TouchEventRepository repo, LandingPageRepository landingPageRepository) {
+    public TouchEventRecorder(TouchEventRepository repo, LandingPageRepository landingPageRepository,
+                              PosterRecordRepository posterRecordRepository) {
         this.repo = repo;
         this.landingPageRepository = landingPageRepository;
+        this.posterRecordRepository = posterRecordRepository;
     }
 
     /**
@@ -83,6 +96,30 @@ public class TouchEventRecorder {
             landingPageRepository.bumpLeads(pageId);
         } else {
             landingPageRepository.bumpVisits(pageId);
+        }
+        return true;
+    }
+
+    /**
+     * 海报漏斗采集落点（L160②）：同事务 touch_event 落库（channel=POSTER, refType=POSTER）
+     * ＋poster_record share/scan/lead/visit 原子自增（@Modifying UPDATE 防 lost update）。
+     * 幂等同 recordLanding 两层（查重 dedup＋唯一索引并发兜底由采集端点捕异常）。
+     *
+     * @param touchType 限 {@link #POSTER_TRACK_TYPES} 四值；deal 由成交回写不经此方法
+     * @return true=新落库并已自增；false=查重命中 dedup（不自增）
+     */
+    @Transactional
+    public boolean recordPoster(String touchType, String posterId, String clientToken, String payload) {
+        boolean inserted = record(CHANNEL_POSTER, touchType, "POSTER", posterId, null, clientToken, payload);
+        if (!inserted) {
+            return false;
+        }
+        switch (touchType) {
+            case TYPE_POSTER_SHARE -> posterRecordRepository.bumpShare(posterId);
+            case TYPE_POSTER_SCAN -> posterRecordRepository.bumpScan(posterId);
+            case TYPE_POSTER_LEAD -> posterRecordRepository.bumpLead(posterId);
+            case TYPE_POSTER_VISIT -> posterRecordRepository.bumpVisit(posterId);
+            default -> throw new IllegalArgumentException("非法海报触点类型：" + touchType);
         }
         return true;
     }

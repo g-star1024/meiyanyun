@@ -61,6 +61,57 @@ public class PosterService {
 
     // ==================== 写动作 ====================
 
+    /** 新建模板：风格/视觉色白名单＋文案合规校验；初始 ENABLED/uses=0；审计 CREATE。 */
+    @Transactional
+    public PosterTemplate createTemplate(TemplateCmd cmd) {
+        String name = cmd.templateName() == null ? "" : cmd.templateName().trim();
+        String style = cmd.style() == null ? "" : cmd.style().trim();
+        String accent = cmd.accent() == null ? "" : cmd.accent().trim();
+        String defaultTitle = cmd.defaultTitle() == null ? "" : cmd.defaultTitle().trim();
+        String defaultSubtitle = cmd.defaultSubtitle() == null ? "" : cmd.defaultSubtitle().trim();
+        validateTemplateFields(name, style, accent, defaultTitle, defaultSubtitle);
+
+        PosterTemplate t = new PosterTemplate();
+        t.setTemplateId(noGen.next("PT", like -> templateRepo
+                .findTopByTemplateIdLikeOrderByTemplateIdDesc(like).map(PosterTemplate::getTemplateId).orElse(null)));
+        t.setTemplateName(name);
+        t.setStyle(style);
+        t.setStatus("ENABLED");
+        t.setUses(0);
+        t.setAccent(accent);
+        t.setDefaultTitle(defaultTitle);
+        t.setDefaultSubtitle(defaultSubtitle);
+        t.setCreatedAt(OffsetDateTime.now());
+        PosterTemplate saved = templateRepo.save(t);
+        audit("POSTER_TEMPLATE", "CREATE", saved.getTemplateId(), Map.of(
+                "name", name, "style", style, "accent", accent,
+                "defaultTitle", defaultTitle, "defaultSubtitle", defaultSubtitle));
+        return saved;
+    }
+
+    /** 编辑模板：名称/风格/视觉色/默认文案可改；status 与 uses 不动；审计 UPDATE。 */
+    @Transactional
+    public PosterTemplate updateTemplate(String templateId, TemplateCmd cmd) {
+        PosterTemplate t = mustGetTemplate(templateId);
+        String name = cmd.templateName() == null ? "" : cmd.templateName().trim();
+        String style = cmd.style() == null ? "" : cmd.style().trim();
+        String accent = cmd.accent() == null ? "" : cmd.accent().trim();
+        String defaultTitle = cmd.defaultTitle() == null ? "" : cmd.defaultTitle().trim();
+        String defaultSubtitle = cmd.defaultSubtitle() == null ? "" : cmd.defaultSubtitle().trim();
+        validateTemplateFields(name, style, accent, defaultTitle, defaultSubtitle);
+
+        t.setTemplateName(name);
+        t.setStyle(style);
+        t.setAccent(accent);
+        t.setDefaultTitle(defaultTitle);
+        t.setDefaultSubtitle(defaultSubtitle);
+        PosterTemplate saved = templateRepo.save(t);
+        audit("POSTER_TEMPLATE", "UPDATE", saved.getTemplateId(), Map.of(
+                "name", name, "style", style, "accent", accent,
+                "defaultTitle", defaultTitle, "defaultSubtitle", defaultSubtitle));
+        return saved;
+    }
+
     /** 模板启用/停用切换（ENABLED↔DISABLED 翻转；每次实际翻转都审计）。 */
     @Transactional
     public boolean toggleTemplate(String templateId) {
@@ -142,6 +193,32 @@ public class PosterService {
 
     // ==================== 内部方法 ====================
 
+    private void validateTemplateFields(String name, String style, String accent,
+                                        String defaultTitle, String defaultSubtitle) {
+        if (name.isEmpty() || name.length() > 64) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "模板名称不可为空且长度不超过 64 字");
+        }
+        if (!STYLES.contains(style)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "模板风格不合法（可选：" + String.join("/", STYLES) + "）");
+        }
+        if (!ACCENTS.contains(accent)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "视觉色不合法（可选：" + String.join("/", ACCENTS) + "）");
+        }
+        if (defaultTitle.isEmpty() || defaultTitle.length() > 64) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "默认主标题不可为空且长度不超过 64 字");
+        }
+        if (defaultSubtitle.length() > 128) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "默认副标题长度不超过 128 字");
+        }
+        List<String> hits = forbiddenWordService.check(name + "\n" + defaultTitle + "\n" + defaultSubtitle);
+        if (!hits.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "营销合规拦截：命中违禁词 " + String.join("、", hits));
+        }
+    }
+
     private PosterTemplate mustGetTemplate(String templateId) {
         return templateRepo.findById(templateId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "海报模板不存在：" + templateId));
@@ -161,4 +238,8 @@ public class PosterService {
     /** 生成海报命令（commissionRate 可空，缺省 5%；百分比×10）。 */
     public record PosterCmd(String templateId, String title, String subtitle, String project,
                             String referrerName, Integer commissionRate) {}
+
+    /** 模板新建/编辑命令（defaultSubtitle 可空）。 */
+    public record TemplateCmd(String templateName, String style, String accent,
+                              String defaultTitle, String defaultSubtitle) {}
 }

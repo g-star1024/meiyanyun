@@ -414,6 +414,23 @@ export interface PosterCmd {
   commissionRate: number
 }
 
+/** 海报模板新建/编辑命令（棒⑥卡5，poster:edit）：五字段对齐后端 TemplateCmd，违禁词后端拦截。 */
+export interface PosterTemplateCmd {
+  templateName: string
+  style: string
+  accent: string
+  defaultTitle: string
+  defaultSubtitle: string
+}
+
+/** 海报行为上报结果（棒⑥卡5 公开采集）：dedup=true 表示 clientToken 幂等命中未重复计数。 */
+export interface PosterTrackResult {
+  received: boolean
+  dedup: boolean
+  touchType: string
+  posterId: string
+}
+
 // -------------------- M5-05 直播团购 / 短视频 --------------------
 // 金额口径：dealAmount bigint 存「分」；startTime 为 LocalDateTime（ISO），前端展示 'yyyy-MM-dd HH:mm'；
 // mountedCouponIds / tags 为 JSON 数组字符串；短视频无 createdAt，发布日用 publishedAt（LocalDate）。
@@ -481,6 +498,14 @@ export const listPosters = () => client.get<PosterRecordDTO[]>('/marketing/poste
 export const togglePosterTemplate = (id: string) =>
   client.post<TransitResult>(`/marketing/poster-templates/${id}/toggle`)
 export const createPoster = (cmd: PosterCmd) => client.post<PosterRecordDTO>('/marketing/posters', cmd)
+
+// 海报模板 CRUD（棒⑥卡5，poster:edit）＋ 行为采集（public-paths 白名单，免鉴权 clientToken 幂等）
+export const createPosterTemplate = (cmd: PosterTemplateCmd) =>
+  client.post<PosterTemplateDTO>('/marketing/poster-templates', cmd)
+export const updatePosterTemplate = (id: string, cmd: PosterTemplateCmd) =>
+  client.put<PosterTemplateDTO>(`/marketing/poster-templates/${id}`, cmd)
+export const trackPoster = (posterId: string, type: 'SHARE' | 'SCAN' | 'LEAD' | 'VISIT', clientToken: string) =>
+  client.post<PosterTrackResult>(`/public/poster/${posterId}/track`, { type, clientToken })
 
 // -------------------- 直播 / 短视频接口 --------------------
 

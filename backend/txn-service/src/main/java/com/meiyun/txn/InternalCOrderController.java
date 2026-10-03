@@ -25,7 +25,8 @@ import java.util.List;
  * <p>与 B 端差异：①B 端数据域（DataScope.canReadStore/ownedSpec）在此不适用——C 端行级隔离
  * 由 c-service 侧 customer_id 归属校验负责（越权 403 中文）；②customerId 强制非空（C 端
  * 下单必绑会员档案）；③状态直接落「待收款」——C 端先下单后支付/到店收银，无 B 端签核流，
- * 显式覆盖 {@link TxnOrder#prePersist} 默认「待签核」；④sourceType 固定 C_MINIAPP；
+ * 显式覆盖 {@link TxnOrder#prePersist} 默认「待签核」；④sourceType 缺省 C_MINIAPP，
+ * L160③ 起支持 POSTER 显式传参（与 LIVE_SESSION/SHORT_VIDEO 同维度，海报成交归因）；
  * ⑤B62 会员折扣快照组/B73 售卡快照组对 C 端零售单不适用，留空；⑥审计 actor 固定
  * "c-service"（溯源通道），payload 带 channel:C。
  */
@@ -35,6 +36,8 @@ public class InternalCOrderController {
 
     /** C 端订单来源标识（txn_order.source_type 列，与 LIVE_SESSION/SHORT_VIDEO 同维度）。 */
     private static final String SOURCE_C_MINIAPP = "C_MINIAPP";
+    /** 海报来源标识（L160③：海报漏斗成交归因 poster_record，与 C_MINIAPP 同维度）。 */
+    private static final String SOURCE_POSTER = "POSTER";
     /** C 端订单落库态：先下单后支付/到店收银，无签核流。 */
     private static final String ST_PENDING_PAY = "待收款";
     /** 单笔购买数量上限（防御性，C 端零售单正常为 1）。 */
@@ -56,9 +59,11 @@ public class InternalCOrderController {
         this.names = names;
     }
 
-    /** C 端下单命令（c-service 已解析门店编码/项目名/单价分，本侧硬校验存在性与正数）。 */
+    /** C 端下单命令（c-service 已解析门店编码/项目名/单价分，本侧硬校验存在性与正数）。
+     *  sourceType/sourceId 可空（L160③）：POSTER 显式传参时 sourceId 必填（海报成交归因锚），缺省 C_MINIAPP。 */
     public record CreateCOrderCmd(String customerId, String storeCode, String skuCode,
-                                  String projectName, Long unitPriceFen, Integer qty) {
+                                  String projectName, Long unitPriceFen, Integer qty,
+                                  String sourceType, String sourceId) {
     }
 
     /** C 端订单视图（internal 响应；金额单位分，元换算与状态映射归 c-service 适配层）。 */
@@ -113,6 +118,19 @@ public class InternalCOrderController {
         if (cmd.qty() > MAX_QTY) {
             throw badRequest("单笔订单购买数量不能超过 " + MAX_QTY);
         }
+        String sourceType = cmd.sourceType() == null ? "" : cmd.sourceType().trim();
+        String sourceId = cmd.sourceId() == null ? "" : cmd.sourceId().trim();
+        if (!sourceType.isEmpty()) {
+            if (!SOURCE_POSTER.equals(sourceType)) {
+                throw badRequest("不支持的订单来源: " + sourceType);
+            }
+            if (sourceId.isEmpty()) {
+                throw badRequest("海报来源订单必须传来源海报编号");
+            }
+            if (sourceId.length() > 64) {
+                throw badRequest("来源海报编号长度超限");
+            }
+        }
         long unitPrice = cmd.unitPriceFen();
         int qty = cmd.qty();
         long amount = unitPrice * qty;
@@ -124,7 +142,10 @@ public class InternalCOrderController {
         o.setProject(projectName);
         o.setAmount(amount);
         o.setStatus(ST_PENDING_PAY);
-        o.setSourceType(SOURCE_C_MINIAPP);
+        o.setSourceType(sourceType.isEmpty() ? SOURCE_C_MINIAPP : sourceType);
+        if (!sourceId.isEmpty()) {
+            o.setSourceId(sourceId);
+        }
         o.setProductCode(skuCode);
         TxnOrder saved = orderRepo.save(o);
 
@@ -140,7 +161,10 @@ public class InternalCOrderController {
         audit.record("ORDER", saved.getOrderNo(), "c-service", "CREATE",
                 "{\"customerId\":\"" + customerId + "\",\"storeCode\":\"" + storeCode
                         + "\",\"skuCode\":\"" + skuCode + "\",\"qty\":" + qty
-                        + ",\"amountFen\":" + amount + ",\"channel\":\"C\"}");
+                        + ",\"amountFen\":" + amount + ",\"channel\":\"C\""
+                        + (sourceType.isEmpty() ? "" : ",\"sourceType\":\"" + sourceType
+                            + "\",\"sourceId\":\"" + sourceId + "\"")
+                        + "}");
 
         return new COrderView(saved.getOrderNo(), customerId, storeCode, storeName,
                 projectName, skuCode, qty, amount, saved.getStatus(),

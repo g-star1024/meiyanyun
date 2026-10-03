@@ -42,6 +42,13 @@ function rate50(v: number): number {
   return Math.round((v || 0) * 1000)
 }
 
+/** 创建幂等令牌（crypto.randomUUID 不可用时回退随机串，同 m5Landing 公开采集范式） */
+function newToken(): string {
+  return typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `tok-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export interface PosterTemplate {
   id: string
   name: string
@@ -252,6 +259,30 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
     return posters.value.find((p) => p.id === res.data.posterId) ?? adaptPoster(res.data)
   }
 
+  /** 新建海报模板（棒⑥卡5，poster:edit）：五字段后端校验（词表/长度/违禁词），成功返回新模板编号 */
+  async function createTemplate(cmd: api.PosterTemplateCmd): Promise<string> {
+    if (!auth.can('poster:edit')) throw new Error('无海报编辑权限')
+    const res = await api.createPosterTemplate(cmd)
+    activity.log(auth.user?.name ?? '系统', `新建海报模板「${cmd.templateName}」`, res.data.templateId)
+    await seed(true)
+    return res.data.templateId
+  }
+
+  /** 编辑海报模板（棒⑥卡5，poster:edit）：名称/风格/视觉色/默认文案五字段，状态与使用数不动 */
+  async function updateTemplate(id: string, cmd: api.PosterTemplateCmd): Promise<void> {
+    if (!auth.can('poster:edit')) throw new Error('无海报编辑权限')
+    await api.updatePosterTemplate(id, cmd)
+    activity.log(auth.user?.name ?? '系统', `编辑海报模板「${cmd.templateName}」`, id)
+    await seed(true)
+  }
+
+  /** 海报行为上报（棒⑥卡5 公开采集）：clientToken 单次幂等；非幂等命中时重拉漏斗 */
+  async function trackPoster(posterId: string, type: 'SHARE' | 'SCAN' | 'LEAD' | 'VISIT') {
+    const res = await api.trackPoster(posterId, type, newToken())
+    if (res.data.received && !res.data.dedup) await seed(true)
+    return res.data
+  }
+
   /** 佣金试算：成交金额 × 比例 */
   function simulateCommission(amount: number, rate = DEFAULT_COMMISSION_RATE) {
     return Math.round(Math.max(0, amount) * rate)
@@ -276,6 +307,7 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
     get, getPoster,
     totalShares, totalScans, totalDeals, totalCommission,
     toggleTemplateStatus, createPoster, simulateCommission,
+    createTemplate, updateTemplate, trackPoster,
     displayReferrer, buildQrPayload, qrDataUrl, exportPosterPng,
     STYLE_LABEL, TEMPLATE_STATUS_LABEL, TEMPLATE_STATUS_PILL, STAGE_LABEL, STAGE_PILL,
     DEFAULT_COMMISSION_RATE,

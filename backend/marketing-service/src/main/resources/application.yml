@@ -43,6 +43,12 @@ spring:
       - "*:missing"
       - "*:future"
 
+  # 棒⑥卡5 三轨真验修复：显式注册违禁词缓存名。classpath 含 spring-boot-starter-data-redis 时
+  # Boot 自动配置 RedisCacheManager；Spring Data Redis 3.2 起 builder 默认 disableCreateOnMissingCache
+  # （不再运行时动态建 cache），未注册的 cache 名调用即抛 Cannot find cache named 'forbiddenWords'，
+  # 致营销域全部违禁词校验写路径 500。全服务 @Cacheable 仅此一处同名，显式注册后启动即建。
+  cache:
+    cache-names: forbiddenWords
   # Redis：违禁词库缓存（@Cacheable）常驻使用；rate-limiter=redis 时兼用于触达频控。
   # Lettuce 懒连接，本机无 Redis 也不影响服务启动；密码经环境变量注入（与中间件 requirepass 一致）。
   data:
@@ -65,12 +71,14 @@ meiyun:
     dev-login: ${MEIYUN_DEV_LOGIN:false}
     # public-paths 整体覆盖默认列表，须显式带全默认公共路径
     # P5-B98：/api/public/landing/** 落地页公开采集端点（visit|lead 免鉴权，限流+幂等见 PublicLandingController）
+    # 棒⑥卡5（L160②）：/api/public/poster/** 海报漏斗公开采集端点（track 免鉴权，限流+幂等见 PosterTrackController）
     public-paths:
       - /api/org/auth/login
       - /api/org/auth/dev-login
       - /actuator/health
       - /error
       - /api/public/landing/**
+      - /api/public/poster/**
 
 # org-service 地址（P5-B57 卡2：外部依赖配置窗口 60s 快照拉取——三渠道 HMAC 密钥/免签开关）
 org:

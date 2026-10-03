@@ -39,15 +39,18 @@ public class DealBackfillService {
     private final DealBackfillStateRepository stateRepo;
     private final LiveSessionRepository sessionRepo;
     private final ShortVideoRepository videoRepo;
+    private final PosterRecordRepository posterRepo;
 
     public DealBackfillService(TxnInternalClient txnClient, MktDealAttributionRepository attrRepo,
                                DealBackfillStateRepository stateRepo,
-                               LiveSessionRepository sessionRepo, ShortVideoRepository videoRepo) {
+                               LiveSessionRepository sessionRepo, ShortVideoRepository videoRepo,
+                               PosterRecordRepository posterRepo) {
         this.txnClient = txnClient;
         this.attrRepo = attrRepo;
         this.stateRepo = stateRepo;
         this.sessionRepo = sessionRepo;
         this.videoRepo = videoRepo;
+        this.posterRepo = posterRepo;
     }
 
     /** paid 段结果。error 非空＝txn 域故障、游标未推进（下轮重试）。 */
@@ -134,10 +137,11 @@ public class DealBackfillService {
     }
 
     private boolean isSourced(String sourceType) {
-        return "LIVE_SESSION".equals(sourceType) || "SHORT_VIDEO".equals(sourceType);
+        return "LIVE_SESSION".equals(sourceType) || "SHORT_VIDEO".equals(sourceType)
+                || "POSTER".equals(sourceType);
     }
 
-    /** 场次/视频成交计数增减（floor 0 保护，退款负向冲销不出负数）。来源行不存在返回 false。 */
+    /** 场次/视频/海报成交计数增减（floor 0 保护，退款负向冲销不出负数）。来源行不存在返回 false。 */
     private boolean applyDelta(String sourceType, String sourceId, int dCount, long dAmount) {
         if ("LIVE_SESSION".equals(sourceType)) {
             LiveSession s = sessionRepo.findById(sourceId).orElse(null);
@@ -145,6 +149,15 @@ public class DealBackfillService {
             s.setDealCount(Math.max(0, s.getDealCount() + dCount));
             s.setDealAmount(Math.max(0L, s.getDealAmount() + dAmount));
             sessionRepo.save(s);
+            return true;
+        }
+        if ("POSTER".equals(sourceType)) {
+            // L160③：海报成交回写——poster_record deal/dealAmount 增量（退款负向冲销 floor 0）
+            PosterRecord p = posterRepo.findById(sourceId).orElse(null);
+            if (p == null) return false;
+            p.setDeal(Math.max(0, p.getDeal() + dCount));
+            p.setDealAmount(Math.max(0L, p.getDealAmount() + dAmount));
+            posterRepo.save(p);
             return true;
         }
         ShortVideo v = videoRepo.findById(sourceId).orElse(null);

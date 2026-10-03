@@ -19,6 +19,7 @@ import { useM5PosterStore } from '@/stores/m5Poster'
 import { useAuthStore } from '@/stores/auth'
 import { checkSensitive } from '@/composables/useSensitiveWords'
 import { errMsg } from '@/stores/m5Coupon'
+import { generateContent } from '@/api/ai'
 import { useToast } from '@/composables/useToast'
 
 const store = useM5PosterStore()
@@ -160,9 +161,12 @@ watch(latestPoster, async (p) => {
 
 async function onExport() {
   if (!posterEl.value || !latestPoster.value) return
+  const posterId = latestPoster.value.id
   try {
-    await store.exportPosterPng(posterEl.value, latestPoster.value.id)
+    await store.exportPosterPng(posterEl.value, posterId)
     toast.success('海报 PNG 已导出下载')
+    // 棒⑥卡5②：导出即分享载体，静默上报 SHARE（失败不影响导出结果）
+    store.trackPoster(posterId, 'SHARE').catch(() => {})
   } catch (e) {
     toast.error('导出失败：' + errMsg(e))
   }
@@ -175,6 +179,95 @@ async function onToggleTemplate() {
     toast.success('模板状态已更新')
   } catch (e) {
     toast.error('操作失败：' + errMsg(e))
+  }
+}
+
+// ---------- 模板管理弹层（棒⑥卡5①：新建/编辑五字段） ----------
+const showTemplate = ref(false)
+const editingTemplateId = ref<string | null>(null)
+const tplForm = ref({ templateName: '', style: 'FESTIVAL', accent: 'brand', defaultTitle: '', defaultSubtitle: '' })
+const tplFormError = ref('')
+const tplSaving = ref(false)
+
+const styleOptions = computed(() =>
+  Object.entries(store.STYLE_LABEL).map(([value, label]) => ({ value, label })))
+const accentOptions = [
+  { value: 'brand', label: '品牌红' },
+  { value: 'teal', label: '青绿' },
+  { value: 'orange', label: '暖橙' },
+  { value: 'purple', label: '雅紫' },
+  { value: 'blue', label: '湛蓝' },
+  { value: 'gold', label: '鎏金' },
+]
+
+function openTemplateCreate() {
+  if (!canEdit.value) return
+  editingTemplateId.value = null
+  tplForm.value = { templateName: '', style: 'FESTIVAL', accent: 'brand', defaultTitle: '', defaultSubtitle: '' }
+  tplFormError.value = ''
+  showTemplate.value = true
+}
+
+function openTemplateEdit() {
+  if (!canEdit.value || !selected.value) return
+  const t = selected.value
+  editingTemplateId.value = t.id
+  tplForm.value = {
+    templateName: t.name, style: t.style, accent: t.accent,
+    defaultTitle: t.defaultTitle, defaultSubtitle: t.defaultSubtitle,
+  }
+  tplFormError.value = ''
+  showTemplate.value = true
+}
+
+async function submitTemplate() {
+  tplFormError.value = ''
+  const f = tplForm.value
+  if (!f.templateName.trim()) { tplFormError.value = '请填写模板名称'; return }
+  if (!f.defaultTitle.trim()) { tplFormError.value = '请填写默认主标题'; return }
+  const hit = checkSensitive(`${f.templateName} ${f.defaultTitle} ${f.defaultSubtitle}`)
+  if (hit.hit) { tplFormError.value = hit.message; return }
+  tplSaving.value = true
+  try {
+    const cmd = {
+      templateName: f.templateName.trim(), style: f.style, accent: f.accent,
+      defaultTitle: f.defaultTitle.trim(), defaultSubtitle: f.defaultSubtitle.trim(),
+    }
+    if (editingTemplateId.value) {
+      await store.updateTemplate(editingTemplateId.value, cmd)
+      toast.success('模板已更新')
+    } else {
+      selectedId.value = await store.createTemplate(cmd)
+      toast.success('模板已创建')
+    }
+    showTemplate.value = false
+  } catch (e) {
+    tplFormError.value = errMsg(e)
+  } finally {
+    tplSaving.value = false
+  }
+}
+
+// ---------- AI 生成文案（棒⑥卡5④：channel=poster，主标题←title、副标题←content） ----------
+const aiGenerating = ref(false)
+async function onAiCopy() {
+  if (aiGenerating.value) return
+  formError.value = ''
+  const topic = form.value.project.trim()
+    || form.value.title.trim()
+    || store.get(form.value.templateId)?.name
+    || ''
+  if (!topic) { formError.value = '请先填写主推项目或主标题，AI 将据此生成文案'; return }
+  aiGenerating.value = true
+  try {
+    const v = await generateContent({ channel: 'poster', topic })
+    if (v.title) form.value.title = v.title.slice(0, 64)
+    if (v.content) form.value.subtitle = v.content.slice(0, 128)
+    toast.success('AI 文案已回填，可继续微调')
+  } catch (e) {
+    formError.value = 'AI 生成失败：' + errMsg(e)
+  } finally {
+    aiGenerating.value = false
   }
 }
 </script>
@@ -190,7 +283,10 @@ async function onToggleTemplate() {
       <CCard class="mp__list" padding="none">
         <div class="filters">
           <CSelect v-model="store.filterStatus" width="160px" :options="statusOptions" />
-          <CButton v-if="canEdit" variant="primary" size="sm" class="filters__btn" @click="openCreate">
+          <CButton v-if="canEdit" variant="secondary" size="sm" class="filters__btn" @click="openTemplateCreate">
+            <CIcon name="plus" :size="14" />新建模板
+          </CButton>
+          <CButton v-if="canEdit" variant="primary" size="sm" @click="openCreate">
             <CIcon name="plus" :size="14" />生成海报
           </CButton>
         </div>
@@ -238,6 +334,9 @@ async function onToggleTemplate() {
               </div>
             </div>
             <div class="mp__detail-actions">
+              <CButton v-if="canEdit" variant="text" size="sm" @click="openTemplateEdit">
+                <CIcon name="edit" :size="14" />编辑模板
+              </CButton>
               <CButton v-if="canEdit && latestPoster" variant="text" size="sm" @click="onExport">
                 <CIcon name="export" :size="14" />导出 PNG
               </CButton>
@@ -361,7 +460,12 @@ async function onToggleTemplate() {
           <label class="form__label">选择模板</label>
           <CSelect v-model="form.templateId" width="100%" :options="templateOptions" />
 
-          <label class="form__label">海报主标题</label>
+          <div class="form__label-row">
+            <label class="form__label">海报主标题</label>
+            <CButton variant="text" size="sm" :disabled="aiGenerating" @click="onAiCopy">
+              <CIcon name="star" :size="13" />{{ aiGenerating ? 'AI 生成中…' : 'AI 生成文案' }}
+            </CButton>
+          </div>
           <CInput v-model="form.title" placeholder="如：双11 狂欢季 礼遇焕新" />
 
           <label class="form__label">海报副标题</label>
@@ -380,6 +484,38 @@ async function onToggleTemplate() {
         <template #footer>
           <CButton variant="ghost" @click="showCreate = false">取消</CButton>
           <CButton variant="primary" @click="submitCreate">生成</CButton>
+        </template>
+      </CCard>
+    </div>
+
+    <!-- 模板管理弹层（棒⑥卡5①：新建/编辑五字段） -->
+    <div v-if="showTemplate" class="modal-mask" @click.self="showTemplate = false">
+      <CCard class="modal" :title="editingTemplateId ? '编辑海报模板' : '新建海报模板'" padding="lg">
+        <div class="form">
+          <label class="form__label">模板名称</label>
+          <CInput v-model="tplForm.templateName" placeholder="如：五一焕新季" />
+
+          <label class="form__label">海报风格</label>
+          <CSelect v-model="tplForm.style" width="100%" :options="styleOptions" />
+
+          <label class="form__label">视觉色</label>
+          <CSelect v-model="tplForm.accent" width="100%" :options="accentOptions" />
+
+          <label class="form__label">默认主标题</label>
+          <CInput v-model="tplForm.defaultTitle" placeholder="生成海报时预填，可再修改" />
+
+          <label class="form__label">默认副标题</label>
+          <CTextarea v-model="tplForm.defaultSubtitle" :rows="2" placeholder="一句话补充利益点" />
+
+          <div v-if="tplFormError" class="form__error">
+            <CIcon name="alert" :size="14" />{{ tplFormError }}
+          </div>
+        </div>
+        <template #footer>
+          <CButton variant="ghost" @click="showTemplate = false">取消</CButton>
+          <CButton variant="primary" :disabled="tplSaving" @click="submitTemplate">
+            {{ tplSaving ? '保存中…' : editingTemplateId ? '保存' : '创建' }}
+          </CButton>
         </template>
       </CCard>
     </div>
@@ -495,6 +631,8 @@ async function onToggleTemplate() {
 .form { display: flex; flex-direction: column; gap: var(--s-sm); }
 .form__label { display: block; font-size: var(--t-xs); color: var(--c-text-3); margin-top: var(--s-xs); }
 .form__label:first-child { margin-top: 0; }
+.form__label-row { display: flex; align-items: center; justify-content: space-between; margin-top: var(--s-xs); }
+.form__label-row .form__label { margin-top: 0; }
 .form__error {
   display: flex; align-items: center; gap: 4px; margin-top: var(--s-xs);
   padding: var(--s-sm); background: var(--c-danger-bg); color: var(--c-danger-fg);
