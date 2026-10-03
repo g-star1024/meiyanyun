@@ -359,7 +359,7 @@ public class TxnService {
             // 远程调用全部在置 REFUNDED 之前，任一失败抛异常 → 终审事务整体回滚（两边均以 RF 单号幂等，重试安全），
             // 杜绝「退款已终审但赠金/储值未回加」。
             FinanceEventPublisher.RefundSplit split = financeEvents.refundSplitForOrder(r.getOrderNo(),
-                    r.getRefundAmt() == null ? 0L : r.getRefundAmt());
+                    r.getRefundAmt() == null ? 0L : r.getRefundAmt(), r.getTxnNo());
             if (split.grant() > 0) {
                 grantClient.refund(r.getCustomer(), split.grant(), r.getOrderNo(),
                         r.getTxnNo(), r.getStoreCode(), actor);

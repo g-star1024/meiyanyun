@@ -32,8 +32,9 @@ import static org.mockito.Mockito.when;
 /**
  * 退款终审「赠金→卡本金→法币」级联单测（JUnit5 + Mockito，B39）：
  * 三段混合单各段联动与资金 outbox 分录、纯赠金单不产生资金事件、纯法币单不触发赠金联动、
- * 营销域失败时整笔不终审（不置 REFUNDED、不调卡域、不入 outbox）。
- * FinanceEventPublisher 用真实实现（仅 mock 两仓储），保证拆分口径与生产一致。
+ * 营销域失败时整笔不终审（不置 REFUNDED、不调卡域、不入 outbox）；同单二次退款剩余额度
+ * 感知（历史 REFUNDED 已耗尽赠金段则不再拆出赠金）、置 REFUNDED 后 outbox 拆分排除本单自身。
+ * FinanceEventPublisher 用真实实现（仅 mock 三仓储），保证拆分口径与生产一致。
  */
 @ExtendWith(MockitoExtension.class)
 class TxnServiceTest {
@@ -48,6 +49,7 @@ class TxnServiceTest {
     @Mock CustomerCardClient cardClient;
     @Mock MarketingGrantClient grantClient;
     @Mock ContractPenaltyJudge penaltyJudge;
+    @Mock ContractRepository contractRepo;
 
     FinanceEventPublisher financeEvents;
     TxnService service;
@@ -58,7 +60,7 @@ class TxnServiceTest {
     void setUp() {
         financeEvents = publisherCapturing(new ArrayList<>());
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
         lenient().when(refundRepo.save(any(TxnRefund.class))).thenAnswer(i -> i.getArgument(0));
     }
 
@@ -69,7 +71,7 @@ class TxnServiceTest {
             sink.add(i.getArgument(0));
             return i.getArgument(0);
         });
-        return new FinanceEventPublisher(eventRepo, payRepo);
+        return new FinanceEventPublisher(eventRepo, payRepo, refundRepo);
     }
 
     private OrderPayment payment(String method, long posted) {
@@ -127,7 +129,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
         stubRefund(r, List.of(payment("grant", 3000L), payment("balance", 2000L), payment("cash", 5000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -154,7 +156,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
         stubRefund(r, List.of(payment("grant", 3000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -171,7 +173,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
         stubRefund(r, List.of(payment("cash", 5000L)));
 
         service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
@@ -190,7 +192,7 @@ class TxnServiceTest {
         List<FinanceEvent> events = new ArrayList<>();
         financeEvents = publisherCapturing(events);
         service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
-                approvalService, financeEvents, cardClient, grantClient, penaltyJudge);
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
         stubRefund(r, List.of(payment("grant", 3000L), payment("cash", 7000L)));
         doThrow(new ResponseStatusException(HttpStatus.BAD_GATEWAY,
                 "赠金退款回加失败：营销服务暂不可用，请稍后重试（本笔操作已回滚，未扣款未记账）"))
@@ -204,6 +206,59 @@ class TxnServiceTest {
         assertNull(r.getRefundedAt());
         verify(cardClient, never()).refundForOrder(anyString(), anyString(), anyLong());
         verify(refundRepo, never()).save(any());
+        assertTrue(events.isEmpty());
+    }
+
+    @Test
+    void confirmRefund_secondRefundOnSameOrderSkipsExhaustedGrantSegment() {
+        // 废单 RF20261002-000002 场景复刻：原单 grant 50000 + wxpay 108000，
+        // 历史 REFUNDED 一笔 50000 已耗尽赠金段 → 本次退 60000 全落法币段
+        TxnRefund r = refund("RF20261002-000002", 60000L, "ORIGINAL");
+        List<FinanceEvent> events = new ArrayList<>();
+        financeEvents = publisherCapturing(events);
+        service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+        stubRefund(r, List.of(payment("grant", 50000L), payment("wxpay", 108000L)));
+        TxnRefund history = refund("RF20260912-000002", 50000L, "ORIGINAL");
+        history.setStatus("REFUNDED");
+        when(refundRepo.findByOrderNoAndStatusOrderByCreatedAtAsc(r.getOrderNo(), "REFUNDED"))
+                .thenReturn(List.of(history));
+
+        service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
+
+        assertEquals("REFUNDED", r.getStatus());
+        verify(grantClient, never()).refund(anyString(), anyLong(), anyString(), anyString(), anyString(), anyString());
+        verify(cardClient, never()).refundForOrder(anyString(), anyString(), anyLong());
+        assertEquals(1, events.size());
+        JsonNode entries = payload(events, 0);
+        assertEquals(1, entries.size());
+        assertEquals("RF-REFUND", entries.get(0).get("subject").asText());
+        assertEquals("OUT", entries.get(0).get("direction").asText());
+        assertEquals(60000L, entries.get(0).get("amount").asLong());
+        assertEquals("wxpay", entries.get(0).get("channel").asText());
+    }
+
+    @Test
+    void confirmRefund_splitExcludesSelfAfterRefundedNoDoubleConsumption() {
+        // 置 REFUNDED 后 emitRefundConfirmed 二次拆分：本单已入 REFUNDED 查询结果，
+        // 必须靠 excludeTxnNo 排除自身，否则赠金段被本单二次消耗 → 错误拆出现金分录
+        TxnRefund r = refund("RF20261002-000009", 1000L, "ORIGINAL");
+        List<FinanceEvent> events = new ArrayList<>();
+        financeEvents = publisherCapturing(events);
+        service = new TxnService(refundRepo, cancelRepo, orderRepo, cardRepo, audit,
+                approvalService, financeEvents, cardClient, grantClient, penaltyJudge, contractRepo);
+        stubRefund(r, List.of(payment("grant", 3000L), payment("cash", 7000L)));
+        TxnRefund history = refund("RF20260912-000008", 2000L, "ORIGINAL");
+        history.setStatus("REFUNDED");
+        TxnRefund selfRefunded = refund(r.getTxnNo(), 1000L, "ORIGINAL");
+        selfRefunded.setStatus("REFUNDED");
+        when(refundRepo.findByOrderNoAndStatusOrderByCreatedAtAsc(r.getOrderNo(), "REFUNDED"))
+                .thenReturn(List.of(history), List.of(history, selfRefunded));
+
+        service.confirmRefund(r.getTxnNo(), new TxnService.ApprovalCmd("E001", null));
+
+        assertEquals("REFUNDED", r.getStatus());
+        verify(grantClient).refund(eq("M0001"), eq(1000L), eq(r.getOrderNo()), eq(r.getTxnNo()), anyString(), anyString());
         assertTrue(events.isEmpty());
     }
 }

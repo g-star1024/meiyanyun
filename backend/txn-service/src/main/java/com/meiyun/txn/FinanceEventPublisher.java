@@ -41,11 +41,14 @@ public class FinanceEventPublisher {
 
     private final FinanceEventRepository eventRepo;
     private final OrderPaymentRepository payRepo;
+    private final TxnRefundRepository refundRepo;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public FinanceEventPublisher(FinanceEventRepository eventRepo, OrderPaymentRepository payRepo) {
+    public FinanceEventPublisher(FinanceEventRepository eventRepo, OrderPaymentRepository payRepo,
+                                 TxnRefundRepository refundRepo) {
         this.eventRepo = eventRepo;
         this.payRepo = payRepo;
+        this.refundRepo = refundRepo;
     }
 
     /**
@@ -110,7 +113,7 @@ public class FinanceEventPublisher {
     @Transactional(propagation = Propagation.REQUIRED)
     public void emitRefundConfirmed(TxnRefund r) {
         long refundAmt = r.getRefundAmt() == null ? 0L : r.getRefundAmt();
-        RefundSplit split = refundSplitForOrder(r.getOrderNo(), refundAmt);
+        RefundSplit split = refundSplitForOrder(r.getOrderNo(), refundAmt, r.getTxnNo());
         String who = nz(r.getCustomerName(), r.getTxnNo());
         List<Map<String, Object>> cmds = new ArrayList<>();
         if (split.balance() > 0) {
@@ -138,27 +141,42 @@ public class FinanceEventPublisher {
     }
 
     /**
-     * 本单退款按「赠金→卡本金→法币」级联拆分（B39），TxnService 远程联动（营销回加/卡回加）
-     * 与本类资金分录必须共用同一结果，避免两边口径漂移。
-     * 赠金段 = min(原单 grant 实付合计, 退款额)；卡本金段 = min(原单 balance 实付合计, 剩余)；
+     * 本单退款按「赠金→卡本金→法币」级联拆分（B39 剩余额度感知版），TxnService 远程联动
+     * （营销回加/卡回加）与本类资金分录必须共用同一结果，避免两边口径漂移。
+     * 赠金段 = min(赠金剩余可退额, 退款额)；卡本金段 = min(卡本金剩余可退额, 剩余)；
      * 法币段 = 退款额 − 前两段。退款额 ≤ 0 返回全 0。
+     * 剩余可退额 = 原单该方式实付合计 − 同单历史 REFUNDED 退款按同一级联规则已消耗的段额
+     * （按 createdAt 升序逐笔模拟消耗，线性单调扣减天然等价递归）。excludeTxnNo 用于排除
+     * 本单自身——终审置 REFUNDED 后本类 emitRefundConfirmed 会再次拆分，不排除会把本单
+     * 计入历史造成双重扣减；调用方（含 TxnService 远程联动侧）一律传本单 txnNo。
      */
-    public RefundSplit refundSplitForOrder(String orderNo, long refundAmt) {
+    public RefundSplit refundSplitForOrder(String orderNo, long refundAmt, String excludeTxnNo) {
         if (orderNo == null || orderNo.isBlank() || refundAmt <= 0) {
             return new RefundSplit(0, 0, 0);
         }
-        long grantPaid = 0;
-        long balancePaid = 0;
+        long remainingGrant = 0;
+        long remainingBalance = 0;
         for (OrderPayment p : payRepo.findByOrderNoOrderByPaymentIdAsc(orderNo)) {
             long posted = p.getPostedAmount() == null ? 0L : p.getPostedAmount();
             if ("grant".equals(p.getPayMethod())) {
-                grantPaid += posted;
+                remainingGrant += posted;
             } else if ("balance".equals(p.getPayMethod())) {
-                balancePaid += posted;
+                remainingBalance += posted;
             }
         }
-        long grantPart = Math.min(grantPaid, refundAmt);
-        long balancePart = Math.min(balancePaid, refundAmt - grantPart);
+        for (TxnRefund h : refundRepo.findByOrderNoAndStatusOrderByCreatedAtAsc(orderNo, "REFUNDED")) {
+            if (excludeTxnNo != null && excludeTxnNo.equals(h.getTxnNo())) {
+                continue;
+            }
+            long consumed = h.getRefundAmt() == null ? 0L : h.getRefundAmt();
+            long g = Math.min(remainingGrant, consumed);
+            remainingGrant -= g;
+            consumed -= g;
+            long b = Math.min(remainingBalance, consumed);
+            remainingBalance -= b;
+        }
+        long grantPart = Math.min(remainingGrant, refundAmt);
+        long balancePart = Math.min(remainingBalance, refundAmt - grantPart);
         long cashPart = refundAmt - grantPart - balancePart;
         return new RefundSplit(grantPart, balancePart, cashPart);
     }
@@ -168,7 +186,7 @@ public class FinanceEventPublisher {
      * 「先冲赠金、再回余额」，保留本方法供既有调用方使用）。
      */
     public long balanceRefundForOrder(String orderNo, long refundAmt) {
-        return refundSplitForOrder(orderNo, refundAmt).balance();
+        return refundSplitForOrder(orderNo, refundAmt, null).balance();
     }
 
     /** 退款三段拆分结果（单位：分）：赠金段 / 卡本金段 / 法币段，三者之和 = 本次退款额。 */

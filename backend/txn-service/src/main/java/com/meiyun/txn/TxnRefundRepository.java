@@ -15,6 +15,8 @@ public interface TxnRefundRepository extends JpaRepository<TxnRefund, String>, J
 
     List<TxnRefund> findByStatusOrderByTxnNoDesc(String status);
 
+    List<TxnRefund> findByOrderNoAndStatusOrderByCreatedAtAsc(String orderNo, String status);
+
     /** 当日退款号最大序号（txn_no 形如 RF20260901-000007，序号从第 12 位起 6 位）。 */
     @Query(value = "select coalesce(max(cast(substring(txn_no from 12) as bigint)), 0) " +
            "from txn_refund where txn_no like :prefix", nativeQuery = true)
