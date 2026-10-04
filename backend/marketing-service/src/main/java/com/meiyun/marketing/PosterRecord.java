@@ -83,4 +83,16 @@ public class PosterRecord {
 
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
+
+    /** 渲染产物定位符 bucket/objectKey（棒⑧卡4 V91；NULL=尚未上传渲染产物）。 */
+    @Column(name = "render_object_key", length = 200)
+    private String renderObjectKey;
+
+    /** 最近渲染上传时间（NULL=未上传）。 */
+    @Column(name = "render_uploaded_at")
+    private OffsetDateTime renderUploadedAt;
+
+    /** 渲染产物字节数（NULL=未上传）。 */
+    @Column(name = "render_size")
+    private Long renderSize;
 }

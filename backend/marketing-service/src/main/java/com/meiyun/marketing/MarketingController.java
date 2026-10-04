@@ -5,10 +5,13 @@ import com.meiyun.security.DataScope;
 import com.meiyun.security.RequirePerm;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.net.URLEncoder;
@@ -400,6 +403,30 @@ public class MarketingController {
     @RequirePerm("poster:edit")
     public PosterRecord createPoster(@RequestBody PosterService.PosterCmd cmd) {
         return posterService.createPoster(cmd);
+    }
+
+    /**
+     * 棒⑧卡4：海报渲染产物上传（PNG ≤10MB＋魔数校验；objectKey 固定覆盖写幂等；审计 RENDER_UPLOAD）。
+     * STORAGE_DIRECT 未启用走本地磁盘兜底；启用但配置不完整 503 SKIPPED 中文诚实降级。
+     */
+    @PostMapping("/posters/{id}/render-upload")
+    @RequirePerm("poster:edit")
+    public PosterRecord renderUpload(@PathVariable String id, @RequestParam("file") MultipartFile file) {
+        return posterService.renderUpload(id, file);
+    }
+
+    /** 棒⑧卡4：海报渲染产物回源（流式 image/png；未上传或文件缺失 404 中文）。 */
+    @GetMapping("/posters/{id}/render-file")
+    @RequirePerm({ "marketing:view", "poster:view" })
+    public ResponseEntity<InputStreamResource> renderFile(@PathVariable String id) {
+        PosterService.RenderFile render = posterService.renderFile(id);
+        ResponseEntity.BodyBuilder builder = ResponseEntity.ok()
+                .contentType(MediaType.IMAGE_PNG)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + id + ".png\"");
+        if (render.size() >= 0) {
+            builder.contentLength(render.size());
+        }
+        return builder.body(new InputStreamResource(render.stream()));
     }
 
     // ==================== M5-05 直播团购（场次创建/开播/结束；P5-B92 起短视频可写） ====================

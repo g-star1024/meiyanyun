@@ -190,13 +190,20 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
     return QRCode.toDataURL(payload, { width: 156, margin: 1 })
   }
 
-  /** D1 纯前端导出 PNG：预览 DOM 快照 → dataURL → a[download]，不入库 */
-  async function exportPosterPng(el: HTMLElement, posterId: string): Promise<void> {
+  /** D1 纯前端导出 PNG：预览 DOM 快照 → dataURL → a[download]；同一快照另出 blob 供棒⑧卡4 入库副路 */
+  async function exportPosterPng(el: HTMLElement, posterId: string): Promise<Blob | null> {
     const canvas = await html2canvas(el, { scale: 2 })
     const a = document.createElement('a')
     a.href = canvas.toDataURL('image/png')
     a.download = `poster-${posterId}.png`
     a.click()
+    return await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+  }
+
+  /** 棒⑧卡4：渲染产物入库副路（PNG blob → render-upload 端点；无编辑权限静默跳过，失败由调用方提示） */
+  async function uploadPosterRender(posterId: string, blob: Blob): Promise<void> {
+    if (!auth.can('poster:edit')) return
+    await api.uploadPosterRender(posterId, blob)
   }
 
   const filteredTemplates = computed(() => {
@@ -308,7 +315,7 @@ export const useM5PosterStore = defineStore('m5Poster', () => {
     totalShares, totalScans, totalDeals, totalCommission,
     toggleTemplateStatus, createPoster, simulateCommission,
     createTemplate, updateTemplate, trackPoster,
-    displayReferrer, buildQrPayload, qrDataUrl, exportPosterPng,
+    displayReferrer, buildQrPayload, qrDataUrl, exportPosterPng, uploadPosterRender,
     STYLE_LABEL, TEMPLATE_STATUS_LABEL, TEMPLATE_STATUS_PILL, STAGE_LABEL, STAGE_PILL,
     DEFAULT_COMMISSION_RATE,
     seed,

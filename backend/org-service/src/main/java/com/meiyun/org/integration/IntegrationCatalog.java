@@ -3,7 +3,7 @@ package com.meiyun.org.integration;
 import java.util.Optional;
 
 /**
- * P0 外部依赖固定目录（16 项），与 V34/V35/V36/V89 迁移 INSERT 同码同名，为目录第二真源。
+ * P0 外部依赖固定目录（18 项），与 V34/V35/V36/V89/V90 迁移 INSERT 同码同名，为目录第二真源。
  * P0 不开放自由新增接入点；P1/P2 新接入点以「新迁移 + 枚举扩充」追加。
  */
 public enum IntegrationCatalog {
@@ -25,7 +25,12 @@ public enum IntegrationCatalog {
 
     // 棒⑧卡3 电子签接入位（V89 迁移同码播种）：厂商无关适配层消费，发送调用与回调验签共用密钥
     ESIGN_DIRECT("ESIGN", "电子签直连厂商 API（接入位）", "SWITCH"),
-    ESIGN_SECRET("ESIGN", "电子签厂商密钥（接入调用与回调验签共用）", "SECRET");
+    ESIGN_SECRET("ESIGN", "电子签厂商密钥（接入调用与回调验签共用）", "SECRET"),
+
+    // 棒⑧卡4 对象存储接入位（V90 迁移同码播种）：marketing DelegatingStorageService 消费，
+    // config_json 承载 provider/endpoint/bucket/region/accessKey，secretKey 独立 SECRET 行
+    STORAGE_DIRECT("STORAGE", "对象存储直连（S3/MinIO 接入位）", "SWITCH"),
+    STORAGE_SECRET("STORAGE", "对象存储密钥（secretKey）", "SECRET");
 
     private final String category;
     private final String integrationName;

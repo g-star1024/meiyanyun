@@ -3,12 +3,18 @@ package com.meiyun.marketing;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.meiyun.marketing.audit.AuditRecorder;
+import com.meiyun.marketing.storage.DelegatingStorageService;
+import com.meiyun.marketing.storage.StorageException;
 import com.meiyun.security.DataScope;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
@@ -32,21 +38,30 @@ public class PosterService {
     /** 默认分销佣金比例 5%（百分比×10 = 50）。 */
     public static final int DEFAULT_COMMISSION_RATE = 50;
 
+    /** 棒⑧卡4：渲染产物大小上限 10MB（与端点校验、multipart 配置同口径）。 */
+    public static final long MAX_RENDER_SIZE = 10L * 1024 * 1024;
+
+    /** PNG 魔数前 8 字节：89 50 4E 47 0D 0A 1A 0A。 */
+    private static final byte[] PNG_MAGIC = {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A};
+
     private final PosterTemplateRepository templateRepo;
     private final PosterRecordRepository posterRepo;
     private final BizNoGenerator noGen;
     private final AuditRecorder audit;
     private final ForbiddenWordService forbiddenWordService;
+    private final DelegatingStorageService storageService;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PosterService(PosterTemplateRepository templateRepo, PosterRecordRepository posterRepo,
                          BizNoGenerator noGen, AuditRecorder audit,
-                         ForbiddenWordService forbiddenWordService) {
+                         ForbiddenWordService forbiddenWordService,
+                         DelegatingStorageService storageService) {
         this.templateRepo = templateRepo;
         this.posterRepo = posterRepo;
         this.noGen = noGen;
         this.audit = audit;
         this.forbiddenWordService = forbiddenWordService;
+        this.storageService = storageService;
     }
 
     // ==================== 查询 ====================
@@ -191,6 +206,73 @@ public class PosterService {
         return saved;
     }
 
+    /**
+     * 棒⑧卡4：海报渲染产物上传。写接口四件套：① 校验（海报存在、非空、≤10MB、Content-Type
+     * 与 PNG 魔数双重校验）；② 幂等（objectKey 固定 posters/{posterId}.png，覆盖写天然幂等，
+     * 重传不产生重复对象）；③ 审计 RENDER_UPLOAD（objectKey/size/provider）；④ 中文错误。
+     * 存储路由：STORAGE_DIRECT 未启用走 local 固定桶；启用缺参抛 503 SKIPPED 不静默回落。
+     */
+    @Transactional
+    public PosterRecord renderUpload(String posterId, MultipartFile file) {
+        PosterRecord p = mustGetPoster(posterId);
+        if (file == null || file.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "渲染产物文件为空");
+        }
+        if (file.getSize() > MAX_RENDER_SIZE) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "渲染产物大小超过 10MB 上限");
+        }
+        String contentType = file.getContentType();
+        if (contentType == null || !contentType.equalsIgnoreCase("image/png")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "渲染产物仅支持 PNG 图片");
+        }
+        byte[] bytes;
+        try {
+            bytes = file.getBytes();
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "渲染产物读取失败");
+        }
+        if (!isPng(bytes)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "文件内容不是有效 PNG 图片");
+        }
+
+        DelegatingStorageService.Route route = storageService.currentRoute();
+        String objectKey = "posters/" + posterId + ".png";
+        try {
+            route.service().upload(route.bucket(), objectKey,
+                    new ByteArrayInputStream(bytes), bytes.length, "image/png");
+        } catch (StorageException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "渲染产物存储失败，请稍后重试");
+        }
+
+        p.setRenderObjectKey(route.bucket() + "/" + objectKey);
+        p.setRenderUploadedAt(OffsetDateTime.now());
+        p.setRenderSize((long) bytes.length);
+        PosterRecord saved = posterRepo.save(p);
+        audit("POSTER", "RENDER_UPLOAD", saved.getPosterId(), Map.of(
+                "objectKey", saved.getRenderObjectKey(), "size", bytes.length, "provider", route.provider()));
+        return saved;
+    }
+
+    /** 棒⑧卡4：渲染产物回源。定位符首段拆 bucket/objectKey；未上传 / 文件缺失均 404 中文。 */
+    public RenderFile renderFile(String posterId) {
+        PosterRecord p = mustGetPoster(posterId);
+        String locator = p.getRenderObjectKey();
+        if (locator == null || locator.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "该海报尚未上传渲染产物");
+        }
+        int slash = locator.indexOf('/');
+        if (slash <= 0 || slash == locator.length() - 1) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "渲染产物定位符损坏");
+        }
+        InputStream stream;
+        try {
+            stream = storageService.download(locator.substring(0, slash), locator.substring(slash + 1));
+        } catch (StorageException e) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "渲染产物文件不存在或已删除");
+        }
+        return new RenderFile(stream, p.getRenderSize() == null ? -1L : p.getRenderSize());
+    }
+
     // ==================== 内部方法 ====================
 
     private void validateTemplateFields(String name, String style, String accent,
@@ -224,6 +306,23 @@ public class PosterService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "海报模板不存在：" + templateId));
     }
 
+    private PosterRecord mustGetPoster(String posterId) {
+        return posterRepo.findById(posterId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "海报不存在：" + posterId));
+    }
+
+    private static boolean isPng(byte[] bytes) {
+        if (bytes == null || bytes.length < PNG_MAGIC.length) {
+            return false;
+        }
+        for (int i = 0; i < PNG_MAGIC.length; i++) {
+            if (bytes[i] != PNG_MAGIC[i]) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private void audit(String bizType, String action, String txnNo, Map<String, Object> payload) {
         try {
             audit.record(bizType, txnNo, DataScope.currentActor(), action,
@@ -242,4 +341,7 @@ public class PosterService {
     /** 模板新建/编辑命令（defaultSubtitle 可空）。 */
     public record TemplateCmd(String templateName, String style, String accent,
                               String defaultTitle, String defaultSubtitle) {}
+
+    /** 棒⑧卡4：渲染产物回源视图（size=-1 表示长度未知，不写 Content-Length）。 */
+    public record RenderFile(InputStream stream, long size) {}
 }

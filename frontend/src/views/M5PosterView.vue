@@ -163,10 +163,19 @@ async function onExport() {
   if (!posterEl.value || !latestPoster.value) return
   const posterId = latestPoster.value.id
   try {
-    await store.exportPosterPng(posterEl.value, posterId)
+    const blob = await store.exportPosterPng(posterEl.value, posterId)
     toast.success('海报 PNG 已导出下载')
     // 棒⑥卡5②：导出即分享载体，静默上报 SHARE（失败不影响导出结果）
     store.trackPoster(posterId, 'SHARE').catch(() => {})
+    // 棒⑧卡4：渲染产物入库副路——失败仅提示，不阻断已完成的下载主路
+    if (blob) {
+      try {
+        await store.uploadPosterRender(posterId, blob)
+        toast.success('渲染产物已入库')
+      } catch (e) {
+        toast.error('渲染产物入库失败（不影响已下载文件）：' + errMsg(e))
+      }
+    }
   } catch (e) {
     toast.error('导出失败：' + errMsg(e))
   }

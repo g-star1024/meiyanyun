@@ -411,6 +411,9 @@ export interface PosterRecordDTO {
   dealAmount: number
   commissionRate: number
   createdAt: string
+  renderObjectKey: string | null
+  renderUploadedAt: string | null
+  renderSize: number | null
 }
 
 export interface PosterCmd {
@@ -514,6 +517,13 @@ export const updatePosterTemplate = (id: string, cmd: PosterTemplateCmd) =>
   client.put<PosterTemplateDTO>(`/marketing/poster-templates/${id}`, cmd)
 export const trackPoster = (posterId: string, type: 'SHARE' | 'SCAN' | 'LEAD' | 'VISIT', clientToken: string) =>
   client.post<PosterTrackResult>(`/public/poster/${posterId}/track`, { type, clientToken })
+
+// 棒⑧卡4：海报渲染产物上传（multipart PNG → render 三列落值；503=对象存储已启用但配置不完整 SKIPPED）
+export const uploadPosterRender = (posterId: string, blob: Blob) => {
+  const form = new FormData()
+  form.append('file', new File([blob], `poster-${posterId}.png`, { type: 'image/png' }))
+  return client.post<PosterRecordDTO>(`/marketing/posters/${posterId}/render-upload`, form)
+}
 
 // -------------------- 直播 / 短视频接口 --------------------
 

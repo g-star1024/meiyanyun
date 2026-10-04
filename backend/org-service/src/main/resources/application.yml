@@ -35,6 +35,9 @@ spring:
     ignore-migration-patterns:
       - "*:missing"
       - "*:future"
+    # 共享历史表下他服务可插入更高版本（如 marketing V88/V91）：org 自身低于当前库版本的
+    # 待应用迁移（V89/V90）默认会被 ignored，须开启乱序应用；版本撞号不得复用，改号段避让。
+    out-of-order: true
 
 # 审计服务（RBAC 管理写动作落 audit_log）：本地默认直连 :8084，容器内经环境变量指向 audit-service
 audit:
