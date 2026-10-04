@@ -6,7 +6,9 @@
 // ② totalAmount 单位「分」必须 > 0；penaltyRate 单位「基点万分比」（2000=20%），0~10000；
 // ③ 状态机：草稿 → 生效中 → 已履行；草稿|生效中 → 已终止（须 terminateReason）；
 // ④ 仅「生效中」合同可被复购/资产转移单 contractNo 引用（D6 联动）；
-// ⑤ 全部状态流转落 append-only 审计链（CONTRACT/CREATE|ACTIVATE|COMPLETE|TERMINATE）。
+// ⑤ 全部状态流转落 append-only 审计链（CONTRACT/CREATE|ACTIVATE|COMPLETE|TERMINATE）；
+// ⑥ 电子签接入位（棒⑧卡3）：esignStatus 独立维度 NONE/SENT/SIGNED/DECLINED/FAILED，
+//    不入生命周期状态机；开关启用后合同须 SIGNED 方可生效；回调落 ESIGN_* 审计。
 // 权限：查看 contract:view / 编辑 contract:edit；门店由后端 JWT 数据域收敛。
 // ============================================================
 import client from './client'
@@ -42,6 +44,16 @@ export interface ContractDTO {
   completedAt: string | null
   terminatedAt: string | null
   terminateReason: string | null
+  /** 电子签流程号（厂商侧签署流程 ID，未发起为 null） */
+  esignFlowId: string | null
+  /** 电子签状态：NONE 未发起 | SENT 已发起 | SIGNED 已签署 | DECLINED 已拒签 | FAILED 签署失败 */
+  esignStatus: string
+  /** 电子签签署人姓名（厂商回调下发） */
+  esignSignerName: string | null
+  /** 电子签签名图（base64/URL，厂商回调下发） */
+  esignSignature: string | null
+  esignSentAt: string | null
+  esignSignedAt: string | null
   createdAt: string
 }
 
@@ -83,6 +95,10 @@ export const createContract = (cmd: CreateContractCmd) =>
 /** 草稿 → 生效中（仅生效中可被 repurchase.contractNo 引用）。 */
 export const activateContract = (no: string) =>
   client.post<ContractDTO>(`/txn/contracts/${no}/activate`)
+
+/** 发起电子签署（仅草稿；SENT 幂等早返回不重复下发厂商流程；接入位未启用 409 中文）。 */
+export const sendContractForSign = (no: string) =>
+  client.post<ContractDTO>(`/txn/contracts/${no}/esign/send`)
 
 /** 生效中 → 已履行。 */
 export const completeContract = (no: string) =>

@@ -46,6 +46,13 @@ public class ContractController {
         return service.activate(no);
     }
 
+    /** 棒⑧卡3 发起电子签署（草稿门禁＋签署状态幂等；SKIPPED 诚实降级 409 中文外露）。 */
+    @PostMapping("/{no}/esign/send")
+    @RequirePerm("contract:edit")
+    public Contract sendForSign(@PathVariable String no) {
+        return service.sendForSign(no);
+    }
+
     @PostMapping("/{no}/complete")
     @RequirePerm("contract:edit")
     public Contract complete(@PathVariable String no) {

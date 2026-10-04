@@ -19,6 +19,7 @@ import CFab from '@/components/CFab.vue'
 import {
   useContractStore,
   CONTRACT_TYPE_LABEL,
+  ESIGN_STATUS_LABEL,
   type Contract,
   type ContractType,
 } from '@/stores/contract'
@@ -101,6 +102,14 @@ async function doActivate() {
     await contract.activate(id)
     selectedId.value = id
     tab.value = 'effective'
+  }
+}
+// 棒⑧卡3 电子签接入位：发起后合同仍停留草稿，待厂商回调 SIGNED 方可生效（开关启用时）
+async function doSendSign() {
+  if (selected.value) {
+    const id = selected.value.id
+    await contract.sendForSign(id)
+    selectedId.value = id
   }
 }
 async function doComplete() {
@@ -355,6 +364,22 @@ async function submitForm() {
             <CIcon name="order" :size="16" />打印合同
           </CButton>
           <template v-if="selected.status === 'DRAFT'">
+            <span
+              v-if="selected.esignStatus && selected.esignStatus !== 'NONE'"
+              class="badge"
+              :class="{
+                'badge--active': selected.esignStatus === 'SIGNED',
+                'badge--warn': selected.esignStatus === 'SENT' || selected.esignStatus === 'DECLINED' || selected.esignStatus === 'FAILED',
+              }"
+            >{{ ESIGN_STATUS_LABEL[selected.esignStatus] ?? selected.esignStatus }}</span>
+            <CButton
+              variant="ghost"
+              v-perm.disable="'contract:edit'"
+              :disabled="selected.esignStatus === 'SENT' || selected.esignStatus === 'SIGNED'"
+              @click="doSendSign"
+            >
+              <CIcon name="sign" :size="16" />发起电子签署
+            </CButton>
             <CButton variant="primary" v-perm.disable="'contract:edit'" @click="doActivate">
               <CIcon name="check" :size="16" />合同生效
             </CButton>

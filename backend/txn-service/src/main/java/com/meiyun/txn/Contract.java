@@ -84,6 +84,28 @@ public class Contract {
     @Column(name = "terminate_reason", length = 256)
     private String terminateReason;
 
+    /** 棒⑧卡3 电子签接入位：厂商签署流程号（发起签署成功回填，回调核验一致性防串号） */
+    @Column(name = "esign_flow_id", length = 64)
+    private String esignFlowId;
+
+    /** 电子签状态：NONE 未发起 | SENT 待客户签署 | SIGNED 已签署 | DECLINED 已拒签 | FAILED 签署失败 */
+    @Column(name = "esign_status", nullable = false, length = 16)
+    private String esignStatus = "NONE";
+
+    /** 客户签署人姓名（签署回调回填） */
+    @Column(name = "esign_signer_name", length = 32)
+    private String esignSignerName;
+
+    /** 客户签名图/厂商签署回执（TEXT 不透明快照，同 ordersJson 口径） */
+    @Column(name = "esign_signature", columnDefinition = "TEXT")
+    private String esignSignature;
+
+    @Column(name = "esign_sent_at")
+    private OffsetDateTime esignSentAt;
+
+    @Column(name = "esign_signed_at")
+    private OffsetDateTime esignSignedAt;
+
     @Column(name = "created_at", nullable = false)
     private OffsetDateTime createdAt;
 }

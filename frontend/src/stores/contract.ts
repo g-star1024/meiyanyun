@@ -21,6 +21,7 @@ import { shDateStr } from '@/utils/datetime'
 import { getCustomer } from '@/api/customer'
 import {
   listContracts, createContract, activateContract, completeContract, terminateContract,
+  sendContractForSign,
   type ContractDTO, type CreateContractCmd,
 } from '@/api/contract'
 
@@ -62,6 +63,16 @@ export interface Contract {
   completedAt?: string
   terminatedAt?: string
   terminateReason?: string
+  /** 电子签流程号（厂商侧签署流程 ID） */
+  esignFlowId?: string
+  /** 电子签状态：NONE 未发起 | SENT 已发起 | SIGNED 已签署 | DECLINED 已拒签 | FAILED 签署失败 */
+  esignStatus?: string
+  /** 电子签签署人姓名（厂商回调下发） */
+  esignSignerName?: string
+  /** 电子签签名图（base64/URL） */
+  esignSignature?: string
+  esignSentAt?: string
+  esignSignedAt?: string
 }
 
 export const CONTRACT_TYPE_LABEL: Record<ContractType, string> = {
@@ -77,6 +88,15 @@ const STATUS_MAP: Record<string, ContractStatus> = {
   生效中: 'EFFECTIVE',
   已履行: 'COMPLETED',
   已终止: 'TERMINATED',
+}
+
+/** 电子签状态 → 中文（独立维度不入生命周期字典，供视图徽标展示） */
+export const ESIGN_STATUS_LABEL: Record<string, string> = {
+  NONE: '未发起签署',
+  SENT: '待客户签署',
+  SIGNED: '客户已签署',
+  DECLINED: '客户已拒签',
+  FAILED: '签署失败',
 }
 
 /** 快照 JSON 容错解析：非法/空一律回退 []（后端不透明 TEXT，绝不让解析异常炸掉列表） */
@@ -156,6 +176,12 @@ export const useContractStore = defineStore('contract', () => {
       completedAt: d.completedAt ?? undefined,
       terminatedAt: d.terminatedAt ?? undefined,
       terminateReason: d.terminateReason ?? undefined,
+      esignFlowId: d.esignFlowId ?? undefined,
+      esignStatus: d.esignStatus ?? 'NONE',
+      esignSignerName: d.esignSignerName ?? undefined,
+      esignSignature: d.esignSignature ?? undefined,
+      esignSentAt: d.esignSentAt ?? undefined,
+      esignSignedAt: d.esignSignedAt ?? undefined,
     }
   }
 
@@ -251,6 +277,23 @@ export const useContractStore = defineStore('contract', () => {
     }
   }
 
+  /** 发起电子签署（仅草稿；后端 SENT 幂等早返回不重复下发厂商流程；接入位未启用 409 中文） */
+  async function sendForSign(id: string): Promise<boolean> {
+    if (!auth.can('contract:edit')) {
+      console.warn('[contract] 无 contract:edit 权限')
+      return false
+    }
+    try {
+      await sendContractForSign(id)
+      activity.log(auth.user.name, `合同 ${id} 已发起电子签署`, id)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '发起电子签署失败'))
+      return false
+    }
+  }
+
   /** 履行完成（生效中 → 已履行） */
   async function complete(id: string): Promise<boolean> {
     if (!auth.can('contract:edit')) {
@@ -302,7 +345,7 @@ export const useContractStore = defineStore('contract', () => {
 
   return {
     contracts, loading, drafts, effective, completed, terminated,
-    get, saveDraft, activate, complete, terminate, inCoolingPeriod, refundEstimate,
+    get, saveDraft, activate, sendForSign, complete, terminate, inCoolingPeriod, refundEstimate,
     seed, load,
   }
 })
