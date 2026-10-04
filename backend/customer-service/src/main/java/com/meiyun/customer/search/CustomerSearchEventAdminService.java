@@ -191,7 +191,7 @@ public class CustomerSearchEventAdminService {
     /** 全量重建审计（reindexAll 本体在 CustomerSearchService，此处仅补留痕）。 */
     public void auditReindex(int indexed, String operator) {
         audit.record(BIZ_TYPE, "REINDEX", operator, "REINDEX",
-                "{\"indexed\":" + indexed + ",\"index\":\"meiyun-customer\"}");
+                "{\"indexed\":" + indexed + ",\"index\":\"" + searchService.getEsIndex() + "\"}");
     }
 
     /** 手动对账留痕：记录 diff 计数与补写数量（铁律 3 审计）。 */

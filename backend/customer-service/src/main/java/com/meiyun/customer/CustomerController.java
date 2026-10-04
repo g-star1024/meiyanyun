@@ -547,7 +547,7 @@ public class CustomerController {
         searchEventAdmin.auditReindex(n, DataScope.currentActor());
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("indexed", n);
-        m.put("index", "meiyun-customer");
+        m.put("index", searchService.getEsIndex());
         return m;
     }
 

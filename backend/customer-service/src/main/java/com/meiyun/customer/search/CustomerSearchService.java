@@ -38,15 +38,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  *       ES 连续失败时熔断开路，直接降级 DB 全表内存过滤（联调期数据量小）。</li>
  * </ul>
  *
- * <p>索引：meiyun-customer，启动时幂等确保显式 mapping（name 分词 + keyword 子字段，
- * phone/customerId/level/status/storeCode 精确 keyword，points long）；索引缺失才创建并全量回填，
- * 已存在的索引不强制改 mapping（避免与存量动态 mapping 冲突）。
+ * <p>索引：默认 meiyun-customer（{@code meiyun.es.index} 可环境化覆盖，如 seed 栈注入
+ * meiyun-customer-seed 与生产栈共享 ES 实例时互相隔离、reindex 互不覆盖），启动时幂等确保显式
+ * mapping（name 分词 + keyword 子字段，phone/customerId/level/status/storeCode 精确 keyword，
+ * points long）；索引缺失才创建并全量回填，已存在的索引不强制改 mapping（避免与存量动态 mapping 冲突）。
  */
 @Component
 public class CustomerSearchService {
 
     private static final Logger log = LoggerFactory.getLogger(CustomerSearchService.class);
-    private static final String INDEX = "meiyun-customer";
 
     /** 熔断：ES 连续失败达到阈值后开路一段时间，期间不打 ES，直接 DB 降级。 */
     private static final int FAILURE_THRESHOLD = 3;
@@ -67,8 +67,17 @@ public class CustomerSearchService {
     @Value("${meiyun.es.endpoint:http://localhost:9200}")
     private String esEndpoint;
 
+    /** 索引名环境化：prod 默认 meiyun-customer；seed 栈注入 meiyun-customer-seed，双栈共享 ES 时 reindex 互不覆盖。 */
+    @Value("${meiyun.es.index:meiyun-customer}")
+    private String esIndex;
+
     public CustomerSearchService(CustomerRepository customerRepo) {
         this.customerRepo = customerRepo;
+    }
+
+    /** 当前生效的 ES 索引名（审计 payload / reindex 响应等外露处统一经此单源）。 */
+    public String getEsIndex() {
+        return esIndex;
     }
 
     /** ES 中继投递结果：SENT 已受理；RETRY 可恢复失败（连接/5xx/429/熔断中）；DEAD 确定性拒绝（4xx）。 */
@@ -79,7 +88,7 @@ public class CustomerSearchService {
     public void initOnReady() {
         try {
             if (ensureIndex()) {
-                log.info("ES 客户索引就绪：{}", INDEX);
+                log.info("ES 客户索引就绪：{}", esIndex);
             }
         } catch (Exception e) {
             log.warn("ES 客户索引初始化失败，待中继/搜索时重试：{}", e.getMessage());
@@ -96,7 +105,7 @@ public class CustomerSearchService {
         try {
             // Java 17 的 Builder 无 HEAD() 便捷方法（18+ 才有），用通用 method 形式
             int head = sendRaw(HttpRequest.newBuilder()
-                    .uri(URI.create(esEndpoint + "/" + INDEX))
+                    .uri(URI.create(esEndpoint + "/" + esIndex))
                     .timeout(Duration.ofSeconds(3))
                     .method("HEAD", HttpRequest.BodyPublishers.noBody())
                     .build()).statusCode();
@@ -110,7 +119,7 @@ public class CustomerSearchService {
                 return false;
             }
             HttpRequest create = HttpRequest.newBuilder()
-                    .uri(URI.create(esEndpoint + "/" + INDEX))
+                    .uri(URI.create(esEndpoint + "/" + esIndex))
                     .header("Content-Type", "application/json")
                     .PUT(HttpRequest.BodyPublishers.ofString(indexMappingJson()))
                     .timeout(Duration.ofSeconds(5))
@@ -123,7 +132,7 @@ public class CustomerSearchService {
             }
             indexReady = true;
             recordSuccess();
-            log.info("ES 客户索引已创建（显式 mapping）：{}", INDEX);
+            log.info("ES 客户索引已创建（显式 mapping）：{}", esIndex);
             // 索引首次创建：把存量客户全量回填，保证新环境/ES 重置后搜索可用
             int n = reindexAll();
             log.info("ES 客户索引初始回填完成：{} 条", n);
@@ -142,7 +151,7 @@ public class CustomerSearchService {
         if (!ensureIndex()) return UpsertResult.RETRY;
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(esEndpoint + "/" + INDEX + "/_doc/" + c.getCustomerId()))
+                    .uri(URI.create(esEndpoint + "/" + esIndex + "/_doc/" + c.getCustomerId()))
                     .header("Content-Type", "application/json")
                     .PUT(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(toDoc(c))))
                     .timeout(Duration.ofSeconds(5))
@@ -177,13 +186,13 @@ public class CustomerSearchService {
             for (Customer c : all) {
                 ObjectNode action = json.createObjectNode();
                 ObjectNode indexNode = action.putObject("index");
-                indexNode.put("_index", INDEX);
+                indexNode.put("_index", esIndex);
                 indexNode.put("_id", c.getCustomerId());
                 nd.append(json.writeValueAsString(action)).append('\n');
                 nd.append(json.writeValueAsString(toDoc(c))).append('\n');
             }
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(esEndpoint + "/" + INDEX + "/_bulk?refresh=true"))
+                    .uri(URI.create(esEndpoint + "/" + esIndex + "/_bulk?refresh=true"))
                     .header("Content-Type", "application/x-ndjson")
                     .POST(HttpRequest.BodyPublishers.ofString(nd.toString()))
                     .timeout(Duration.ofSeconds(10))
@@ -210,7 +219,7 @@ public class CustomerSearchService {
     /**
      * 文档级对账：以 PG customer 表为权威源 diff ES 索引。
      * missing（PG 有 ES 无，多为补偿体系上线前的静默丢失）逐条 upsert 自动补齐；
-     * orphan（ES 有 PG 无，含 seed 栈共享索引的 SC* 文档）仅报告不自动删，人工确认后处置。
+     * orphan（ES 有 PG 无）仅报告不自动删，人工确认后处置。
      * ES 不可达时抛 IllegalStateException（调用方转 503）——对账必须读真 ES，不静默降级。
      */
     public ReconcileResult reconcile() {
@@ -247,7 +256,7 @@ public class CustomerSearchService {
     private Set<String> fetchAllEsIds() {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(esEndpoint + "/" + INDEX + "/_search?size=10000&_source=false"))
+                    .uri(URI.create(esEndpoint + "/" + esIndex + "/_search?size=10000&_source=false"))
                     .GET()
                     .timeout(Duration.ofSeconds(10))
                     .build();
@@ -283,7 +292,7 @@ public class CustomerSearchService {
             bool.putObject("must_not").putObject("exists").put("field", "mergedInto");
             body.put("size", SEARCH_LIMIT);
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(esEndpoint + "/" + INDEX + "/_search"))
+                    .uri(URI.create(esEndpoint + "/" + esIndex + "/_search"))
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(body)))
                     .timeout(Duration.ofSeconds(5))
@@ -339,7 +348,7 @@ public class CustomerSearchService {
     private boolean deleteFromEs(String customerId) {
         try {
             HttpRequest req = HttpRequest.newBuilder()
-                    .uri(URI.create(esEndpoint + "/" + INDEX + "/_doc/" + customerId))
+                    .uri(URI.create(esEndpoint + "/" + esIndex + "/_doc/" + customerId))
                     .DELETE()
                     .timeout(Duration.ofSeconds(5))
                     .build();

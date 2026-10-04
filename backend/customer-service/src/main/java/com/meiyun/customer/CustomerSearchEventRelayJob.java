@@ -15,7 +15,8 @@ import java.util.Optional;
  * 客户检索事件近线中继（B30 建档实时写 ES，与 CardFinanceEventRetryJob 同构的 outbox 中继）。
  *
  * <p>每 10 秒扫描最早 50 条 PENDING 事件（FIFO 限批防长事务）；事件只存 customerId，
- * 投递时回查 PG 取权威客户数据，PUT ES {@code meiyun-customer/_doc/{customerId}} 幂等 upsert，
+ * 投递时回查 PG 取权威客户数据，PUT ES {@code {meiyun.es.index}/_doc/{customerId}} 幂等 upsert
+ *（索引名环境化：prod 默认 meiyun-customer，seed 栈 meiyun-customer-seed），
  * 重复投递覆盖同一文档不双算：
  * <ul>
  *   <li>SENT（ES 2xx，含重复覆盖）→ 置 SENT，记 sentAt、清 lastError；</li>

@@ -31,6 +31,8 @@ services:
     environment:
       SPRING_DATASOURCE_URL: "jdbc:postgresql://meiyun-pg:5432/meiyun_core?stringtype=unspecified"
       MEIYUN_ES_ENDPOINT: "http://meiyun-es:9200"
+      # 棒⑥卡6（L159）：ES 索引名显式自我文档化——prod 固定 meiyun-customer（同默认值），seed 栈另注 meiyun-customer-seed 隔离 reindex。
+      MEIYUN_ES_INDEX: "meiyun-customer"
       SPRING_DATA_REDIS_HOST: "meiyun-redis"
       # Redis 容器启用了 requirepass，Spring Cache（违禁词库）与 redis 频控需带密码认证。
       SPRING_DATA_REDIS_PASSWORD: "meiyun123"
