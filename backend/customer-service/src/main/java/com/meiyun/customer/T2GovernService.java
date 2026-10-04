@@ -12,7 +12,10 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
+import org.springframework.dao.DataAccessException;
 import org.springframework.data.domain.Sort;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,15 +47,17 @@ public class T2GovernService {
     private final DataLineageNodeRepository nodeRepository;
     private final DataLineageEdgeRepository edgeRepository;
     private final AuditRecorder audit;
+    private final JdbcTemplate jdbc;
 
     public T2GovernService(DataGovernRuleRepository ruleRepository, DataGovernIssueRepository issueRepository,
                            DataLineageNodeRepository nodeRepository, DataLineageEdgeRepository edgeRepository,
-                           AuditRecorder audit) {
+                           AuditRecorder audit, JdbcTemplate jdbc) {
         this.ruleRepository = ruleRepository;
         this.issueRepository = issueRepository;
         this.nodeRepository = nodeRepository;
         this.edgeRepository = edgeRepository;
         this.audit = audit;
+        this.jdbc = jdbc;
     }
 
     /** 规则视图（字段名映射回前端契约：tableName→table / columnName→column / ruleType→type）。 */
@@ -155,6 +160,167 @@ public class T2GovernService {
         audit.record("GOVERN_RULE", "RULE-" + saved.getId(), actor, "TOGGLE",
                 "{\"enabled\":" + saved.getEnabled() + "}");
         return toRuleView(saved);
+    }
+
+    /** 规则执行结果（手动 run 返回体；error 非空=执行失败，仅 GovernScanJob 路径使用）。 */
+    public record RuleRunResult(long scanned, long errorCount, double passRate, Long issueId, String error) {}
+
+    private record Detection(long scanned, long errorCount, String sample) {}
+
+    private static final Pattern IDENT = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
+    private static final Pattern FORBIDDEN_WORD = Pattern.compile(
+            "\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|execute|call|copy)\\b",
+            Pattern.CASE_INSENSITIVE);
+
+    /**
+     * 手动执行质量规则（POST /rules/{id}/run）：禁用规则拒绝执行；
+     * 真回填 last_check_at/error_count/pass_rate；违规>0 时幂等检出 OPEN 问题单；落 RUN 审计。
+     */
+    @Transactional
+    public RuleRunResult runRule(Long id) {
+        DataGovernRule r = mustGetRule(id);
+        if (!Boolean.TRUE.equals(r.getEnabled())) {
+            throw new BadReq("规则已停用，请先启用后再执行");
+        }
+        return applyDetection(r, detect(r), DataScope.currentActor(), true);
+    }
+
+    /** 定时扫描执行（GovernScanJob 调用，启用态由调用方过滤）：一切异常收敛为 error 字段不抛出。 */
+    @Transactional
+    public RuleRunResult runRuleQuiet(DataGovernRule r) {
+        try {
+            return applyDetection(r, detect(r), "SYSTEM", false);
+        } catch (Exception ex) {
+            return new RuleRunResult(0, 0, 100.0, null, ex.getMessage());
+        }
+    }
+
+    /** 检出落地：三统计真回填；违规>0 时已有 OPEN 单刷新样本/条数（幂等不重复开单），否则新建；手动或有违规才落审计。 */
+    private RuleRunResult applyDetection(DataGovernRule r, Detection d, String actor, boolean manual) {
+        OffsetDateTime now = OffsetDateTime.now();
+        r.setLastCheckAt(now);
+        r.setErrorCount((int) d.errorCount());
+        double passRate = d.scanned() == 0 ? 100.0
+                : Math.round((d.scanned() - d.errorCount()) * 10000.0 / d.scanned()) / 100.0;
+        r.setPassRate(BigDecimal.valueOf(passRate));
+        ruleRepository.save(r);
+        Long issueId = null;
+        if (d.errorCount() > 0) {
+            DataGovernIssue issue = issueRepository
+                    .findFirstByRuleIdAndStatusOrderByIdDesc(r.getId(), DataGovernIssue.STATUS_OPEN)
+                    .orElse(null);
+            if (issue == null) {
+                issue = new DataGovernIssue();
+                issue.setRuleId(r.getId());
+                issue.setRuleName(r.getName());
+                issue.setTableName(r.getTableName());
+                issue.setColumnName(r.getColumnName());
+                issue.setStatus(DataGovernIssue.STATUS_OPEN);
+                issue.setDetectedAt(now);
+            }
+            issue.setSample(d.sample());
+            issue.setErrorCount((int) d.errorCount());
+            issueId = issueRepository.save(issue).getId();
+        }
+        if (manual || d.errorCount() > 0) {
+            audit.record("GOVERN_RULE", "RULE-" + r.getId(), actor, "RUN",
+                    "{\"scanned\":" + d.scanned() + ",\"errorCount\":" + d.errorCount()
+                            + ",\"passRate\":" + passRate + "}");
+        }
+        return new RuleRunResult(d.scanned(), d.errorCount(), passRate, issueId, null);
+    }
+
+    /**
+     * 规则检测执行器。标识符白名单防注入（JDBC 无法参数化标识符）；expression 白名单拒绝多语句/注释/DML/DDL。
+     * 翻译契约（expression 即「合法条件」，违规=不满足）：
+     * NOT_NULL→WHERE col IS NULL（不读 expression）；UNIQUE→GROUP BY col HAVING count(*)&gt;1（违规数=涉及行数）；
+     * RANGE/REGEX/CUSTOM→WHERE NOT (expression)（REGEX 追加 col IS NOT NULL 前置，NULL 不算格式违规）；样本取前 3 条列值。
+     */
+    private Detection detect(DataGovernRule r) {
+        try {
+            return doDetect(r);
+        } catch (BadReq ex) {
+            throw ex;
+        } catch (DataAccessException ex) {
+            throw new BadReq("规则执行失败：" + rootMessage(ex));
+        }
+    }
+
+    private Detection doDetect(DataGovernRule r) {
+        String table = ident(r.getTableName(), "表名");
+        String column = r.getColumnName() == null || r.getColumnName().isBlank()
+                ? null : ident(r.getColumnName(), "列名");
+        if (column == null && !DataGovernRule.TYPE_CUSTOM.equals(r.getRuleType())) {
+            throw new BadReq("规则列名必填（自定义规则可留空）");
+        }
+        Long total = jdbc.queryForObject("SELECT count(*) FROM " + table, Long.class);
+        long scanned = total == null ? 0 : total;
+        if (DataGovernRule.TYPE_UNIQUE.equals(r.getRuleType())) {
+            Long dup = jdbc.queryForObject(
+                    "SELECT coalesce(sum(c), 0) FROM (SELECT count(*) AS c FROM " + table
+                            + " GROUP BY " + column + " HAVING count(*) > 1) s", Long.class);
+            long dupRows = dup == null ? 0 : dup;
+            String sample = dupRows == 0 ? "" : "重复值: " + String.join(", ", jdbc.queryForList(
+                    "SELECT CAST(" + column + " AS text) FROM " + table + " GROUP BY " + column
+                            + " HAVING count(*) > 1 LIMIT 3", String.class));
+            return new Detection(scanned, dupRows, sample);
+        }
+        String violationWhere;
+        if (DataGovernRule.TYPE_NOT_NULL.equals(r.getRuleType())) {
+            violationWhere = column + " IS NULL";
+        } else if (DataGovernRule.TYPE_RANGE.equals(r.getRuleType())
+                || DataGovernRule.TYPE_REGEX.equals(r.getRuleType())
+                || DataGovernRule.TYPE_CUSTOM.equals(r.getRuleType())) {
+            String expr = guardExpression(r.getExpression());
+            violationWhere = "NOT (" + expr + ")";
+            if (DataGovernRule.TYPE_REGEX.equals(r.getRuleType())) {
+                violationWhere = column + " IS NOT NULL AND NOT (" + expr + ")";
+            }
+        } else {
+            throw new BadReq("规则类型不支持执行：" + r.getRuleType());
+        }
+        Long err = jdbc.queryForObject(
+                "SELECT count(*) FROM " + table + " WHERE " + violationWhere, Long.class);
+        long errorCount = err == null ? 0 : err;
+        String sample = "";
+        if (errorCount > 0 && column != null) {
+            sample = "样本: " + String.join(", ", jdbc.queryForList(
+                    "SELECT CAST(" + column + " AS text) FROM " + table + " WHERE " + violationWhere
+                            + " LIMIT 3", String.class));
+        }
+        return new Detection(scanned, errorCount, sample);
+    }
+
+    /** 标识符白名单（表/列名来自规则配置，JDBC 无法参数化，仅放行字母/数字/下划线）。 */
+    private static String ident(String name, String label) {
+        if (name == null || !IDENT.matcher(name).matches()) {
+            throw new BadReq(label + "含非法字符，仅支持字母/数字/下划线");
+        }
+        return name;
+    }
+
+    /** 表达式白名单（行级合法条件片段）：拒绝分号多语句/注释/DML/DDL 关键词。 */
+    private static String guardExpression(String expression) {
+        if (expression == null || expression.isBlank()) {
+            throw new BadReq("规则表达式必填");
+        }
+        String expr = expression.trim();
+        if (expr.indexOf(';') >= 0 || expr.contains("--") || expr.contains("/*") || expr.contains("*/")) {
+            throw new BadReq("表达式含非法字符（分号/注释）");
+        }
+        if (FORBIDDEN_WORD.matcher(expr).find()) {
+            throw new BadReq("表达式含非法关键词（仅支持查询条件）");
+        }
+        return expr;
+    }
+
+    private static String rootMessage(DataAccessException ex) {
+        Throwable root = ex.getRootCause();
+        String msg = root == null ? ex.getMessage() : root.getMessage();
+        if (msg == null) {
+            return ex.getClass().getSimpleName();
+        }
+        return msg.length() > 120 ? msg.substring(0, 120) : msg;
     }
 
     /** 问题单列表：id 升序（种子插入序=前端 mock 数组序）。 */

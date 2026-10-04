@@ -186,7 +186,7 @@ const lineageGroups = computed(() => {
             <th style="width:220px">通过率</th>
             <th style="width:100px" class="num">错误数</th>
             <th style="width:80px">启用</th>
-            <th style="width:140px">操作</th>
+            <th style="width:200px">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -207,6 +207,9 @@ const lineageGroups = computed(() => {
               </label>
             </td>
             <td>
+              <CButton v-if="auth.can('govern:rule:edit')" size="sm" variant="text" :disabled="store.runningId !== null || !r.enabled" @click="store.runRule(r.id)">
+                <CIcon name="scan" :size="14" />{{ store.runningId === r.id ? '执行中…' : '执行' }}
+              </CButton>
               <CButton v-if="auth.can('govern:rule:edit')" size="sm" variant="text" @click="editRule(r.id)">
                 <CIcon name="edit" :size="14" />编辑
               </CButton>

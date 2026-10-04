@@ -33,6 +33,9 @@ public class T2DataServiceController {
     /** 权限申请请求体（applicant 不收，后端一律 DataScope.currentActor() 防伪造）。 */
     public record ApplyReq(String reason) {}
 
+    /** 调用上报请求体（latencyMs 缺省 0·success 缺省 true）。 */
+    public record CallReq(Integer latencyMs, Boolean success) {}
+
     @GetMapping("/services")
     @RequirePerm("dataService:view")
     public List<DataServiceService.ServiceView> services(@RequestParam(required = false) String type,
@@ -63,6 +66,13 @@ public class T2DataServiceController {
     @RequirePerm("dataService:publish")
     public DataServiceService.ServiceView deprecate(@PathVariable Long id) {
         return service.deprecateService(id);
+    }
+
+    /** 调用上报：逐条落 data_service_call_log（三列指标读时聚合透出）；权限=dataService:view（已授权调用方）。 */
+    @PostMapping("/services/{id}/calls")
+    @RequirePerm("dataService:view")
+    public void recordCall(@PathVariable Long id, @RequestBody(required = false) CallReq req) {
+        service.recordCall(id, req == null ? null : req.latencyMs(), req == null ? null : req.success());
     }
 
     @PostMapping("/services/{id}/apply")

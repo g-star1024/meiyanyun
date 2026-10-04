@@ -1,26 +1,36 @@
 <script setup lang="ts">
 /* ============================================================
- * T2-01 数据采集 /data/collect（P5-B98 接真：纯监控页）
- * 采集通道（touch_event 五通道聚合）+ 触点时间线，KPI×4
- * v1 无写动作（DESIGN-T2 §6）：创建/测试/同步/编辑等 mock 动作已摘除
+ * T2-01 数据采集 /data/collect
+ * 采集通道（touch_event 五通道聚合）+ 触点时间线 + 数据源注册（棒⑥卡7 真源化），KPI×4
+ * 数据源注册：CDC/Kafka/三方注册登记（V72 落库）；三方 API 真实连通探测，
+ * CDC/Kafka 接入运行时归 v2 移交（DESIGN-T2 §6）如实不伪造。
  * ============================================================ */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
 import CButton from '@/components/CButton.vue'
+import CInput from '@/components/CInput.vue'
+import CSelect from '@/components/CSelect.vue'
+import CTextarea from '@/components/CTextarea.vue'
+import CDrawer from '@/components/CDrawer.vue'
 import CStatusPill from '@/components/CStatusPill.vue'
 import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import { useT2DataCollectStore, type ChannelCard } from '@/stores/t2DataCollect'
+import { useT2DataSourceStore, type DataSourceType } from '@/stores/t2DataSource'
+import { useAuthStore } from '@/stores/auth'
 import type { TouchType } from '@/api/touchEvent'
 
 const store = useT2DataCollectStore()
-onMounted(() => store.seed())
+const dsStore = useT2DataSourceStore()
+const auth = useAuthStore()
+onMounted(() => { store.seed(); dsStore.seed() })
 
-const tab = ref<'channels' | 'events'>('channels')
+const tab = ref<'channels' | 'events' | 'sources'>('channels')
 const tabOpts = [
   { value: 'channels', label: '采集通道' },
   { value: 'events', label: '触点时间线' },
+  { value: 'sources', label: '数据源注册' },
 ]
 
 const kpis = computed(() => [
@@ -58,6 +68,69 @@ function fmtTime(iso: string | null) {
   const d = new Date(iso)
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
+
+// ---- 数据源注册（棒⑥卡7：CDC/Kafka/三方注册登记真源化；接入运行时归 v2） ----
+function dsStatusPill(s: 'REGISTERED' | 'CONNECTED' | 'DISABLED') {
+  return s === 'CONNECTED' ? 'success' : s === 'REGISTERED' ? 'info' : 'disabled'
+}
+function dsTypeTagClass(t: DataSourceType) {
+  return t === 'CDC' ? 'tag--primary' : t === 'KAFKA' ? 'tag--warn' : 'tag--success'
+}
+
+const showDsForm = ref(false)
+const dsEditingId = ref<number | null>(null)
+const dsSaving = ref(false)
+const dsForm = reactive({
+  code: '', name: '', type: 'THIRD_PARTY' as DataSourceType, endpoint: '', description: '',
+})
+const dsTypeOptions = [
+  { value: 'CDC', label: 'CDC（数据库变更捕获）' },
+  { value: 'KAFKA', label: 'Kafka（消息流）' },
+  { value: 'THIRD_PARTY', label: '三方 API（支持连通探测）' },
+]
+const canDsSubmit = computed(() =>
+  dsForm.name.trim() && (dsEditingId.value !== null || /^[A-Z][A-Z0-9_]{0,63}$/.test(dsForm.code.trim())))
+
+function openDsCreate() {
+  Object.assign(dsForm, { code: '', name: '', type: 'THIRD_PARTY', endpoint: '', description: '' })
+  dsEditingId.value = null
+  showDsForm.value = true
+}
+function openDsEdit(id: number) {
+  const d = dsStore.getSource(id)
+  if (!d) return
+  Object.assign(dsForm, {
+    code: d.code, name: d.name, type: d.type,
+    endpoint: d.endpoint ?? '', description: d.description,
+  })
+  dsEditingId.value = id
+  showDsForm.value = true
+}
+async function submitDs() {
+  if (!canDsSubmit.value || dsSaving.value) return
+  dsSaving.value = true
+  try {
+    const ok = dsEditingId.value
+      ? await dsStore.updateSource(dsEditingId.value, {
+          name: dsForm.name.trim(),
+          endpoint: dsForm.endpoint.trim() || undefined,
+          description: dsForm.description.trim(),
+        })
+      : !!(await dsStore.createSource({
+          code: dsForm.code.trim(),
+          name: dsForm.name.trim(),
+          type: dsForm.type,
+          endpoint: dsForm.endpoint.trim() || undefined,
+          description: dsForm.description.trim(),
+        }))
+    if (ok) {
+      showDsForm.value = false
+      dsEditingId.value = null
+    }
+  } finally {
+    dsSaving.value = false
+  }
+}
 </script>
 
 <template>
@@ -70,9 +143,12 @@ function fmtTime(iso: string | null) {
       <div class="col__toolbar">
         <CSegmented v-model="tab" :options="tabOpts" size="sm" />
         <div class="col__toolbar-right">
-          <span v-if="store.loadError" class="load-err"><CIcon name="alert" :size="14" />{{ store.loadError }}</span>
-          <CButton variant="secondary" size="sm" :disabled="store.loading" @click="store.load()">
-            <CIcon name="refresh" :size="16" />{{ store.loading ? '加载中…' : '刷新' }}
+          <span v-if="tab === 'sources' ? dsStore.loadError : store.loadError" class="load-err"><CIcon name="alert" :size="14" />{{ tab === 'sources' ? dsStore.loadError : store.loadError }}</span>
+          <CButton v-if="tab === 'sources' && auth.can('collect:create')" variant="primary" size="sm" @click="openDsCreate">
+            <CIcon name="plus" :size="16" />新建数据源
+          </CButton>
+          <CButton variant="secondary" size="sm" :disabled="tab === 'sources' ? dsStore.loading : store.loading" @click="tab === 'sources' ? dsStore.load() : store.load()">
+            <CIcon name="refresh" :size="16" />{{ (tab === 'sources' ? dsStore.loading : store.loading) ? '加载中…' : '刷新' }}
           </CButton>
         </div>
       </div>
@@ -113,7 +189,7 @@ function fmtTime(iso: string | null) {
       </div>
 
       <!-- 触点时间线（同步任务＝触点倒序流） -->
-      <table v-else class="ctable">
+      <table v-else-if="tab === 'events'" class="ctable">
         <thead>
           <tr>
             <th style="width:130px">触点类型</th>
@@ -136,7 +212,75 @@ function fmtTime(iso: string | null) {
           </tr>
         </tbody>
       </table>
+
+      <!-- 数据源注册（棒⑥卡7：CDC/Kafka/三方注册登记；接入运行时归 v2） -->
+      <table v-else class="ctable">
+        <thead>
+          <tr>
+            <th style="width:150px">编码</th>
+            <th>名称</th>
+            <th style="width:100px">类型</th>
+            <th>接入地址</th>
+            <th style="width:90px">状态</th>
+            <th style="width:80px">负责人</th>
+            <th style="width:120px">最近同步</th>
+            <th style="width:210px">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="d in dsStore.sources" :key="d.id">
+            <td><code class="tbl">{{ d.code }}</code></td>
+            <td>
+              <div class="rulename">{{ d.name }}</div>
+              <div class="rulename__sub">{{ d.description }}</div>
+            </td>
+            <td><span class="tag" :class="dsTypeTagClass(d.type)">{{ dsStore.DS_TYPE_LABEL[d.type] }}</span></td>
+            <td class="muted">{{ d.endpoint || '—' }}</td>
+            <td><CStatusPill :status="dsStatusPill(d.status)" dot>{{ dsStore.DS_STATUS_LABEL[d.status] }}</CStatusPill></td>
+            <td class="muted">{{ d.owner }}</td>
+            <td>{{ fmtTime(d.lastSyncAt) }}</td>
+            <td>
+              <template v-if="d.status !== 'DISABLED'">
+                <CButton v-if="auth.can('collect:sync') && d.type === 'THIRD_PARTY'" size="sm" variant="text" :disabled="dsStore.syncingId !== null" @click="dsStore.syncSource(d.id)">
+                  <CIcon name="refresh" :size="14" />{{ dsStore.syncingId === d.id ? '探测中…' : '连通探测' }}
+                </CButton>
+                <CButton v-if="auth.can('collect:edit')" size="sm" variant="text" @click="openDsEdit(d.id)">
+                  <CIcon name="edit" :size="14" />编辑
+                </CButton>
+                <CButton v-if="auth.can('collect:edit')" size="sm" variant="text" @click="dsStore.disableSource(d.id)">
+                  <CIcon name="close" :size="14" />停用
+                </CButton>
+              </template>
+              <span v-else class="muted">已停用</span>
+            </td>
+          </tr>
+          <tr v-if="dsStore.loaded && dsStore.sources.length === 0">
+            <td colspan="8" class="empty-cell">暂无数据源，点击右上角「新建数据源」注册</td>
+          </tr>
+        </tbody>
+      </table>
     </CCard>
+
+    <!-- 数据源新建/编辑 Drawer（code/type 建后不可变） -->
+    <CDrawer :show="showDsForm" :title="dsEditingId ? '编辑数据源' : '新建数据源'" size="md" @update:show="showDsForm = $event">
+      <div class="form">
+        <div class="form__row">
+          <CInput v-model="dsForm.code" label="编码（建后不可变）" placeholder="例如：TP_DOUYIN" :disabled="dsEditingId !== null" />
+          <div class="form__field">
+            <label class="fld-label">类型（建后不可变）</label>
+            <CSelect v-model="dsForm.type" :options="dsTypeOptions" width="100%" :disabled="dsEditingId !== null" />
+          </div>
+        </div>
+        <CInput v-model="dsForm.name" label="名称" placeholder="例如：抖音三方回传 API" />
+        <CInput v-model="dsForm.endpoint" label="接入地址" placeholder="https://… 或 host:port（三方 API 探测用）" />
+        <CTextarea v-model="dsForm.description" :rows="3" label="描述" placeholder="接入内容、归属域、备注" />
+        <div v-if="dsForm.type !== 'THIRD_PARTY'" class="form-hint">CDC / Kafka 接入运行时归 v2 移交（DESIGN-T2 §6），当前仅注册登记，不支持连通探测。</div>
+      </div>
+      <template #footer>
+        <CButton variant="ghost" @click="showDsForm = false">取消</CButton>
+        <CButton variant="primary" :disabled="!canDsSubmit || dsSaving" @click="submitDs">{{ dsSaving ? '提交中…' : dsEditingId ? '保存' : '注册' }}</CButton>
+      </template>
+    </CDrawer>
   </div>
 </template>
 
@@ -207,4 +351,14 @@ function fmtTime(iso: string | null) {
 .tag--success { color: var(--c-success-fg); background: var(--c-success-bg); }
 .tag--warn { color: var(--c-warning-fg); background: var(--c-warning-bg); }
 .tag--purple { color: #7C3AED; background: #F3E8FF; }
+
+.tbl { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: var(--t-xs); color: var(--c-text); background: var(--c-bg-page); padding: 2px 6px; border-radius: var(--r-sm); }
+.rulename { font-weight: 600; color: var(--c-text); }
+.rulename__sub { font-size: var(--t-xs); color: var(--c-text-3); margin-top: 2px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.form { display: flex; flex-direction: column; gap: var(--s-md); }
+.form__row { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s-md); }
+.form__field { display: flex; flex-direction: column; gap: 6px; }
+.fld-label { font-size: var(--t-xs); color: var(--c-text-2); font-weight: 600; }
+.form-hint { font-size: var(--t-xs); color: var(--c-warning-fg); background: var(--c-warning-bg); border-radius: var(--r-md); padding: var(--s-sm) var(--s-md); }
 </style>

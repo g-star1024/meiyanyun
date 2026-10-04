@@ -113,6 +113,7 @@ export const useT2DataGovernStore = defineStore('t2DataGovern', () => {
   const loading = ref(false)
   const loaded = ref(false)
   const loadError = ref('')
+  const runningId = ref<number | null>(null)
 
   // ---- 查询 ----
   const enabledRules = computed(() => rules.value.filter((r) => r.enabled))
@@ -222,6 +223,33 @@ export const useT2DataGovernStore = defineStore('t2DataGovern', () => {
     }
   }
 
+  /** 手动执行规则：真回填三统计＋违规幂等检出 OPEN 问题单；执行后整页重拉（结果集口径以后端为准）。 */
+  async function runRule(id: number): Promise<boolean> {
+    if (!canEdit()) {
+      toast.error('无规则编辑权限')
+      return false
+    }
+    if (runningId.value !== null) return false
+    runningId.value = id
+    try {
+      const res = await api.runRule(id)
+      const name = getRule(id)?.name ?? String(id)
+      if (res.error) {
+        toast.error(`规则「${name}」执行失败：${res.error}`)
+        return false
+      }
+      activity.log(auth.user.name, `手动执行质量规则「${name}」（扫描 ${res.scanned} 行·异常 ${res.errorCount}）`, String(id))
+      toast.success(`执行完成：扫描 ${res.scanned} 行，异常 ${res.errorCount} 条，通过率 ${res.passRate.toFixed(2)}%`)
+      await load()
+      return true
+    } catch (e) {
+      toast.error(errMsg(e, '执行失败'))
+      return false
+    } finally {
+      runningId.value = null
+    }
+  }
+
   async function resolveIssue(id: number): Promise<boolean> {
     if (!canEdit()) {
       toast.error('无问题处理权限')
@@ -261,11 +289,11 @@ export const useT2DataGovernStore = defineStore('t2DataGovern', () => {
 
   return {
     rules, issues, lineageNodes, lineageEdges,
-    loading, loaded, loadError,
+    loading, loaded, loadError, runningId,
     enabledRules, openIssues, passRate,
     RULE_TYPE_LABEL, RULE_SEVERITY_LABEL, ISSUE_STATUS_LABEL, LINEAGE_NODE_LABEL,
     getRule, canCreate, canEdit,
     load, seed,
-    createRule, updateRule, toggleRule, resolveIssue, ignoreIssue,
+    createRule, updateRule, toggleRule, runRule, resolveIssue, ignoreIssue,
   }
 })

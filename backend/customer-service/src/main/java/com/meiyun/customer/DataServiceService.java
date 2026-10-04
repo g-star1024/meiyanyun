@@ -10,9 +10,12 @@ import com.meiyun.security.DataScope;
 import com.meiyun.security.LoginUser;
 import com.meiyun.security.SecurityContext;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,6 +30,10 @@ import org.springframework.transaction.annotation.Transactional;
  * DataScope.currentActor()（请求体不收 actor，防伪造）；owner 展示用登录人姓名（govern 先例）。
  * 审计 DATA_SERVICE / DSVC-{serviceId} 六动作 CREATE/PUBLISH/DEPRECATE/APPLY/APPROVE/REJECT
  * （同一服务全动作同链，照 T2-B2 TAG_FACTORY 先例）。
+ * 调用统计（棒⑥卡7 T2-04 收口）：POST /services/{id}/calls 逐条落 data_service_call_log（V71）；
+ * ServiceView 三列指标（callCount24h/avgLatency/errorRate）读时聚合 24h 窗口透出（列表一次 group by·
+ * 单写操作单服务聚合），errorRate 对齐种子口径=百分数 errors*100/calls 两位小数；data_service 表内
+ * 三列保留为种子初始快照不再更新；上报高频路径不落审计防洪泛。
  */
 @Service
 public class DataServiceService {
@@ -38,14 +45,17 @@ public class DataServiceService {
 
     private final DataServiceRepository serviceRepository;
     private final DataServicePermissionRepository permissionRepository;
+    private final DataServiceCallLogRepository callLogRepository;
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
 
     public DataServiceService(DataServiceRepository serviceRepository,
                               DataServicePermissionRepository permissionRepository,
+                              DataServiceCallLogRepository callLogRepository,
                               AuditRecorder audit, ObjectMapper mapper) {
         this.serviceRepository = serviceRepository;
         this.permissionRepository = permissionRepository;
+        this.callLogRepository = callLogRepository;
         this.audit = audit;
         this.mapper = mapper;
     }
@@ -61,17 +71,21 @@ public class DataServiceService {
                                  String reason, String status, String appliedAt, String decidedAt,
                                  String decidedBy) {}
 
-    /** 服务列表：id 升序（种子插入序=前端 mock 数组序）；type 精确过滤＋keyword 名称/描述/端点模糊（大小写不敏感）。 */
+    /** 服务列表：id 升序（种子插入序=前端 mock 数组序）；type 精确过滤＋keyword 名称/描述/端点模糊（大小写不敏感）；三列指标读时聚合 24h 窗口（一次 group by 取回）。 */
     @Transactional(readOnly = true)
     public List<ServiceView> listServices(String type, String keyword) {
         String kw = keyword == null ? "" : keyword.trim().toLowerCase();
+        Map<Long, Agg> aggMap = new HashMap<>();
+        for (Object[] row : callLogRepository.aggregate24hGroupByService()) {
+            aggMap.put(((Number) row[0]).longValue(), toAgg(row, 1));
+        }
         return serviceRepository.findAllByOrderByIdAsc().stream()
                 .filter(s -> type == null || type.isBlank() || type.equals(s.getType()))
                 .filter(s -> kw.isEmpty()
                         || s.getName().toLowerCase().contains(kw)
                         || (s.getDescription() != null && s.getDescription().toLowerCase().contains(kw))
                         || (s.getEndpoint() != null && s.getEndpoint().toLowerCase().contains(kw)))
-                .map(this::toView)
+                .map(s -> toView(s, aggMap.getOrDefault(s.getId(), Agg.EMPTY)))
                 .toList();
     }
 
@@ -112,7 +126,7 @@ public class DataServiceService {
         DataService saved = serviceRepository.save(s);
         audit.record("DATA_SERVICE", "DSVC-" + saved.getId(), actor, "CREATE",
                 "{\"name\":\"" + esc(saved.getName()) + "\",\"type\":\"" + saved.getType() + "\"}");
-        return toView(saved);
+        return toView(saved, aggOf(saved.getId()));
     }
 
     /** 发布：仅 DRAFT/DEPRECATED；版本 v0.x→v1.0（mock 口径，非 v0 开头保持不变）；落 PUBLISH 审计。 */
@@ -128,7 +142,7 @@ public class DataServiceService {
         DataService saved = serviceRepository.save(s);
         audit.record("DATA_SERVICE", "DSVC-" + saved.getId(), actor, "PUBLISH",
                 "{\"name\":\"" + esc(saved.getName()) + "\",\"version\":\"" + esc(saved.getVersion()) + "\"}");
-        return toView(saved);
+        return toView(saved, aggOf(saved.getId()));
     }
 
     /** 下线：仅 PUBLISHED→DEPRECATED；落 DEPRECATE 审计。 */
@@ -141,7 +155,18 @@ public class DataServiceService {
         DataService saved = serviceRepository.save(s);
         audit.record("DATA_SERVICE", "DSVC-" + saved.getId(), actor, "DEPRECATE",
                 "{\"name\":\"" + esc(saved.getName()) + "\"}");
-        return toView(saved);
+        return toView(saved, aggOf(saved.getId()));
+    }
+
+    /** 调用上报：服务不存在 404 透出 mock 原文「服务不存在」；逐条落 call_log（三列指标读时聚合透出；高频路径不落审计防洪泛，照 GovernScanJob 审计收敛先例）。 */
+    @Transactional
+    public void recordCall(Long serviceId, Integer latencyMs, Boolean success) {
+        DataService s = mustGet(serviceId);
+        DataServiceCallLog log = new DataServiceCallLog();
+        log.setServiceId(s.getId());
+        log.setLatencyMs(latencyMs == null || latencyMs < 0 ? 0 : latencyMs);
+        log.setSuccess(success == null || success);
+        callLogRepository.save(log);
     }
 
     /** 申请权限：服务不存在 404 透出 mock 原文「服务不存在」；applicant=当前操作人；PENDING 落库；落 APPLY 审计。 */
@@ -216,7 +241,29 @@ public class DataServiceService {
         }
     }
 
-    private ServiceView toView(DataService s) {
+    /** 24h 窗口聚合（calls/avgLatency/errors；errorRate 透出时按种子口径=百分数 errors*100/calls 两位小数）。 */
+    private record Agg(long calls, double avgLatency, long errors) {
+        static final Agg EMPTY = new Agg(0, 0, 0);
+    }
+
+    /** 聚合行转换（offset=1：group by 版首列 service_id；offset=0：单服务版仅三列聚合值）。 */
+    private static Agg toAgg(Object[] row, int offset) {
+        long calls = ((Number) row[offset]).longValue();
+        double avg = row[offset + 1] == null ? 0 : ((Number) row[offset + 1]).doubleValue();
+        long errors = ((Number) row[offset + 2]).longValue();
+        return new Agg(calls, avg, errors);
+    }
+
+    /** 单服务 24h 聚合（无日志→EMPTY）。 */
+    private Agg aggOf(Long serviceId) {
+        List<Object[]> rows = callLogRepository.aggregate24hByServiceId(serviceId);
+        return rows.isEmpty() ? Agg.EMPTY : toAgg(rows.get(0), 1);
+    }
+
+    private ServiceView toView(DataService s, Agg agg) {
+        BigDecimal errorRate = agg.calls() == 0 ? BigDecimal.ZERO
+                : BigDecimal.valueOf(agg.errors() * 100.0 / agg.calls())
+                        .setScale(2, RoundingMode.HALF_UP).stripTrailingZeros();
         return new ServiceView(
                 s.getId(),
                 s.getName(),
@@ -226,9 +273,9 @@ public class DataServiceService {
                 s.getDescription() == null ? "" : s.getDescription(),
                 s.getOwner(),
                 s.getStatus(),
-                s.getCallCount24h() == null ? 0 : s.getCallCount24h(),
-                s.getAvgLatency() == null ? 0 : s.getAvgLatency(),
-                s.getErrorRate() == null ? BigDecimal.ZERO : s.getErrorRate(),
+                (int) Math.min(agg.calls(), Integer.MAX_VALUE),
+                (int) Math.round(agg.avgLatency()),
+                errorRate,
                 parseStrings(s.getFields()),
                 parseStrings(s.getTags()),
                 s.getVersion(),

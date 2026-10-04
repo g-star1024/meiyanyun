@@ -74,6 +74,19 @@ export function toggleRule(id: number): Promise<RuleView> {
   return client.post(`/customer/t2/govern/rules/${id}/toggle`).then((r) => r.data)
 }
 
+/** 手动执行结果（对齐后端 RuleRunResult：error 非空=执行失败原因）。 */
+export interface RuleRunResult {
+  scanned: number
+  errorCount: number
+  passRate: number
+  issueId: number | null
+  error: string | null
+}
+
+export function runRule(id: number): Promise<RuleRunResult> {
+  return client.post(`/customer/t2/govern/rules/${id}/run`).then((r) => r.data)
+}
+
 export function fetchIssues(): Promise<IssueView[]> {
   return client.get('/customer/t2/govern/issues').then((r) => r.data)
 }

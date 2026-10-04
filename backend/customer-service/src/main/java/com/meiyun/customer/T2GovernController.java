@@ -55,6 +55,13 @@ public class T2GovernController {
         return service.toggleRule(id);
     }
 
+    /** 手动执行质量规则：真回填三统计＋违规幂等检出 OPEN 问题单（禁用规则 400 中文透出）。 */
+    @PostMapping("/rules/{id}/run")
+    @RequirePerm("govern:rule:edit")
+    public T2GovernService.RuleRunResult runRule(@PathVariable Long id) {
+        return service.runRule(id);
+    }
+
     @GetMapping("/issues")
     @RequirePerm("govern:view")
     public List<T2GovernService.IssueView> issues() {

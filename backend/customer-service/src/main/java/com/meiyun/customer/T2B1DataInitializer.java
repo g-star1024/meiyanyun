@@ -51,43 +51,43 @@ public class T2B1DataInitializer implements ApplicationRunner {
         }
         OffsetDateTime now = OffsetDateTime.now();
 
-        DataGovernRule r0 = seedRule(now, 0, "订单号非空", "orders", "order_no",
+        DataGovernRule r0 = seedRule(now, 0, "订单号非空", "txn_order", "order_no",
                 DataGovernRule.TYPE_NOT_NULL, DataGovernRule.SEVERITY_HIGH,
                 "order_no IS NOT NULL", true, "100", 0, "张数");
-        DataGovernRule r1 = seedRule(now, 1, "客户手机号唯一", "customers", "phone",
+        DataGovernRule r1 = seedRule(now, 1, "客户手机号唯一", "customer", "phone",
                 DataGovernRule.TYPE_UNIQUE, DataGovernRule.SEVERITY_HIGH,
                 "COUNT(DISTINCT phone) = COUNT(*)", true, "98.4", 124, "张数");
-        DataGovernRule r2 = seedRule(now, 2, "订单金额合理范围", "orders", "amount",
+        DataGovernRule r2 = seedRule(now, 2, "订单金额合理范围", "txn_order", "amount",
                 DataGovernRule.TYPE_RANGE, DataGovernRule.SEVERITY_HIGH,
-                "amount BETWEEN 0.01 AND 500000", true, "99.6", 18, "李析");
-        DataGovernRule r3 = seedRule(now, 3, "手机号格式", "customers", "phone",
+                "amount BETWEEN 1 AND 10000000", true, "99.6", 18, "李析");
+        DataGovernRule r3 = seedRule(now, 3, "手机号格式", "customer", "phone",
                 DataGovernRule.TYPE_REGEX, DataGovernRule.SEVERITY_MEDIUM,
                 "phone ~ '^1[3-9]\\d{9}$'", true, "96.2", 42, "李析");
-        DataGovernRule r4 = seedRule(now, 4, "预约时间非过去", "appointments", "appoint_at",
+        DataGovernRule r4 = seedRule(now, 4, "预约时间非过去", "appointment", "appt_date",
                 DataGovernRule.TYPE_CUSTOM, DataGovernRule.SEVERITY_MEDIUM,
-                "appoint_at >= created_at", true, "99.1", 8, "王治");
-        DataGovernRule r5 = seedRule(now, 5, "退款金额不超订单", "refunds", "amount",
+                "created_at::date <= appt_date", true, "99.1", 8, "王治");
+        DataGovernRule r5 = seedRule(now, 5, "退款金额不超订单", "txn_refund", "refund_amt",
                 DataGovernRule.TYPE_CUSTOM, DataGovernRule.SEVERITY_HIGH,
-                "refunds.amount <= orders.amount", true, "100", 0, "王治");
-        DataGovernRule r6 = seedRule(now, 6, "身份证号格式", "customers", "id_card",
+                "refund_amt >= 0 AND refund_amt <= paid_amt", true, "100", 0, "王治");
+        DataGovernRule r6 = seedRule(now, 6, "客户姓名格式", "customer", "name",
                 DataGovernRule.TYPE_REGEX, DataGovernRule.SEVERITY_HIGH,
-                "id_card ~ '^\\d{17}[\\dXx]$'", false, "94.8", 6, "王治");
-        DataGovernRule r7 = seedRule(now, 7, "员工工号非空", "staff", "staff_no",
+                "name ~ '^\\S{2,30}$'", false, "94.8", 6, "王治");
+        DataGovernRule r7 = seedRule(now, 7, "员工工号非空", "staff", "staff_id",
                 DataGovernRule.TYPE_NOT_NULL, DataGovernRule.SEVERITY_MEDIUM,
-                "staff_no IS NOT NULL", true, "100", 0, "张数");
-        DataGovernRule r8 = seedRule(now, 8, "会员等级枚举", "customers", "level",
+                "staff_id IS NOT NULL", true, "100", 0, "张数");
+        DataGovernRule r8 = seedRule(now, 8, "会员等级枚举", "customer", "level",
                 DataGovernRule.TYPE_CUSTOM, DataGovernRule.SEVERITY_LOW,
-                "level IN ('NORMAL','SILVER','GOLD','BLACK')", true, "99.9", 2, "张数");
-        DataGovernRule r9 = seedRule(now, 9, "消费记录时间合法", "orders", "paid_at",
+                "level IN ('普通','银卡','金卡','钻石')", true, "99.9", 2, "张数");
+        DataGovernRule r9 = seedRule(now, 9, "消费记录时间合法", "txn_order", "created_at",
                 DataGovernRule.TYPE_RANGE, DataGovernRule.SEVERITY_MEDIUM,
-                "paid_at >= '2020-01-01' AND paid_at <= NOW()", true, "100", 0, "李析");
+                "created_at >= TIMESTAMP '2020-01-01' AND created_at <= now()", true, "100", 0, "李析");
 
         seedIssue(now, r1, "phone='138****8000' 出现 3 次", 42, DataGovernIssue.STATUS_OPEN, 6, null);
         seedIssue(now, r1, "phone='138****8000' 出现 3 次", 42, DataGovernIssue.STATUS_RESOLVED, 12, 4L);
         seedIssue(now, r1, "phone='138****8000' 出现 3 次", 42, DataGovernIssue.STATUS_OPEN, 18, null);
-        seedIssue(now, r2, "order_no=SO202608250091 amount=-200", 18, DataGovernIssue.STATUS_OPEN, 6, null);
+        seedIssue(now, r2, "amount=-20000（分）", 18, DataGovernIssue.STATUS_OPEN, 6, null);
         seedIssue(now, r3, "1380013800 (10位)", 42, DataGovernIssue.STATUS_OPEN, 6, null);
-        seedIssue(now, r4, "appoint_at < created_at", 8, DataGovernIssue.STATUS_OPEN, 6, null);
+        seedIssue(now, r4, "appt_date 早于创建日期", 8, DataGovernIssue.STATUS_OPEN, 6, null);
         seedIssue(now, r6, "异常样本示例数据", 6, DataGovernIssue.STATUS_OPEN, 6, null);
         seedIssue(now, r8, "异常样本示例数据", 2, DataGovernIssue.STATUS_OPEN, 6, null);
 

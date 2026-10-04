@@ -13,6 +13,9 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Pattern;
+import org.springframework.dao.DataAccessException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,11 +25,12 @@ import org.springframework.transaction.annotation.Transactional;
  * 否则直发 PUBLISHED）；approve 仅 PENDING_APPROVAL；offline 仅 PUBLISHED；delete 禁 PUBLISHED
  * （409 透出 mock 原文「已发布标签不可删除，请先下线」）——其余违反一律 409 中文透出当前态
  * （幂等提交方据此识别已流转）。
- * doPublish：版本 v{n+1}.0 追加 versions jsonb；coverCount 确定性（base 按加工方式＋sql+id 哈希取模
- * spread，区间对齐 mock 随机区间 SQL 2000+/RULE 1500+/ML 3000+）；同事务 syncToM3 直写 customer_tag
- * （name 查重软跳过对齐 mock if(!existing)·窄映射 RULE→行为/SQL→消费/ML→价值·TG### max+1
- * synchronized 防重号复用 CustomerService.createTag 模式；mock 的 color/rule 两字段 customer_tag
- * 无对应列故弃用）。
+ * doPublish：版本 v{n+1}.0 追加 versions jsonb；coverCount 真算（SQL 型守卫后直跑成员 SQL·RULE 型
+ * 字段白名单翻译 customer 表 WHERE 条件，棒⑥卡7 T2-03 收口）；tag_factory_result 同事务整批重写
+ * （先删后插，仅存当前发布版本成员）；syncToM3 直写 customer_tag（name 查重软跳过对齐 mock if(!existing)
+ * ·窄映射 RULE→行为/SQL→消费/ML→价值·TG### max+1 synchronized 防重号复用 CustomerService.createTag
+ * 模式）并把真算成员扩写 customer_tag_rel（已存在跳过）；ML 型无在线模型，coverCount 保留确定性
+ * 估算口径如实返回、不落结果集；mock 的 color/rule 两字段 customer_tag 无对应列故弃用。
  * 操作人取 DataScope.currentActor()（请求体不收 actor，防伪造）；owner 展示用登录人姓名（govern 先例）。
  */
 @Service
@@ -44,16 +48,24 @@ public class TagFactoryService {
 
     private final TagFactoryDefRepository defRepository;
     private final CustomerTagRepository customerTagRepository;
+    private final TagFactoryResultRepository resultRepository;
+    private final CustomerTagRelRepository relRepository;
     private final AuditRecorder audit;
     private final ObjectMapper mapper;
+    private final JdbcTemplate jdbc;
 
     public TagFactoryService(TagFactoryDefRepository defRepository,
                              CustomerTagRepository customerTagRepository,
-                             AuditRecorder audit, ObjectMapper mapper) {
+                             TagFactoryResultRepository resultRepository,
+                             CustomerTagRelRepository relRepository,
+                             AuditRecorder audit, ObjectMapper mapper, JdbcTemplate jdbc) {
         this.defRepository = defRepository;
         this.customerTagRepository = customerTagRepository;
+        this.resultRepository = resultRepository;
+        this.relRepository = relRepository;
         this.audit = audit;
         this.mapper = mapper;
+        this.jdbc = jdbc;
     }
 
     /** 版本视图（jsonb 元素结构，字段名对齐前端 TagVersion）。 */
@@ -170,10 +182,14 @@ public class TagFactoryService {
         return toView(saved);
     }
 
-    /** 试算：确定性覆盖人数（同输入同输出，区间对齐 mock 随机区间）。 */
+    /** 试算：SQL/RULE 真算成员覆盖人数（与发布同引擎）；ML 无在线模型，保留确定性估算口径如实返回。 */
     @Transactional(readOnly = true)
     public PreviewView previewCompute(Long id) {
-        return new PreviewView(deterministicCover(mustGet(id)));
+        TagFactoryDef t = mustGet(id);
+        if (TagFactoryDef.TYPE_ML.equals(t.getType())) {
+            return new PreviewView(deterministicCover(t));
+        }
+        return new PreviewView(computeMembers(t).size());
     }
 
     /** 发布：仅 DRAFT/OFFLINE；SENSITIVE→PENDING_APPROVAL（落 SUBMIT_APPROVAL 审计）否则 doPublish 直发（落 PUBLISH 审计）。synchronized 护 TG### 取号。 */
@@ -237,31 +253,62 @@ public class TagFactoryService {
                 "{\"name\":\"" + esc(t.getName()) + "\",\"code\":\"" + esc(t.getCode()) + "\"}");
     }
 
-    /** 发布主流程：版本 v{n+1}.0 追加＋确定性 coverCount＋lastComputeAt＋同事务 syncToM3（对齐 mock doPublish）。 */
+    /** 发布主流程：版本 v{n+1}.0 追加＋真算 coverCount（SQL/RULE 实跑成员集；ML 估算）＋结果集整批重写＋同事务 syncToM3。 */
     private void doPublish(TagFactoryDef t, String publisherName) {
         OffsetDateTime now = OffsetDateTime.now();
         List<VersionView> versions = parseVersions(t.getVersions());
         String version = "v" + (versions.size() + 1) + ".0";
-        int cover = deterministicCover(t);
+        boolean ml = TagFactoryDef.TYPE_ML.equals(t.getType());
+        List<String> memberIds = ml ? List.of() : computeMembers(t);
+        int cover = ml ? deterministicCover(t) : memberIds.size();
         versions.add(new VersionView(version, t.getSql(), now.toString(), publisherName, cover));
         t.setVersions(writeJson(versions));
         t.setStatus(TagFactoryDef.STATUS_PUBLISHED);
         t.setCoverCount(cover);
         t.setLastComputeAt(now);
         t.setUpdatedAt(now);
-        syncToM3(t);
+        rewriteResults(t.getId(), version, memberIds);
+        syncToM3(t, memberIds);
     }
 
-    /** 同步标签到 M3-06 标签体系（customer_tag 窄表）：名称查重存在即跳过（对齐 mock if(!existing)）；窄映射 RULE→行为/SQL→消费/ML→价值。 */
-    private void syncToM3(TagFactoryDef t) {
-        if (customerTagRepository.existsByTagName(t.getName())) {
-            return;
+    /** 结果集整批重写（先删后插，仅存当前发布版本成员；上限 10 万行防爆表）。 */
+    private void rewriteResults(Long factoryId, String version, List<String> memberIds) {
+        resultRepository.deleteByFactoryId(factoryId);
+        int limit = Math.min(memberIds.size(), 100_000);
+        List<TagFactoryResult> batch = new ArrayList<>(limit);
+        for (int i = 0; i < limit; i++) {
+            TagFactoryResult r = new TagFactoryResult();
+            r.setFactoryId(factoryId);
+            r.setCustomerId(memberIds.get(i));
+            r.setTagVersion(version);
+            batch.add(r);
         }
-        CustomerTag ct = new CustomerTag();
-        ct.setTagId(nextTgId());
-        ct.setTagName(t.getName());
-        ct.setCategory(narrowCategory(t.getType()));
-        customerTagRepository.save(ct);
+        resultRepository.saveAll(batch);
+    }
+
+    /** 同步标签到 M3-06 标签体系（customer_tag 窄表）：名称查重存在即复用（对齐 mock if(!existing)）；窄映射 RULE→行为/SQL→消费/ML→价值；同事务把真算成员扩写 customer_tag_rel（已存在跳过，上限 5 万条）。 */
+    private void syncToM3(TagFactoryDef t, List<String> memberIds) {
+        CustomerTag ct = customerTagRepository.findByTagName(t.getName()).orElse(null);
+        if (ct == null) {
+            ct = new CustomerTag();
+            ct.setTagId(nextTgId());
+            ct.setTagName(t.getName());
+            ct.setCategory(narrowCategory(t.getType()));
+            ct = customerTagRepository.save(ct);
+        }
+        int added = 0;
+        for (String cid : memberIds) {
+            if (added >= 50_000) {
+                break;
+            }
+            if (!relRepository.existsByCustomerIdAndTagId(cid, ct.getTagId())) {
+                CustomerTagRel rel = new CustomerTagRel();
+                rel.setCustomerId(cid);
+                rel.setTagId(ct.getTagId());
+                relRepository.save(rel);
+                added++;
+            }
+        }
     }
 
     /** 类型→customer_tag 五分类窄映射（customer_tag 仅 消费/肤质/行为/价值/医疗 五值）。 */
@@ -305,6 +352,76 @@ public class TagFactoryService {
             }
         }
         return base + Math.floorMod(((t.getSql() == null ? "" : t.getSql()) + t.getId()).hashCode(), spread);
+    }
+
+    private static final Pattern FORBIDDEN_WORD = Pattern.compile(
+            "\\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|execute|call|copy)\\b",
+            Pattern.CASE_INSENSITIVE);
+    private static final Pattern RULE_IDENT = Pattern.compile("[a-zA-Z_][a-zA-Z0-9_]*");
+    private static final Set<String> RULE_FIELDS = Set.of(
+            "customer_id", "name", "phone", "gender", "birth_date", "level", "store_code",
+            "points", "status", "created_at", "channel", "owner_staff_id", "total_spend",
+            "visit_count", "age", "budget", "intent_level", "skin_type");
+    private static final Set<String> RULE_KEYWORDS = Set.of(
+            "and", "or", "not", "in", "like", "is", "null", "between", "true", "false",
+            "now", "date", "interval", "cast", "text", "int", "integer", "numeric", "extract", "year");
+
+    /** 真算成员集：SQL 型守卫后直跑（约定返回单列 customer_id）；RULE 型字段白名单翻译为 customer 表 WHERE 条件。 */
+    private List<String> computeMembers(TagFactoryDef t) {
+        String sql = TagFactoryDef.TYPE_SQL.equals(t.getType())
+                ? guardMemberSql(t.getSql())
+                : "SELECT customer_id FROM customer WHERE " + guardRuleExpression(t.getSql());
+        try {
+            return jdbc.queryForList(sql, String.class);
+        } catch (DataAccessException e) {
+            Throwable root = e.getRootCause() != null ? e.getRootCause() : e;
+            String msg = root.getMessage() == null ? e.getMessage() : root.getMessage();
+            throw new BadReq("标签加工 SQL 执行失败："
+                    + (msg.length() > 120 ? msg.substring(0, 120) : msg));
+        }
+    }
+
+    /** SQL 型守卫：仅允许单条只读 SELECT（拒绝分号/注释/DML 关键词，防多语句与写操作）。 */
+    private static String guardMemberSql(String sql) {
+        if (sql == null || sql.isBlank()) {
+            throw new BadReq("加工 SQL 不能为空");
+        }
+        String trimmed = sql.trim();
+        if (!trimmed.regionMatches(true, 0, "select", 0, 6)) {
+            throw new BadReq("加工 SQL 仅允许 SELECT 查询");
+        }
+        if (trimmed.contains(";") || trimmed.contains("--") || trimmed.contains("/*")) {
+            throw new BadReq("加工 SQL 含非法字符（分号/注释）");
+        }
+        if (FORBIDDEN_WORD.matcher(trimmed).find()) {
+            throw new BadReq("加工 SQL 含禁用关键词（仅允许只读查询）");
+        }
+        return trimmed;
+    }
+
+    /** RULE 型守卫：字符级拒绝＋引号外标识符全量白名单（customer 真列或条件关键字），翻译为 WHERE 条件。 */
+    private static String guardRuleExpression(String expr) {
+        if (expr == null || expr.isBlank()) {
+            throw new BadReq("规则表达式不能为空");
+        }
+        if (expr.length() > 500) {
+            throw new BadReq("规则表达式过长（上限 500 字符）");
+        }
+        if (expr.contains(";") || expr.contains("--") || expr.contains("/*")) {
+            throw new BadReq("规则表达式含非法字符（分号/注释）");
+        }
+        if (FORBIDDEN_WORD.matcher(expr).find()) {
+            throw new BadReq("规则表达式含禁用关键词");
+        }
+        String noLiteral = expr.replaceAll("'[^']*'", " ");
+        java.util.regex.Matcher m = RULE_IDENT.matcher(noLiteral);
+        while (m.find()) {
+            String ident = m.group().toLowerCase();
+            if (!RULE_FIELDS.contains(ident) && !RULE_KEYWORDS.contains(ident)) {
+                throw new BadReq("规则表达式引用了未登记的字段或关键字：" + m.group());
+            }
+        }
+        return expr;
     }
 
     private TagFactoryDef mustGet(Long id) {
