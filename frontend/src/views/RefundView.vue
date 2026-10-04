@@ -116,6 +116,7 @@ async function load() {
 
 onMounted(async () => {
   await load()
+  if (auth.can('contract:view') && !contract.contracts.length) await contract.load()
   const qno = typeof route.query.contractNo === 'string' ? route.query.contractNo : ''
   if (!qno) return
   if (!contract.contracts.length) await contract.load()
