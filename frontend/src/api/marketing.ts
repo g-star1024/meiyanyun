@@ -259,6 +259,14 @@ export interface PushRecordDTO {
   pushType: string
   content: string
   sentAt: string
+  /** 棒⑧卡2 外发腿：SENT/FAILED/DEAD/SKIPPED；null=外发腿上线前纯落库历史行。 */
+  status: string | null
+  /** 通道回执 ID（短信 BizId 等）。 */
+  channelMsgId: string | null
+  /** 失败/跳过原因（诚实口径，不伪造成功）。 */
+  error: string | null
+  /** 外发成功时间（仅 SENT 写）。 */
+  deliveredAt: string | null
 }
 
 // -------------------- 活动接口 --------------------

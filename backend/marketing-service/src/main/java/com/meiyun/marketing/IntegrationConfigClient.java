@@ -72,6 +72,15 @@ public class IntegrationConfigClient {
         return envFallback;
     }
 
+    /** 通道扩展配置 JSON（棒⑧卡2：短信直连 accessKeyId/signName/templateCode 等）：库启用值 → env 兜底 → 空。 */
+    public String resolveConfigJson(String code, String envFallback) {
+        SnapshotLine line = current().get(code);
+        if (line != null && line.enabled() && notBlank(line.configJson())) {
+            return line.configJson();
+        }
+        return envFallback == null ? null : envFallback.isBlank() ? null : envFallback;
+    }
+
     /** 取当前有效快照；TTL 过期则尝试刷新，刷新失败在宽限期内沿用旧快照。 */
     private Map<String, SnapshotLine> current() {
         long now = System.currentTimeMillis();
@@ -119,6 +128,7 @@ public class IntegrationConfigClient {
                         Boolean.TRUE.equals(row.get("enabled")),
                         str(row.get("baseUrl")),
                         str(row.get("secret")),
+                        str(row.get("configJson")),
                         row.get("boolValue") instanceof Boolean b ? b : null,
                         row.get("updatedAt") == null ? null : parseTime(row.get("updatedAt"))));
             }
@@ -145,7 +155,7 @@ public class IntegrationConfigClient {
         return s != null && !s.isBlank();
     }
 
-    private record SnapshotLine(boolean enabled, String baseUrl, String secret,
+    private record SnapshotLine(boolean enabled, String baseUrl, String secret, String configJson,
                                 Boolean boolValue, OffsetDateTime updatedAt) {
     }
 }

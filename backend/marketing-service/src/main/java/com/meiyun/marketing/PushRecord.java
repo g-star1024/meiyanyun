@@ -37,4 +37,21 @@ public class PushRecord {
 
     @Column(name = "sent_at", nullable = false)
     private OffsetDateTime sentAt;
+
+    // ---- 棒⑧卡2 外发腿四列（V88；历史行 NULL = 外发腿上线前纯落库，不追标） ----
+    /** 外发状态：SENT/FAILED/DEAD/SKIPPED；NULL=纯落库历史行。 */
+    @Column(name = "status", length = 16)
+    private String status;
+
+    /** 通道回执 ID（短信 BizId 等）。 */
+    @Column(name = "channel_msg_id", length = 64)
+    private String channelMsgId;
+
+    /** 失败/跳过原因（诚实口径，不伪造成功）。 */
+    @Column(name = "error", length = 512)
+    private String error;
+
+    /** 外发成功时间（仅 SENT 写）。 */
+    @Column(name = "delivered_at")
+    private OffsetDateTime deliveredAt;
 }

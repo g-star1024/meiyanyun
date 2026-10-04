@@ -6,6 +6,7 @@ import com.meiyun.common.event.DomainEventPublisher;
 import com.meiyun.common.ratelimit.RateLimiter;
 import com.meiyun.marketing.audit.AuditRecorder;
 import com.meiyun.security.DataScope;
+import org.springframework.context.ApplicationEventPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -54,6 +55,7 @@ public class PushService {
     private final AuditRecorder audit;
     private final CustomerConsentClient consentClient;
     private final TouchEventRecorder touchRecorder;
+    private final ApplicationEventPublisher appEvents;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public PushService(PushRecordRepository pushRepo,
@@ -63,7 +65,8 @@ public class PushService {
                        DomainEventPublisher events,
                        AuditRecorder audit,
                        CustomerConsentClient consentClient,
-                       TouchEventRecorder touchRecorder) {
+                       TouchEventRecorder touchRecorder,
+                       ApplicationEventPublisher appEvents) {
         this.pushRepo = pushRepo;
         this.forbiddenWordService = forbiddenWordService;
         this.cfgService = cfgService;
@@ -72,6 +75,7 @@ public class PushService {
         this.audit = audit;
         this.consentClient = consentClient;
         this.touchRecorder = touchRecorder;
+        this.appEvents = appEvents;
     }
 
     @Transactional
@@ -159,6 +163,12 @@ public class PushService {
         payload.put("contentPreview", content.length() > 50 ? content.substring(0, 50) + "…" : content);
         payload.put("contentLength", content.length());
         audit("SEND", String.valueOf(saved.getPushId()), payload);
+
+        // 棒⑧卡2：Spring 应用事件（AFTER_COMMIT 由 PushDispatchService 消费做真实外发）。
+        // 与上方 MQ 领域事件双轨：MQ 事件面向下游分析，本事件驱动本服务外发腿；
+        // dedup 早返回路径（上方 return recent.get(0)）不发布，杜绝重复外发。
+        appEvents.publishEvent(new PushDispatchService.PushRecordedEvent(
+                saved.getPushId(), customerId, cmd.pushType(), content));
         return saved;
     }
 

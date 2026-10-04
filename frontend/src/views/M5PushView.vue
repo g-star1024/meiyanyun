@@ -55,6 +55,17 @@ function pushTypeLabel(t: string) {
   return PUSH_TYPE_LABEL[t] ?? t
 }
 
+// 棒⑧卡2 外发腿状态（null=外发腿上线前纯落库历史行，不展示）
+const PUSH_STATUS_VIEW: Record<string, { label: string; tone: 'success' | 'danger' | 'default' }> = {
+  SENT: { label: '已送达', tone: 'success' },
+  FAILED: { label: '发送失败', tone: 'danger' },
+  DEAD: { label: '通道拒绝', tone: 'danger' },
+  SKIPPED: { label: '未外发', tone: 'default' },
+}
+function pushStatusView(s: string | null) {
+  return s ? PUSH_STATUS_VIEW[s] ?? null : null
+}
+
 const kpis = computed(() => [
   { label: '可触达客户', icon: 'marketing', value: String(customersTotal.value || customers.value.length), tone: 'brand' as const },
   { label: '当前客户近7天已触达', icon: 'bell', value: String(quota.value?.sentLast7Days ?? 0), tone: 'teal' as const },
@@ -270,10 +281,16 @@ onMounted(loadCustomers)
           <div v-else class="hist-list">
             <CCard v-for="r in history" :key="r.pushId" class="tpl-card hist-item" padding="md">
               <div class="hist-top">
-                <CStatusPill status="info" dot>{{ pushTypeLabel(r.pushType) }}</CStatusPill>
+                <div class="hist-top__left">
+                  <CStatusPill status="info" dot>{{ pushTypeLabel(r.pushType) }}</CStatusPill>
+                  <CStatusPill v-if="pushStatusView(r.status)" :status="pushStatusView(r.status)!.tone" dot>
+                    {{ pushStatusView(r.status)!.label }}
+                  </CStatusPill>
+                </div>
                 <span class="hist-time">{{ fmtTime(r.sentAt) }}</span>
               </div>
               <div class="tpl-body">{{ r.content }}</div>
+              <div v-if="r.error" class="hist-err">{{ r.error }}</div>
             </CCard>
           </div>
         </div>
@@ -366,7 +383,9 @@ onMounted(loadCustomers)
 .hist-list { display: flex; flex-direction: column; gap: var(--s-sm); max-height: 360px; overflow-y: auto; }
 .hist-item { background: var(--c-bg-right); }
 .hist-top { display: flex; align-items: center; justify-content: space-between; gap: var(--s-sm); }
+.hist-top__left { display: flex; align-items: center; gap: 6px; }
 .hist-time { font-size: var(--t-xs); color: var(--c-text-3); font-variant-numeric: tabular-nums; }
+.hist-err { font-size: var(--t-xs); color: var(--c-text-3); line-height: 1.5; word-break: break-all; }
 
 .modal-mask { position: fixed; inset: 0; background: rgba(20,21,43,.45); display: flex; align-items: center; justify-content: center; z-index: 200; padding: var(--s-lg); }
 .modal { width: 540px; max-width: 100%; box-shadow: var(--shadow-pop); }

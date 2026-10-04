@@ -42,6 +42,11 @@ public class PushSchemaInitializer implements ApplicationRunner {
             jdbc.execute("ALTER TABLE push_record DROP CONSTRAINT IF EXISTS push_record_push_type_check");
             // 幂等键补列（B22：防双击/重试重复触达，60 秒窗口同键重放返回已落库记录；ddl-auto=update 会自动补列，此 ALTER 兜底旧库）
             jdbc.execute("ALTER TABLE push_record ADD COLUMN IF NOT EXISTS dedup_key varchar(32)");
+            // 棒⑧卡2 外发腿四列（V88 flyway 为正路，此处 IF NOT EXISTS 幂等兜底非 flyway 环境）
+            jdbc.execute("ALTER TABLE push_record ADD COLUMN IF NOT EXISTS status varchar(16)");
+            jdbc.execute("ALTER TABLE push_record ADD COLUMN IF NOT EXISTS channel_msg_id varchar(64)");
+            jdbc.execute("ALTER TABLE push_record ADD COLUMN IF NOT EXISTS error varchar(512)");
+            jdbc.execute("ALTER TABLE push_record ADD COLUMN IF NOT EXISTS delivered_at TIMESTAMPTZ");
             log.info("push_record.push_type 已确认为 varchar(16) 且旧中文渠道 CHECK 约束已清理（承载 SMS/WECOM/WECHAT_MP）；dedup_key 幂等列已确认");
         } catch (Exception e) {
             // 表尚不存在（首次启动 Hibernate 还未建表）等场景：不阻断启动，实体 length=16 已保证新表正确

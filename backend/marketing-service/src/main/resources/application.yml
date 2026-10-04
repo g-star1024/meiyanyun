@@ -64,6 +64,12 @@ spring:
 meiyun:
   rate-limiter: ${MEIYUN_RATE_LIMITER:db}
   event-publisher: ${MEIYUN_EVENT_PUBLISHER:log}
+  # 棒⑧卡2：客户侧营销推送短信直连（与 txn 员工侧同键同语义；org integration_config 库行优先，env 兜底）
+  notify:
+    direct:
+      sms-enabled: ${MEIYUN_NOTIFY_SMS_DIRECT_ENABLED:false}
+      sms-config: ${MEIYUN_NOTIFY_SMS_DIRECT_CONFIG:}
+      sms-secret: ${MEIYUN_NOTIFY_SMS_SECRET:}
   security:
     # 生产经环境变量注入；dev 默认值仅供本地联调
     secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}
