@@ -83,6 +83,15 @@ meiyun:
       enabled: ${MEIYUN_STORAGE_DIRECT_ENABLED:false}
       config: ${MEIYUN_STORAGE_DIRECT_CONFIG:}
       secret: ${MEIYUN_STORAGE_DIRECT_SECRET:}
+  # 棒⑧卡5：Kafka 事件发布直连（接入位；org integration_config 目录 KAFKA_DIRECT/KAFKA_SECRET
+  # 库行优先，此处 env 为库外兜底）。meiyun.event-publisher=mq 时由 KafkaDomainEventPublisher @Primary
+  # 接管；KAFKA_DIRECT 未启用即使 mq 模式也如实降级 Logging 口径、不伪造已发送。config 为 JSON
+  # 两字段：bootstrapServers/clientIdPrefix；secret 为 SASL JAAS 配置串（PLAINTEXT 内网直连留空）。
+  kafka:
+    direct:
+      enabled: ${MEIYUN_KAFKA_DIRECT_ENABLED:false}
+      config: ${MEIYUN_KAFKA_DIRECT_CONFIG:}
+      secret: ${MEIYUN_KAFKA_DIRECT_SECRET:}
   security:
     # 生产经环境变量注入；dev 默认值仅供本地联调
     secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}

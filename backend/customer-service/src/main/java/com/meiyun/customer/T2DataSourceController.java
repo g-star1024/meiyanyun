@@ -57,7 +57,7 @@ public class T2DataSourceController {
         return service.disable(id);
     }
 
-    /** 连通探测：仅 THIRD_PARTY 真实探测；CDC/KAFKA 如实拒绝（接入运行时归 v2）。 */
+    /** 连通探测：三类型均真实探测（棒⑧卡5 放开 CDC/KAFKA；接入装配位归 DESIGN-T3 §7）。 */
     @PostMapping("/{id}/sync")
     @RequirePerm("collect:sync")
     public DataSourceService.DataSourceView sync(@PathVariable Long id) {

@@ -22,9 +22,10 @@ import org.springframework.transaction.annotation.Transactional;
  * T2-01 数据源注册服务（棒⑥卡7，/api/customer/t2/datasources）。
  * 注册登记真源化：code 不可变·name/endpoint/description 可编辑；类型三值白名单
  * CDC/KAFKA/THIRD_PARTY；状态机 REGISTERED/CONNECTED→DISABLED（重复禁用 409 透出当前态）。
- * 连通探测 sync：仅 THIRD_PARTY 真实探测（http(s) 走 HttpURLConnection·其余按 host:port
- * Socket，3s 超时；响应码<500 视为通），成功→CONNECTED＋lastSyncAt=now；CDC/KAFKA 接入
- * 运行时归 v2 移交（DESIGN-T2 §6），如实 400 拒绝不伪造连通。owner 展示用登录人姓名
+ * 连通探测 sync：三类型（CDC/KAFKA/THIRD_PARTY）均真实探测（http(s) 走 HttpURLConnection·
+ * 其余按 scheme 剥离 host:port Socket，3s 超时；响应码<500 视为通），成功→CONNECTED＋
+ * lastSyncAt=now，失败 400 如实透出原因不伪造连通；棒⑧卡5 放开 CDC/KAFKA 探测（接入
+ * 装配位/消费运行时归数据中台二期 DESIGN-T3 §7）。owner 展示用登录人姓名
  * （govern 先例）；操作人一律 DataScope.currentActor() 防伪造。
  * 审计 DATA_SOURCE / DS-{id} 四动作 CREATE/EDIT/DISABLE/SYNC（同一源全动作同链，照
  * T2-B3 DATA_SERVICE 先例）。
@@ -145,9 +146,9 @@ public class DataSourceService {
     }
 
     /**
-     * 连通探测：仅 THIRD_PARTY 真实探测（http(s) GET 响应码<500 视为通；其余按 host:port
-     * Socket 连接；超时 3s），成功→CONNECTED＋lastSyncAt=now 落 SYNC 审计；失败 400 透出原因。
-     * CDC/KAFKA 接入运行时归 v2 移交（DESIGN-T2 §6），如实 400 拒绝；DISABLED 409 透出当前态。
+     * 连通探测：三类型均真实探测（http(s) GET 响应码<500 视为通；其余按 scheme 剥离
+     * host:port Socket 连接；超时 3s；棒⑧卡5 放开 CDC/KAFKA，接入装配位归 DESIGN-T3 §7），
+     * 成功→CONNECTED＋lastSyncAt=now 落 SYNC 审计；失败 400 如实透出原因；DISABLED 409 透出当前态。
      */
     @Transactional
     public DataSourceView sync(Long id) {
@@ -155,12 +156,8 @@ public class DataSourceService {
         if (!DISABLEABLE.contains(d.getStatus())) {
             throw new Conflict("当前状态「" + statusLabel(d.getStatus()) + "」不允许此操作");
         }
-        if (!DataSource.TYPE_THIRD_PARTY.equals(d.getType())) {
-            throw new BadReq(typeLabel(d.getType())
-                    + " 接入运行时归 v2 移交（DESIGN-T2 §6），当前仅注册登记，暂不支持连通探测");
-        }
         if (d.getEndpoint() == null || d.getEndpoint().isBlank()) {
-            throw new BadReq("三方数据源未配置接入地址，无法探测");
+            throw new BadReq("数据源未配置接入地址，无法探测");
         }
         String failure = probe(d.getEndpoint());
         if (failure != null) {
@@ -250,15 +247,6 @@ public class DataSourceService {
             case DataSource.STATUS_CONNECTED -> "已连通";
             case DataSource.STATUS_DISABLED -> "已停用";
             default -> status == null ? "未知" : status;
-        };
-    }
-
-    private static String typeLabel(String type) {
-        return switch (type == null ? "" : type) {
-            case DataSource.TYPE_CDC -> "CDC";
-            case DataSource.TYPE_KAFKA -> "Kafka";
-            case DataSource.TYPE_THIRD_PARTY -> "三方数据源";
-            default -> type == null ? "未知" : type;
         };
     }
 

@@ -47,7 +47,7 @@ export function disableDataSource(id: number): Promise<DataSourceView> {
   return client.post(`/customer/t2/datasources/${id}/disable`).then((r) => r.data)
 }
 
-/** 连通探测：仅 THIRD_PARTY 真实探测；CDC/KAFKA 后端如实 400（接入运行时归 v2）。 */
+/** 连通探测：三类型均真实探测（棒⑧卡5 放开 CDC/KAFKA）；失败后端如实 400 透出原因。 */
 export function syncDataSource(id: number): Promise<DataSourceView> {
   return client.post(`/customer/t2/datasources/${id}/sync`).then((r) => r.data)
 }

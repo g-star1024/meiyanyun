@@ -3,7 +3,7 @@ package com.meiyun.org.integration;
 import java.util.Optional;
 
 /**
- * P0 外部依赖固定目录（18 项），与 V34/V35/V36/V89/V90 迁移 INSERT 同码同名，为目录第二真源。
+ * P0 外部依赖固定目录（20 项），与 V34/V35/V36/V89/V90/V93 迁移 INSERT 同码同名，为目录第二真源。
  * P0 不开放自由新增接入点；P1/P2 新接入点以「新迁移 + 枚举扩充」追加。
  */
 public enum IntegrationCatalog {
@@ -30,7 +30,12 @@ public enum IntegrationCatalog {
     // 棒⑧卡4 对象存储接入位（V90 迁移同码播种）：marketing DelegatingStorageService 消费，
     // config_json 承载 provider/endpoint/bucket/region/accessKey，secretKey 独立 SECRET 行
     STORAGE_DIRECT("STORAGE", "对象存储直连（S3/MinIO 接入位）", "SWITCH"),
-    STORAGE_SECRET("STORAGE", "对象存储密钥（secretKey）", "SECRET");
+    STORAGE_SECRET("STORAGE", "对象存储密钥（secretKey）", "SECRET"),
+
+    // 棒⑧卡5 Kafka 事件发布接入位（V93 迁移同码播种）：marketing KafkaDomainEventPublisher 消费，
+    // config_json 承载 bootstrapServers/clientIdPrefix，SASL 凭据独立 SECRET 行（PLAINTEXT 可留空）
+    KAFKA_DIRECT("KAFKA", "Kafka 事件发布直连（接入位）", "SWITCH"),
+    KAFKA_SECRET("KAFKA", "Kafka 密钥（SASL）", "SECRET");
 
     private final String category;
     private final String integrationName;

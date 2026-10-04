@@ -14,7 +14,8 @@ import org.springframework.transaction.annotation.Transactional;
  * T2-B4 数据源演示种子（@Order(48)，T2-B1 用 45、T2-B2 用 46、T2-B3 用 47 顺链）。
  * 仅 meiyun_seed 库生效（JDBC URL 门控）；repository.count()>0 跳过幂等（一体事务同生共灭单门控）。
  * 三条种子覆盖类型三值 CDC/KAFKA/THIRD_PARTY 各一，状态一律 REGISTERED·lastSyncAt=null
- * （注册登记·未接入，接入运行时归 v2 移交 DESIGN-T2 §6，如实不伪造连通）。
+ * （注册登记；棒⑧卡5 起三类型探测真实化——CDC_CORE_DB 指向 pg 容器可探测通过，
+ * KAFKA_TOUCH 无 broker 如实 400；装配/消费运行时归数据中台二期 DESIGN-T3 §7）。
  * 时间语义：createdAt=now-30d/-37d/-44d（逐条隔 7 天，照 T2-B3 阶梯先例）。
  */
 @Component
@@ -44,13 +45,13 @@ public class T2B4DataInitializer implements ApplicationRunner {
 
         seeded.add(seed(now, 0, "CDC_CORE_DB", "核心库 CDC（PostgreSQL）", DataSource.TYPE_CDC,
                 "pg://meiyun-pg:5432/meiyun_core",
-                "业务核心库 customer/txn_order 全量 CDC 接入登记（接入运行时归 v2 移交）", "王治"));
+                "业务核心库 customer/txn_order 全量 CDC 接入登记（装配/消费运行时归数据中台二期）", "王治"));
         seeded.add(seed(now, 1, "KAFKA_TOUCH", "触点时间线 Kafka", DataSource.TYPE_KAFKA,
                 "kafka://meiyun-kafka:9092/touch-events",
-                "五通道触点时间线 touch_event 接入登记（接入运行时归 v2 移交）", "李析"));
+                "五通道触点时间线 touch_event 接入登记（装配/消费运行时归数据中台二期）", "李析"));
         seeded.add(seed(now, 2, "TP_MEITUAN", "美团三方回传 API", DataSource.TYPE_THIRD_PARTY,
                 "https://open-api.meituan.com/v1/returnback",
-                "美团渠道核销/评价回传三方 API 登记（支持连通探测）", "张数"));
+                "美团渠道核销/评价回传三方 API 登记", "张数"));
 
         repository.saveAll(seeded);
     }

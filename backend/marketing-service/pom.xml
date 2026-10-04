@@ -73,6 +73,13 @@
             <artifactId>minio</artifactId>
             <version>8.5.17</version>
         </dependency>
+        <!-- 棒⑧卡5：Kafka 事件发布装配位（接入位）。版本由父 pom spring-boot-dependencies BOM 托管；
+             仅 KafkaDomainEventPublisher 在 event-publisher=mq 且 KAFKA_DIRECT 启用时懒装配
+             KafkaProducer，默认 log 模式 client 完全不初始化，对存量功能零影响。 -->
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+        </dependency>
         <!-- 测试：JUnit5 + Mockito + MockMvc（@WebMvcTest 切片），mvn test 进 CI 红线 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

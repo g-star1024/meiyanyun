@@ -2,8 +2,8 @@
 /* ============================================================
  * T2-01 数据采集 /data/collect
  * 采集通道（touch_event 五通道聚合）+ 触点时间线 + 数据源注册（棒⑥卡7 真源化），KPI×4
- * 数据源注册：CDC/Kafka/三方注册登记（V72 落库）；三方 API 真实连通探测，
- * CDC/Kafka 接入运行时归 v2 移交（DESIGN-T2 §6）如实不伪造。
+ * 数据源注册：CDC/Kafka/三方注册登记（V72 落库）；三类型均真实连通探测
+ * （棒⑧卡5 放开 CDC/Kafka，接入装配位归数据中台二期 DESIGN-T3 §7）。
  * ============================================================ */
 import { computed, onMounted, reactive, ref } from 'vue'
 import CCard from '@/components/CCard.vue'
@@ -69,7 +69,7 @@ function fmtTime(iso: string | null) {
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
-// ---- 数据源注册（棒⑥卡7：CDC/Kafka/三方注册登记真源化；接入运行时归 v2） ----
+// ---- 数据源注册（棒⑥卡7：CDC/Kafka/三方注册登记真源化；棒⑧卡5 三类型探测放开） ----
 function dsStatusPill(s: 'REGISTERED' | 'CONNECTED' | 'DISABLED') {
   return s === 'CONNECTED' ? 'success' : s === 'REGISTERED' ? 'info' : 'disabled'
 }
@@ -86,7 +86,7 @@ const dsForm = reactive({
 const dsTypeOptions = [
   { value: 'CDC', label: 'CDC（数据库变更捕获）' },
   { value: 'KAFKA', label: 'Kafka（消息流）' },
-  { value: 'THIRD_PARTY', label: '三方 API（支持连通探测）' },
+  { value: 'THIRD_PARTY', label: '三方 API' },
 ]
 const canDsSubmit = computed(() =>
   dsForm.name.trim() && (dsEditingId.value !== null || /^[A-Z][A-Z0-9_]{0,63}$/.test(dsForm.code.trim())))
@@ -213,7 +213,7 @@ async function submitDs() {
         </tbody>
       </table>
 
-      <!-- 数据源注册（棒⑥卡7：CDC/Kafka/三方注册登记；接入运行时归 v2） -->
+      <!-- 数据源注册（棒⑥卡7：CDC/Kafka/三方注册登记；棒⑧卡5 三类型探测放开） -->
       <table v-else class="ctable">
         <thead>
           <tr>
@@ -241,7 +241,7 @@ async function submitDs() {
             <td>{{ fmtTime(d.lastSyncAt) }}</td>
             <td>
               <template v-if="d.status !== 'DISABLED'">
-                <CButton v-if="auth.can('collect:sync') && d.type === 'THIRD_PARTY'" size="sm" variant="text" :disabled="dsStore.syncingId !== null" @click="dsStore.syncSource(d.id)">
+                <CButton v-if="auth.can('collect:sync')" size="sm" variant="text" :disabled="dsStore.syncingId !== null" @click="dsStore.syncSource(d.id)">
                   <CIcon name="refresh" :size="14" />{{ dsStore.syncingId === d.id ? '探测中…' : '连通探测' }}
                 </CButton>
                 <CButton v-if="auth.can('collect:edit')" size="sm" variant="text" @click="openDsEdit(d.id)">
@@ -272,9 +272,8 @@ async function submitDs() {
           </div>
         </div>
         <CInput v-model="dsForm.name" label="名称" placeholder="例如：抖音三方回传 API" />
-        <CInput v-model="dsForm.endpoint" label="接入地址" placeholder="https://… 或 host:port（三方 API 探测用）" />
+        <CInput v-model="dsForm.endpoint" label="接入地址" placeholder="https://… 或 host:port（连通探测用）" />
         <CTextarea v-model="dsForm.description" :rows="3" label="描述" placeholder="接入内容、归属域、备注" />
-        <div v-if="dsForm.type !== 'THIRD_PARTY'" class="form-hint">CDC / Kafka 接入运行时归 v2 移交（DESIGN-T2 §6），当前仅注册登记，不支持连通探测。</div>
       </div>
       <template #footer>
         <CButton variant="ghost" @click="showDsForm = false">取消</CButton>

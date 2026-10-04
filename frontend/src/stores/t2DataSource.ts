@@ -1,6 +1,6 @@
 // ============================================================
 // T2-01 数据源注册 store（棒⑥卡7 接真 customer-service）
-// CDC/Kafka/三方数据源注册登记真源化；接入运行时归 v2（DESIGN-T2 §6）。
+// CDC/Kafka/三方数据源注册登记真源化；棒⑧卡5 三类型探测放开（接入装配位归 DESIGN-T3 §7）。
 // 数据源：/api/customer/t2/datasources（V72 落库；查询=collect:view，
 // 新建=collect:create，编辑/停用=collect:edit，连通探测=collect:sync）。
 // ============================================================
@@ -133,7 +133,7 @@ export const useT2DataSourceStore = defineStore('t2DataSource', () => {
     }
   }
 
-  /** 连通探测：仅 THIRD_PARTY 真实探测；CDC/KAFKA 后端如实 400（接入运行时归 v2），toast 透出原文。 */
+  /** 连通探测：三类型均真实探测（棒⑧卡5 放开 CDC/KAFKA）；失败 toast 透出后端原文。 */
   async function syncSource(id: number): Promise<boolean> {
     if (!canSync()) {
       toast.error('无连通探测权限')
