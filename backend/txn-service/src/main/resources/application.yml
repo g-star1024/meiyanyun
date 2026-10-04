@@ -37,6 +37,24 @@ meiyun:
       enabled: ${MEIYUN_NOTIFY_QUIET_ENABLED:false}
       start: ${MEIYUN_NOTIFY_QUIET_START:22:00}
       end: ${MEIYUN_NOTIFY_QUIET_END:08:00}
+    # dev 网关 webhook 中继兜底（直连未开启时生效；配置窗口 NOTIFY_*_GATEWAY 启用值优先）
+    gateway:
+      sms-url: ${MEIYUN_NOTIFY_SMS_GATEWAY_URL:}
+      email-url: ${MEIYUN_NOTIFY_EMAIL_GATEWAY_URL:}
+      wechat-url: ${MEIYUN_NOTIFY_WECHAT_GATEWAY_URL:}
+    # 棒⑧卡1 三通道直连官方 API env 兜底：配置窗口 NOTIFY_*_DIRECT（SWITCH+configJson）
+    # 与 NOTIFY_*_SECRET（AES-GCM 密文）启用值优先；本段仅在配置窗未启用时生效。
+    # 直连开启但厂商参数/密钥/员工联系方式任一缺失 → SKIPPED 诚实降级，不回落 webhook 中继。
+    direct:
+      sms-enabled: ${MEIYUN_NOTIFY_SMS_DIRECT_ENABLED:false}
+      sms-config: ${MEIYUN_NOTIFY_SMS_DIRECT_CONFIG:}
+      sms-secret: ${MEIYUN_NOTIFY_SMS_DIRECT_SECRET:}
+      email-enabled: ${MEIYUN_NOTIFY_EMAIL_DIRECT_ENABLED:false}
+      email-config: ${MEIYUN_NOTIFY_EMAIL_DIRECT_CONFIG:}
+      email-secret: ${MEIYUN_NOTIFY_EMAIL_DIRECT_SECRET:}
+      wechat-enabled: ${MEIYUN_NOTIFY_WECHAT_DIRECT_ENABLED:false}
+      wechat-config: ${MEIYUN_NOTIFY_WECHAT_DIRECT_CONFIG:}
+      wechat-secret: ${MEIYUN_NOTIFY_WECHAT_DIRECT_SECRET:}
   security:
     # 生产经环境变量注入；dev 默认值仅供本地联调
     secret: ${MEIYUN_JWT_SECRET:meiyun-dev-jwt-secret-please-change-in-prod-0123456789}

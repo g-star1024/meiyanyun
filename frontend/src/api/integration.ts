@@ -26,7 +26,7 @@ export interface IntegrationDTO {
   lastTestAt: string | null
   lastTestOk: boolean | null
   lastTestMsg: string | null
-  /** QUIET_WINDOW 类：{"start":"HH:mm","end":"HH:mm"}；其余类型为 null */
+  /** QUIET_WINDOW 类：{"start":"HH:mm","end":"HH:mm"}；SWITCH 直连类：厂商参数模板 JSON；其余为 null */
   configJson: string | null
 }
 
@@ -41,6 +41,8 @@ export interface UpsertIntegrationCmd {
   /** QUIET_WINDOW 类：免打扰起止时间 HH:mm */
   quietStart?: string | null
   quietEnd?: string | null
+  /** SWITCH 直连类：厂商参数模板 JSON（留空 = 不修改；密钥走 secret 字段） */
+  configJson?: string | null
 }
 
 /** 测试连接结果（对齐 IntegrationService.TestResult） */

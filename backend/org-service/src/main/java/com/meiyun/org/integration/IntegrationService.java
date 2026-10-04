@@ -95,6 +95,7 @@ public class IntegrationService {
         boolean urlChanged = false;
         boolean secretChanged = false;
         boolean windowChanged = false;
+        boolean configChanged = false;
         switch (catalog.getValueKind()) {
             case "URL" -> {
                 String url = req.baseUrl() == null ? "" : req.baseUrl().trim();
@@ -119,6 +120,23 @@ public class IntegrationService {
             case "SWITCH" -> {
                 if (req.boolValue() != null) {
                     e.setBoolValue(req.boolValue());
+                }
+                // 棒⑧卡1：SWITCH 行扩展参数（直连官方 API 厂商参数模板，如阿里云 accessKeyId/签名/模板码）。
+                // null=不修改；空串=清空；非空=JSON 合法性校验后写入。审计只记变更标志，绝不记参数内容。
+                if (req.configJson() != null) {
+                    String cj = req.configJson().trim();
+                    if (cj.isEmpty()) {
+                        e.setConfigJson(null);
+                        configChanged = true;
+                    } else {
+                        try {
+                            JSON.readTree(cj);
+                        } catch (Exception ex) {
+                            throw new IllegalArgumentException("扩展参数不是合法 JSON，请检查格式: " + code);
+                        }
+                        e.setConfigJson(cj);
+                        configChanged = true;
+                    }
                 }
             }
             case "QUIET_WINDOW" -> {
@@ -159,10 +177,11 @@ public class IntegrationService {
         }
 
         String payload = "{\"code\":\"" + code + "\",\"kind\":\"" + catalog.getValueKind()
-                + ",\"enabled\":" + saved.isEnabled()
+                + "\",\"enabled\":" + saved.isEnabled()
                 + ",\"urlChanged\":" + urlChanged
                 + ",\"secretChanged\":" + secretChanged
-                + ",\"windowChanged\":" + windowChanged + "}";
+                + ",\"windowChanged\":" + windowChanged
+                + ",\"configChanged\":" + configChanged + "}";
         audit.record("INTEGRATION", code, actor, "integration.update", payload);
         return toView(saved);
     }
@@ -344,10 +363,10 @@ public class IntegrationService {
                                   String configJson) {
     }
 
-    /** upsert 入参：SECRET 留空/含 **** 表示不修改原密钥；非 https 的 URL 须 insecureHttpConfirmed=true；QUIET_WINDOW 用 quietStart/quietEnd。 */
+    /** upsert 入参：SECRET 留空/含 **** 表示不修改原密钥；非 https 的 URL 须 insecureHttpConfirmed=true；QUIET_WINDOW 用 quietStart/quietEnd；SWITCH 可用 configJson 承载扩展参数（null 不改/空串清空/非空须合法 JSON）。 */
     public record UpsertRequest(String baseUrl, String secret, Boolean boolValue,
                                 Boolean enabled, Boolean insecureHttpConfirmed,
-                                String quietStart, String quietEnd) {
+                                String quietStart, String quietEnd, String configJson) {
     }
 
     public record TestResult(boolean ok, String message) {

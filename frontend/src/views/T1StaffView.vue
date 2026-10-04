@@ -17,7 +17,7 @@ import CCheckbox from '@/components/CCheckbox.vue'
 import {
   listStaff, listRoles, listStores, getStaffRoles, getOrgTree,
   createStaff, disableStaff, resetStaffPassword, transferStaff,
-  setPrimaryRole, addStaffRole, removeStaffRole,
+  setPrimaryRole, addStaffRole, removeStaffRole, updateStaffContact,
   type Staff, type RoleDef, type Store as OrgStore,
   type StaffRoleScopeRow, type OrgTreeNode,
 } from '@/api/org'
@@ -50,7 +50,7 @@ const canAssign = computed(() => auth.can('role:assign'))
 const canComp = computed(() => auth.can('finance:commission:edit'))
 
 // ---------------- 抽屉 ----------------
-type DrawerKind = '' | 'create' | 'transfer' | 'roles' | 'comp'
+type DrawerKind = '' | 'create' | 'transfer' | 'roles' | 'comp' | 'contact'
 const drawerKind = ref<DrawerKind>('')
 const drawerOpen = computed({
   get: () => drawerKind.value !== '',
@@ -61,6 +61,7 @@ const drawerTitle = computed(() => {
   if (drawerKind.value === 'transfer') return `调店 / 调区 · ${activeStaff.value?.staffName ?? ''}`
   if (drawerKind.value === 'roles') return `角色管理 · ${activeStaff.value?.staffName ?? ''}`
   if (drawerKind.value === 'comp') return `薪酬配置 · ${activeStaff.value?.staffName ?? ''}`
+  if (drawerKind.value === 'contact') return `联系方式 · ${activeStaff.value?.staffName ?? ''}`
   return ''
 })
 const activeStaff = ref<Staff | null>(null)
@@ -69,7 +70,11 @@ const submitting = ref(false)
 // 新建员工表单
 const createForm = reactive({
   staffId: '', staffName: '', roleCode: '', storeCode: '', region: '', medicalLicensed: false,
+  phone: '', email: '', wecomUserid: '',
 })
+
+// 联系方式表单（通知直连收件人：短信取手机号 / 邮件取邮箱 / 企微取企微账号）
+const contactForm = reactive({ phone: '', email: '', wecomUserid: '' })
 
 // 调店/调区表单（空值保持 null，提交时区分门店/区域岗）
 const transferForm = reactive({ storeCode: '', region: '' })
@@ -179,6 +184,9 @@ function openCreate() {
   createForm.storeCode = ''
   createForm.region = ''
   createForm.medicalLicensed = false
+  createForm.phone = ''
+  createForm.email = ''
+  createForm.wecomUserid = ''
   drawerKind.value = 'create'
 }
 
@@ -196,12 +204,44 @@ async function submitCreate() {
       storeCode: createForm.storeCode || null,
       region: createForm.region.trim() || null,
       medicalLicensed: createForm.medicalLicensed,
+      phone: createForm.phone.trim() || null,
+      email: createForm.email.trim() || null,
+      wecomUserid: createForm.wecomUserid.trim() || null,
     })
     toast.success(`员工 ${createForm.staffName.trim()} 已创建，初始密码为 meiyun123，请提示本人尽快修改`)
     drawerKind.value = ''
     await seed()
   } catch (e) {
     toast.error(errMsg(e, '员工创建失败，请稍后重试'))
+  } finally {
+    submitting.value = false
+  }
+}
+
+// ---------------- 联系方式（通知直连收件人） ----------------
+function openContact(s: Staff) {
+  activeStaff.value = s
+  contactForm.phone = s.phone ?? ''
+  contactForm.email = s.email ?? ''
+  contactForm.wecomUserid = s.wecomUserid ?? ''
+  drawerKind.value = 'contact'
+}
+
+async function submitContact() {
+  const s = activeStaff.value
+  if (!s) return
+  submitting.value = true
+  try {
+    await updateStaffContact(s.staffId, {
+      phone: contactForm.phone.trim() || null,
+      email: contactForm.email.trim() || null,
+      wecomUserid: contactForm.wecomUserid.trim() || null,
+    })
+    toast.success(`已保存 ${s.staffName} 的联系方式，直连通道约 60 秒内生效`)
+    drawerKind.value = ''
+    await seed()
+  } catch (e) {
+    toast.error(errMsg(e, '联系方式保存失败，请稍后重试'))
   } finally {
     submitting.value = false
   }
@@ -507,6 +547,7 @@ onMounted(() => { seed() })
             </span>
             <span class="col-ops">
               <CButton variant="text" size="sm" @click="openRoles(s)">角色</CButton>
+              <CButton v-if="canManage && s.status === '在职'" variant="text" size="sm" @click="openContact(s)">联系</CButton>
               <CButton v-if="canComp && s.status === '在职'" variant="text" size="sm" @click="openComp(s)">薪酬</CButton>
               <CButton v-if="canManage && s.status === '在职'" variant="text" size="sm" @click="openTransfer(s)">调店</CButton>
               <CButton v-if="canManage && s.status === '在职'" variant="text" size="sm" @click="onResetPwd(s)">重置密码</CButton>
@@ -542,6 +583,18 @@ onMounted(() => { seed() })
         <label class="field">
           <span class="field__label">归属区域（区域/集团岗填写，如 华东大区）</span>
           <CInput v-model="createForm.region" placeholder="门店岗留空" />
+        </label>
+        <label class="field">
+          <span class="field__label">手机号（短信直连收件人，可选）</span>
+          <CInput v-model="createForm.phone" placeholder="11 位手机号" />
+        </label>
+        <label class="field">
+          <span class="field__label">邮箱（邮件直连收件人，可选）</span>
+          <CInput v-model="createForm.email" placeholder="如 zhangsan@example.com" />
+        </label>
+        <label class="field">
+          <span class="field__label">企业微信账号（企微直连收件人，可选）</span>
+          <CInput v-model="createForm.wecomUserid" placeholder="企微通讯录 UserID" />
         </label>
         <label class="field field--row">
           <CCheckbox v-model="createForm.medicalLicensed">
@@ -664,6 +717,31 @@ onMounted(() => { seed() })
       <template #footer>
         <CButton variant="secondary" @click="drawerKind = ''">取消</CButton>
         <CButton variant="primary" :disabled="submitting || compLoading" @click="submitComp">保存配置</CButton>
+      </template>
+    </CDrawer>
+
+    <!-- 抽屉：联系方式（通知直连收件人） -->
+    <CDrawer v-else-if="drawerKind === 'contact'" v-model:show="drawerOpen" :title="drawerTitle" size="md">
+      <div class="form">
+        <label class="field">
+          <span class="field__label">手机号（短信直连收件人）</span>
+          <CInput v-model="contactForm.phone" placeholder="11 位手机号；留空表示清除" />
+        </label>
+        <label class="field">
+          <span class="field__label">邮箱（邮件直连收件人）</span>
+          <CInput v-model="contactForm.email" placeholder="如 zhangsan@example.com；留空表示清除" />
+        </label>
+        <label class="field">
+          <span class="field__label">企业微信账号（企微直连收件人）</span>
+          <CInput v-model="contactForm.wecomUserid" placeholder="企微通讯录中的账号 UserID；留空表示清除" />
+        </label>
+        <div class="form-tip">
+          <CIcon name="info" :size="13" />直连通道（短信/邮件/企微官方 API）按此处登记的联系方式触达本人；未登记对应字段时该通道将跳过发送并记录原因（诚实降级，不回落 webhook 中继）。联系方式属个人隐私信息，仅用于工作通知触达。
+        </div>
+      </div>
+      <template #footer>
+        <CButton variant="secondary" @click="drawerKind = ''">取消</CButton>
+        <CButton variant="primary" :disabled="submitting" @click="submitContact">保存联系方式</CButton>
       </template>
     </CDrawer>
   </div>

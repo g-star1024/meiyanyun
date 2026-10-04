@@ -25,6 +25,11 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+        <!-- 棒⑧卡1：邮件直连官方 SMTP（JavaMailSender）；版本由父 pom Boot 3.2.5 统一管理 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-mail</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.meiyun</groupId>
             <artifactId>meiyun-security</artifactId>

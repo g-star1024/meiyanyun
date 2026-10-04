@@ -96,6 +96,10 @@ export interface Staff {
   storeCode: string | null
   region?: string | null
   medicalLicensed: boolean
+  /** 通知直连联系方式（可选；短信直连取 phone，邮件直连取 email，企微直连取 wecomUserid） */
+  phone?: string | null
+  email?: string | null
+  wecomUserid?: string | null
   /** 在职 | 离职 */
   status: string
   loginName?: string
@@ -143,7 +147,11 @@ export interface StaffCreatePayload {
   roleCode: string
   storeCode?: string | null
   region?: string | null
-  medicalLicensed?: boolean
+  medicalLicensed: boolean
+  /** 通知直连联系方式（可选） */
+  phone?: string | null
+  email?: string | null
+  wecomUserid?: string | null
 }
 
 export interface StaffTransferPayload {
@@ -239,6 +247,12 @@ export const transferStaff = (staffId: string, payload: StaffTransferPayload) =>
 
 export const setPrimaryRole = (staffId: string, roleCode: string) =>
   client.post<Staff>(`/org/admin/staff/${staffId}/primary-role`, { roleCode })
+
+/** 维护员工联系方式（通知直连收件人：手机号/邮箱/企微账号；留空字段表示清除） */
+export const updateStaffContact = (
+  staffId: string,
+  payload: { phone?: string | null; email?: string | null; wecomUserid?: string | null },
+) => client.put<void>(`/org/admin/staff/${staffId}/contact`, payload)
 
 /** 授予兼岗角色；orgCode 缺省 ''=全局，否则挂大区/门店节点码（B87） */
 export const addStaffRole = (staffId: string, roleCode: string, orgCode = '') =>

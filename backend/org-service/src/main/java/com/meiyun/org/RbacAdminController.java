@@ -11,6 +11,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.time.OffsetDateTime;
 import java.util.*;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -92,6 +93,9 @@ public class RbacAdminController {
         s.setStoreCode(storeCode);
         s.setRegion(req.region() == null || req.region().isBlank() ? null : req.region().trim());
         s.setMedicalLicensed(Boolean.TRUE.equals(req.medicalLicensed()));
+        s.setPhone(normPhone(req.phone()));
+        s.setEmail(normEmail(req.email()));
+        s.setWecomUserid(normWecom(req.wecomUserid()));
         s.setStatus("在职");
         s.setLoginName(staffId);
         s.setPasswordHash(PasswordEncoder.hash(RbacDataInitializer.DEFAULT_PASSWORD));
@@ -467,7 +471,80 @@ public class RbacAdminController {
                 "rolesDetail", rolesDetail);
     }
 
+    /**
+     * 联系方式编辑（棒⑧卡1：通知直连官方 API 收件人档案）。
+     * 三字段全量覆盖语义：空串/null 清除该字段；同值幂等直接返回不重复记审计。
+     * 审计只记变更标志，绝不记联系方式明文（PII 最小化）。
+     */
+    @PutMapping("/admin/staff/{id}/contact")
+    @RequirePerm("rbac:edit")
+    @Transactional
+    public Staff updateStaffContact(@PathVariable String id, @RequestBody StaffContactRequest req) {
+        Staff s = getManageableStaff(id);
+        String phone = normPhone(req.phone());
+        String email = normEmail(req.email());
+        String wecom = normWecom(req.wecomUserid());
+        boolean phoneChanged = !Objects.equals(phone, s.getPhone());
+        boolean emailChanged = !Objects.equals(email, s.getEmail());
+        boolean wecomChanged = !Objects.equals(wecom, s.getWecomUserid());
+        if (!phoneChanged && !emailChanged && !wecomChanged) {
+            roleRepo.findById(s.getRoleCode()).ifPresent(s::setRole);
+            return s;
+        }
+        s.setPhone(phone);
+        s.setEmail(email);
+        s.setWecomUserid(wecom);
+        staffRepo.save(s);
+        roleRepo.findById(s.getRoleCode()).ifPresent(s::setRole);
+        audit.record("STAFF", id, DataScope.currentActor(), "CONTACT_UPDATE",
+                "{\"staffId\":\"" + id + "\",\"phoneChanged\":" + phoneChanged
+                        + ",\"emailChanged\":" + emailChanged
+                        + ",\"wecomChanged\":" + wecomChanged + "}");
+        return s;
+    }
+
     // ==================== 内部方法 ====================
+
+    private static final Pattern PHONE_PATTERN = Pattern.compile("^1[3-9]\\d{9}$");
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("^[\\w.+-]+@[\\w-]+(\\.[\\w-]+)+$");
+    private static final Pattern WECOM_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{1,64}$");
+
+    /** 手机号归一：空白→null（清除）；非空须 11 位大陆手机号（直连短信收件人口径）。 */
+    private static String normPhone(String v) {
+        if (v == null || v.isBlank()) {
+            return null;
+        }
+        String t = v.trim();
+        if (!PHONE_PATTERN.matcher(t).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "手机号格式非法，须为 11 位大陆手机号");
+        }
+        return t;
+    }
+
+    /** 邮箱归一：空白→null；非空须合法邮箱且 ≤128 字符（直连 SMTP 收件人口径）。 */
+    private static String normEmail(String v) {
+        if (v == null || v.isBlank()) {
+            return null;
+        }
+        String t = v.trim();
+        if (t.length() > 128 || !EMAIL_PATTERN.matcher(t).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "邮箱格式非法");
+        }
+        return t;
+    }
+
+    /** 企微账号归一：空白→null；非空须企微 userid 字符集（字母/数字/下划线/短横，≤64）。 */
+    private static String normWecom(String v) {
+        if (v == null || v.isBlank()) {
+            return null;
+        }
+        String t = v.trim();
+        if (!WECOM_PATTERN.matcher(t).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "企微账号格式非法，须为字母/数字/下划线/短横（64 字符内）");
+        }
+        return t;
+    }
 
     /** 取待管理员工：不存在/越权统一 404 中文（不泄露存在性）。 */
     private Staff getManageableStaff(String id) {
@@ -507,7 +584,12 @@ public class RbacAdminController {
     // ==================== 请求体记录 ====================
 
     public record StaffCreateRequest(String staffId, String staffName, String roleCode,
-                                     String storeCode, String region, Boolean medicalLicensed) {
+                                     String storeCode, String region, Boolean medicalLicensed,
+                                     String phone, String email, String wecomUserid) {
+    }
+
+    /** 联系方式编辑入参（棒⑧卡1）：三字段全量覆盖，空串/null 清除。 */
+    public record StaffContactRequest(String phone, String email, String wecomUserid) {
     }
 
     public record StaffTransferRequest(String storeCode, String region) {

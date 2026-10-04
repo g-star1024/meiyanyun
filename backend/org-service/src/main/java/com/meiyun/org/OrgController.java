@@ -225,6 +225,29 @@ public class OrgController {
     }
 
     /**
+     * 员工联系方式快照（服务间调用专用，棒⑧卡1 三通道直连收件人映射）：
+     * GET /api/org/internal/staff/contact-snapshot → 全量在职员工 [{staffId,phone,email,wecomUserid}]。
+     * txn StaffContactClient 60s TTL 快照消费；联系方式未登记的字段为 null，由消费侧按通道判定
+     * SKIPPED 诚实降级（不静默回落 webhook 中继）。含 PII，仅限系统身份（X-Internal-Token）调用；
+     * 与 /internal/staff/{id} 共存（精确路径优先）。
+     */
+    @GetMapping("/internal/staff/contact-snapshot")
+    @RequirePerm("internal:contact-read")
+    public List<Map<String, Object>> staffContactSnapshot() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Staff s : staffRepo.findAll(Sort.by("staffId"))) {
+            if (!"在职".equals(s.getStatus())) continue;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("staffId", s.getStaffId());
+            m.put("phone", s.getPhone());
+            m.put("email", s.getEmail());
+            m.put("wecomUserid", s.getWecomUserid());
+            out.add(m);
+        }
+        return out;
+    }
+
+    /**
      * 员工档案单查（服务间调用专用，B18 划扣双签复核人硬校验）：GET /api/org/internal/staff/{id}。
      * 返回工号/姓名/主角色/全量角色（staff_role 并集）/兼岗范围明细 scopedRoles [{roleCode, orgCode}]
      * /在职状态/门店；无 DataScope——调用方（txn）

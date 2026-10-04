@@ -80,6 +80,18 @@ public class IntegrationConfigClient {
     }
 
     /**
+     * 扩展参数（棒⑧卡1 直连厂商参数模板）：快照行存在且启用、config_json 非空时返回原文；
+     * 否则 null。调用方自行 JSON 解析并逐字段判空，缺参按 SKIPPED 诚实降级。
+     */
+    public String resolveConfigJson(String code) {
+        SnapshotLine line = current().get(code);
+        if (line != null && line.enabled() && notBlank(line.configJson())) {
+            return line.configJson();
+        }
+        return null;
+    }
+
+    /**
      * 全局免打扰时段（P5-B60 卡4 / L39）：快照行存在且启用、config_json 携带合法非空窗时返回；
      * 其余情况（行禁用/无快照/格式异常）一律 empty，由调用方回退 yml @Value 兜底。
      */

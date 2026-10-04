@@ -3,7 +3,7 @@ package com.meiyun.org.integration;
 import java.util.Optional;
 
 /**
- * P0 外部依赖固定目录（8 项），与 V34/V35 迁移 INSERT 同码同名，为目录第二真源。
+ * P0 外部依赖固定目录（14 项），与 V34/V35/V36 迁移 INSERT 同码同名，为目录第二真源。
  * P0 不开放自由新增接入点；P1/P2 新接入点以「新迁移 + 枚举扩充」追加。
  */
 public enum IntegrationCatalog {
@@ -15,7 +15,13 @@ public enum IntegrationCatalog {
     AD_SECRET_RED("AD_CHANNEL", "小红书回传签名密钥", "SECRET"),
     AD_SECRET_MEITUAN("AD_CHANNEL", "美团回传签名密钥", "SECRET"),
     AD_DEV_NO_AUTH("AD_CHANNEL", "广告回传免签（仅联调）", "SWITCH"),
-    NOTIFY_GLOBAL_QUIET("NOTIFY_GATEWAY", "全局免打扰时段", "QUIET_WINDOW");
+    NOTIFY_GLOBAL_QUIET("NOTIFY_GATEWAY", "全局免打扰时段", "QUIET_WINDOW"),
+    NOTIFY_SMS_DIRECT("NOTIFY_GATEWAY", "短信直连官方 API（阿里云）", "SWITCH"),
+    NOTIFY_SMS_SECRET("NOTIFY_GATEWAY", "短信直连密钥（阿里云 AccessKeySecret）", "SECRET"),
+    NOTIFY_EMAIL_DIRECT("NOTIFY_GATEWAY", "邮件直连 SMTP 服务", "SWITCH"),
+    NOTIFY_EMAIL_SECRET("NOTIFY_GATEWAY", "邮件直连密钥（SMTP 授权码）", "SECRET"),
+    NOTIFY_WECHAT_DIRECT("NOTIFY_GATEWAY", "企业微信直连官方 API（应用消息）", "SWITCH"),
+    NOTIFY_WECHAT_SECRET("NOTIFY_GATEWAY", "企微直连密钥（应用 secret）", "SECRET");
 
     private final String category;
     private final String integrationName;

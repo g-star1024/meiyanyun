@@ -14,6 +14,7 @@ import CIcon from '@/components/CIcon.vue'
 import CKpi from '@/components/CKpi.vue'
 import CSegmented from '@/components/CSegmented.vue'
 import CDrawer from '@/components/CDrawer.vue'
+import CTextarea from '@/components/CTextarea.vue'
 import { useT3IntegrationStore } from '@/stores/t3Integration'
 import { useAuthStore } from '@/stores/auth'
 import type { Connector, ConnectorType, OutboxMessage, ReconcileBatch } from '@/stores/t3Integration'
@@ -266,12 +267,15 @@ interface IntForm {
   insecureHttpConfirmed: boolean
   quietStart: string
   quietEnd: string
+  configJson: string
 }
+/** SWITCH 直连类（通知三通道官方 API 直连）：code 以 _DIRECT 结尾，参数模板存 configJson */
+const isDirectSwitch = (code: string) => code.endsWith('_DIRECT')
 const intEditOpen = ref(false)
 const intEditing = ref<IntegrationDTO | null>(null)
 const intForm = ref<IntForm>({
   baseUrl: '', secret: '', boolValue: false, enabled: false,
-  insecureHttpConfirmed: false, quietStart: '22:00', quietEnd: '08:00',
+  insecureHttpConfirmed: false, quietStart: '22:00', quietEnd: '08:00', configJson: '',
 })
 const intSaving = ref(false)
 const intTesting = ref<string>('')
@@ -288,6 +292,7 @@ function openIntEdit(i: IntegrationDTO) {
     insecureHttpConfirmed: false,
     quietStart: w.start || '22:00',
     quietEnd: w.end || '08:00',
+    configJson: i.configJson ?? '',
   }
   intEditOpen.value = true
 }
@@ -322,6 +327,14 @@ async function saveInt() {
     if (!window.confirm('当前为明文 HTTP 网关（仅限内网联调），确认保存？')) return
     f.insecureHttpConfirmed = true
   }
+  if (i.valueKind === 'SWITCH' && isDirectSwitch(i.code) && f.configJson.trim()) {
+    try {
+      JSON.parse(f.configJson)
+    } catch {
+      setFlash('err', '直连参数模板 JSON 格式非法，请检查后再保存')
+      return
+    }
+  }
   intSaving.value = true
   try {
     await upsertIntegration(i.code, {
@@ -332,6 +345,7 @@ async function saveInt() {
       insecureHttpConfirmed: i.valueKind === 'URL' ? f.insecureHttpConfirmed : undefined,
       quietStart: i.valueKind === 'QUIET_WINDOW' ? f.quietStart : null,
       quietEnd: i.valueKind === 'QUIET_WINDOW' ? f.quietEnd : null,
+      configJson: i.valueKind === 'SWITCH' && isDirectSwitch(i.code) ? (f.configJson.trim() || null) : null,
     })
     setFlash('ok', `「${i.name}」配置已保存（约 60 秒内对各服务生效）`)
     intEditOpen.value = false
@@ -810,7 +824,7 @@ watch(tab, () => (flash.value = null))
           </div>
         </template>
 
-        <template v-else>
+        <template v-else-if="intEditing.code === 'AD_DEV_NO_AUTH'">
           <label class="access-chk">
             <input type="checkbox" v-model="intForm.boolValue" />
             <span>
@@ -822,6 +836,36 @@ watch(tab, () => (flash.value = null))
             <CIcon name="alert" :size="14" />
             <span><em>安全红线：</em>免签模式下任何来源都可提交回传数据，仅限隔离联调环境短时开启，联调结束请立即关闭。</span>
           </div>
+        </template>
+
+        <template v-else-if="isDirectSwitch(intEditing.code)">
+          <label class="access-chk">
+            <input type="checkbox" v-model="intForm.boolValue" />
+            <span>
+              <span class="access-chk__title">开启官方 API 直连（绕过 webhook 网关）</span>
+              <span class="access-chk__desc">直连官方短信/邮件/企微接口；参数模板、密钥或员工收件人任一缺失将跳过发送并记录原因（诚实降级，不回落 webhook 中继）</span>
+            </span>
+          </label>
+          <CTextarea
+            v-model="intForm.configJson"
+            label="直连参数模板 JSON"
+            :rows="6"
+            placeholder='如 {"accessKeyId":"…","signName":"…","templateCode":"…","endpoint":"dysmsapi.aliyuncs.com"}'
+          />
+          <div class="form__hint">
+            <CIcon name="shield" :size="14" />
+            <span>参数模板按渠道而异：短信含 accessKeyId/signName/templateCode，邮件含 host/port/username/from，企微含 corpId/agentId；密钥（AccessKeySecret/邮箱授权码/企微 Secret）<em>不写入此处</em>，请在对应 *_SECRET 配置行单独维护。</span>
+          </div>
+        </template>
+
+        <template v-else>
+          <label class="access-chk">
+            <input type="checkbox" v-model="intForm.boolValue" />
+            <span>
+              <span class="access-chk__title">开启该开关</span>
+              <span class="access-chk__desc">开关状态即时生效（约 60 秒内同步各服务）</span>
+            </span>
+          </label>
         </template>
 
         <div v-if="intEditing.remark" class="form__readonly access-remark-ro">
