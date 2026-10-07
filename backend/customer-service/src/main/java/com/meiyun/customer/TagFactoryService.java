@@ -12,6 +12,7 @@ import com.meiyun.security.SecurityContext;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.dao.DataAccessException;
@@ -91,13 +92,20 @@ public class TagFactoryService {
         return defRepository.findAllByOrderByIdAsc().stream().map(this::toView).toList();
     }
 
-    /** 新建标签：编码/名称必填且各自唯一（409 中文）；词表校验；缺省 status=DRAFT/owner=当前登录人姓名；落 CREATE 审计。 */
+    /** 标签编码格式：大写字母开头＋字母/数字/下划线，2-64 位（对齐 code varchar(64)），新建统一转大写。 */
+    private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Z][A-Z0-9_]{1,63}$");
+
+    /** 新建标签：编码/名称必填且各自唯一（409 中文）；编码统一大写＋格式正则（400 中文）；词表校验；缺省 status=DRAFT/owner=当前登录人姓名；落 CREATE 审计。 */
     @Transactional
     public TagView createTag(String code, String name, String category, String type, String sensitivity,
                              String valueType, String description, String sql, String refreshCron,
                              List<String> tags) {
         if (code == null || code.isBlank()) {
             throw new BadReq("标签编码必填");
+        }
+        String codeNorm = code.trim().toUpperCase(Locale.ROOT);
+        if (!CODE_PATTERN.matcher(codeNorm).matches()) {
+            throw new BadReq("标签编码格式不正确（大写字母开头＋字母/数字/下划线，2-64 位）: " + codeNorm);
         }
         if (name == null || name.isBlank()) {
             throw new BadReq("标签名称必填");
@@ -111,15 +119,15 @@ public class TagFactoryService {
         if (sensitivity != null && !SENSITIVITIES.contains(sensitivity)) {
             throw new BadReq("敏感等级不合法，仅支持 PUBLIC/INTERNAL/SENSITIVE");
         }
-        if (defRepository.existsByCode(code.trim())) {
-            throw new Conflict("标签编码已存在：" + code.trim());
+        if (defRepository.existsByCode(codeNorm)) {
+            throw new Conflict("标签编码已存在：" + codeNorm);
         }
         if (defRepository.existsByName(name.trim())) {
             throw new Conflict("标签名称已存在：" + name.trim());
         }
         String actor = DataScope.currentActor();
         TagFactoryDef t = new TagFactoryDef();
-        t.setCode(code.trim());
+        t.setCode(codeNorm);
         t.setName(name.trim());
         t.setCategory(category == null ? "" : category.trim());
         t.setType(type);

@@ -8,12 +8,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 public class DictionaryService {
+
+    /** 字典编码格式：大写字母开头＋字母/数字/下划线，1-50 位（对齐 dict_code varchar(50)），新建统一转大写。 */
+    private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Z][A-Z0-9_]{0,49}$");
 
     @Autowired
     private DictionaryRepository dictionaryRepository;
@@ -65,14 +70,17 @@ public class DictionaryService {
     @Transactional
     public Dictionary create(Dictionary dict) {
         String category = trim(dict.getCategory());
-        String code = trim(dict.getDictCode());
+        String code = trim(dict.getDictCode()).toUpperCase(Locale.ROOT);
         String value = trim(dict.getDictValue());
         String label = trim(dict.getDictLabel());
         if (category.isEmpty() || code.isEmpty() || value.isEmpty() || label.isEmpty()) {
             throw new IllegalArgumentException("分类、字典编码、字典值、显示标签均为必填项");
         }
-        if (category.length() > 50 || code.length() > 50 || value.length() > 50) {
-            throw new IllegalArgumentException("分类/编码/字典值长度不能超过 50 个字符");
+        if (!CODE_PATTERN.matcher(code).matches()) {
+            throw new IllegalArgumentException("字典编码格式不正确（大写字母开头＋字母/数字/下划线，1-50 位）: " + code);
+        }
+        if (category.length() > 50 || value.length() > 50) {
+            throw new IllegalArgumentException("分类/字典值长度不能超过 50 个字符");
         }
         if (label.length() > 100) {
             throw new IllegalArgumentException("显示标签长度不能超过 100 个字符");
