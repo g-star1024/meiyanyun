@@ -47,6 +47,9 @@ public class TagFactoryService {
     private static final Set<String> PUBLISHABLE = Set.of(
             TagFactoryDef.STATUS_DRAFT, TagFactoryDef.STATUS_OFFLINE);
 
+    /** 标签编码格式：大写字母开头＋字母/数字/下划线，2-64 位（对齐 code varchar(64)），新建统一转大写。 */
+    private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Z][A-Z0-9_]{1,63}$");
+
     private final TagFactoryDefRepository defRepository;
     private final CustomerTagRepository customerTagRepository;
     private final TagFactoryResultRepository resultRepository;
@@ -92,9 +95,6 @@ public class TagFactoryService {
         return defRepository.findAllByOrderByIdAsc().stream().map(this::toView).toList();
     }
 
-    /** 标签编码格式：大写字母开头＋字母/数字/下划线，2-64 位（对齐 code varchar(64)），新建统一转大写。 */
-    private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Z][A-Z0-9_]{1,63}$");
-
     /** 新建标签：编码/名称必填且各自唯一（409 中文）；编码统一大写＋格式正则（400 中文）；词表校验；缺省 status=DRAFT/owner=当前登录人姓名；落 CREATE 审计。 */
     @Transactional
     public TagView createTag(String code, String name, String category, String type, String sensitivity,
@@ -119,7 +119,7 @@ public class TagFactoryService {
         if (sensitivity != null && !SENSITIVITIES.contains(sensitivity)) {
             throw new BadReq("敏感等级不合法，仅支持 PUBLIC/INTERNAL/SENSITIVE");
         }
-        if (defRepository.existsByCode(codeNorm)) {
+        if (defRepository.existsByCodeIgnoreCase(codeNorm)) {
             throw new Conflict("标签编码已存在：" + codeNorm);
         }
         if (defRepository.existsByName(name.trim())) {
