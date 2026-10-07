@@ -56,10 +56,13 @@ public class DictionaryService {
     }
 
     /**
-     * 按分类和编码获取启用字典
+     * 按分类和编码获取启用字典。
+     * 编码先归一为大写（对称写路径 create 的归一），避免大小写不一致静默查空。
      */
     public List<Dictionary> getByCategoryAndCode(String category, String dictCode) {
-        return dictionaryRepository.findByCategoryAndDictCodeAndEnabledTrueOrderBySortOrderAsc(category, dictCode);
+        String cat = category == null ? null : category.trim();
+        String code = dictCode == null ? null : dictCode.trim().toUpperCase(Locale.ROOT);
+        return dictionaryRepository.findByCategoryAndDictCodeAndEnabledTrueOrderBySortOrderAsc(cat, code);
     }
 
     /**
