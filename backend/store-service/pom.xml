@@ -30,6 +30,11 @@
             <artifactId>meiyun-security</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.meiyun</groupId>
+            <artifactId>meiyun-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
