@@ -14,7 +14,7 @@ import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { useStoreContext } from './storeContext'
 import {
-  listEquipments, createEquipment, setEquipmentStatus, addEquipmentRecord,
+  listEquipments, createEquipment, setEquipmentStatus, addEquipmentRecord, nextAssetNo,
   type EquipmentDTO, type MaintenanceRecordDTO,
 } from '@/api/equipment'
 
@@ -264,15 +264,25 @@ export const useEquipmentStore = defineStore('equipment', () => {
     return true
   }
 
-  /** 新建设备建档（真实持久化 POST /equipments；金额元→分，折旧恒 0） */
-  async function addEquipment(data: Omit<Equipment, 'id' | 'records'>): Promise<boolean> {
+  /** 资产编号预览（打开新建表单时预填建议码；失败静默回退留空，由后端创建时自动生成） */
+  async function previewAssetNo(): Promise<string> {
+    try {
+      const { data } = await nextAssetNo(ctx.currentStoreCode)
+      return data.assetNo
+    } catch {
+      return ''
+    }
+  }
+
+  /** 新建设备建档（真实持久化 POST /equipments；金额元→分，折旧恒 0；assetNo 留空后端自动生成） */
+  async function addEquipment(data: Omit<Equipment, 'id' | 'records' | 'assetNo'> & { assetNo?: string }): Promise<boolean> {
     if (!auth.can('equipment:edit')) {
       console.warn('[equipment] 无 equipment:edit 权限')
       return false
     }
     await createEquipment({
       storeCode: ctx.currentStoreCode,
-      assetNo: data.assetNo,
+      assetNo: data.assetNo?.trim() ? data.assetNo.trim() : undefined,
       name: data.name,
       brand: data.brand || undefined,
       model: data.model || undefined,
@@ -286,7 +296,7 @@ export const useEquipmentStore = defineStore('equipment', () => {
       nextMaintenanceAt: data.nextMaintenanceAt ? new Date(data.nextMaintenanceAt).toISOString() : undefined,
       note: data.note || undefined,
     })
-    activity.log(auth.user.name, `新建设备 ${data.name}（${data.assetNo}）`, data.assetNo)
+    activity.log(auth.user.name, `新建设备 ${data.name}（${data.assetNo || '自动编号'}）`, data.assetNo || '')
     await seed(true)
     return true
   }
@@ -383,7 +393,7 @@ export const useEquipmentStore = defineStore('equipment', () => {
   return {
     list, filterStatus, filterCategory, keyword,
     normal, calibrating, repairing, disabled, dueCalibration, filtered,
-    get, netValue, dueStatus, setStatus, addRecord, addEquipment, seed, loaded, demo,
+    get, netValue, dueStatus, setStatus, addRecord, addEquipment, previewAssetNo, seed, loaded, demo,
     STATUS_LABEL, STATUS_PILL, CATEGORY_LABEL, MAINT_TYPE_LABEL, DUE_SOON_DAYS,
   }
 })

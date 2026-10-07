@@ -40,10 +40,11 @@ export interface EquipmentDTO {
   records: MaintenanceRecordDTO[]
 }
 
-/** 设备建档入参；金额 purchaseAmountFen 单位「分」，日期为 ISO 字符串。 */
+/** 设备建档入参；金额 purchaseAmountFen 单位「分」，日期为 ISO 字符串。
+ *  assetNo 选填（留空后端按本店 EQ- 号段自动生成）；手填须大写字母开头＋字母/数字/横杠，后端权威重校验。 */
 export interface CreateEquipmentCmd {
   storeCode: string
-  assetNo: string
+  assetNo?: string
   name: string
   brand?: string
   model?: string
@@ -91,6 +92,10 @@ export const getEquipment = (id: number, params?: { storeCode?: string }) =>
 /** 设备建档；返回 {id, assetNo, storeCode}。 */
 export const createEquipment = (cmd: CreateEquipmentCmd) =>
   client.post<{ id: number; assetNo: string; storeCode: string }>('/stores/equipments', cmd)
+
+/** 资产编号预览（新建表单打开时预填建议码，可编辑；创建时后端权威生成/重校验）。 */
+export const nextAssetNo = (storeCode: string) =>
+  client.get<{ assetNo: string }>('/stores/equipments/next-code', { params: { storeCode } })
 
 /** 设备状态变更；返回 {ok:true}。 */
 export const setEquipmentStatus = (id: number, cmd: EquipmentStatusCmd) =>

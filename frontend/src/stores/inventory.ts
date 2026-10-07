@@ -15,7 +15,7 @@ import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { useStoreContext } from './storeContext'
 import {
-  listConsumables, listMovements, createConsumable, stockInConsumable,
+  listConsumables, listMovements, createConsumable, stockInConsumable, nextSkuCode,
   type ConsumableDTO, type ConsumableMovementDTO,
 } from '@/api/consumable'
 import { submitRequisition, submitLossReport } from '@/api/approval'
@@ -256,12 +256,22 @@ export const useInventoryStore = defineStore('inventory', () => {
     return true
   }
 
-  /** 新建 SKU（建档）：POST /consumables（成本价元→分，初始库存>0 由后端写 PURCHASE 流水）。 */
-  async function addSku(data: Omit<InventorySku, 'id'>): Promise<boolean> {
+  /** SKU 编码预览（打开新建表单时预填建议码；失败静默回退留空，由后端创建时自动生成） */
+  async function previewSkuCode(): Promise<string> {
+    try {
+      const { data } = await nextSkuCode(ctx.currentStoreCode)
+      return data.skuCode
+    } catch {
+      return ''
+    }
+  }
+
+  /** 新建 SKU（建档）：POST /consumables（成本价元→分，初始库存>0 由后端写 PURCHASE 流水；skuCode 留空后端自动生成）。 */
+  async function addSku(data: Omit<InventorySku, 'id' | 'skuCode'> & { skuCode?: string }): Promise<boolean> {
     if (!auth.can('inventory:consumable:edit')) return false
     await createConsumable({
       storeCode: ctx.currentStoreCode,
-      skuCode: data.skuCode,
+      skuCode: data.skuCode?.trim() ? data.skuCode.trim() : undefined,
       name: data.name,
       category: data.category,
       spec: data.spec || undefined,
@@ -272,7 +282,7 @@ export const useInventoryStore = defineStore('inventory', () => {
       supplier: data.supplier,
       location: data.location,
     })
-    activity.log(auth.user.name, `新建 SKU ${data.name}（${data.skuCode}）`, data.skuCode)
+    activity.log(auth.user.name, `新建 SKU ${data.name}（${data.skuCode || '自动编号'}）`, data.skuCode || '')
     await seed(true)
     return true
   }
@@ -323,6 +333,6 @@ export const useInventoryStore = defineStore('inventory', () => {
     skus, txns, selectedId, selected, filterCategory, keyword,
     lowStock, outOfStock, totalValue, totalSkuCount, filteredSkus,
     stockStatus, txnsOfSku, categoryLabel, txnLabel, CATEGORY_LABEL, TXN_LABEL,
-    stockIn, stockOut, reportLoss, addSku, seed, loaded, demo,
+    stockIn, stockOut, reportLoss, addSku, previewSkuCode, seed, loaded, demo,
   }
 })

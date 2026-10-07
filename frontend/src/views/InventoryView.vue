@@ -132,13 +132,16 @@ function openCreate() {
     supplier: '', location: '',
   }
   createOpen.value = true
+  inv.previewSkuCode().then((code) => {
+    if (code && createOpen.value && !createForm.value.skuCode) createForm.value.skuCode = code
+  })
 }
 async function doCreate() {
   const f = createForm.value
-  if (!f.name.trim() || !f.skuCode.trim()) return
+  if (!f.name.trim()) return
   try {
     const ok = await inv.addSku({
-      name: f.name.trim(), skuCode: f.skuCode.trim(), category: f.category,
+      name: f.name.trim(), skuCode: f.skuCode.trim() || undefined, category: f.category,
       spec: f.spec, unit: f.unit || '个', stock: Number(f.stock) || 0, safetyStock: Number(f.safetyStock) || 0,
       avgCost: Number(f.avgCost) || 0, supplier: f.supplier || undefined, location: f.location || undefined,
     })
@@ -560,7 +563,7 @@ async function doCreateRequisition(e: BomExceptionDTO) {
     <CDrawer v-model:show="createOpen" title="新建库存 SKU" size="sm">
       <div class="opform">
         <CInput v-model="createForm.name" label="名称 *" placeholder="如：润百颜玻尿酸" />
-        <CInput v-model="createForm.skuCode" label="SKU 编码 *" placeholder="如：HC-003" />
+        <CInput v-model="createForm.skuCode" label="SKU 编码（留空自动生成）" placeholder="如：HC-006，留空自动生成" />
         <CSelect v-model="createForm.category" :options="categoryOptions" label="分类" width="100%" />
         <CInput v-model="createForm.spec" label="规格" placeholder="如：1ml/支" />
         <CInput v-model="createForm.unit" label="单位" placeholder="如：支、盒、瓶" />
@@ -572,7 +575,7 @@ async function doCreateRequisition(e: BomExceptionDTO) {
       </div>
       <div class="drawer__ops">
         <CButton variant="ghost" size="sm" @click="createOpen = false">取消</CButton>
-        <CButton variant="primary" size="sm" :disabled="!createForm.name.trim() || !createForm.skuCode.trim()" @click="doCreate">
+        <CButton variant="primary" size="sm" :disabled="!createForm.name.trim()" @click="doCreate">
           创建
         </CButton>
       </div>

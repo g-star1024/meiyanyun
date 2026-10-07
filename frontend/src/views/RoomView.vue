@@ -160,12 +160,15 @@ const createTypeOptions = [
 function openCreateRoom() {
   createForm.value = { code: '', name: '', type: 'TREATMENT', bedCount: '' }
   showCreate.value = true
+  store.previewRoomCode().then((code) => {
+    if (code && showCreate.value && !createForm.value.code) createForm.value.code = code
+  })
 }
 async function doCreateRoom() {
   const f = createForm.value
-  if (!f.code.trim() || !f.name.trim()) return
+  if (!f.name.trim()) return
   try {
-    const ok = await store.addRoom({ code: f.code.trim(), name: f.name.trim(), type: f.type, bedCount: f.bedCount ? Number(f.bedCount) : undefined })
+    const ok = await store.addRoom({ code: f.code.trim() || undefined, name: f.name.trim(), type: f.type, bedCount: f.bedCount ? Number(f.bedCount) : undefined })
     if (ok) {
       showCreate.value = false
       toast.success(`已创建房间「${f.name}」`)
@@ -181,7 +184,7 @@ async function doCreateRoom() {
     <!-- 新建房间抽屉 -->
     <CDrawer v-model:show="showCreate" title="新建房间" size="sm">
       <div class="opform">
-        <CInput v-model="createForm.code" label="房间编号 *" placeholder="如：E01" />
+        <CInput v-model="createForm.code" label="房间编号（留空自动生成）" placeholder="如：RM-001，留空自动生成" />
         <CInput v-model="createForm.name" label="房间名称 *" placeholder="如：激光治疗室 3" />
         <div class="opform__field">
           <label class="opform__label">房间类型 *</label>
@@ -191,7 +194,7 @@ async function doCreateRoom() {
       </div>
       <div class="drawer__ops">
         <CButton variant="ghost" size="sm" @click="showCreate = false">取消</CButton>
-        <CButton variant="primary" size="sm" :disabled="!createForm.code.trim() || !createForm.name.trim()" @click="doCreateRoom">
+        <CButton variant="primary" size="sm" :disabled="!createForm.name.trim()" @click="doCreateRoom">
           确认创建
         </CButton>
       </div>

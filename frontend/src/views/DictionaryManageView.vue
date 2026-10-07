@@ -285,7 +285,7 @@ onMounted(loadData)
             <span v-if="editingItem" class="form-hint">分类为业务键，创建后不可修改</span>
           </div>
           <div class="form-row">
-            <CInput v-model="form.dictCode" label="字典编码" placeholder="如：SOURCE" />
+            <CInput v-model="form.dictCode" label="字典编码" placeholder="如：SOURCE（大写字母开头＋字母/数字/下划线，自动转大写）" />
           </div>
           <div class="form-row">
             <CInput v-model="form.dictValue" label="字典值" placeholder="如：WALK_IN" />

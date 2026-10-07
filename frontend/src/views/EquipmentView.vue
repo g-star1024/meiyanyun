@@ -104,13 +104,16 @@ function openCreateEq() {
     nextCalibrationAt: '', nextMaintenanceAt: '',
   }
   showCreateEq.value = true
+  store.previewAssetNo().then((code) => {
+    if (code && showCreateEq.value && !eqForm.value.assetNo) eqForm.value.assetNo = code
+  })
 }
 async function doCreateEq() {
   const f = eqForm.value
-  if (!f.assetNo.trim() || !f.name.trim()) return
+  if (!f.name.trim()) return
   try {
     const ok = await store.addEquipment({
-      assetNo: f.assetNo.trim(), name: f.name.trim(), category: f.category,
+      assetNo: f.assetNo.trim() || undefined, name: f.name.trim(), category: f.category,
       brand: f.brand.trim() || undefined, model: f.model.trim() || undefined,
       location: f.location.trim() || '未设置',
       status: 'NORMAL',
@@ -353,7 +356,7 @@ async function submitRec() {
     <!-- 新建设备抽屉 -->
     <CDrawer v-model:show="showCreateEq" title="新建设备" size="sm">
       <div class="opform">
-        <CInput v-model="eqForm.assetNo" label="资产编号 *" placeholder="如：EQ-L009" />
+        <CInput v-model="eqForm.assetNo" label="资产编号（留空自动生成）" placeholder="如：EQ-001，留空自动生成" />
         <CInput v-model="eqForm.name" label="设备名称 *" placeholder="如：超皮秒治疗仪" />
         <div class="opform__field">
           <label class="opform__label">设备分类 *</label>
@@ -369,7 +372,7 @@ async function submitRec() {
       </div>
       <div class="drawer__ops">
         <CButton variant="ghost" size="sm" @click="showCreateEq = false">取消</CButton>
-        <CButton variant="primary" size="sm" :disabled="!eqForm.assetNo.trim() || !eqForm.name.trim()" @click="doCreateEq">
+        <CButton variant="primary" size="sm" :disabled="!eqForm.name.trim()" @click="doCreateEq">
           创建
         </CButton>
       </div>

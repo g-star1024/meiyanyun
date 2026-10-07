@@ -142,7 +142,8 @@ export interface StoreRegionDist {
 }
 
 export interface StaffCreatePayload {
-  staffId: string
+  /** 工号选填（留空后端按 E 序号自动生成）；手填须大写字母开头＋字母/数字，后端权威重校验 */
+  staffId?: string
   staffName: string
   roleCode: string
   storeCode?: string | null
@@ -233,6 +234,9 @@ export const deleteOrgUnit = (orgCode: string) =>
 
 export const createStaff = (payload: StaffCreatePayload) =>
   client.post<Staff>('/org/admin/staff', payload)
+
+/** 工号预览（新建表单打开时预填建议工号，可编辑；创建时后端权威生成/重校验）。 */
+export const nextStaffId = () => client.get<{ staffId: string }>('/org/admin/staff/next-id')
 
 export const disableStaff = (staffId: string) =>
   client.post<Staff>(`/org/admin/staff/${staffId}/disable`)

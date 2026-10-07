@@ -13,7 +13,7 @@ import { nextId, useActivityStore } from './activity'
 import { useAuthStore } from './auth'
 import { useStoreContext } from './storeContext'
 import {
-  listRooms, listRoomLogs, createRoom, setBedMaintenance, restoreBed,
+  listRooms, listRoomLogs, createRoom, nextRoomCode, setBedMaintenance, restoreBed,
   type RoomDTO, type RoomLogDTO,
 } from '@/api/room'
 
@@ -255,8 +255,18 @@ export const useRoomStore = defineStore('room', () => {
     return true
   }
 
-  /** 新建房间（真实持久化 POST /rooms，批量生成床位 {roomCode}-B{n}） */
-  async function addRoom(data: { code: string; name: string; type: RoomType; bedCount?: number }): Promise<boolean> {
+  /** 房间码预览（打开新建表单时预填建议码；失败静默回退留空，由后端创建时自动生成） */
+  async function previewRoomCode(): Promise<string> {
+    try {
+      const { data } = await nextRoomCode(ctx.currentStoreCode)
+      return data.roomCode
+    } catch {
+      return ''
+    }
+  }
+
+  /** 新建房间（真实持久化 POST /rooms，批量生成床位 {roomCode}-B{n}；code 留空由后端自动生成） */
+  async function addRoom(data: { code?: string; name: string; type: RoomType; bedCount?: number }): Promise<boolean> {
     if (!auth.can('room:edit')) {
       console.warn('[room] 无 room:edit 权限')
       return false
@@ -264,12 +274,12 @@ export const useRoomStore = defineStore('room', () => {
     const bedCount = data.bedCount ?? 2
     await createRoom({
       storeCode: ctx.currentStoreCode,
-      roomCode: data.code,
+      roomCode: data.code?.trim() ? data.code.trim() : undefined,
       name: data.name,
       roomType: data.type,
       bedCount,
     })
-    activity.log(auth.user.name, `新建房间 ${data.name}（${data.code}）`, data.code)
+    activity.log(auth.user.name, `新建房间 ${data.name}（${data.code || '自动编号'}）`, data.code || '')
     await seed(true)
     return true
   }
@@ -360,7 +370,7 @@ export const useRoomStore = defineStore('room', () => {
     total, inUse, free, sanitizing, maintenance,
     filteredRooms, allBeds,
     getRoom, findBed,
-    occupy, release, clean, setMaintenance, restore, addRoom,
+    occupy, release, clean, setMaintenance, restore, addRoom, previewRoomCode,
     seed, loaded, demo,
     ROOM_TYPE_LABEL, BED_STATUS_LABEL, BED_STATUS_PILL,
   }

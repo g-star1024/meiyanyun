@@ -16,7 +16,7 @@ import CDrawer from '@/components/CDrawer.vue'
 import CCheckbox from '@/components/CCheckbox.vue'
 import {
   listStaff, listRoles, listStores, getStaffRoles, getOrgTree,
-  createStaff, disableStaff, resetStaffPassword, transferStaff,
+  createStaff, nextStaffId, disableStaff, resetStaffPassword, transferStaff,
   setPrimaryRole, addStaffRole, removeStaffRole, updateStaffContact,
   type Staff, type RoleDef, type Store as OrgStore,
   type StaffRoleScopeRow, type OrgTreeNode,
@@ -188,17 +188,24 @@ function openCreate() {
   createForm.email = ''
   createForm.wecomUserid = ''
   drawerKind.value = 'create'
+  nextStaffId()
+    .then(({ data }) => {
+      if (data.staffId && drawerKind.value === 'create' && !createForm.staffId) {
+        createForm.staffId = data.staffId
+      }
+    })
+    .catch(() => {})
 }
 
 async function submitCreate() {
-  if (!createForm.staffId.trim() || !createForm.staffName.trim() || !createForm.roleCode) {
-    toast.warning('请填写工号、姓名并选择主角色')
+  if (!createForm.staffName.trim() || !createForm.roleCode) {
+    toast.warning('请填写姓名并选择主角色')
     return
   }
   submitting.value = true
   try {
     await createStaff({
-      staffId: createForm.staffId.trim(),
+      staffId: createForm.staffId.trim() || undefined,
       staffName: createForm.staffName.trim(),
       roleCode: createForm.roleCode,
       storeCode: createForm.storeCode || null,
@@ -565,8 +572,8 @@ onMounted(() => { seed() })
     <CDrawer v-if="drawerKind === 'create'" v-model:show="drawerOpen" title="新建员工" size="md">
       <div class="form">
         <label class="field">
-          <span class="field__label">工号 <i>*</i></span>
-          <CInput v-model="createForm.staffId" placeholder="如 E101（大写字母+数字，全局唯一）" />
+          <span class="field__label">工号（留空自动生成）</span>
+          <CInput v-model="createForm.staffId" placeholder="如 E015，留空自动生成（大写字母+数字，全局唯一）" />
         </label>
         <label class="field">
           <span class="field__label">姓名 <i>*</i></span>

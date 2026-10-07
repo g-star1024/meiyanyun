@@ -44,10 +44,11 @@ export interface ConsumableMovementDTO {
   createdAt: string
 }
 
-/** 耗材建档入参；金额 costPriceFen 单位「分」，initialQty>0 自动写 PURCHASE 流水。 */
+/** 耗材建档入参；金额 costPriceFen 单位「分」，initialQty>0 自动写 PURCHASE 流水。
+ *  skuCode 选填（留空后端按本店 HC- 号段自动生成）；手填须大写字母开头＋字母/数字/横杠，后端权威重校验。 */
 export interface CreateSkuCmd {
   storeCode: string
-  skuCode: string
+  skuCode?: string
   name: string
   category: string
   spec?: string
@@ -80,6 +81,10 @@ export const listMovements = (params?: { storeCode?: string; types?: string[] })
 /** 耗材建档（含初始库存）；返回 {id, skuCode, storeCode}。 */
 export const createConsumable = (cmd: CreateSkuCmd) =>
   client.post<{ id: number; skuCode: string; storeCode: string }>('/stores/consumables', cmd)
+
+/** SKU 编码预览（新建表单打开时预填建议码，可编辑；创建时后端权威生成/重校验）。 */
+export const nextSkuCode = (storeCode: string) =>
+  client.get<{ skuCode: string }>('/stores/consumables/next-code', { params: { storeCode } })
 
 /** 采购入库（移动平均重算）；batchNo 幂等，返回 {ok:true}。 */
 export const stockInConsumable = (cmd: StockInCmd) =>

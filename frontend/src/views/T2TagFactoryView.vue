@@ -283,7 +283,7 @@ async function doDelete(t: FactoryTag) {
     <CDrawer :show="showForm" :title="editingId ? '编辑标签' : '新建标签'" size="lg" @update:show="showForm = $event">
       <div class="form">
         <div class="form__row">
-          <CInput v-model="form.code" label="标签编码" placeholder="TAG_XXX（英文大写下划线）" />
+          <CInput v-model="form.code" label="标签编码" placeholder="如 TAG_VIP（大写字母开头＋字母/数字/下划线，自动转大写）" />
           <CInput v-model="form.name" label="标签名称" placeholder="例如：高价值客户" />
         </div>
         <CInput v-model="form.category" label="分类" placeholder="客户价值 / 风险预警 / 消费偏好 ..." />

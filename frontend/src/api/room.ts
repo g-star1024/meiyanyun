@@ -40,10 +40,10 @@ export interface RoomLogDTO {
   createdAt: string
 }
 
-/** 房间建档入参；bedCount 1~50，床位编号 {roomCode}-B{n}。 */
+/** 房间建档入参；roomCode 选填（留空后端按本店 RM- 号段自动生成），bedCount 1~50，床位编号 {roomCode}-B{n}。 */
 export interface CreateRoomCmd {
   storeCode: string
-  roomCode: string
+  roomCode?: string
   name: string
   roomType: string
   bedCount: number
@@ -62,6 +62,10 @@ export const listRooms = (params?: { storeCode?: string; type?: string; status?:
 /** 房间/床位操作日志（最近 limit 条，时间倒序）。 */
 export const listRoomLogs = (params?: { storeCode?: string; limit?: number }) =>
   client.get<RoomLogDTO[]>('/stores/rooms/logs', { params })
+
+/** 房间码预览（新建表单打开时预填建议码，可编辑；创建时后端权威生成/重校验）。 */
+export const nextRoomCode = (storeCode: string) =>
+  client.get<{ roomCode: string }>('/stores/rooms/next-code', { params: { storeCode } })
 
 /** 房间建档（批量生成床位）；返回 {id, roomCode, storeCode}。 */
 export const createRoom = (cmd: CreateRoomCmd) =>
