@@ -1,5 +1,6 @@
 package com.meiyun.store.equipment;
 
+import com.meiyun.common.codegen.CodeGen;
 import com.meiyun.store.consumable.ConsumableAuditRecorder;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -11,7 +12,9 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 设备仪器域服务（B13）：台账查询、建档、状态变更、校准/维保/维修记录登记。
@@ -46,6 +49,18 @@ public class EquipmentService {
     /** 400 参数错误（中文） */
     static ResponseStatusException badReq(String msg) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, msg);
+    }
+
+    /** 资产编号自动号段：EQ- + 3 位门店内序号；手填码统一大写＋格式正则（字母开头，允许横杠）。 */
+    static final String ASSET_NO_PREFIX = "EQ-";
+    static final int ASSET_NO_WIDTH = 3;
+    static final Pattern ASSET_NO_PATTERN = Pattern.compile("^[A-Z][A-Z0-9-]{1,19}$");
+
+    /** 资产编号预览：新建表单打开时预填建议码（可编辑），创建时后端仍按库内最大号权威生成/重校验。 */
+    @Transactional(readOnly = true)
+    public String nextAssetNo(String storeCode) {
+        if (isBlank(storeCode)) throw badReq("请指定所属门店");
+        return CodeGen.nextSeq(ASSET_NO_PREFIX, ASSET_NO_WIDTH, p -> eqRepo.maxEqCode(storeCode.trim()));
     }
 
     /** 设备台账（含校准/维保记录嵌套，金额单位「元」）。 */
@@ -91,15 +106,22 @@ public class EquipmentService {
         return out;
     }
 
-    /** 设备建档；金额单位「分」，日期入参为 ISO 字符串（yyyy-MM-dd 或完整 ISO 时间，截前 10 位）。 */
+    /** 设备建档；assetNo 选填：留空按本店 EQ- 号段自动生成，手填统一转大写并按格式正则强校验；
+     *  金额单位「分」，日期入参为 ISO 字符串（yyyy-MM-dd 或完整 ISO 时间，截前 10 位）。 */
     @Transactional
     public Equipment createEquipment(String storeCode, String assetNo, String name, String brand, String model,
                                      String category, String location, String status,
                                      String purchasedAt, Long purchaseAmountFen, Integer lifespanYears,
                                      String nextCalibrationAt, String nextMaintenanceAt, String note,
                                      String operator) {
-        if (isBlank(storeCode) || isBlank(assetNo) || isBlank(name) || isBlank(category)) {
-            throw badReq("门店、资产编号、设备名称、设备分类均不能为空");
+        if (isBlank(storeCode) || isBlank(name) || isBlank(category)) {
+            throw badReq("门店、设备名称、设备分类均不能为空");
+        }
+        String an = isBlank(assetNo)
+                ? CodeGen.nextSeq(ASSET_NO_PREFIX, ASSET_NO_WIDTH, p -> eqRepo.maxEqCode(storeCode.trim()))
+                : assetNo.trim().toUpperCase(Locale.ROOT);
+        if (!ASSET_NO_PATTERN.matcher(an).matches()) {
+            throw badReq("资产编号格式不正确（大写字母开头＋字母/数字/横杠，2-20 位；留空可自动生成）: " + an);
         }
         if (!CATEGORIES.contains(category.trim())) {
             throw badReq("设备分类仅支持 LASER/RF/ULTRASOUND/INJECTION/MONITOR/OTHER");
@@ -110,13 +132,13 @@ public class EquipmentService {
         }
         long fen = purchaseAmountFen == null ? 0L : Math.max(0L, purchaseAmountFen);
         int years = lifespanYears == null || lifespanYears <= 0 ? 8 : lifespanYears;
-        if (eqRepo.findByStoreCodeAndAssetNo(storeCode, assetNo.trim()).isPresent()) {
+        if (eqRepo.findByStoreCodeAndAssetNo(storeCode, an).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "本店已存在资产编号「" + assetNo + "」，请勿重复建档");
+                    "本店已存在资产编号「" + an + "」，请勿重复建档");
         }
         Equipment e = new Equipment();
         e.setStoreCode(storeCode);
-        e.setAssetNo(assetNo.trim());
+        e.setAssetNo(an);
         e.setName(name.trim());
         e.setBrand(blankToNull(brand));
         e.setModel(blankToNull(model));

@@ -46,7 +46,14 @@ public class ConsumableController {
         return service.listMovements(sc, types);
     }
 
-    /** 耗材建档（含初始库存，可 0）；金额单位「分」由前端换算后传入。 */
+    /** SKU 码预览：新建表单打开时预填建议码（可编辑），创建时后端仍权威生成/重校验。 */
+    @GetMapping("/next-code")
+    @RequirePerm("inventory:consumable:edit")
+    public Map<String, String> nextSkuCode(@RequestParam(value = "storeCode", required = false) String storeCode) {
+        return Map.of("skuCode", service.nextSkuCode(resolveWriteStoreCode(storeCode)));
+    }
+
+    /** 耗材建档（含初始库存，可 0）；skuCode 留空自动按本店 HC- 号段生成；金额单位「分」由前端换算后传入。 */
     @PostMapping
     @RequirePerm("inventory:consumable:edit")
     public Map<String, Object> create(@RequestBody CreateSkuCmd cmd) {

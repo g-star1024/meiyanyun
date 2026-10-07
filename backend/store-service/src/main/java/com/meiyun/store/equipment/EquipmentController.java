@@ -44,7 +44,14 @@ public class EquipmentController {
         return service.getEquipment(resolveStoreCode(storeCode), id);
     }
 
-    /** 设备建档；金额单位「分」，日期为 ISO 字符串。 */
+    /** 资产编号预览：新建表单打开时预填建议码（可编辑），创建时后端仍权威生成/重校验。 */
+    @GetMapping("/equipments/next-code")
+    @RequirePerm("equipment:edit")
+    public Map<String, String> nextAssetNo(@RequestParam(value = "storeCode", required = false) String storeCode) {
+        return Map.of("assetNo", service.nextAssetNo(resolveWriteStoreCode(storeCode)));
+    }
+
+    /** 设备建档；assetNo 留空自动按本店 EQ- 号段生成；金额单位「分」，日期为 ISO 字符串。 */
     @PostMapping("/equipments")
     @RequirePerm("equipment:edit")
     public Map<String, Object> create(@RequestBody CreateEquipmentCmd cmd) {

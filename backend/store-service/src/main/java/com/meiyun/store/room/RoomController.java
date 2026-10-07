@@ -43,7 +43,14 @@ public class RoomController {
         return service.listLogs(resolveStoreCode(storeCode), limit);
     }
 
-    /** 房间建档：按 roomCode 唯一建房间并批量生成 bedCount 张床位（bed_code={roomCode}-B{n}）。 */
+    /** 房间码预览：新建表单打开时预填建议码（可编辑），创建时后端仍权威生成/重校验。 */
+    @GetMapping("/rooms/next-code")
+    @RequirePerm("room:edit")
+    public Map<String, String> nextRoomCode(@RequestParam(value = "storeCode", required = false) String storeCode) {
+        return Map.of("roomCode", service.nextRoomCode(resolveWriteStoreCode(storeCode)));
+    }
+
+    /** 房间建档：roomCode 留空自动按本店 RM- 号段生成；按 roomCode 唯一建房间并批量生成 bedCount 张床位（bed_code={roomCode}-B{n}）。 */
     @PostMapping("/rooms")
     @RequirePerm("room:edit")
     public Map<String, Object> createRoom(@RequestBody CreateRoomCmd cmd) {

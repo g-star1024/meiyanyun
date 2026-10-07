@@ -1,5 +1,6 @@
 package com.meiyun.store.consumable;
 
+import com.meiyun.common.codegen.CodeGen;
 import com.meiyun.security.DataScope;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
@@ -12,7 +13,9 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 耗材域服务（B5）：档案建档、入库（PURCHASE 移动平均重算）、出库（领用 USE / 报损 SCRAP）。
@@ -50,24 +53,43 @@ public class ConsumableService {
         return new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, msg);
     }
 
-    /** 建档：一店一 SKU 唯一校验，初始库存行随行落库（initialQty 可为 0）。 */
+    /** SKU 码自动号段：HC- + 3 位门店内序号；手填码统一大写＋格式正则（字母开头，允许横杠）。 */
+    static final String SKU_CODE_PREFIX = "HC-";
+    static final int SKU_CODE_WIDTH = 3;
+    static final Pattern SKU_CODE_PATTERN = Pattern.compile("^[A-Z][A-Z0-9-]{1,19}$");
+
+    /** SKU 码预览：新建表单打开时预填建议码（可编辑），创建时后端仍按库内最大号权威生成/重校验。 */
+    @Transactional(readOnly = true)
+    public String nextSkuCode(String storeCode) {
+        if (isBlank(storeCode)) throw badReq("请指定所属门店");
+        return CodeGen.nextSeq(SKU_CODE_PREFIX, SKU_CODE_WIDTH, p -> consumableRepo.maxHcCode(storeCode.trim()));
+    }
+
+    /** 建档：一店一 SKU 唯一校验，初始库存行随行落库（initialQty 可为 0）。
+     *  skuCode 选填：留空按本店 HC- 号段自动生成；手填统一转大写并按格式正则强校验。 */
     @Transactional
     public Consumable createSku(String storeCode, String skuCode, String name, String category,
                                 String spec, String unit, long costPriceFen, int safetyStock,
                                 int initialQty, String supplier, String location, String operator) {
-        if (isBlank(storeCode) || isBlank(skuCode) || isBlank(name) || isBlank(category) || isBlank(unit)) {
-            throw badReq("门店、SKU 编码、名称、分类、单位均不能为空");
+        if (isBlank(storeCode) || isBlank(name) || isBlank(category) || isBlank(unit)) {
+            throw badReq("门店、名称、分类、单位均不能为空");
+        }
+        String sc = isBlank(skuCode)
+                ? CodeGen.nextSeq(SKU_CODE_PREFIX, SKU_CODE_WIDTH, p -> consumableRepo.maxHcCode(storeCode.trim()))
+                : skuCode.trim().toUpperCase(Locale.ROOT);
+        if (!SKU_CODE_PATTERN.matcher(sc).matches()) {
+            throw badReq("SKU 编码格式不正确（大写字母开头＋字母/数字/横杠，2-20 位；留空可自动生成）: " + sc);
         }
         if (costPriceFen < 0 || safetyStock < 0 || initialQty < 0) {
             throw badReq("成本价、安全库存、初始库存不能为负");
         }
-        if (consumableRepo.findByStoreCodeAndSkuCode(storeCode, skuCode).isPresent()) {
+        if (consumableRepo.findByStoreCodeAndSkuCode(storeCode, sc).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "本店已存在 SKU「" + skuCode + "」，请勿重复建档");
+                    "本店已存在 SKU「" + sc + "」，请勿重复建档");
         }
         Consumable c = new Consumable();
         c.setStoreCode(storeCode);
-        c.setSkuCode(skuCode.trim());
+        c.setSkuCode(sc);
         c.setName(name.trim());
         c.setCategory(category.trim());
         c.setSpec(spec);

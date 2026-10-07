@@ -2,6 +2,8 @@ package com.meiyun.store.consumable;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.Optional;
 
@@ -16,4 +18,8 @@ public interface ConsumableRepository extends JpaRepository<Consumable, Long>,
         JpaSpecificationExecutor<Consumable> {
 
     Optional<Consumable> findByStoreCodeAndSkuCode(String storeCode, String skuCode);
+
+    /** 本店 HC- 号段最大 SKU 码（只取自动号段），供 CodeGen 门店内续号。 */
+    @Query("select max(c.skuCode) from Consumable c where c.storeCode = :storeCode and c.skuCode like 'HC-%'")
+    String maxHcCode(@Param("storeCode") String storeCode);
 }

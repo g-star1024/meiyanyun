@@ -11,6 +11,10 @@ public interface TreatmentRoomRepository extends JpaRepository<TreatmentRoom, Lo
 
     Optional<TreatmentRoom> findByStoreCodeAndRoomCode(String storeCode, String roomCode);
 
+    /** 本店 RM- 号段最大房间码（只取自动号段），供 CodeGen 门店内续号。 */
+    @Query("select max(r.roomCode) from TreatmentRoom r where r.storeCode = :storeCode and r.roomCode like 'RM-%'")
+    String maxRmCode(@Param("storeCode") String storeCode);
+
     /**
      * 房间检索：storeCode/type/status 均为可选过滤（null 不过滤）。
      * stringtype=unspecified 连接串下 null 参数须 cast(:x as string)，否则 PG 推断为 bytea 报错。

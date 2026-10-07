@@ -1,5 +1,6 @@
 package com.meiyun.store.room;
 
+import com.meiyun.common.codegen.CodeGen;
 import com.meiyun.store.consumable.ConsumableAuditRecorder;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
@@ -11,7 +12,9 @@ import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 房间/床位域服务（B13）：房间建档（建房并批量生成床位）、床位设维护/维护恢复、操作日志查询。
@@ -42,6 +45,18 @@ public class RoomService {
     /** 400 参数错误（中文） */
     static ResponseStatusException badReq(String msg) {
         return new ResponseStatusException(HttpStatus.BAD_REQUEST, msg);
+    }
+
+    /** 房间码自动号段：RM- + 3 位门店内序号；手填码统一大写＋格式正则（字母开头，允许横杠）。 */
+    static final String ROOM_CODE_PREFIX = "RM-";
+    static final int ROOM_CODE_WIDTH = 3;
+    static final Pattern ROOM_CODE_PATTERN = Pattern.compile("^[A-Z][A-Z0-9-]{1,19}$");
+
+    /** 房间码预览：新建表单打开时预填建议码（可编辑），创建时后端仍按库内最大号权威生成/重校验。 */
+    @Transactional(readOnly = true)
+    public String nextRoomCode(String storeCode) {
+        if (isBlank(storeCode)) throw badReq("请指定所属门店");
+        return CodeGen.nextSeq(ROOM_CODE_PREFIX, ROOM_CODE_WIDTH, p -> roomRepo.maxRmCode(storeCode.trim()));
     }
 
     /**
@@ -102,12 +117,19 @@ public class RoomService {
         return out;
     }
 
-    /** 建房：一店一房间码唯一校验，按 bedCount 批量生成床位（bed_code = {roomCode}-B{n}）。 */
+    /** 建房：一店一房间码唯一校验，按 bedCount 批量生成床位（bed_code = {roomCode}-B{n}）。
+     *  roomCode 选填：留空按本店 RM- 号段自动生成；手填统一转大写并按格式正则强校验。 */
     @Transactional
     public TreatmentRoom createRoom(String storeCode, String roomCode, String name, String roomType,
                                     int bedCount, String operator) {
-        if (isBlank(storeCode) || isBlank(roomCode) || isBlank(name) || isBlank(roomType)) {
-            throw badReq("门店、房间编号、房间名称、房间类型均不能为空");
+        if (isBlank(storeCode) || isBlank(name) || isBlank(roomType)) {
+            throw badReq("门店、房间名称、房间类型均不能为空");
+        }
+        String rc = isBlank(roomCode)
+                ? CodeGen.nextSeq(ROOM_CODE_PREFIX, ROOM_CODE_WIDTH, p -> roomRepo.maxRmCode(storeCode.trim()))
+                : roomCode.trim().toUpperCase(Locale.ROOT);
+        if (!ROOM_CODE_PATTERN.matcher(rc).matches()) {
+            throw badReq("房间编号格式不正确（大写字母开头＋字母/数字/横杠，2-20 位；留空可自动生成）: " + rc);
         }
         if (bedCount < 1 || bedCount > 50) {
             throw badReq("床位数量须在 1~50 之间");
@@ -115,13 +137,13 @@ public class RoomService {
         if (!List.of("TREATMENT", "CONSULT", "OBSERVE", "RECOVERY").contains(roomType.trim())) {
             throw badReq("房间类型仅支持 TREATMENT/CONSULT/OBSERVE/RECOVERY");
         }
-        if (roomRepo.findByStoreCodeAndRoomCode(storeCode, roomCode.trim()).isPresent()) {
+        if (roomRepo.findByStoreCodeAndRoomCode(storeCode, rc).isPresent()) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "本店已存在房间「" + roomCode + "」，请勿重复建档");
+                    "本店已存在房间「" + rc + "」，请勿重复建档");
         }
         TreatmentRoom r = new TreatmentRoom();
         r.setStoreCode(storeCode);
-        r.setRoomCode(roomCode.trim());
+        r.setRoomCode(rc);
         r.setName(name.trim());
         r.setRoomType(roomType.trim());
         r.setStatus("ACTIVE");
@@ -133,7 +155,7 @@ public class RoomService {
             TreatmentBed b = new TreatmentBed();
             b.setStoreCode(storeCode);
             b.setRoomId(r.getId());
-            b.setBedCode(roomCode.trim() + "-B" + i);
+            b.setBedCode(rc + "-B" + i);
             b.setMaintStatus("OK");
             b.setCreatedBy(operator);
             b.setUpdatedBy(operator);

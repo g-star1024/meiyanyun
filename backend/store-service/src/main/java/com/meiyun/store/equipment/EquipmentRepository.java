@@ -11,6 +11,10 @@ public interface EquipmentRepository extends JpaRepository<Equipment, Long> {
 
     Optional<Equipment> findByStoreCodeAndAssetNo(String storeCode, String assetNo);
 
+    /** 本店 EQ- 号段最大资产编号（只取自动号段），供 CodeGen 门店内续号。 */
+    @Query("select max(e.assetNo) from Equipment e where e.storeCode = :storeCode and e.assetNo like 'EQ-%'")
+    String maxEqCode(@Param("storeCode") String storeCode);
+
     long countByStoreCode(String storeCode);
 
     /**
