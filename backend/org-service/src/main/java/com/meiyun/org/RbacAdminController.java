@@ -1,5 +1,6 @@
 package com.meiyun.org;
 
+import com.meiyun.common.codegen.CodeGen;
 import com.meiyun.org.audit.AuditRecorder;
 import com.meiyun.security.DataScope;
 import com.meiyun.security.PasswordEncoder;
@@ -35,6 +36,11 @@ public class RbacAdminController {
             "SUPER_ADMIN", "REGION_MGR", "STORE_MGR", "CONSULTANT",
             "DOCTOR", "FRONT_DESK", "OPERATOR", "FINANCE");
 
+    /** 工号自动生成位宽：E + 3 位序号（续库内最大 E 号段，如 E015）。 */
+    private static final int STAFF_ID_WIDTH = 3;
+    /** 手填工号格式：大写字母开头＋字母/数字，总长 2-20（兼容存量 E001/SE101）。 */
+    private static final Pattern STAFF_ID_PATTERN = Pattern.compile("^[A-Z][A-Z0-9]{1,19}$");
+
     private final StaffRepository staffRepo;
     private final RoleDefRepository roleRepo;
     private final StaffRoleRepository staffRoleRepo;
@@ -58,21 +64,31 @@ public class RbacAdminController {
 
     // ==================== 员工管理 ====================
 
-    /** 新建员工：工号/姓名/主角色必填；loginName 默认=工号，默认密码 meiyun123（PBKDF2），状态在职。 */
+    /** 工号预览：新建表单打开时预填建议工号（可编辑），创建时后端仍按库内最大号权威生成/重校验。 */
+    @GetMapping("/admin/staff/next-id")
+    @RequirePerm("rbac:edit")
+    public Map<String, String> nextStaffId() {
+        return Map.of("staffId", CodeGen.nextSeq("E", STAFF_ID_WIDTH, p -> staffRepo.maxEId()));
+    }
+
+    /** 新建员工：姓名/主角色必填；工号选填——留空自动生成 E 序号（续库内最大 E 号段），手填统一转大写强校验格式；loginName 默认=工号，默认密码 meiyun123（PBKDF2），状态在职。 */
     @PostMapping("/admin/staff")
     @RequirePerm("rbac:edit")
     @Transactional
     public Staff createStaff(@RequestBody StaffCreateRequest req) {
-        if (req.staffId() == null || req.staffId().isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "工号不能为空");
-        }
         if (req.staffName() == null || req.staffName().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "员工姓名不能为空");
         }
         if (req.roleCode() == null || req.roleCode().isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "主角色不能为空");
         }
-        String staffId = req.staffId().trim();
+        String staffId = (req.staffId() == null || req.staffId().isBlank())
+                ? CodeGen.nextSeq("E", STAFF_ID_WIDTH, p -> staffRepo.maxEId())
+                : req.staffId().trim().toUpperCase(Locale.ROOT);
+        if (!STAFF_ID_PATTERN.matcher(staffId).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "工号格式不正确（大写字母开头＋字母/数字，2-20 位；留空可自动生成）: " + staffId);
+        }
         if (staffRepo.existsById(staffId)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "工号已存在: " + staffId);
         }
