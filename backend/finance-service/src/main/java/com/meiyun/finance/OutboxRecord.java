@@ -41,4 +41,15 @@ public class OutboxRecord {
 
     @Column(name = "reconciled_at")
     private OffsetDateTime reconciledAt;
+
+    /** F2 #21 哨兵：最近一次扫描/挂差异原因（中文），人工对账端点不写此列。 */
+    @Column(name = "error", columnDefinition = "TEXT")
+    private String error;
+
+    /**
+     * F2 #21 哨兵：已重试次数。Java 侧初始化 0，保证 postOne() new 后未显式 set
+     * 时 insert 不为 null（DB 列 NOT NULL DEFAULT 0，但 JPA 显式插列会绕过 DB 默认值）。
+     */
+    @Column(name = "retry_count", nullable = false)
+    private Integer retryCount = 0;
 }

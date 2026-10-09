@@ -5,11 +5,15 @@ import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.time.OffsetDateTime;
 import java.util.List;
 
 public interface OutboxRepository extends JpaRepository<OutboxRecord, Long> {
 
     List<OutboxRecord> findByStatusOrderByCreatedAtDesc(String status);
+
+    /** F2 #21 哨兵：扫描 status 指定且 created_at 早于 cutoff 的超时台账（如超时 PENDING）。 */
+    List<OutboxRecord> findByStatusAndCreatedAtBefore(String status, OffsetDateTime cutoff);
 
     /**
      * B11 重算本月：删除该月系统结转产生的成本对账台账行（与 fund_entry/cost_allocation 同事务）。
