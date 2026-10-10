@@ -77,7 +77,8 @@ meiyun:
       sms-secret: ${MEIYUN_NOTIFY_SMS_SECRET:}
   # 棒⑧卡4：对象存储直连（S3/MinIO 接入位；org integration_config 目录 STORAGE_DIRECT/STORAGE_SECRET
   # 库行优先，此处 env 为库外兜底）。未启用走本地磁盘兜底 storage.local.root；启用缺参渲染上传
-  # SKIPPED 503 中文诚实降级，不静默回落 local。config 为 JSON 五字段：provider/endpoint/bucket/region/accessKey。
+  # SKIPPED 503 中文诚实降级，不静默回落 local。config 为 JSON 六字段：provider/endpoint/bucket/region/
+  # accessKey＋选填 publicEndpoint（F3 卡2 ㉕ 外轨·仅预签名 URL host，缺省=内轨 endpoint）。
   storage:
     direct:
       enabled: ${MEIYUN_STORAGE_DIRECT_ENABLED:false}

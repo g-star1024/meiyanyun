@@ -27,8 +27,8 @@ public enum IntegrationCatalog {
     ESIGN_DIRECT("ESIGN", "电子签直连厂商 API（接入位）", "SWITCH"),
     ESIGN_SECRET("ESIGN", "电子签厂商密钥（接入调用与回调验签共用）", "SECRET"),
 
-    // 棒⑧卡4 对象存储接入位（V90 迁移同码播种）：marketing DelegatingStorageService 消费，
-    // config_json 承载 provider/endpoint/bucket/region/accessKey，secretKey 独立 SECRET 行
+    // 棒⑧卡4 对象存储接入位（V90 迁移同码播种；V95 模板补 publicEndpoint）：marketing DelegatingStorageService 消费，
+    // config_json 承载 provider/endpoint/bucket/region/accessKey＋选填 publicEndpoint（㉕ 外轨·仅预签名 URL host），secretKey 独立 SECRET 行
     STORAGE_DIRECT("STORAGE", "对象存储直连（S3/MinIO 接入位）", "SWITCH"),
     STORAGE_SECRET("STORAGE", "对象存储密钥（secretKey）", "SECRET"),
 

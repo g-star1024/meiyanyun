@@ -22,9 +22,15 @@ import java.util.HexFormat;
  * 存储路由门面（棒⑧卡4）：按 org 集成目录 60s 快照运行时裁决 local / MinIO 直连。
  *
  * <p>STORAGE_DIRECT（SWITCH）未启用 → 本地磁盘兜底（storage.local.root），对存量功能零影响；
- * 启用 → 解析 config_json 五字段（provider/endpoint/bucket/region/accessKey）＋STORAGE_SECRET 密钥，
- * 任一缺失或非法 → 503 SKIPPED 中文诚实降级，不静默回落 local（避免运维误以为已上对象存储）。
+ * 启用 → 解析 config_json 六字段（provider/endpoint/bucket/region/accessKey＋选填 publicEndpoint
+ * 外轨，F3 卡2 ㉕）＋STORAGE_SECRET 密钥，
+ * 任一必填缺失或非法 → 503 SKIPPED 中文诚实降级，不静默回落 local（避免运维误以为已上对象存储）。
  * MinioClient 懒装配，config hash 变化即重建；env（MEIYUN_STORAGE_DIRECT_*）为库外兜底。
+ *
+ * <p><b>tenant-ctx 链口径（㉕ 登记）：</b>租户/集团上下文（X-Tenant-Id、JWT group claim）
+ * 不经存储链路传递——隔离边界由 bucket 按库隔离（meiyun-core/meiyun-seed，V90 在案）＋
+ * 后端中介读写（render-file 流式回源走鉴权链）承担；预签名 URL 仅外轨 host 重写，
+ * 同 bucket 同 objectKey 签名绑 host 不绑租户，不越隔离边界。
  *
  * <p>读侧按定位符 bucket 回源路由（契约③）：local 固定桶 → 本地腿，其余 → S3 腿；
  * STORAGE_DIRECT 开关切换后历史渲染产物仍可回源，旧图不丢。
@@ -111,14 +117,16 @@ public class DelegatingStorageService implements StorageService {
         if (secret == null || secret.isBlank()) {
             throw skipped("STORAGE_SECRET 密钥未配置");
         }
-        String hash = sha256(cfg.endpoint() + "|" + cfg.bucket() + "|" + cfg.region() + "|" + cfg.accessKey() + "|" + secret);
+        String hash = sha256(cfg.endpoint() + "|" + nullToEmpty(cfg.publicEndpoint()) + "|" + cfg.bucket()
+                + "|" + cfg.region() + "|" + cfg.accessKey() + "|" + secret);
         if (s3 == null || !hash.equals(s3Hash)) {
             synchronized (this) {
                 if (s3 == null || !hash.equals(s3Hash)) {
-                    s3 = new S3StorageService(cfg.endpoint(), cfg.region(), cfg.accessKey(), secret);
+                    s3 = new S3StorageService(cfg.endpoint(), cfg.publicEndpoint(), cfg.region(), cfg.accessKey(), secret);
                     s3Hash = hash;
                     s3Bucket = cfg.bucket();
-                    log.info("对象存储直连 client 已装配 endpoint={} bucket={}", cfg.endpoint(), cfg.bucket());
+                    log.info("对象存储直连 client 已装配 endpoint={} publicEndpoint={} bucket={}",
+                            cfg.endpoint(), cfg.publicEndpoint() == null ? "(缺省=内轨)" : cfg.publicEndpoint(), cfg.bucket());
                 }
             }
         }
@@ -137,6 +145,7 @@ public class DelegatingStorageService implements StorageService {
         }
         String provider = text(node, "provider");
         String endpoint = text(node, "endpoint");
+        String publicEndpoint = text(node, "publicEndpoint");
         String bucket = text(node, "bucket");
         String region = text(node, "region");
         String accessKey = text(node, "accessKey");
@@ -146,6 +155,7 @@ public class DelegatingStorageService implements StorageService {
         if (endpoint == null) {
             throw skipped("STORAGE_DIRECT 扩展参数 endpoint 未配置");
         }
+        // publicEndpoint 选填（㉕ 外轨）：缺省=内轨 endpoint，仅预签名 URL 生成使用
         if (bucket == null) {
             throw skipped("STORAGE_DIRECT 扩展参数 bucket 未配置（按库隔离：meiyun-core / meiyun-seed）");
         }
@@ -155,12 +165,16 @@ public class DelegatingStorageService implements StorageService {
         if (accessKey == null) {
             throw skipped("STORAGE_DIRECT 扩展参数 accessKey 未配置");
         }
-        return new S3Config(endpoint, bucket, region, accessKey);
+        return new S3Config(endpoint, publicEndpoint, bucket, region, accessKey);
     }
 
     private static ResponseStatusException skipped(String reason) {
         return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                 "对象存储已启用但配置不完整，渲染上传暂不可用（SKIPPED）：" + reason);
+    }
+
+    private static String nullToEmpty(String s) {
+        return s == null ? "" : s;
     }
 
     private static String text(JsonNode node, String field) {
@@ -180,6 +194,6 @@ public class DelegatingStorageService implements StorageService {
         }
     }
 
-    private record S3Config(String endpoint, String bucket, String region, String accessKey) {
+    private record S3Config(String endpoint, String publicEndpoint, String bucket, String region, String accessKey) {
     }
 }
