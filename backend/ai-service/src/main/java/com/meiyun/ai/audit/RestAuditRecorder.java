@@ -55,7 +55,7 @@ public class RestAuditRecorder implements AuditRecorder {
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
         try {
-            restTemplate.postForEntity(auditBaseUrl + "/api/audit",
+            restTemplate.postForEntity(auditBaseUrl + "/api/audit/internal/entries",
                     new HttpEntity<>(body, headers), Map.class);
         } catch (Exception e) {
             log.error("审计追加失败 bizType={} txnNo={} : {}", bizType, txnNo, e.getMessage());

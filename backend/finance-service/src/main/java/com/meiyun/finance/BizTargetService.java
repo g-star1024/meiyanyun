@@ -46,7 +46,7 @@ public class BizTargetService {
             "REVENUE", "NEW_CUSTOMER", "REPURCHASE_RATE", "PROCEDURE_COUNT", "SATISFACTION");
     private static final Set<String> PERIODS = Set.of("YEAR", "QUARTER", "MONTH");
 
-    private static final ParameterizedTypeReference<List<Map<String, Object>>> LIST_MAP_TYPE =
+    private static final ParameterizedTypeReference<Map<String, String>> MAP_STRING_TYPE =
             new ParameterizedTypeReference<>() {};
 
     private final BizTargetRepository targetRepo;
@@ -433,16 +433,14 @@ public class BizTargetService {
         try {
             HttpHeaders h = new HttpHeaders();
             h.set("X-Internal-Token", internalToken);
-            ResponseEntity<List<Map<String, Object>>> resp = restTemplate.exchange(
-                    storeServiceUrl + "/api/stores", HttpMethod.GET,
-                    new HttpEntity<>(h), LIST_MAP_TYPE);
+            // F3 卡1：改调 store 域伞下全量端点（原带 token 调业务端点 GET /api/stores，
+            // 方案 A 收口后 token 对非 internal 路径不再授予身份）。
+            ResponseEntity<Map<String, String>> resp = restTemplate.exchange(
+                    storeServiceUrl + "/api/stores/internal/store-regions", HttpMethod.GET,
+                    new HttpEntity<>(h), MAP_STRING_TYPE);
             Map<String, String> out = new LinkedHashMap<>();
             if (resp.getBody() != null) {
-                for (Map<String, Object> s : resp.getBody()) {
-                    String code = str(s.get("storeCode"));
-                    String region = str(s.get("region"));
-                    if (code != null) out.put(code, region == null ? "" : region);
-                }
+                resp.getBody().forEach((code, region) -> out.put(code, region == null ? "" : region));
             }
             return out;
         } catch (Exception e) {

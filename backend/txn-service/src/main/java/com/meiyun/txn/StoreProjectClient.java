@@ -17,8 +17,9 @@ import java.util.Map;
 
 /**
  * txn → store SKU 目录客户端（B49 卡7 M1 大屏品类占比）：经 X-Internal-Token 以系统身份
- * （GROUP 全域 + perms=["*"]，meiyun-security AuthInterceptor 放行 brand:view）调
- * {@code GET /api/stores/skus} 空参全量列表，构建「SKU 名称 → serviceCategory 五枚举」映射，
+ * 调伞下端点 {@code GET /api/stores/internal/skus}（internal:catalog-read，F3 卡1 自业务端点
+ * {@code /api/stores/skus} 迁入——方案 A 后 token 对非 internal 路径不再授予身份），
+ * 空参全量列表，构建「SKU 名称 → serviceCategory 五枚举」映射，
  * 供 order_item.item_name 精确匹配归桶，免 join 品类表。
  *
  * <p>容错口径（与 StoreCatalogClient 售卡主链路 502 不同）：大屏品类占比是读侧富化，
@@ -64,7 +65,7 @@ public class StoreProjectClient {
             HttpHeaders headers = new HttpHeaders();
             headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
             List<Map<String, Object>> rows = restTemplate.exchange(
-                    storeBaseUrl + "/api/stores/skus", HttpMethod.GET, new HttpEntity<>(headers),
+                    storeBaseUrl + "/api/stores/internal/skus", HttpMethod.GET, new HttpEntity<>(headers),
                     new ParameterizedTypeReference<List<Map<String, Object>>>() {
                     }).getBody();
             Map<String, String> fresh = new HashMap<>();
@@ -154,7 +155,7 @@ public class StoreProjectClient {
 
     /**
      * ACTIVE 态 SKU → durationMin（分钟）映射（P5-B51 卡6：预约 sku_code 外键校验 +
-     * 派单时长真源）。同一 {@code /api/stores/skus} 空参全量数据源；刷新失败沿用旧缓存，
+     * 派单时长真源）。同一 {@code /api/stores/internal/skus} 空参全量数据源；刷新失败沿用旧缓存，
      * 首次失败返回空 Map——调用方口径：create 校验「查无 SKU 即 400」（与客户/门店外键
      * 同硬口径），派单时长「查无/为 0 回落 60 分钟」（软降级不阻塞调度主链路）。
      */
@@ -167,7 +168,7 @@ public class StoreProjectClient {
             HttpHeaders headers = new HttpHeaders();
             headers.set(AuthInterceptor.INTERNAL_TOKEN_HEADER, internalToken);
             List<Map<String, Object>> rows = restTemplate.exchange(
-                    storeBaseUrl + "/api/stores/skus", HttpMethod.GET, new HttpEntity<>(headers),
+                    storeBaseUrl + "/api/stores/internal/skus", HttpMethod.GET, new HttpEntity<>(headers),
                     new ParameterizedTypeReference<List<Map<String, Object>>>() {
                     }).getBody();
             Map<String, Integer> fresh = new HashMap<>();

@@ -61,7 +61,7 @@ public class CAuditRecorder {
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             headers.set("X-Internal-Token", props.getInternalToken());
-            restTemplate.postForEntity(auditServiceUrl + "/api/audit",
+            restTemplate.postForEntity(auditServiceUrl + "/api/audit/internal/entries",
                     new HttpEntity<>(body, headers), String.class);
         } catch (Exception e) {
             log.warn("审计主通道失败，落 audit_outbox 补偿：{}", e.getMessage());

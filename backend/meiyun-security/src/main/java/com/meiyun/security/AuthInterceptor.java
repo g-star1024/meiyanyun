@@ -14,9 +14,12 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 统一鉴权拦截器：
- * 1. 服务间内部调用携带 X-Internal-Token 且与配置一致时，按系统身份（"*" 全权限）放行；
- * 2. 否则从 Authorization: Bearer &lt;token&gt; 解析 JWT，写入 {@link SecurityContext}；
+ * 统一鉴权拦截器（F3 卡1 方案 A 身份维收口）：
+ * 1. /internal/ 伞下（/api/&lt;service&gt;/internal/**，与网关 router.go isInternalPath 同口径）
+ *    仅接受 X-Internal-Token 系统身份：匹配 → system（"*" 全权限）；不匹配 →
+ *    无 Bearer 401 / 有 Bearer（员工 JWT，含超管）403，人类身份一律不得调服务间端点；
+ * 2. 非 internal 路径：X-Internal-Token 一律忽略（不再授予系统身份），仅从
+ *    Authorization: Bearer &lt;token&gt; 解析 JWT，写入 {@link SecurityContext}；
  * 3. 方法/类上有 {@link RequirePerm} 时校验权限码，无 token → 401，有权限不足 → 403；
  * 4. 公共路径（public-paths，如 /api/org/auth/login）与 OPTIONS 预检直接放行；
  * 5. 请求线程归还线程池前一律清理 SecurityContext（同步 afterCompletion；异步 afterConcurrentHandlingStarted；
@@ -43,12 +46,23 @@ public class AuthInterceptor implements AsyncHandlerInterceptor {
         }
         LoginUser user = null;
         String internalToken = request.getHeader(INTERNAL_TOKEN_HEADER);
-        if (internalToken != null && !internalToken.isBlank()
-                && constantTimeEquals(internalToken, props.getInternalToken())) {
+        boolean tokenMatch = internalToken != null && !internalToken.isBlank()
+                && constantTimeEquals(internalToken, props.getInternalToken());
+        if (isInternalPath(request.getRequestURI())) {
+            // 方案 A①：伞下仅系统 token 身份可调；不匹配即拒（无 Bearer 401 / 员工 JWT 403），
+            // 不再回落 JWT 链——员工（含超管）直连服务间端点属越权场景，一律不放行。
+            if (!tokenMatch) {
+                String auth = request.getHeader("Authorization");
+                boolean hasBearer = auth != null && auth.startsWith("Bearer ");
+                writeError(response,
+                        hasBearer ? HttpServletResponse.SC_FORBIDDEN : HttpServletResponse.SC_UNAUTHORIZED,
+                        hasBearer ? "服务间内部端点不接受员工身份调用" : "服务间内部端点仅接受系统身份调用");
+                return false;
+            }
             user = new LoginUser("system", "系统服务", List.of(), null,
                     "GROUP", List.of("*"), false, null, List.of());
-        }
-        if (user == null) {
+        } else {
+            // 方案 A②：非伞下路径忽略 X-Internal-Token（不再授予系统身份），只认员工 JWT。
             String auth = request.getHeader("Authorization");
             if (auth != null && auth.startsWith("Bearer ")) {
                 String token = auth.substring(7).trim();
@@ -103,6 +117,24 @@ public class AuthInterceptor implements AsyncHandlerInterceptor {
     public void afterConcurrentHandlingStarted(HttpServletRequest request, HttpServletResponse response,
                                                Object handler) {
         SecurityContext.clear();
+    }
+
+    /**
+     * /internal/ 伞下判定（与网关 router.go isInternalPath 同口径）：
+     * /api/&lt;service&gt;/internal 或 /api/&lt;service&gt;/internal/**。九服务均无 context-path，
+     * getRequestURI() 即应用内路径。
+     */
+    private boolean isInternalPath(String uri) {
+        if (uri == null || !uri.startsWith("/api/")) {
+            return false;
+        }
+        String rest = uri.substring("/api/".length());
+        int slash = rest.indexOf('/');
+        if (slash < 0) {
+            return false;
+        }
+        String sub = rest.substring(slash + 1);
+        return sub.equals("internal") || sub.startsWith("internal/");
     }
 
     /** 令牌常量时间比较，避免时序侧信道；长度不等直接不等（长度本身非敏感）。 */

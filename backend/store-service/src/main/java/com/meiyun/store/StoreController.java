@@ -106,6 +106,20 @@ public class StoreController {
         return out;
     }
 
+    /**
+     * 全量门店 → 区域映射（服务间调用专用，F3 卡1）：finance 域经营目标按 GROUP 全量铺开 /
+     * 按 REGION 过滤时一次拉全。与 /internal/region-map（codes 指定查询，null → 空）分立——
+     * 全量语义独立端点，避免「忘传 codes 返回全量」的危险默认。
+     */
+    @GetMapping("/internal/store-regions")
+    @RequirePerm("internal:name-map")
+    public Map<String, String> storeRegions() {
+        Map<String, String> out = new LinkedHashMap<>();
+        storeRepository.findAll()
+                .forEach(s -> out.put(s.getStoreCode(), s.getRegion() == null ? "" : s.getRegion()));
+        return out;
+    }
+
     /** 六大区分布（含三层口径汇总，ID-2）。 */
     @GetMapping("/regions/dist")
     @RequirePerm("org:view")
